@@ -239,7 +239,8 @@ fn proton_env(steam_root: &Path, game_dir: Option<&Path>) -> Vec<(String, String
         ("UMU_ID".into(), "umu-default".into()),
         ("UMU_USE_STEAM".into(), "0".into()),
         ("PROTON_LOG".into(), "0".into()),
-        ("WINEDEBUG".into(), "-all".into()),
+        // Quiet, but for OpenXR's warnings and errors: they say why VR didn't start.
+        ("WINEDEBUG".into(), "-all,err+openxr,warn+openxr".into()),
     ];
     if let Some(dir) = game_dir {
         env.push(("STEAM_COMPAT_INSTALL_PATH".into(), s(dir)));
