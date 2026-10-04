@@ -47,8 +47,8 @@ from PIL import Image
 HERE = Path(__file__).resolve().parent
 CONFIG_PATH = HERE / "config.json"
 CREDS_PATH = Path(os.environ.get("FEED_CREDS", HERE / ".bot.creds"))
-OUT_DIR = Path(os.environ.get("FEED_OUT", "/var/www/EchoClientHosting/launcher/feed"))
-LOG_PATH = Path(os.environ.get("FEED_LOG", "/root/log/launcher_feed.log"))
+OUT_DIR = Path(os.environ.get("FEED_OUT", "/var/www/release/launcher/feed"))
+LOG_PATH = Path(os.environ.get("FEED_LOG", "/var/log/echo-launcher/launcher_feed.log"))
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "guild": 779349159852769310,

@@ -1,5 +1,5 @@
 [Unit]
-Description=Echo VR launcher log uploads (files.echovr.de/launcher/logs, behind Apache)
+Description=Echo VR launcher log uploads (release.echovr.de/launcher/logs, behind nginx)
 After=network-online.target clamav-daemon.service
 Wants=network-online.target clamav-daemon.service
 

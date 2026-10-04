@@ -16,7 +16,7 @@ from pathlib import Path
 
 import log_upload as lu
 
-UA = "EchoVR-Installer/0.10.0"
+UA = "EchoVR-Launcher/0.10.0"
 LAUNCHER_LOG = (
     "2026-10-03T10:00:00.123456Z  INFO ---- Echo VR Launcher v0.10.0 starting ----\n"
     "2026-10-03T10:00:01.000000Z  WARN couldn't reach the feed: timed out\n"
@@ -260,6 +260,23 @@ class Checks(unittest.TestCase):
         self.assertEqual(b"".join(parts), long)
         self.assertTrue(all(len(p) <= 1024 for p in parts))
 
+    def test_json_payloads_are_set_aside(self):
+        line = b'[10-04-2026] [17:17:47]: [NSUSER] saved x.json: {"newunlocks":[-9113421417707657637,-8872509825382237577],"a":true}'
+        self.assertEqual(lu.without_json(line + b"\n"), b"[10-04-2026] [17:17:47]: [NSUSER] saved x.json: {}\n")
+        # Cut off by the game's log filter mid-string, the next message run on: still data.
+        cut = b'[10-04-2026] [17:17:47]: [NSUSER] saved s.json: {"loadout":{"slots":{"emote":"emote_' + b"x" * 80
+        self.assertEqual(lu.without_json(cut + b" from peer, disconnecting"), b"[10-04-2026] [17:17:47]: [NSUSER] saved s.json: {}")
+        # Short bracket runs and code stay (and are checked).
+        for keep in [b"if (x) { run(); }", b"[10-04-2026] [17:17:46]: ======= Build ('r') =======",
+                     b"function f(a) { return eval(atob(a)) + document.cookie; } f('" + b"QQ" * 40 + b"')"]:
+            self.assertEqual(lu.without_json(keep), keep)
+
+    def test_user_agents(self):
+        for ua in ["EchoVR-Launcher/0.10.0", "EchoVR-Installer/0.9.5-001"]:
+            self.assertTrue(lu.USER_AGENT.fullmatch(ua), ua)
+        for ua in ["curl/8.0", "EchoVR-Launcher/x", "EchoVR-Launcher/0.10.0 extra"]:
+            self.assertFalse(lu.USER_AGENT.fullmatch(ua), ua)
+
     def test_forbidden_characters(self):
         for ch in "\x00\x07\x1b\x7f\x85\x9b­؜​‎‪‮⁦⁩  ﻿\U000e0001":
             self.assertTrue(lu.FORBIDDEN.search(ch), repr(ch))
@@ -276,7 +293,11 @@ class Checks(unittest.TestCase):
         echo = "".join(
             f"[10-03-2026] [10:{i // 60 % 60:02d}:{i % 60:02d}]: [NETGAME] NetGame switching state "
             f"(from logged in, to lobby) session={i}\r\n" for i in range(3000)).encode()
-        for log in [(LAUNCHER_LOG * 400).encode(), echo]:
+        # The game's profile line: one JSON payload of tens of KiB.
+        profile = ('[10-04-2026] [17:17:47]: [NSUSER] saved clientprofile.json: {"newunlocks":['
+                   + ",".join(str(-9113421417707657637 + i * 7919) for i in range(2000))
+                   + '],' + ",".join(f'"decal_{i}_a":true' for i in range(800)) + "}\n").encode()
+        for log in [(LAUNCHER_LOG * 400).encode(), echo, lu.without_json(profile)]:
             for part in [log, *lu.segments(log)]:
                 self.assertIsNone(code(part))
         for script in [

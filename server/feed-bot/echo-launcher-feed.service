@@ -1,13 +1,15 @@
 [Unit]
-Description=Echo VR launcher feed (Discord -> files.echovr.de/launcher/feed)
+Description=Echo VR launcher feed (Discord -> release.echovr.de/launcher/feed/news.json)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/root/EchoLauncherFeed
-ExecStart=/root/EchoLauncherFeed/.venv/bin/python /root/EchoLauncherFeed/feed_bot.py
+WorkingDirectory=/opt/echo-launcher-feed
+ExecStart=/opt/echo-launcher-feed/.venv/bin/python /opt/echo-launcher-feed/feed_bot.py
 Environment=PYTHONUNBUFFERED=1
+Environment=FEED_OUT=/var/www/release/launcher/feed
+Environment=FEED_LOG=/var/log/echo-launcher/launcher_feed.log
 Restart=always
 RestartSec=10
 NoNewPrivileges=true

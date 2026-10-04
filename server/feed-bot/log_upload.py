@@ -22,7 +22,9 @@ It is checked while it streams in, and kept only when every check passed:
    ClamAV (clamd) as it arrives. The first violation ends the upload.
 3. Each finished file: ClamAV's verdict, then Magika (Google's file type detection) on the
    whole file and on every 2 KiB segment of it (Magika only reads the first and last
-   1 KiB of what it is given, so this way it sees every byte). Code, a script or markup
+   1 KiB of what it is given, so this way it sees every byte), with each line's JSON
+   payload set aside (the game logs settings and profiles as long JSON lines, which cut
+   into segments look like JavaScript to the model). Code, a script or markup
    it is confident of, anywhere, refuses the file. (Its confidence thresholds are its own:
    on real logs the model's raw guesses are noise -- a log segment can look 79% like
    SQL -- while scripts score 0.98 and more.)
@@ -93,7 +95,8 @@ DATA = {"csv", "tsv", "json", "jsonl", "ini", "toml", "yaml"}
 KINDS = {"launcher", "echo", "echoxr", "quest", "plugin"}
 NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
 FILE_LINE = re.compile(rb"FILE ([a-z]{1,16})/([A-Za-z0-9._-]{1,100}) ([0-9]{1,9})")
-USER_AGENT = re.compile(r"EchoVR-Installer/[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}([-+][0-9A-Za-z.-]{1,32})?")
+# The launcher (older builds still say "Installer").
+USER_AGENT = re.compile(r"EchoVR-(Launcher|Installer)/[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,6}([-+][0-9A-Za-z.-]{1,32})?")
 CODE = re.compile(r"[2-9A-HJ-NP-Z]{8}")
 CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 BASE64 = re.compile(rb"[A-Za-z0-9+/=]{%d,}" % BASE64_RUN)
@@ -288,9 +291,67 @@ def segments(data: bytes, size: int = SEGMENT) -> Iterable[bytes]:
         start = end
 
 
+# What may stand outside a string in JSON: brackets, separators, numbers, true/false/null.
+JSONISH = frozenset(b" \t{}[],:-+.0123456789eEtrufalsn")
+# A JSON-like run shorter than this stays (a time stamp's "[10-04-2026]" is one).
+JSON_RUN_MIN = 64
+
+
+def json_run(body: bytes, at: int) -> int:
+    """Where the JSON-like run starting at `at` (a `{` or `[`) ends: at the bracket that
+    closes it, at the first byte JSON can't have outside a string, or at the line's end
+    (the game's log filter cuts long lines, sometimes mid-string)."""
+    depth, in_str, esc = 0, False, False
+    for i in range(at, len(body)):
+        c = body[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == 0x5C:
+                esc = True
+            elif c == 0x22:
+                in_str = False
+        elif c == 0x22:
+            in_str = True
+        elif c in b"{[":
+            depth += 1
+        elif c in b"}]":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        elif c not in JSONISH:
+            return i
+    return len(body)
+
+
+def without_json(data: bytes) -> bytes:
+    """`data` with each line's JSON payloads (runs of JSON of at least JSON_RUN_MIN bytes,
+    complete or cut off) replaced by `{}`. The game logs its settings and the player's
+    profiles as JSON, lines of tens of KiB: cut into segments, those are JSON fragments
+    Magika takes for JavaScript. JSON is data; the rest of the line is checked."""
+    out = []
+    for line in data.split(b"\n"):
+        i, tries = 0, 0
+        while tries < 50:
+            starts = [p for p in (line.find(b"{", i), line.find(b"[", i)) if p >= 0]
+            if not starts:
+                break
+            at = min(starts)
+            end = json_run(line, at)
+            if end - at >= JSON_RUN_MIN:
+                line = line[:at] + b"{}" + line[end:]
+                i = at + 2
+            else:
+                i = at + 1
+            tries += 1
+        out.append(line)
+    return b"\n".join(out)
+
+
 def check_kind(path: Path, code_of: Callable[[bytes], Optional[str]]) -> None:
-    """Magika on a finished file: as a whole, and every segment of it."""
-    data = path.read_bytes()
+    """Magika on a finished file (its JSON payloads aside): as a whole, and every segment
+    of it."""
+    data = without_json(path.read_bytes())
     for part in [data, *segments(data)]:
         code = code_of(part)
         if code:

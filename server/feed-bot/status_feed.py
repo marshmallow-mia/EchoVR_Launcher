@@ -50,9 +50,9 @@ import echovrce
 
 HERE = Path(__file__).resolve().parent
 API = os.environ.get("STATUS_API", "https://g.echovrce.com/status/matches")
-OUT = Path(os.environ.get("FEED_OUT", "/var/www/EchoClientHosting/launcher/feed")) / "servers.json"
+OUT = Path(os.environ.get("FEED_OUT", "/var/www/release/launcher/feed")) / "servers.json"
 STATE = Path(os.environ.get("STATUS_STATE", HERE / "state"))
-LOG_PATH = Path(os.environ.get("STATUS_LOG", "/root/log/launcher_status.log"))
+LOG_PATH = Path(os.environ.get("STATUS_LOG", "/var/log/echo-launcher/launcher_status.log"))
 EVERY_S = 30
 LOG_DAYS = 30
 HISTORY_S = 30 * 86400
