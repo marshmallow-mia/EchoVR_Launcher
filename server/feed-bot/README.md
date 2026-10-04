@@ -9,7 +9,7 @@ certificate); Pangolin (newt) forwards `release.echovr.de` to it. The old instal
 `files.echo`, which redirects the moved paths here. [Terms of Service](TERMS.md) ·
 [Privacy Policy](PRIVACY.md).
 
-- **`servers.json`** (SERVER INFO): `status_feed.py` as `echo-launcher-status.service`.
+- **`servers.json`** (RIGHT NOW): `status_feed.py` as `echo-launcher-status.service`.
   It reads the EchoVRCE status API every 30 s and publishes aggregate numbers only, plus
   distinct players per hour, 24 h and 30 days, counted with keyed-hash pseudonyms kept 30
   days in `state/` (the key is `state/history.key`; never copy it off the server). No

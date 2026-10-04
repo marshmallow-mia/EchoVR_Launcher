@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Server status for the launcher's SERVER INFO panel.
+"""Server status for the launcher's RIGHT NOW panel.
 
 Polls the EchoVRCE status API (https://g.echovrce.com/status/matches) and writes aggregate
 numbers only to servers.json next to the other feed files: servers and how busy they are

@@ -1,6 +1,6 @@
 # Privacy Policy: Echo VR Launcher Feed
 
-*Last updated: October 3, 2026*
+*Last updated: October 4, 2026*
 
 This policy explains what personal data the Echo VR Launcher Feed processes, why, and what
 your rights are. The feed has three parts:
@@ -8,7 +8,7 @@ your rights are. The feed has three parts:
 - **The Discord bot ("the Bot"):** it copies the community news messages that moderators
   pick.
 - **The status service:** it turns the public EchoVRCE server status into the numbers
-  shown under SERVER INFO.
+  shown under RIGHT NOW.
 - **The log upload service:** it receives the logs a player chooses to send with "Upload
   logs" in the launcher, to help them with a problem.
 
@@ -29,6 +29,9 @@ Email: echo@mia-hentschel.de
   Discord server.
 - No names, usernames or IDs of players or authors are published, and none are used for
   advertising, profiling or tracking. No data is sold or shared. No cookies are set.
+- The launcher's Friends page (finding players, friend requests, the players of your last
+  matches) talks to EchoVRCE directly with your own session. None of it passes through
+  the feed, and the launcher keeps it only in memory while it runs.
 
 ## Data processed, purposes and legal basis
 
