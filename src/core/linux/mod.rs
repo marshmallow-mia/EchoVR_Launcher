@@ -313,6 +313,12 @@ pub fn play_from_steam() -> i32 {
     }
     let result = echoxr::game_command(&steam_root, &v.bin_dir(), &args, start).and_then(|mut c| {
         tracing::info!("--play: {c:?}");
+        // Proton's and the game's own output (OpenXR's warnings among it), for this run.
+        if let Ok(out) = std::fs::File::create(crate::core::paths::log_dir().join("proton.log")) {
+            if let Ok(err) = out.try_clone() {
+                c.stdout(out).stderr(err);
+            }
+        }
         Ok(c.status()?)
     });
     if let Some(mut b) = bridge {

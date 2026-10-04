@@ -41,14 +41,16 @@ const PLUGIN_FILES: usize = 3;
 const PLUGIN_TOTAL: usize = 8;
 const RECENT: Duration = Duration::from_secs(14 * 24 * 3600);
 
-/// The launcher's own logs, as `core::log` writes and rotates them.
-const LAUNCHER_LOGS: [&str; 6] = [
+/// The launcher's own logs, as `core::log` writes and rotates them, and Proton's output
+/// of the last Linux start.
+const LAUNCHER_LOGS: [&str; 7] = [
     "EchoVR_Launcher.log",
     "EchoVR_Launcher.log.1",
     "play.log",
     "play.log.1",
     "admin-helper.log",
     "admin-helper.log.1",
+    "proton.log",
 ];
 
 /// nEVR's newest logs of a start and crash records, from the last two weeks.
