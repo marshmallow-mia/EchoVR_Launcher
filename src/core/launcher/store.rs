@@ -63,6 +63,17 @@ pub struct LaunchProfile {
     pub extra_args: String,
 }
 
+impl LaunchProfile {
+    /// Whether hand tracking (`wanted`: EchoXR Hands is on) plays along with a start
+    /// like this: in VR through EchoXR on SteamVR, whose finger data it reads. On
+    /// Windows that's SteamVR through EchoXR; on Linux, SteamVR (not WiVRn).
+    pub fn hands(&self, wanted: bool) -> bool {
+        wanted
+            && self.runtime == Runtime::Revive
+            && (cfg!(target_os = "linux") || self.steamvr_via == SteamVrVia::EchoXr)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct InstalledVersion {
@@ -152,6 +163,8 @@ pub struct LauncherState {
     /// Event builds can be installed. Off (the default, and the first release's), they
     /// are listed as coming soon; `"event_builds": true` in this file turns them on.
     pub event_builds: bool,
+    /// EchoXR Hands is on (Mods page): it plays along whenever EchoXR runs on SteamVR.
+    pub echoxr_hands: bool,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -197,6 +210,7 @@ impl Default for LauncherState {
             spark_links_off: false,
             relay_server: super::relay::DEFAULT_SERVER.into(),
             event_builds: false,
+            echoxr_hands: false,
             relay_account: None,
         }
     }

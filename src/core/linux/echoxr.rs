@@ -376,6 +376,22 @@ fn drives() -> Vec<(char, PathBuf)> {
         .collect()
 }
 
+/// A Windows program run through Proton in Echo VR's prefix, beside the game (EchoXR
+/// Hands' finger bridge).
+pub fn proton_run(steam_root: &Path, program: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new(proton_dir().join("proton"));
+    c.arg("run")
+        .arg(program)
+        .envs(proton_env(steam_root, None))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    if let Some(dir) = program.parent() {
+        c.current_dir(dir);
+    }
+    c
+}
+
 /// The command that starts Echo VR from its bin folder `bin` through Proton, with `args`
 /// for the game, the way `start` says (see [`Start`]). In VR, `EchoXR.exe` makes
 /// `echovr_openxr.exe` on its first run, turns Proton's OpenXR on itself (no OpenVR

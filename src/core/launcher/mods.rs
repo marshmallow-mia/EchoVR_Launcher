@@ -804,7 +804,7 @@ fn plugin(
 /// `_local/config.json` (an obsolete EchoVRCE one is set aside so nEVR's built-in one,
 /// with friends and parties, applies; with `own_game_config` yours is used), and writes
 /// `config.yaml`. Without nEVR there is nothing to do.
-pub fn before_start(v: &InstalledVersion, own_game_config: bool) -> Result<()> {
+pub fn before_start(v: &InstalledVersion, own_game_config: bool, hands: bool) -> Result<()> {
     let bin = v.bin_dir();
     if !nevr_in(&bin) {
         // Without nEVR the game needs its config again (Verify put the stock DLL back).
@@ -831,6 +831,10 @@ pub fn before_start(v: &InstalledVersion, own_game_config: bool) -> Result<()> {
             tracing::info!("your _local/config.json is back (Use my own config.json)")
         }
         nevr::GameConfigStep::Nothing => {}
+    }
+    // EchoXR Hands' plugin in plugins/ for this start, or out of it; nEVR's list follows.
+    if let Err(e) = crate::core::echoxr_hands::apply(&bin, hands) {
+        tracing::warn!("hand tracking: {e:#}");
     }
     prepare(v)
 }
@@ -1545,7 +1549,7 @@ mod tests {
         let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
         // The old loader's place: nEVR won't start beside it, so it goes.
         std::fs::write(bin.join("dbgcore.dll"), "MZ EchoLoader 1").unwrap();
-        before_start(&v, false).unwrap();
+        before_start(&v, false, false).unwrap();
         assert!(!bin.join("dbgcore.dll").exists());
         assert!(bin.join("plugins/dbgcore.dll").exists());
         let text = std::fs::read_to_string(&yaml).unwrap();
@@ -1592,7 +1596,7 @@ mod tests {
         // Without nEVR, nothing is written.
         std::fs::write(bin.join(SLOT), "MZ stock").unwrap();
         std::fs::remove_file(&yaml).unwrap();
-        before_start(&v, false).unwrap();
+        before_start(&v, false, false).unwrap();
         assert!(!yaml.exists());
     }
 
