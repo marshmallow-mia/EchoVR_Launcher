@@ -333,14 +333,13 @@ pub fn parse_match(entry: &Value) -> Option<Match> {
 /// players, scores and server, and every game server. The match list behind the session
 /// (`/v2/match`) names no players any more.
 fn status() -> Result<Value> {
-    let a = api()?;
-    let url = format!(
-        "{}/status/matches",
-        a.base.trim_end_matches('/').trim_end_matches("/v2")
-    );
-    let (code, body) = call(reqwest::Method::GET, &url, None, None)?;
+    let (code, body) = call(reqwest::Method::GET, STATUS_URL, None, None)?;
     answer(code, body)
 }
+
+/// The public status, on the service's web port (its API is on 7350); the feed's status
+/// service reads it too.
+const STATUS_URL: &str = "https://g.echovrce.com/status/matches";
 
 /// Pure: the matches of the public status, as `parse_match` reads them.
 pub fn parse_status_matches(status: &Value) -> Vec<Match> {
