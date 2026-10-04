@@ -25,8 +25,11 @@ fn main() {
         }
     }
 
-    // Linux: Steam's shortcut runs the launcher to start the game (see core::linux).
-    if args.get(1).map(String::as_str) == Some(core::linux::PLAY_FLAG) {
+    // Linux: Steam's shortcut runs the launcher to start the game (see core::linux), with
+    // --play, or without it once Steam has dropped the shortcut's launch options.
+    if args.get(1).map(String::as_str) == Some(core::linux::PLAY_FLAG)
+        || (args.len() == 1 && core::linux::started_for_shortcut())
+    {
         core::log::init("play.log");
         std::process::exit(core::linux::play_from_steam());
     }
