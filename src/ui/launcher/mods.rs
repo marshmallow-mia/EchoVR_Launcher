@@ -119,7 +119,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         .filter(|(id, ..)| *id == v.id)
         .map(|(_, view, _)| view.clone());
     let (half, dy) = (kit.dx(), kit.dy());
-    loader_card(d, kit, ctx, &v, view.as_ref(), LOADER.wider(half));
+    loader_card(d, kit, &v, view.as_ref(), LOADER.wider(half));
     plugins_card(
         d,
         kit,
@@ -281,7 +281,6 @@ fn not_available(d: &mut Dashboard, kit: &mut Kit, v: Option<&InstalledVersion>)
 fn loader_card(
     d: &mut Dashboard,
     kit: &mut Kit,
-    ctx: &egui::Context,
     v: &InstalledVersion,
     view: Option<&ModView>,
     r: Dr,
@@ -311,7 +310,6 @@ fn loader_card(
 
     // Left: the main action (or the switch); right: the folders.
     let by = bottom - BTN_H;
-    let busy = busy(d, v);
     match &view.loader {
         Loader::Nevr { .. } => {
             let mut off = !view.enabled;
@@ -340,35 +338,8 @@ fn loader_card(
                 d.save();
             }
         }
-        Loader::None => {
-            let label = "Install mod loader";
-            let updates = crate::core::launcher::versions::has_updates(v);
-            let tip = match (busy, updates) {
-                (Some(why), _) => why,
-                (None, false) => "This version doesn't get the community update",
-                (None, true) => "Runs the community update, which brings the mod loader",
-            };
-            let bw = kit
-                .button_width(label, Some(Icon::Download), BTN_H)
-                .max(dz(260.0));
-            if kit
-                .button(
-                    "mods-loader",
-                    x,
-                    by,
-                    bw,
-                    BTN_H,
-                    Tone::Go,
-                    Some(Icon::Download),
-                    label,
-                    busy.is_none() && updates,
-                    tip,
-                )
-                .clicked
-            {
-                versions::update(d, ctx, v.clone());
-            }
-        }
+        // The community update brings it: nothing to do here.
+        Loader::None => {}
         Loader::Unknown => {}
     }
     let bin = v.bin_dir();
@@ -442,7 +413,7 @@ fn loader_text(view: &ModView) -> String {
                 None => format!("It hasn't started yet: what it loads shows here after you PLAY. {about}"),
             }
         }
-        Loader::None => "Echo VR runs without plugins. The community update brings nEVR runtime: Discord sign-in, friends and parties in the game, and plugins (asset patches).".into(),
+        Loader::None => "Echo VR runs without plugins for now. nEVR runtime (Discord sign-in, friends and parties in the game, and plugins) comes with the community update, the next time this version updates.".into(),
         Loader::Unknown => "BugSplat64.dll here is neither the game's nor nEVR runtime. Verify on the Install page puts the right one back.".into(),
     }
 }
