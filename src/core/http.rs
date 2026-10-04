@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::{Client, Response};
 
-pub const USER_AGENT: &str = concat!("EchoVR-Installer/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("EchoVR-Launcher/", env!("CARGO_PKG_VERSION"));
 
 /// How long a body may go without delivering a byte before the transfer is abandoned.
 pub const STALL_TIMEOUT: Duration = Duration::from_secs(60);
