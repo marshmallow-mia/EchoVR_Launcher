@@ -33,8 +33,7 @@ pub const DBGCORE: &str = "dbgcore.dll";
 pub const GAME_CONFIG: &str = "config.json";
 /// Where a game config nEVR replaces is kept.
 pub const GAME_CONFIG_ASIDE: &str = "config.json.pre-nevr";
-/// What the EchoRelay-era game config held (the archive's, and the personalized copies
-/// with a Discord id in the login host): services nEVR points elsewhere anyway.
+/// What the EchoRelay-era game config held: the service hosts and the build lock.
 const SERVICE_KEYS: [&str; 9] = [
     "apiservice_host",
     "configservice_host",
@@ -149,28 +148,71 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Pure: whether a game config (its text) holds only the EchoRelay-era service settings.
-pub fn service_only_config(text: &str) -> bool {
-    match serde_json::from_str::<Value>(text) {
-        Ok(Value::Object(o)) => o.keys().all(|k| SERVICE_KEYS.contains(&k.as_str())),
-        _ => false,
-    }
+/// Pure: whether a game config (its text) is an obsolete EchoVRCE one: nothing but the
+/// EchoRelay-era service settings, every host on echovrce.com (the archive's, and the
+/// personalized copies with a Discord id in the login host). One pointing at another
+/// server, or with anything else in it, is someone's own.
+pub fn obsolete_echovrce_config(text: &str) -> bool {
+    let Ok(Value::Object(o)) = serde_json::from_str::<Value>(text) else {
+        return false;
+    };
+    o.iter().all(|(k, v)| {
+        SERVICE_KEYS.contains(&k.as_str())
+            && (!k.ends_with("_host") || v.as_str().is_some_and(on_echovrce))
+    })
 }
 
-/// Moves `v`'s `_local/config.json` aside (to `config.json.pre-nevr`) when it holds only
-/// the EchoRelay-era service settings: nEVR then uses its built-in game config. One with
-/// anything else in it stays. Returns whether it moved.
-pub fn set_aside_game_config(v: &InstalledVersion) -> Result<bool> {
+/// Whether `url`'s host is echovrce.com or one of its subdomains.
+fn on_echovrce(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(h, _)| h)
+        .to_ascii_lowercase();
+    host == "echovrce.com" || host.ends_with(".echovrce.com")
+}
+
+/// What [`arrange_game_config`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameConfigStep {
+    Nothing,
+    /// An obsolete EchoVRCE config went to `config.json.pre-nevr`.
+    SetAside,
+    /// "Use my own config.json": the one set aside earlier is back.
+    Restored,
+}
+
+/// Before a start of `v`: with `own` (Settings: "Use my own config.json") the game's
+/// config stays, and one set aside earlier is put back; otherwise an obsolete EchoVRCE
+/// config is set aside, so nEVR uses its built-in one (friends and parties on).
+pub fn arrange_game_config(v: &InstalledVersion, own: bool) -> Result<GameConfigStep> {
     let path = local_dir(v).join(GAME_CONFIG);
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(false);
-    };
-    if !service_only_config(&text) {
-        return Ok(false);
-    }
     let aside = local_dir(v).join(GAME_CONFIG_ASIDE);
+    if own {
+        if !path.exists() && aside.is_file() {
+            std::fs::rename(&aside, &path)
+                .with_context(|| format!("put {} back", path.display()))?;
+            return Ok(GameConfigStep::Restored);
+        }
+        return Ok(GameConfigStep::Nothing);
+    }
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(GameConfigStep::Nothing);
+    };
+    if !obsolete_echovrce_config(&text) {
+        return Ok(GameConfigStep::Nothing);
+    }
     std::fs::rename(&path, &aside).with_context(|| format!("move {} aside", path.display()))?;
-    Ok(true)
+    Ok(GameConfigStep::SetAside)
+}
+
+/// The game config nEVR loads for `v` (the first `config.json` in its search), if any.
+pub fn game_config_in_use(v: &InstalledVersion) -> Option<PathBuf> {
+    search(v)
+        .into_iter()
+        .map(|d| d.join(GAME_CONFIG))
+        .find(|p| p.is_file())
 }
 
 // ---- config.yaml ----
@@ -705,24 +747,50 @@ mod tests {
     }
 
     #[test]
-    fn sets_aside_only_the_old_service_config() {
+    fn sets_aside_only_obsolete_echovrce_configs() {
         // The archive's, and a personalized copy (a Discord id in the login host).
-        let archive = r#"{"apiservice_host":"http://g.echovrce.com:80/api","configservice_host":"ws://g.echovrce.com:80/config","loginservice_host":"ws://g.echovrce.com:80/login","matchingservice_host":"ws://g.echovrce.com:80/matching","serverdb_host":"ws://g.echovrce.com:80/serverdb","transactionservice_host":"ws://g.echovrce.com:80/transaction","publisher_lock":"echovrce"}"#;
-        assert!(service_only_config(archive));
-        assert!(!service_only_config(r#"{"publisher_lock":"x","fov":90}"#));
-        assert!(!service_only_config("not json"));
+        let archive = r#"{"apiservice_host":"http://g.echovrce.com:80/api","configservice_host":"ws://g.echovrce.com:80/config","loginservice_host":"ws://g.echovrce.com:80/login?discordid=1&password=x","matchingservice_host":"ws://g.echovrce.com:80/matching","serverdb_host":"ws://g.echovrce.com:80/serverdb","transactionservice_host":"ws://g.echovrce.com:80/transaction","publisher_lock":"echovrce"}"#;
+        assert!(obsolete_echovrce_config(archive));
+        // Another server, extra keys, a look-alike host, not JSON: someone's own.
+        let private = archive.replace("g.echovrce.com", "relay.example.org");
+        assert!(!obsolete_echovrce_config(&private));
+        assert!(!obsolete_echovrce_config(
+            r#"{"publisher_lock":"x","fov":90}"#
+        ));
+        assert!(!obsolete_echovrce_config(
+            r#"{"loginservice_host":"ws://echovrce.com.evil.net/login"}"#
+        ));
+        assert!(!obsolete_echovrce_config("not json"));
 
         let dir = tempfile::tempdir().unwrap();
         let v = version_at(dir.path());
-        assert!(!set_aside_game_config(&v).unwrap());
+        assert_eq!(
+            arrange_game_config(&v, false).unwrap(),
+            GameConfigStep::Nothing
+        );
         std::fs::create_dir_all(local_dir(&v)).unwrap();
         let path = local_dir(&v).join(GAME_CONFIG);
         std::fs::write(&path, archive).unwrap();
-        assert!(set_aside_game_config(&v).unwrap());
-        assert!(!path.exists());
-        assert!(local_dir(&v).join(GAME_CONFIG_ASIDE).exists());
-        std::fs::write(&path, r#"{"publisher_lock":"x","fov":90}"#).unwrap();
-        assert!(!set_aside_game_config(&v).unwrap());
+        assert_eq!(
+            arrange_game_config(&v, false).unwrap(),
+            GameConfigStep::SetAside
+        );
+        assert!(!path.exists() && game_config_in_use(&v).is_none());
+        // "Use my own config.json": it comes back, and then stays.
+        assert_eq!(
+            arrange_game_config(&v, true).unwrap(),
+            GameConfigStep::Restored
+        );
+        assert_eq!(game_config_in_use(&v), Some(path.clone()));
+        assert_eq!(
+            arrange_game_config(&v, true).unwrap(),
+            GameConfigStep::Nothing
+        );
+        std::fs::write(&path, &private).unwrap();
+        assert_eq!(
+            arrange_game_config(&v, false).unwrap(),
+            GameConfigStep::Nothing
+        );
         assert!(path.exists());
     }
 

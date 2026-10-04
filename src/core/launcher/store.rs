@@ -130,6 +130,9 @@ pub struct LauncherState {
     pub imported: bool,
     /// Minimize the launcher window once Echo VR has started.
     pub minimize_on_launch: bool,
+    /// Echo VR uses your own `_local/config.json`: with nEVR, the launcher doesn't set an
+    /// EchoVRCE-era one aside (nEVR's built-in config, with friends and parties, is off).
+    pub own_game_config: bool,
     /// Owns Echo VR on a Meta account (`Some(false)`: a new player, who needs the
     /// licence patch). `None` until asked: at an install, or a version's first PLAY.
     pub owner: Option<bool>,
@@ -190,6 +193,7 @@ impl Default for LauncherState {
             last_lobby: String::new(),
             imported: false,
             minimize_on_launch: true,
+            own_game_config: false,
             owner: None,
             revive_artwork: true,
             revive_library: true,

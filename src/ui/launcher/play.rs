@@ -1147,7 +1147,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     }
     // The live build with nEVR: its plugins list (config.yaml) as the Mods page has it.
     if v.publisher_lock.is_none() {
-        if let Err(e) = crate::core::launcher::mods::before_start(&v) {
+        if let Err(e) = crate::core::launcher::mods::before_start(&v, d.state.own_game_config) {
             d.dialogs.error(
                 "Couldn't prepare the mods",
                 &format!("{e:#}"),

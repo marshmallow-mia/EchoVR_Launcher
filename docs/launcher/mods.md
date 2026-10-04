@@ -16,7 +16,7 @@ put them back, Verify reports any change. The launcher never edits them. It writ
 
 | File | What it holds |
 |---|---|
-| `_local/config.yaml` (the game's `_local`) | nEVR's plugin list, written before every start from the plugins in `bin/win10/plugins` and the launcher's choices; `plugins: []` with mods off |
+| `_local/config.yaml` (the game's `_local`) | nEVR's plugin list, written before every start from the plugins in `bin/win10/plugins` and the launcher's choices; with mods off only the required plugins (NvrAssetPatches with `required_only`) |
 | `_local/launcher-mods.json` | the choices: "Start without mods" (`enabled`), a plugin on or off and its arguments (`overrides`), the plugins it added (`add`, each with its `sha256`) |
 | `_local/.credentials.json` | the game's own EchoVRCE sign-in (see below) |
 | `bin/win10/asset_patches/manifest.local.json` | every asset patch, or one of them, on or off |
@@ -29,6 +29,26 @@ Every DLL in `plugins/` is listed (on unless turned off), except EchoRelay's
 disk. That is what makes it removable: REMOVE deletes only such files, never one the update
 ships. Before every start the launcher checks an added plugin against its `sha256` and
 leaves it out of `config.yaml` when the file changed.
+
+**Required plugins.** The catalogue marks plugins the game needs (`"required": true`:
+NvrAssetPatches for the netgun fixes, NvrXmlHttpFix for windowed mode under nEVR 4.0.0).
+They can't be turned off, an old "off" choice is ignored and dropped, and they stay in
+`config.yaml` with mods off. Inside NvrAssetPatches the update's
+`asset_patches/manifest.json` marks patches `required` (the `netgun_*` ones): the plugin
+loads them whatever `manifest.local.json` says, and the page shows them locked.
+
+**Arguments.** A plugin's defaults are the catalogue's `args` for its file, written into
+`config.yaml` unless you changed them. The Options editor resets one argument (or takes
+out one that isn't a default) and has "Reset to default" for all of them. The launcher keeps
+the last catalogue it fetched (`mods.json` in its data folder) to use offline before a
+start.
+
+**The game's own config.** nEVR doesn't need `_local/config.json`: without one it supplies
+its built-in game config, with friends, parties, presence and matchmaking on. Before PLAY
+the launcher moves an obsolete EchoVRCE one aside (to `config.json.pre-nevr`): only the old
+service hosts and `publisher_lock`, every host on echovrce.com. One pointing at another
+server, or with anything else in it, stays and nEVR uses it. "Use my own config.json" on the
+Mods page turns the moving off and puts a file moved aside back.
 
 nEVR looks for `_local/config.yaml` beside the exe, then one and two folders up (the
 game's own `_local`); the first found wins, so the page warns when one nearer the exe
@@ -87,6 +107,7 @@ current draft, which is also built in for when it can't be fetched):
   in `launcher-mods.json`, so a file changed later is left out of `config.yaml`.
 - `shipped`: the community update brings it; the page shows it (INSTALLED, or "with the
   update"), never downloads it.
+- `required`: the game needs it: always on, also with mods off.
 - `version`: shown, and compared with the installed one: a different version offers
   UPDATE.
 - `api`, `capabilities` (`observes-only`, `cosmetic`, `alters-gameplay`, `alters-rules`,
