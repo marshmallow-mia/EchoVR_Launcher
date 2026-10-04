@@ -569,7 +569,8 @@ fn plugins_card(
                         };
                         plugin_row(d, k, v, p, &look, x, ry, w)
                     }
-                    Row::Vr(part) => vr_row(d, k, *part, x, ry, w),
+                    Row::Vr(VrPart::EchoXr, _) => echoxr_row(d, k, v, x, ry, w),
+                    Row::Vr(VrPart::Hands, p) => hands_row(d, k, ctx, v, *p, x, ry, w),
                     Row::Assets(on) => assets_row(d, k, v, *on, x, ry, editable && !locked),
                     Row::Asset(a, all_on) => {
                         asset_row(d, k, v, a, x, ry, editable && !locked && *all_on)
@@ -616,10 +617,12 @@ struct Look {
 enum VrPart {
     /// EchoXR's OpenXR layer: Linux's VR (always), Windows' SteamVR instead of Revive.
     EchoXr,
+    /// EchoXR Hands: its plugin (nEVR's view of it, once there) and finger bridge.
+    Hands,
 }
 
 enum Row<'a> {
-    Vr(VrPart),
+    Vr(VrPart, Option<&'a Plugin>),
     Plugin(&'a Plugin),
     /// The asset patches' own switch (on or off).
     Assets(bool),
@@ -632,7 +635,7 @@ enum Row<'a> {
 impl Row<'_> {
     fn height(&self) -> f32 {
         match self {
-            Row::Plugin(_) | Row::Vr(_) => dz(ROW_H),
+            Row::Plugin(_) | Row::Vr(..) => dz(ROW_H),
             Row::Assets(_) | Row::Asset(..) => dz(SUB_H),
             Row::Options(n) => dz(ARG_H) * (*n as f32 + 1.0) + dz(12.0),
         }
@@ -643,10 +646,16 @@ impl Row<'_> {
 /// when open, and the asset patches under NvrAssetPatches.
 fn rows<'a>(view: &'a ModView, editing: Option<&Editing>, vr: bool) -> Vec<Row<'a>> {
     let mut out = Vec::new();
+    let hands = |p: &&Plugin| {
+        p.file
+            .eq_ignore_ascii_case(crate::core::echoxr_hands::PLUGIN)
+    };
     if vr {
-        out.push(Row::Vr(VrPart::EchoXr));
+        out.push(Row::Vr(VrPart::EchoXr, None));
+        out.push(Row::Vr(VrPart::Hands, view.plugins.iter().find(hands)));
     }
-    for p in &view.plugins {
+    // Hand tracking's plugin is its row above, not one of the plugins.
+    for p in view.plugins.iter().filter(|p| !hands(p)) {
         out.push(Row::Plugin(p));
         if let Some(e) = editing.filter(|e| e.file.eq_ignore_ascii_case(&p.file)) {
             out.push(Row::Options(e.rows.len()));
@@ -856,11 +865,10 @@ fn plugin_row(
 /// A VR part's row, as a plugin's: its switch and name with tags, whether it is ready on
 /// the right, what it does under it. On Linux EchoXR is how VR plays: always on. On
 /// Windows its switch is how SteamVR plays: through EchoXR, or (off) Revive.
-fn vr_row(d: &mut Dashboard, k: &mut Kit, part: VrPart, x: f32, y: f32, w: f32) {
+fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f32, w: f32) {
     use crate::core::echoxr;
     use crate::core::launcher::store::{Runtime, SteamVrVia};
     let linux = cfg!(target_os = "linux") && !d.demo;
-    let VrPart::EchoXr = part;
     let name = "EchoXR";
     let steamvr = d.state.profile.runtime == Runtime::Revive;
     let mut on = linux || d.state.profile.steamvr_via == SteamVrVia::EchoXr;
@@ -912,11 +920,22 @@ fn vr_row(d: &mut Dashboard, k: &mut Kit, part: VrPart, x: f32, y: f32, w: f32) 
         } else {
             SteamVrVia::Revive
         };
+        let hands_off = !on && d.state.echoxr_hands;
+        if hands_off {
+            // Hand tracking needs EchoXR.
+            d.state.echoxr_hands = false;
+            if let Err(e) = crate::core::echoxr_hands::remove_from(&v.bin_dir()) {
+                tracing::warn!("hand tracking: {e:#}");
+            }
+            d.mods.changed();
+        }
         d.save();
-        d.notify(if on {
-            "SteamVR plays through EchoXR now"
-        } else {
-            "SteamVR plays through Revive now"
+        d.notify(match (on, hands_off) {
+            (true, _) => "SteamVR plays through EchoXR now",
+            (false, true) => {
+                "SteamVR plays through Revive now, without hand tracking (it needs EchoXR)"
+            }
+            (false, false) => "SteamVR plays through Revive now",
         });
     }
     let tags = [
@@ -944,6 +963,159 @@ fn vr_row(d: &mut Dashboard, k: &mut Kit, part: VrPart, x: f32, y: f32, w: f32) 
             echoxr::VERSION
         )
     };
+    let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
+    k.put(x + dz(INDENT), y + dz(43.0), g);
+}
+
+/// EchoXR Hands' row: its switch (it needs EchoXR, on SteamVR), what nEVR did with its
+/// plugin, finger sharing and its settings window; what it does under it.
+#[allow(clippy::too_many_arguments)]
+fn hands_row(
+    d: &mut Dashboard,
+    k: &mut Kit,
+    ctx: &egui::Context,
+    v: &InstalledVersion,
+    plugin: Option<&Plugin>,
+    x: f32,
+    y: f32,
+    w: f32,
+) {
+    use crate::core::echoxr_hands as hands;
+    use crate::core::launcher::store::{Runtime, SteamVrVia};
+    let linux = cfg!(target_os = "linux") && !d.demo;
+    let bin = v.bin_dir();
+    let name = "EchoXR Hands";
+    let wivrn = linux && d.state.profile.runtime == Runtime::Wivrn;
+    let busy = busy(d, v);
+    let mut on = d.state.echoxr_hands;
+    let can = busy.is_none() && !wivrn;
+    let tip = if wivrn {
+        "Needs SteamVR: its finger bridge reads your fingers from it (choose SteamVR in Settings)"
+    } else if let Some(why) = busy {
+        why
+    } else if on {
+        "Turn it off: the plugin comes out of the game's plugins folder"
+    } else {
+        "Turn it on: your own fingers on Echo VR's hands, from SteamVR (it turns EchoXR on too)"
+    };
+    let key = |what: &str| format!("mods-vr-{what}-hands");
+    let bh = dz(30.0);
+    let by = y + dz(10.0);
+    let mut right = x + w;
+    let installed = d.demo || hands::installed_in(&bin);
+    // Its settings window (Windows), and finger sharing.
+    if on && installed && (cfg!(windows) || d.demo) {
+        let bw = k.button_width("Settings", None, bh).max(dz(110.0));
+        right -= bw;
+        if k.button(
+            &key("settings"),
+            right,
+            by,
+            bw,
+            bh,
+            Tone::Dark,
+            None,
+            "Settings",
+            true,
+            "EchoXR Hands' own settings window: every setting shows in the game straight away",
+        )
+        .clicked
+            && !d.demo
+        {
+            let app = hands::dir_in(&bin).join(hands::SETTINGS_APP);
+            if let Err(e) = std::process::Command::new(&app)
+                .current_dir(hands::dir_in(&bin))
+                .spawn()
+            {
+                d.dialogs.error(
+                    "Couldn't open EchoXR Hands' settings",
+                    &format!("{}: {e}", app.display()),
+                    Default::default(),
+                );
+            }
+        }
+        right -= dz(14.0);
+    }
+    if on && installed {
+        let mut share = !d.demo && hands::sharing(&bin);
+        let label = "Share fingers";
+        let cw = k
+            .label_galley(label, design::din(18.0), design::TEXT, f32::INFINITY)
+            .size()
+            .x
+            + dz(26.0);
+        right -= cw;
+        if k.check(
+            &key("share"),
+            &mut share,
+            label,
+            right,
+            y + dz(13.0),
+            !d.demo,
+            "Others running it see your fingers, and you theirs. It sends your display name and the names of the players in your match to EchoXR Hands' relay server, which pairs you up.",
+        ) {
+            if let Err(e) = hands::set_sharing(&bin, share) {
+                d.dialogs
+                    .error("Couldn't change finger sharing", &format!("{e:#}"), Default::default());
+            }
+        }
+        right -= dz(18.0);
+    }
+    if on {
+        let (chip, color) = match plugin {
+            Some(p) if d.mods.view.is_some() => state(p),
+            _ if installed => ("Next start".into(), design::QUEST_OFF),
+            _ => ("Not installed".into(), design::QUEST_WARN),
+        };
+        let cw = k.chip_width(&chip);
+        right -= cw;
+        k.chip(right, by + (bh - dz(27.0)) / 2.0, &chip, color);
+    }
+    let g = k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY);
+    let name_w = g.size().x;
+    if k.check(&key("on"), &mut on, name, x, y + dz(13.0), can, tip) {
+        d.state.echoxr_hands = on;
+        if on && !linux && d.state.profile.steamvr_via != SteamVrVia::EchoXr {
+            d.state.profile.steamvr_via = SteamVrVia::EchoXr;
+            d.notify("EchoXR is on too: hand tracking needs it");
+        }
+        d.save();
+        if on {
+            run(d, ctx, v, "Installing EchoXR Hands", |v, cancel, on| {
+                hands::fetch(cancel, on)?;
+                hands::install_into(&v.bin_dir())?;
+                Ok("Hand tracking is on: it plays along in SteamVR through EchoXR".into())
+            });
+        } else {
+            match hands::remove_from(&bin) {
+                Ok(()) => d.notify("Hand tracking is off"),
+                Err(e) => d.dialogs.error(
+                    "Couldn't turn hand tracking off",
+                    &format!("{e:#}"),
+                    Default::default(),
+                ),
+            }
+            d.mods.changed();
+        }
+    }
+    let tags = [
+        Some(("VR", design::BLUE)),
+        Some(("Needs EchoXR", design::SUBTLE)),
+        linux.then_some(("Experimental", design::QUEST_WARN)),
+    ];
+    let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
+    for (tag, color) in tags.into_iter().flatten() {
+        let tw = k.dot_tag_width(tag, 12.0);
+        if tag_x + tw >= right - dz(12.0) {
+            break;
+        }
+        k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
+        tag_x += tw + dz(14.0);
+    }
+    let line = format!(
+        "v{}  ·  your own fingers on Echo VR's hands, from SteamVR  ·  its finger bridge runs with the game",
+        hands::VERSION
+    );
     let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
     k.put(x + dz(INDENT), y + dz(43.0), g);
 }

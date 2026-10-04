@@ -1148,7 +1148,10 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     }
     // The live build with nEVR: its plugins list (config.yaml) as the Mods page has it.
     if v.publisher_lock.is_none() {
-        if let Err(e) = crate::core::launcher::mods::before_start(&v, d.state.own_game_config) {
+        let hands = d.state.profile.hands(d.state.echoxr_hands);
+        if let Err(e) =
+            crate::core::launcher::mods::before_start(&v, d.state.own_game_config, hands)
+        {
             d.dialogs.error(
                 "Couldn't prepare the mods",
                 &format!("{e:#}"),
@@ -1233,6 +1236,18 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             d.child_echoxr = profile.runtime == Runtime::Revive
                 && profile.steamvr_via == SteamVrVia::EchoXr
                 && v.publisher_lock.is_none();
+            // EchoXR Hands: its finger bridge runs beside the game, until the game ends.
+            if d.child_echoxr && profile.hands(d.state.echoxr_hands) {
+                let bridge = crate::core::echoxr_hands::dir_in(&v.bin_dir())
+                    .join(crate::core::echoxr_hands::BRIDGE);
+                match crate::core::process::command(&bridge)
+                    .current_dir(bridge.parent().unwrap_or(&v.bin_dir()))
+                    .spawn()
+                {
+                    Ok(b) => d.hands_bridge = Some(b),
+                    Err(e) => tracing::warn!("hand tracking: no finger bridge: {e}"),
+                }
+            }
             d.launched = Some(super::Launched::now());
             d.login_watch = Some(LoginWatching::new(&v.root));
             if d.state.minimize_on_launch {

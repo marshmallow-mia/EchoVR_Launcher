@@ -183,7 +183,8 @@ pub fn play_from_steam() -> i32 {
         return 2;
     }
     // Started from Steam without the launcher's window too: nEVR's plugin list.
-    if let Err(e) = crate::core::launcher::mods::before_start(&v, state.own_game_config) {
+    let hands = profile.hands(state.echoxr_hands);
+    if let Err(e) = crate::core::launcher::mods::before_start(&v, state.own_game_config, hands) {
         tracing::warn!("--play: mods not prepared: {e:#}");
     }
     let playing = Playing {
@@ -212,10 +213,24 @@ pub fn play_from_steam() -> i32 {
         echoxr::Start::Flat
     };
     tracing::info!("--play: {} {start:?}", v.id);
+    // EchoXR Hands: its finger bridge through Proton beside the game, until it ends.
+    let mut bridge = None;
+    if hands && start != echoxr::Start::Flat && start != echoxr::Start::FlatOculus {
+        let exe =
+            crate::core::echoxr_hands::dir_in(&v.bin_dir()).join(crate::core::echoxr_hands::BRIDGE);
+        match echoxr::proton_run(&steam_root, &exe).spawn() {
+            Ok(b) => bridge = Some(b),
+            Err(e) => tracing::warn!("--play: no finger bridge: {e}"),
+        }
+    }
     let result = echoxr::game_command(&steam_root, &v.bin_dir(), &args, start).and_then(|mut c| {
         tracing::info!("--play: {c:?}");
         Ok(c.status()?)
     });
+    if let Some(mut b) = bridge {
+        let _ = b.kill();
+        let _ = b.wait();
+    }
     let _ = std::fs::remove_file(playing_file());
     match result {
         Ok(status) => {

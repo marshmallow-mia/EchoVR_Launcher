@@ -5,6 +5,7 @@ pub mod cache;
 pub mod download;
 pub mod echovrce;
 pub mod echoxr;
+pub mod echoxr_hands;
 pub mod elevation;
 pub mod error;
 pub mod http;

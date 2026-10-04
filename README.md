@@ -39,6 +39,16 @@ The SteamVR choice runs Echo VR through [Revive](https://github.com/LibreVR/Revi
 injection and no administrator rights (the Meta library's copy excepted). EchoXR runs
 only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
 
+## Hand tracking
+
+**EchoXR Hands** on the Mods page puts your own fingers on Echo VR's hands, from SteamVR
+([EchoXR Hands](https://github.com/heisthecat31/EchoXR-Hands), built as an nEVR plugin).
+It needs EchoXR (switching it on turns EchoXR on) and SteamVR, so on Linux it plays with
+the SteamVR choice, not WiVRn. The launcher puts its plugin into the game's `plugins`
+folder and runs its finger bridge beside the game. Finger sharing starts off: on, it sends
+your display name and your match's player names to its relay, so others running it see
+your fingers.
+
 ## Linux
 
 The PC version plays on Linux through Steam. **SET UP** on the Play page downloads a
