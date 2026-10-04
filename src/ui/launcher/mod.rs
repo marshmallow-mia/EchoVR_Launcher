@@ -123,6 +123,8 @@ enum JobResult {
     /// Revive (SteamVR) is installed; with what of the rest (artwork, library entry)
     /// couldn't be done.
     ReviveReady(Vec<String>),
+    /// The game artwork for SteamVR's library is in place.
+    ArtworkInstalled,
     /// Echo VR was put into SteamVR's library (`true`) or taken out.
     LibraryEntry(bool),
     /// Linux: set up, with the Steam shortcut's appid.
@@ -1798,6 +1800,9 @@ impl Dashboard {
                 self.linux_set_up = true;
                 self.save();
                 self.notify("Echo VR is set up for Linux: PLAY starts it through Steam");
+            }
+            JobResult::ArtworkInstalled => {
+                self.notify("Echo VR's artwork is installed (restart SteamVR to see it)")
             }
             JobResult::LibraryEntry(true) => {
                 self.notify("Echo VR is in SteamVR's library (restart SteamVR to see it)")

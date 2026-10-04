@@ -421,6 +421,23 @@ fn launch_args(d: &Dashboard, v: &InstalledVersion) -> String {
 
 /// Puts Echo VR into SteamVR's library (`add`) or takes it out, asking for administrator
 /// rights when Revive's folder needs them.
+/// Installs the game artwork for SteamVR's library on its own (Revive was there before
+/// the launcher, so its SET UP never ran), asking for administrator rights if needed.
+pub(super) fn revive_artwork(d: &mut Dashboard, ctx: &egui::Context) {
+    let mut consent = consent_asker(d.worker.tx(ctx));
+    d.start_job(
+        ctx,
+        JobKind::Revive,
+        LIBRARY_JOB,
+        "Installing the game artwork",
+        "Downloading the artwork...",
+        move |_, _| match elevation::install_artwork(&mut consent) {
+            Ok(()) => JobResult::ArtworkInstalled,
+            Err(e) => job_err(e, "Game Artwork"),
+        },
+    );
+}
+
 pub(super) fn steamvr_library(d: &mut Dashboard, ctx: &egui::Context, add: bool) {
     let target = if add { library_target(d) } else { None };
     if add && target.is_none() {
@@ -499,20 +516,23 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
         "Setting up SteamVR",
         "Downloading Revive...",
         move |cancel, on| {
-            let installer = match revive::download_installer(cancel, &mut |p| {
-                if let download::Progress::Percent(v) = p {
-                    on(Step::Percent(v));
+            // Installed already (by hand, or before): only the artwork and library entry.
+            if revive::find_revive_dir().is_none() {
+                let installer = match revive::download_installer(cancel, &mut |p| {
+                    if let download::Progress::Percent(v) = p {
+                        on(Step::Percent(v));
+                    }
+                }) {
+                    Ok(p) => p,
+                    Err(e) => return job_err(e, "SteamVR Setup Failed"),
+                };
+                on(Step::Status("Installing Revive...".into()));
+                if let Err(e) = elevation::run_revive_installer(&installer, &mut consent) {
+                    return job_err(
+                        e.context("Installing Revive failed"),
+                        "SteamVR Setup Failed",
+                    );
                 }
-            }) {
-                Ok(p) => p,
-                Err(e) => return job_err(e, "SteamVR Setup Failed"),
-            };
-            on(Step::Status("Installing Revive...".into()));
-            if let Err(e) = elevation::run_revive_installer(&installer, &mut consent) {
-                return job_err(
-                    e.context("Installing Revive failed"),
-                    "SteamVR Setup Failed",
-                );
             }
             on(Step::Status("Waiting for Revive...".into()));
             if revive::wait_for_revive_dir(std::time::Duration::from_secs(8)).is_none() {
@@ -523,7 +543,7 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
             }
             // The artwork and the library entry are niceties: Revive works without them.
             let mut notes = Vec::new();
-            if artwork {
+            if artwork && !revive::artwork_installed() {
                 on(Step::Status("Installing the game artwork...".into()));
                 if let Err(e) = elevation::install_artwork(&mut consent) {
                     tracing::warn!("artwork: {e:#}");
@@ -573,7 +593,9 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
             Some(&v.bin_dir()),
             Some(&exe),
         ),
-        (Runtime::Revive, Some(dir)) => revive::create_injector_shortcut(&dir, &exe, &args),
+        (Runtime::Revive, Some(dir)) => {
+            revive::create_injector_shortcut(&format!("{name} (Revive)"), &dir, &exe, &args)
+        }
         _ => platform::create_shortcut(
             &name,
             &exe,

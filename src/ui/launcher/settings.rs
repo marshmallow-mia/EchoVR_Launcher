@@ -7,7 +7,7 @@ use super::{hero, panel, setup, Dashboard, LauncherUpdate, Msg, CREDITS};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{Runtime, SteamVrVia};
 use crate::core::links::Handler;
-use crate::core::{logs, paths, platform};
+use crate::core::{logs, paths, platform, revive};
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::kit::Kit;
 use crate::ui::markdown;
@@ -136,6 +136,24 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library",
         ) {
             d.save();
+        }
+        // Revive was there before (its SET UP never ran): the artwork from here.
+        let present = cfg!(windows) && !d.demo && !d.revive_missing();
+        if present && d.state.revive_artwork && !d.any_job() && !revive::artwork_installed() {
+            let lx = cx + dz(250.0);
+            if kit
+                .link(
+                    "artwork-install",
+                    lx,
+                    cy + dz(2.0),
+                    "Install it",
+                    14.0,
+                    "The artwork isn't installed yet (asks for administrator rights)",
+                )
+                .clicked
+            {
+                setup::revive_artwork(d, ctx);
+            }
         }
         // Beside the artwork's, on the same row.
         let idle = !d.any_job();
