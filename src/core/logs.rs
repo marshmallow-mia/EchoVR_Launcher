@@ -133,7 +133,7 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 /// The non-empty files in `dir` whose names pass `keep`, newest first.
-fn newest_in(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<(PathBuf, SystemTime)> {
+pub(crate) fn newest_in(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<(PathBuf, SystemTime)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };

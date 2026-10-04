@@ -26,6 +26,8 @@ use crate::ui::widgets::{Tone, BTN_H};
 
 /// How often the session is checked (and renewed when due).
 const CHECK_EVERY: Duration = Duration::from_secs(600);
+/// After the game's sign-in couldn't be given: when to try again.
+const RETRY_GAME_SIGN_IN: Duration = Duration::from_secs(3600);
 /// After EchoVRCE didn't answer: when to try again.
 const RETRY_AFTER: Duration = Duration::from_secs(120);
 /// How often a sign-in code is asked about.
@@ -333,7 +335,8 @@ impl Vrce {
 /// takes them away.
 #[derive(Default)]
 pub(super) struct GameSignIn {
-    worker: Worker<()>,
+    /// Whether every version that needed a sign-in got one.
+    worker: Worker<bool>,
     busy: bool,
     account: Option<String>,
     next: Option<Instant>,
@@ -350,8 +353,13 @@ impl GameSignIn {
         if demo {
             return;
         }
-        if !self.worker.drain().is_empty() {
+        for all_good in self.worker.drain() {
             self.busy = false;
+            // A sign-in that couldn't be written or linked: each try links another device
+            // of the account, so wait longer before the next.
+            if !all_good {
+                self.next = Some(Instant::now() + RETRY_GAME_SIGN_IN);
+            }
         }
         let id = session.as_ref().map(|(_, a)| a.id.clone());
         if self.account != id {
@@ -375,6 +383,7 @@ impl GameSignIn {
             .collect();
         self.worker.spawn(ctx, move |tx| {
             let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let mut all_good = true;
             for v in &live {
                 if !crate::core::launcher::mods::nevr_in(&v.bin_dir())
                     || nevr::read_login(v).is_some_and(|l| l.good_for(&account.id, now))
@@ -390,10 +399,13 @@ impl GameSignIn {
                 });
                 match linked {
                     Ok(()) => tracing::info!("{}: the game has its own EchoVRCE sign-in", v.id),
-                    Err(e) => tracing::warn!("{}: no EchoVRCE sign-in for the game: {e:#}", v.id),
+                    Err(e) => {
+                        all_good = false;
+                        tracing::warn!("{}: no EchoVRCE sign-in for the game: {e:#}", v.id)
+                    }
                 }
             }
-            tx.send(());
+            tx.send(all_good);
         });
     }
 

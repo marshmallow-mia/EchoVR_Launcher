@@ -1248,6 +1248,9 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
 
 // ---- what EchoVRCE says to a login ----
 
+/// How long after PLAY the game's log is watched for a login EchoVRCE turned down.
+const LOGIN_WATCH_FOR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
 /// The login watch of the start PLAY made: polled once a second while the game may run.
 pub(super) struct LoginWatching {
     watch: LoginWatch,
@@ -1260,7 +1263,7 @@ impl LoginWatching {
         // A little slack: the game may open its log in the same second PLAY ran.
         let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
         LoginWatching {
-            watch: LoginWatch::new(root, since),
+            watch: LoginWatch::new(root, since, crate::core::launcher::nevr::log_dir()),
             at: std::time::Instant::now(),
             since: std::time::Instant::now(),
         }
@@ -1276,7 +1279,8 @@ pub(super) fn watch_login(d: &mut Dashboard, ctx: &egui::Context) {
         return;
     };
     let starting = w.since.elapsed() < crate::core::launcher::game::LAUNCH_WAIT;
-    if !ours && !starting {
+    // A login is turned down around the start; after that the watch rests.
+    if (!ours && !starting) || w.since.elapsed() > LOGIN_WATCH_FOR {
         d.login_watch = None;
         return;
     }

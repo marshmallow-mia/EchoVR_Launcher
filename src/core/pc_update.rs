@@ -27,7 +27,8 @@ pub fn manifest_for(url: &str) -> String {
         if let Ok(o) = std::env::var(MANIFEST_OVERRIDE) {
             // Asked for every frame: said once.
             static SAID: std::sync::Once = std::sync::Once::new();
-            let ok = o.starts_with("https://files.echovr.de/") && o.ends_with(".manifest");
+            let ok = o.starts_with("https://files.echovr.de/updates-")
+                && o.ends_with("/update.manifest");
             SAID.call_once(|| {
                 if ok {
                     tracing::warn!(
@@ -35,7 +36,7 @@ pub fn manifest_for(url: &str) -> String {
                     );
                 } else {
                     tracing::warn!(
-                        "{MANIFEST_OVERRIDE} ignored: not a manifest on files.echovr.de"
+                        "{MANIFEST_OVERRIDE} ignored: not https://files.echovr.de/updates-*/update.manifest"
                     );
                 }
             });

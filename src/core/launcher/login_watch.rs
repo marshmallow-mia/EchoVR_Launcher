@@ -18,7 +18,7 @@
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::core::paths;
 
@@ -103,10 +103,17 @@ fn blocks(text: &str) -> (Vec<String>, Option<String>) {
     (done, open)
 }
 
-/// Follows the game's log of one start for login notices.
+/// How long a `[LOGIN]` block waits for nEVR's log to say the login failed.
+const CONFIRM_WAIT: Duration = Duration::from_secs(15);
+
+/// Follows the game's log of one start for login notices. A `[LOGIN]` block counts only
+/// when nEVR's log of the same start says the login failed ("to login failed"); without
+/// nEVR's log, only one with a code to pick does.
 #[derive(Debug)]
 pub struct LoginWatch {
     dir: PathBuf,
+    /// nEVR's log folder, where it confirms a failed login.
+    nevr_logs: Option<PathBuf>,
     /// Only logs written since the start count.
     since: SystemTime,
     file: Option<PathBuf>,
@@ -114,28 +121,70 @@ pub struct LoginWatch {
     /// Lines read but not yet ending in a newline, and the block still open.
     partial: String,
     open: Option<String>,
+    /// Blocks waiting for nEVR's word, since when.
+    pending: Vec<(LoginNotice, Instant)>,
 }
 
 impl LoginWatch {
-    /// For the game at install `root`, started at `since`.
-    pub fn new(root: &str, since: SystemTime) -> LoginWatch {
+    /// For the game at install `root`, started at `since`; `nevr_logs`: nEVR's log folder.
+    pub fn new(root: &str, since: SystemTime, nevr_logs: Option<PathBuf>) -> LoginWatch {
         LoginWatch {
             dir: Path::new(root)
                 .join(paths::ARENA_DIR)
                 .join("_local/r14logs"),
+            nevr_logs,
             since,
             file: None,
             pos: 0,
             partial: String::new(),
             open: None,
+            pending: Vec::new(),
         }
     }
 
-    /// Reads what was added since the last call (file I/O: cheap, the log is small).
-    /// Returns the notices that are complete now.
+    /// Reads what was added since the last call (file I/O: cheap, the logs are small).
+    /// Returns the notices that are complete, and confirmed, now.
     pub fn poll(&mut self) -> Vec<LoginNotice> {
+        let found = self.read_blocks();
+        self.pending
+            .extend(found.into_iter().map(|n| (n, Instant::now())));
+        if self.pending.is_empty() {
+            return Vec::new();
+        }
+        let failed = self.login_failed();
+        let mut out = Vec::new();
+        self.pending.retain(|(n, at)| {
+            let confirmed = match failed {
+                Some(f) => f,
+                // No nEVR log of this start: only a code to pick is clear enough.
+                None => n.code.is_some(),
+            };
+            if confirmed {
+                out.push(n.clone());
+                return false;
+            }
+            at.elapsed() < CONFIRM_WAIT
+        });
+        out
+    }
+
+    /// Whether nEVR's log of this start says the login failed (`None`: there is none).
+    fn login_failed(&self) -> Option<bool> {
+        let dir = self.nevr_logs.as_ref()?;
+        let (log, _) = crate::core::logs::newest_in(dir, crate::core::launcher::nevr::is_run_log)
+            .into_iter()
+            .find(|(_, t)| *t >= self.since)?;
+        let text = std::fs::read_to_string(log).ok()?;
+        Some(text.contains("to login failed"))
+    }
+
+    /// The `[LOGIN]` blocks complete since the last call.
+    fn read_blocks(&mut self) -> Vec<LoginNotice> {
         if self.file.is_none() {
-            self.file = newest_since(&self.dir, self.since);
+            self.file = crate::core::logs::newest_in(&self.dir, |n| n.ends_with(".log"))
+                .into_iter()
+                .find(|(_, t)| *t >= self.since)
+                .map(|(p, _)| p);
         }
         let Some(file) = &self.file else {
             return Vec::new();
@@ -152,9 +201,17 @@ impl LoginWatch {
         }
         let quiet = added.is_empty();
         self.partial.push_str(&added);
-        // Only whole lines; the rest waits for the next read.
-        let cut = self.partial.rfind('\n').map_or(0, |i| i + 1);
-        let lines: String = self.partial.drain(..cut).collect();
+        // Whole lines; the rest waits for the next read, unless nothing more came (the
+        // game may write its last line without a newline, then wait).
+        let cut = if quiet {
+            self.partial.len()
+        } else {
+            self.partial.rfind('\n').map_or(0, |i| i + 1)
+        };
+        let mut lines: String = self.partial.drain(..cut).collect();
+        if !lines.ends_with('\n') && !lines.is_empty() {
+            lines.push('\n');
+        }
         let mut text = String::new();
         if let Some(open) = self.open.take() {
             // Its first line was a stamped one: put it back in front.
@@ -172,19 +229,6 @@ impl LoginWatch {
         }
         out
     }
-}
-
-/// The newest log in `dir` written since `since`.
-fn newest_since(dir: &Path, since: SystemTime) -> Option<PathBuf> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .filter_map(Result::ok)
-        .filter_map(|e| {
-            let t = e.metadata().ok()?.modified().ok()?;
-            (t >= since && e.file_name().to_string_lossy().ends_with(".log")).then(|| (e.path(), t))
-        })
-        .max_by_key(|(_, t)| *t)
-        .map(|(p, _)| p)
 }
 
 #[cfg(test)]
@@ -234,7 +278,7 @@ Select code >>> 58 <<<\n";
         let logs = dir.path().join(paths::ARENA_DIR).join("_local/r14logs");
         std::fs::create_dir_all(&logs).unwrap();
         let since = SystemTime::now() - std::time::Duration::from_secs(5);
-        let mut w = LoginWatch::new(&dir.path().to_string_lossy(), since);
+        let mut w = LoginWatch::new(&dir.path().to_string_lossy(), since, None);
         assert!(w.poll().is_empty());
         let file = logs.join("[r14(client)]-[10-04-2026]_[16-03-37]_312.log");
         let (head, tail) = LOG.split_at(LOG.find("Check your").unwrap());
@@ -250,5 +294,50 @@ Select code >>> 58 <<<\n";
         assert_eq!(n.len(), 1);
         assert_eq!(n[0].code.as_deref(), Some("58"));
         assert!(w.poll().is_empty());
+    }
+
+    /// A game dir with its r14 log holding `log`, and nEVR's log folder holding `nevr`.
+    fn watch(log: &str, nevr: Option<&str>) -> (tempfile::TempDir, LoginWatch) {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join(paths::ARENA_DIR).join("_local/r14logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let since = SystemTime::now() - std::time::Duration::from_secs(5);
+        std::fs::write(logs.join("[r14(client)]-a.log"), log).unwrap();
+        let nevr_dir = dir.path().join("EchoVR/logs");
+        std::fs::create_dir_all(&nevr_dir).unwrap();
+        if let Some(n) = nevr {
+            std::fs::write(nevr_dir.join("nevr-2026-10-04T16-03-37.000.jsonl"), n).unwrap();
+        }
+        let w = LoginWatch::new(&dir.path().to_string_lossy(), since, Some(nevr_dir));
+        (dir, w)
+    }
+
+    #[test]
+    fn a_block_counts_once_nevr_says_the_login_failed() {
+        let failed = r#"{"msg":"[EVR] [NETGAME] NetGame switching state (from logging in, to login failed)"}"#;
+        let msg = "[10-04-2026] [16:03:41]: [LOGIN] [XPID:OVR-ORG-1 /\nDiscord:1]\nThis account is suspended.\n";
+        let (_d, mut w) = watch(msg, Some(failed));
+        w.poll();
+        let n = w.poll();
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].message, "This account is suspended.");
+        // A [LOGIN] line of a login that went through: never a card.
+        let (_d, mut w) = watch(msg, Some(r#"{"msg":"to logged in"}"#));
+        w.poll();
+        assert!(w.poll().is_empty());
+        // Without nEVR's log of this start: only one with a code counts.
+        let (_d, mut w) = watch(msg, None);
+        w.poll();
+        assert!(w.poll().is_empty());
+        let (_d, mut w) = watch(LOG, None);
+        w.poll();
+        assert_eq!(w.poll()[0].code.as_deref(), Some("58"));
+    }
+
+    #[test]
+    fn reads_a_last_line_without_a_newline() {
+        let (_d, mut w) = watch(LOG.trim_end_matches('\n'), None);
+        w.poll();
+        assert_eq!(w.poll()[0].code.as_deref(), Some("58"));
     }
 }
