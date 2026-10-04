@@ -6,6 +6,7 @@ pub mod discover;
 pub mod feed;
 pub mod game;
 pub mod launch;
+pub mod login_watch;
 pub mod mods;
 pub mod nevr;
 pub mod patch;
