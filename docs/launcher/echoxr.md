@@ -74,7 +74,8 @@ Any other code is Echo's own. EchoXR logs to `EchoXR\launcher.log` (every launch
 
 ### Windows: SteamVR through EchoXR
 
-Settings → Game → SteamVR → **SteamVR through: Revive | EchoXR**. With EchoXR:
+Settings → Game → SteamVR, and **EchoXR** switched on on the Mods page (off: Revive).
+With EchoXR:
 
 - **SET UP** downloads EchoXR and Meta's loader, then puts EchoXR into the selected
   version's folder.
@@ -91,13 +92,17 @@ Settings → Game → SteamVR → **SteamVR through: Revive | EchoXR**. With Ech
 
 GE-Proton runs `EchoXR.exe` (`proton waitforexitandrun`) with:
 
-- `wineopenxr` passing OpenXR on to the system's runtime (`XR_RUNTIME_JSON`, or the
-  active one); no OpenVR runtime is needed since 0.4.0;
+- `wineopenxr` passing OpenXR on to the runtime chosen in Settings: `XR_RUNTIME_JSON` is
+  SteamVR's `steamapps/common/SteamVR/steamxr_linux64.json` or WiVRn's
+  `openxr/1/openxr_wivrn.json` (`/usr/share`, `/usr/local/share`, `XDG_DATA_DIRS` or the
+  Flatpak), unless it is set already; no OpenVR runtime is needed since 0.4.0;
 - `PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES=1`;
 - no DLL override: the mod loader, nEVR runtime, is the game's `BugSplat64.dll`, which
   Wine has no builtin of;
-- `ECHOXR_VR_SERVICE=ready` when SteamVR's `vrserver`, or Monado's or WiVRn's socket, is
-  there. Without a VR service EchoXR gives up after 20 s (exit code 5) instead of hanging.
+- `ECHOXR_VR_SERVICE=ready` once the runtime's service runs: SteamVR's `vrserver`
+  (started through `steam://run/250820` when it isn't, waiting up to a minute) or WiVRn's
+  `wivrn/comp_ipc` socket (`wivrn-server`, or the Flatpak's, started when it isn't).
+  Without a VR service EchoXR gives up after 20 s (exit code 5) instead of hanging.
 
 GE-Proton11-3's `wineopenxr` has to offer what 0.4.0 calls to turn OpenXR on
 (`wineopenxr_init_registry`); that is still to be checked on hardware.

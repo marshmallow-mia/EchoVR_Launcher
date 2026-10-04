@@ -602,16 +602,41 @@ pub(super) fn needs_patch(d: &Dashboard, v: &InstalledVersion) -> bool {
         && (cfg!(any(windows, target_os = "linux")) || d.demo)
 }
 
-/// The ways to play this PC offers: SteamVR (through Revive) only on Windows; on Linux
-/// VR is one way (OpenXR through EchoXR, "VR" on the Meta Link tile) and Flat. Snapshots
-/// show all of them, as on Windows.
+/// The ways to play this PC offers. Windows: Meta Link, Virtual Desktop, SteamVR
+/// (through Revive or EchoXR) and Flat. Linux: VR through EchoXR on SteamVR or WiVRn (the
+/// ones installed; both when neither is), and Flat. Snapshots show Windows'.
 pub(super) fn runtimes(d: &Dashboard) -> Vec<Runtime> {
-    let linux = cfg!(target_os = "linux") && !d.demo;
+    if cfg!(target_os = "linux") && !d.demo {
+        use crate::core::linux::echoxr::{installed, Xr};
+        let xr = installed();
+        let mut out: Vec<Runtime> = [(Xr::SteamVr, Runtime::Revive), (Xr::Wivrn, Runtime::Wivrn)]
+            .into_iter()
+            .filter(|(x, _)| xr.is_empty() || xr.contains(x))
+            .map(|(_, rt)| rt)
+            .collect();
+        out.push(Runtime::Flat);
+        return out;
+    }
     Runtime::ALL
         .into_iter()
+        .filter(|rt| *rt != Runtime::Wivrn)
         .filter(|rt| *rt != Runtime::Revive || cfg!(windows) || d.demo)
-        .filter(|rt| !(linux && *rt == Runtime::VirtualDesktop))
         .collect()
+}
+
+/// Linux: a choice Linux doesn't offer (Meta Link, Linux's "VR" before) becomes SteamVR,
+/// or WiVRn when only that is installed. Returns whether it changed.
+pub(super) fn linux_runtime(runtime: &mut Runtime) -> bool {
+    use crate::core::linux::echoxr::{installed, Xr};
+    if !matches!(runtime, Runtime::MetaLink | Runtime::VirtualDesktop) {
+        return false;
+    }
+    *runtime = if installed() == [Xr::Wivrn] {
+        Runtime::Wivrn
+    } else {
+        Runtime::Revive
+    };
+    true
 }
 
 /// Whether PLAY can start the PC game here (snapshots: as on Windows). On Linux, once it
@@ -749,13 +774,16 @@ pub(super) const NEW_NOTE: &str =
 
 pub(super) fn runtime_note(r: Runtime) -> &'static str {
     match r {
-        // On Linux every headset plays through its OpenXR runtime (EchoXR).
-        Runtime::MetaLink if cfg!(target_os = "linux") => {
-            "Any headset on SteamVR, WiVRn or Monado: start its OpenXR runtime first."
-        }
         Runtime::MetaLink => "Quest over Link or Air Link, or a Rift, with the Meta Quest app.",
         Runtime::VirtualDesktop => "Quest over Virtual Desktop; start its streamer first.",
+        // On Linux every headset plays through EchoXR on its OpenXR runtime.
+        Runtime::Revive if cfg!(target_os = "linux") => {
+            "Any SteamVR headset, through EchoXR. PLAY starts SteamVR."
+        }
         Runtime::Revive => "Any SteamVR headset. The launcher sets it up for you.",
+        Runtime::Wivrn => {
+            "Quest and other headsets over WiVRn, through EchoXR. Connect in WiVRn's app."
+        }
         Runtime::Flat => "No headset: play or spectate on the monitor.",
     }
 }
@@ -763,10 +791,10 @@ pub(super) fn runtime_note(r: Runtime) -> &'static str {
 /// A runtime's name on its tile (the Install card's, Settings').
 pub(super) fn runtime_label(r: Runtime) -> &'static str {
     match r {
-        Runtime::MetaLink if cfg!(target_os = "linux") => "VR",
         Runtime::MetaLink => "Meta Link",
         Runtime::VirtualDesktop => "Virtual Desktop",
         Runtime::Revive => "SteamVR",
+        Runtime::Wivrn => "WiVRn",
         Runtime::Flat => "Flat",
     }
 }

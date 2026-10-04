@@ -101,11 +101,14 @@ pub fn build(
     let cwd = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     let args = game_args(profile, lobby);
     match profile.runtime {
-        Runtime::MetaLink | Runtime::VirtualDesktop | Runtime::Flat => Ok(Command {
-            program: exe.to_path_buf(),
-            args,
-            cwd,
-        }),
+        // WiVRn is Linux's, which starts through Steam (`core::linux`), not here.
+        Runtime::MetaLink | Runtime::VirtualDesktop | Runtime::Wivrn | Runtime::Flat => {
+            Ok(Command {
+                program: exe.to_path_buf(),
+                args,
+                cwd,
+            })
+        }
         // EchoXR.exe beside the game starts it (as its copy, echovr_openxr.exe) on
         // SteamVR's OpenXR runtime, with the game's arguments.
         Runtime::Revive if profile.steamvr_via == SteamVrVia::EchoXr => Ok(Command {

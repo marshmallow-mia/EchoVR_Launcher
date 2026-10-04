@@ -240,13 +240,19 @@ pub fn start(root: &Path) -> Result<()> {
 
 /// Starts the shortcut `appid` through Steam.
 pub fn run(root: &Path, appid: u32) -> Result<()> {
+    open(root, &format!("steam://rungameid/{}", game_id(appid)))
+        .context("Couldn't ask Steam to start Echo VR")
+}
+
+/// Hands Steam a `steam://` link (say, to start SteamVR).
+pub fn open(root: &Path, link: &str) -> Result<()> {
     steam_command(root)
-        .arg(format!("steam://rungameid/{}", game_id(appid)))
+        .arg(link)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .context("Couldn't ask Steam to start Echo VR")?;
+        .with_context(|| format!("Couldn't ask Steam to open {link}"))?;
     Ok(())
 }
 

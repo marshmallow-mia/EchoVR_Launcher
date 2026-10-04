@@ -603,6 +603,12 @@ impl Dashboard {
         self.quest_ip_field = self.state.quest_ip.clone().unwrap_or_default();
         self.relay_server_field = self.state.relay_server.clone();
         self.linux_set_up = cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up();
+        if cfg!(target_os = "linux")
+            && !self.demo
+            && setup::linux_runtime(&mut self.state.profile.runtime)
+        {
+            self.save();
+        }
         self.check_launcher_update(ctx);
         // The custom background is gone; so is what an older launcher converted for it.
         let old_background = crate::core::paths::data_dir().join("background");

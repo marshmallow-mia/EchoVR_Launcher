@@ -9,7 +9,7 @@ pub mod vdf;
 use std::path::PathBuf;
 
 use crate::core::launcher::launch;
-use crate::core::launcher::store::{LauncherState, Target};
+use crate::core::launcher::store::{LauncherState, Runtime, Target};
 
 /// What Steam's shortcut runs the launcher with.
 pub const PLAY_FLAG: &str = "--play";
@@ -163,6 +163,10 @@ pub fn play_from_steam() -> i32 {
     };
     let lobby = take_next_lobby();
     let mut profile = state.profile.clone();
+    if matches!(profile.runtime, Runtime::MetaLink | Runtime::VirtualDesktop) {
+        // Linux's "VR" before there was a choice: SteamVR (the window asks again).
+        profile.runtime = Runtime::Revive;
+    }
     if lobby.as_ref().is_some_and(|(_, spectate)| *spectate) {
         profile.runtime = crate::core::launcher::store::Runtime::Flat;
         profile.spectator = true;
@@ -197,7 +201,7 @@ pub fn play_from_steam() -> i32 {
     let oculus = flat && !profile.spectator && crate::core::launcher::mods::nevr_in(&v.bin_dir());
     let mut args = args;
     let start = if !flat {
-        echoxr::Start::Vr
+        echoxr::Start::Vr(echoxr::Xr::of(profile.runtime))
     } else if oculus {
         args.retain(|a| !a.eq_ignore_ascii_case("-noovr"));
         if !args.iter().any(|a| a.eq_ignore_ascii_case("-windowed")) {
