@@ -1,7 +1,7 @@
 //! The game service's live side, as echovrce.com's own pages use it: the servers running
 //! (and who is on them), joining one, starting a new one, your party and matchmaking
-//! queue, your friends' matches, and your match history. Every call is made with the
-//! signed-in session's token.
+//! queue, your friends (and requests) and their matches, finding players, and your match
+//! history. Every call is made with the signed-in session's token.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -39,6 +39,12 @@ fn get(token: &str, url: &str) -> Result<Value> {
         None,
         Some(&format!("Bearer {token}")),
     )?;
+    answer(status, body)
+}
+
+/// A call without a body (POST, DELETE) on the service's API.
+fn send(token: &str, method: reqwest::Method, url: &str) -> Result<Value> {
+    let (status, body) = call(method, url, None, Some(&format!("Bearer {token}")))?;
     answer(status, body)
 }
 
@@ -578,11 +584,24 @@ pub fn find_me<'a>(servers: &'a [Match], nakama_id: &str) -> Option<(&'a Match, 
     })
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Where a friendship stands (the service's friend states 0-3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FriendState {
+    #[default]
+    Friend,
+    /// You asked them; they haven't answered.
+    Sent,
+    /// They asked you.
+    Received,
+    Blocked,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Friend {
     pub user_id: String,
     pub discord_id: String,
     pub name: String,
+    pub state: FriendState,
 }
 
 pub fn parse_friends(body: &Value) -> Vec<Friend> {
@@ -597,10 +616,17 @@ pub fn parse_friends(body: &Value) -> Vec<Friend> {
                         Some(v) => v.clone(),
                         None => Value::Null,
                     };
+                    let state = match e.get("state").and_then(Value::as_i64).unwrap_or(0) {
+                        0 => FriendState::Friend,
+                        1 => FriendState::Sent,
+                        2 => FriendState::Received,
+                        _ => FriendState::Blocked,
+                    };
                     Some(Friend {
                         user_id: s(u, &["id"]).to_string(),
                         discord_id: s(&meta, &["discord_id"]).to_string(),
                         name: s(u, &["display_name", "username"]).to_string(),
+                        state,
                     })
                 })
                 .collect()
@@ -608,10 +634,97 @@ pub fn parse_friends(body: &Value) -> Vec<Friend> {
         .unwrap_or_default()
 }
 
-/// Your friends (accepted ones).
+/// Your friends, and the requests you sent and got (not the players you blocked).
 pub fn friends(token: &str) -> Result<Vec<Friend>> {
     let a = api()?;
-    get(token, &format!("{}/friend?limit=100&state=0", a.base)).map(|b| parse_friends(&b))
+    get(token, &format!("{}/friend?limit=500", a.base)).map(|b| {
+        let mut f = parse_friends(&b);
+        f.retain(|f| f.state != FriendState::Blocked && !f.user_id.is_empty());
+        f
+    })
+}
+
+/// Asks player `user_id` to be your friend, or accepts their request.
+pub fn add_friend(token: &str, user_id: &str) -> Result<()> {
+    let a = api()?;
+    let id: String = url::form_urlencoded::byte_serialize(user_id.as_bytes()).collect();
+    send(
+        token,
+        reqwest::Method::POST,
+        &format!("{}/friend?ids={id}", a.base),
+    )
+    .map(|_| ())
+}
+
+/// Removes friend `user_id`, or turns down or takes back a request.
+pub fn remove_friend(token: &str, user_id: &str) -> Result<()> {
+    let a = api()?;
+    let id: String = url::form_urlencoded::byte_serialize(user_id.as_bytes()).collect();
+    send(
+        token,
+        reqwest::Method::DELETE,
+        &format!("{}/friend?ids={id}", a.base),
+    )
+    .map(|_| ())
+}
+
+// ---- finding players ----
+
+/// A player found by name.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Found {
+    pub user_id: String,
+    /// The name it matched (a display name, which can differ per guild).
+    pub name: String,
+    pub username: String,
+}
+
+/// Pure: what the search sends for `text`, or `None` when it's too short. The service
+/// matches it as a pattern against lowercased display names, so it is lowercased and
+/// anything but letters, digits, spaces, `-` and `_` is escaped.
+pub fn search_pattern(text: &str) -> Option<String> {
+    let t = text.trim().to_lowercase();
+    if t.chars().count() < 2 {
+        return None;
+    }
+    let mut out = String::new();
+    for c in t.chars().take(32) {
+        if !(c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    Some(out)
+}
+
+/// Pure: the search's answer, one entry per player (it lists one per guild name).
+pub fn parse_found(body: &Value) -> Vec<Found> {
+    let mut out: Vec<Found> = Vec::new();
+    for m in body
+        .get("display_name_matches")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let id = s(m, &["user_id"]);
+        if id.is_empty() || out.iter().any(|f| f.user_id == id) {
+            continue;
+        }
+        out.push(Found {
+            user_id: id.to_string(),
+            name: s(m, &["display_name", "username"]).to_string(),
+            username: s(m, &["username"]).to_string(),
+        });
+    }
+    out
+}
+
+/// Players whose display name matches `text` (see `search_pattern`).
+pub fn search(token: &str, text: &str) -> Result<Vec<Found>> {
+    let Some(pattern) = search_pattern(text) else {
+        return Ok(Vec::new());
+    };
+    rpc(token, "account/search", json!({ "display_name": pattern })).map(|b| parse_found(&b))
 }
 
 /// The match a friend is in, from the server list.
@@ -750,6 +863,8 @@ pub struct Summary {
     pub score: Option<(u32, u32)>,
     /// Your team, when you are in its player list.
     pub team: Option<Team>,
+    /// Who played (user id, name), you too.
+    pub players: Vec<(String, String)>,
 }
 
 impl Summary {
@@ -810,6 +925,19 @@ pub fn parse_history(body: &Value, nakama_id: &str) -> Vec<Summary> {
                 let duration = n(m, &["duration"])
                     .map(|d| d as u32)
                     .or_else(|| Some((ended? - played?).max(0) as u32));
+                let mut players: Vec<(String, String)> = Vec::new();
+                let lists = teams
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t.get("players").and_then(Value::as_array))
+                    .chain(m.get("participants").and_then(Value::as_array));
+                for p in lists.flatten() {
+                    let id = s(p, &["user_id"]);
+                    if !id.is_empty() && !players.iter().any(|(i, _)| i == id) {
+                        let name = s(p, &["display_name", "username"]).to_string();
+                        players.push((id.to_string(), name));
+                    }
+                }
                 Summary {
                     id: s(m, &["match_id", "_id"]).to_string(),
                     mode: Mode::of(s(m, &["mode"])),
@@ -817,11 +945,44 @@ pub fn parse_history(body: &Value, nakama_id: &str) -> Vec<Summary> {
                     duration_s: duration,
                     score,
                     team,
+                    players,
                 }
             })
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// Someone you played with lately.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recent {
+    pub user_id: String,
+    pub name: String,
+    /// Your last match together.
+    pub mode: Mode,
+    pub played: Option<i64>,
+}
+
+/// Pure: the players of `history` but you (`me`), the latest match together first, each
+/// once.
+pub fn recent_players(history: &[Summary], me: &str) -> Vec<Recent> {
+    let mut matches: Vec<&Summary> = history.iter().collect();
+    matches.sort_by_key(|m| std::cmp::Reverse(m.played));
+    let mut out: Vec<Recent> = Vec::new();
+    for m in matches {
+        for (id, name) in &m.players {
+            if id == me || name.is_empty() || out.iter().any(|r| &r.user_id == id) {
+                continue;
+            }
+            out.push(Recent {
+                user_id: id.clone(),
+                name: name.clone(),
+                mode: m.mode,
+                played: m.played,
+            });
+        }
+    }
+    out
 }
 
 /// Your last `limit` matches (from echovrce.com's own match history).
@@ -908,8 +1069,8 @@ mod tests {
         assert!(find_me(&servers, "nobody").is_none());
         let f = Friend {
             user_id: "x".into(),
-            discord_id: String::new(),
             name: "X".into(),
+            ..Default::default()
         };
         assert!(friend_match(&servers, &f).is_some());
     }
@@ -937,6 +1098,68 @@ mod tests {
         ]}));
         assert_eq!(f[0].discord_id, "42");
         assert_eq!(f[0].name, "One");
+    }
+
+    #[test]
+    fn friend_states_and_search() {
+        let f = parse_friends(&json!({"friends": [
+            {"user": {"id": "a", "display_name": "A"}, "state": 0},
+            {"user": {"id": "b", "display_name": "B"}, "state": 1},
+            {"user": {"id": "c", "display_name": "C"}, "state": 2},
+            {"user": {"id": "d", "display_name": "D"}, "state": 3}
+        ]}));
+        let states: Vec<FriendState> = f.iter().map(|f| f.state).collect();
+        assert_eq!(
+            states,
+            [
+                FriendState::Friend,
+                FriendState::Sent,
+                FriendState::Received,
+                FriendState::Blocked
+            ]
+        );
+        assert_eq!(search_pattern(" Mia "), Some("mia".into()));
+        assert_eq!(search_pattern("m"), None);
+        assert_eq!(search_pattern(".*"), Some(r"\.\*".into()));
+        assert_eq!(search_pattern("mia - (500)"), Some(r"mia - \(500\)".into()));
+        let found = parse_found(&json!({"display_name_matches": [
+            {"display_name": "Mars", "username": "mars1", "user_id": "u1", "group_id": "g1"},
+            {"display_name": "mars", "username": "mars1", "user_id": "u1", "group_id": "g2"},
+            {"display_name": "Marsh", "username": "m2", "user_id": "u2"},
+            {"display_name": "nobody"}
+        ]}));
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            (found[0].name.as_str(), found[1].user_id.as_str()),
+            ("Mars", "u2")
+        );
+        assert!(parse_found(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn players_you_played_with() {
+        let h = parse_history(
+            &json!([
+                {"_id": "old", "mode": "echo_arena", "start_time": "2026-10-01T10:00:00Z",
+                 "participants": [{"user_id": "me", "display_name": "Me"}, {"user_id": "p1", "display_name": "One"},
+                                  {"user_id": "p2", "display_name": "Two"}]},
+                {"_id": "new", "mode": "echo_combat", "start_time": "2026-10-03T10:00:00Z",
+                 "teams": [{"players": [{"user_id": "me"}, {"user_id": "p2", "display_name": "Two"}]},
+                           {"players": [{"user_id": "p3", "username": "three"}]}]}
+            ]),
+            "me",
+        );
+        assert_eq!(h[1].players.len(), 3);
+        let r = recent_players(&h, "me");
+        let who: Vec<(&str, Mode)> = r.iter().map(|r| (r.name.as_str(), r.mode)).collect();
+        assert_eq!(
+            who,
+            [
+                ("Two", Mode::Combat),
+                ("three", Mode::Combat),
+                ("One", Mode::Arena)
+            ]
+        );
     }
 
     #[test]

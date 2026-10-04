@@ -3,6 +3,7 @@
 //! patching, SteamVR setup and the Quest all run inline (`setup.rs`).
 
 mod echovrce;
+mod friends;
 mod hero;
 mod install;
 mod install_panel;
@@ -397,6 +398,8 @@ pub enum SnapVariant {
     ServersInvites,
     /// Play signed in: RIGHT NOW with friends and an invite.
     PlayFriends,
+    /// Friends signed in: a search, requests, friends and the players of your matches.
+    FriendsPage,
     /// EchoVRCE asks to confirm this location: the code card.
     LoginCode,
     /// EchoVRCE turned the login down with a message.
@@ -1033,6 +1036,7 @@ impl Dashboard {
                 | SnapVariant::ServersStart
                 | SnapVariant::ServersInvites
                 | SnapVariant::PlayFriends
+                | SnapVariant::FriendsPage
                 | SnapVariant::ServersShare),
             ) => {
                 self.vrce.demo(true);
@@ -1050,8 +1054,14 @@ impl Dashboard {
                         level: 1,
                     });
                 }
-                if matches!(v, SnapVariant::ServersInvites | SnapVariant::PlayFriends) {
+                if matches!(
+                    v,
+                    SnapVariant::ServersInvites | SnapVariant::PlayFriends | SnapVariant::FriendsPage
+                ) {
                     self.servers.demo_social(true);
+                }
+                if v == SnapVariant::FriendsPage {
+                    self.servers.demo_search();
                 }
                 if v == SnapVariant::ServersShare {
                     let id = self.servers.demo_social(false);
@@ -1557,6 +1567,7 @@ impl Dashboard {
         let shown = match self.page {
             Page::Servers => servers::Shown::Servers,
             Page::Play => servers::Shown::Play,
+            Page::Friends => servers::Shown::Friends,
             _ => servers::Shown::Neither,
         };
         if let Some(notice) = self.servers.tick(ctx, session, shown) {
@@ -1931,7 +1942,7 @@ impl Dashboard {
         // The other pages start with their header strip.
         if !matches!(
             page,
-            Page::Play | Page::Install | Page::Settings | Page::Servers
+            Page::Play | Page::Install | Page::Settings | Page::Servers | Page::Friends
         ) {
             let h = HEADER.wider(kit.dx());
             kit.header_strip(dz(h.x), dz(h.y), dz(h.w), dz(h.h), page.title());
@@ -1943,12 +1954,7 @@ impl Dashboard {
             Page::Mods => mods::show(self, kit, ctx),
             Page::Servers => servers::show(self, kit, ctx),
             Page::EchoVrce => echovrce::show(self, kit, ctx),
-            Page::Friends => empty_state(
-                kit,
-                Icon::Info,
-                "Friends",
-                "Find players and add them as friends.",
-            ),
+            Page::Friends => friends::show(self, kit, ctx),
             Page::Plugins => empty_state(
                 kit,
                 Icon::Plus,
@@ -2031,6 +2037,16 @@ impl Dashboard {
             kit.ui
                 .painter()
                 .circle_filled(c, dz(6.0), design::QUEST_WARN);
+        }
+        // Friend requests to answer: a dot on Friends.
+        if self
+            .servers
+            .requests
+            .iter()
+            .any(|f| f.state == crate::core::echovrce::game::FriendState::Received)
+        {
+            let c = kit.drect(Dr::new(63.0, 753.0 - 21.0, 0.0, 0.0)).min;
+            kit.ui.painter().circle_filled(c, dz(6.0), design::QUEST_ON);
         }
         // Invites to a match: a dot on Servers.
         if !self.servers.open_invites().is_empty() {
