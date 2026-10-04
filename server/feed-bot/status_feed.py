@@ -424,7 +424,7 @@ def aggregate(data: dict[str, Any], history: History, t: float, official: Offici
 
 
 def fetch() -> dict[str, Any]:
-    req = urllib.request.Request(API, headers={"User-Agent": "echovr-launcher-status/1 (+files.echovr.de)"})
+    req = urllib.request.Request(API, headers={"User-Agent": "echovr-launcher-status/1 (+release.echovr.de)"})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
 

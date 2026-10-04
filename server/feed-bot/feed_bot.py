@@ -2,7 +2,7 @@
 """Echo VR launcher feed: Community News.
 
 Mirrors the Community News messages that moderators pick from the Echo VR Discord into
-static files the launcher reads from https://files.echovr.de/launcher/feed/:
+static files the launcher reads from https://release.echovr.de/launcher/feed/:
 
   news.json  one configurable message per slot ("main" feeds the banner and the first card,
              "community" the second card), plus each message's first image as

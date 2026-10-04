@@ -49,7 +49,7 @@ The **Mods** page shows the selected PC version's mod loader
 ([nEVR runtime](https://github.com/EchoTools/nevr-runtime), the game's `BugSplat64.dll`,
 which also brings Discord sign-in, friends and parties into the game) and what it loaded
 at the last start, lets you turn plugins and asset patches on or off, set a plugin's
-arguments, start without mods, and install mods from the catalogue on files.echovr.de or a
+arguments, start without mods, and install mods from the catalogue on release.echovr.de or a
 DLL of your own. The launcher keeps its choices in its own files and writes nEVR's
 `_local/config.yaml` from them before every start, so updates and Verify never undo them.
 Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask in the

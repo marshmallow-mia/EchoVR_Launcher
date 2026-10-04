@@ -41,7 +41,7 @@ CREDS = STATE / "echovrce.creds"
 SESSION = STATE / "echovrce.session.json"
 API = os.environ.get("ECHOVRCE_API", "https://g.echovrce.com/v2")
 WEB_CONFIG = "https://echovrce.com/config.json"
-UA = "echovr-launcher-status/1 (+files.echovr.de)"
+UA = "echovr-launcher-status/1 (+release.echovr.de)"
 # Renew the session when it has less than this left.
 MARGIN_S = 300
 

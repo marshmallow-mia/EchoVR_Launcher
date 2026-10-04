@@ -41,7 +41,7 @@ the Bot reads the message text, embeds and the first image.
   display names.
 - **Not copied:** the message author's name and user IDs.
 - **Where it goes:** the result is written as `news.json` and an image file to
-  `https://files.echovr.de/launcher/feed/`, where it is **publicly accessible**.
+  `https://release.echovr.de/launcher/feed/`, where it is **publicly accessible**.
 
 Purpose: showing community news in the launcher. Legal basis: our legitimate interest in
 informing the community (Art. 6(1)(f) GDPR). The announcements are already published to the
@@ -108,7 +108,7 @@ messages.
 
 ### Web server logs
 
-When the launcher (or anyone) downloads the feed files, the web server at `files.echovr.de`
+When the launcher (or anyone) downloads the feed files, the web server at `release.echovr.de`
 logs the IP address, time, requested file and the client's user agent. This is done for
 operation and security, based on legitimate interest (Art. 6(1)(f) GDPR).
 

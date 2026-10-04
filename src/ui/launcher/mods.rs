@@ -1208,9 +1208,9 @@ fn catalogue_card(
         return;
     };
     let note = if catalog.builtin {
-        "The built-in list: files.echovr.de couldn't be reached."
+        "The built-in list: release.echovr.de couldn't be reached."
     } else {
-        "From files.echovr.de. Every download is checked against its checksum, and again before every start."
+        "From release.echovr.de. Every download is checked against its checksum, and again before every start."
     };
     let note_h = {
         let gs = kit.caps_block(note, 13.5, design::GREY, w);

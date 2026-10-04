@@ -1,7 +1,12 @@
 # Launcher feed
 
-What the launcher's Play page shows from `https://files.echovr.de/launcher/feed/`, made on
-`files.echo` in `/root/EchoLauncherFeed`. [Terms of Service](TERMS.md) ·
+What the launcher's Play page shows from `https://release.echovr.de/launcher/feed/`, made on
+`release.echo` in `/opt/echo-launcher-feed`. `release.echo` serves everything only the
+launcher needs (catalogues, feed, log uploads, the event builds, `pc.zip` and the staging
+updates) from `/var/www/release` with nginx on `127.0.0.1:443` (a self-signed
+certificate); Pangolin (newt) forwards `release.echovr.de` to it. The old installer's files
+(`updates/`, `stuff/`, `ready-at-dawn-echo-arena.zip`, the APKs) and the patcher stay on
+`files.echo`, which redirects the moved paths here. [Terms of Service](TERMS.md) ·
 [Privacy Policy](PRIVACY.md).
 
 - **`servers.json`** (SERVER INFO): `status_feed.py` as `echo-launcher-status.service`.
@@ -9,7 +14,7 @@ What the launcher's Play page shows from `https://files.echovr.de/launcher/feed/
   distinct players per hour, 24 h and 30 days, counted with keyed-hash pseudonyms kept 30
   days in `state/` (the key is `state/history.key`; never copy it off the server). No
   Discord, no dependencies. `python3 status_feed.py --forget <player ID>` stops counting
-  a player who asks; `--hide-top <player ID>` hides a name in the top 3. Log: `/root/log/launcher_status.log`.
+  a player who asks; `--hide-top <player ID>` hides a name in the top 3. Log: `/var/log/echo-launcher/launcher_status.log`.
   With an EchoVRCE login in `state/echovrce.creds` (`echovrce.py`; `python3 echovrce.py
   --check` tests it) it adds the matchmaking queue, the week's Arena top 3, and merges the
   official daily/weekly Arena player lists into the counts. The login file can hold a
@@ -17,7 +22,7 @@ What the launcher's Play page shows from `https://files.echovr.de/launcher/feed/
   `authorization: Bearer …` header (which lasts only until that session expires).
 - **`news.json`** (Community News): `feed_bot.py` as `echo-launcher-feed.service`, a
   read-only Discord bot. It receives no message events and only fetches the picked
-  messages by ID, every 5 min. Log: `/root/log/launcher_feed.log`.
+  messages by ID, every 5 min. Log: `/var/log/echo-launcher/launcher_feed.log`.
 
 Logs rotate daily and are kept 30 days. Tests: `python3 -m unittest test_status_feed
 test_log_upload`.
@@ -26,8 +31,8 @@ test_log_upload`.
 
 Settings → Upload logs in the launcher sends the player's logs (the launcher's, Echo VR's,
 EchoXR's, plugins', the Quest's) as one plain-text bundle to
-`https://files.echovr.de/launcher/logs`. `log_upload.py` (as `echo-launcher-logs.service`,
-on `127.0.0.1:8787` behind Apache) keeps an upload only when it is logs: see its docstring
+`https://release.echovr.de/launcher/logs`. `log_upload.py` (as `echo-launcher-logs.service`,
+on `127.0.0.1:8787` behind nginx) keeps an upload only when it is logs: see its docstring
 for every check. In short: 10 attempts per hour per IP; the launcher's user agent; strict
 UTF-8 text without control, format or private-use characters, line and size limits,
 checked while it streams in; ClamAV on every file as it arrives; Magika (Google's file
@@ -38,35 +43,39 @@ The player gets an 8-character reference to give you. On the server:
 
 ```sh
 L='/opt/echo-launcher-logs/.venv/bin/python /opt/echo-launcher-logs/log_upload.py --dir /var/lib/echo-launcher-logs'
-ssh files.echo "$L --list"
-ssh files.echo "$L --show K7Q4MZ2A" | less     # never -R: the text is checked, but stay safe
-ssh files.echo "$L --delete K7Q4MZ2A"          # on request
-ssh files.echo "$L --check /path/to/some.log"  # every check on files, to tune
+ssh release.echo "$L --list"
+ssh release.echo "$L --show K7Q4MZ2A" | less     # never -R: the text is checked, but stay safe
+ssh release.echo "$L --delete K7Q4MZ2A"          # on request
+ssh release.echo "$L --check /path/to/some.log"  # every check on files, to tune
 ```
 
 Deploy (ClamAV needs about 1.2 GiB of RAM, 2.4 GiB while it reloads its signatures):
 
 ```sh
-ssh files.echo 'apt install -y clamav-daemon clamav-freshclam && systemctl enable --now clamav-freshclam clamav-daemon'
-ssh files.echo 'mkdir -p /opt/echo-launcher-logs'
-scp log_upload.py requirements-log-upload.txt files.echo:/opt/echo-launcher-logs/
-scp echo-launcher-logs.service files.echo:/etc/systemd/system/
-ssh files.echo 'cd /opt/echo-launcher-logs && python3 -m venv .venv && .venv/bin/pip install -r requirements-log-upload.txt'
+ssh release.echo 'apt install -y clamav-daemon clamav-freshclam && systemctl enable --now clamav-freshclam clamav-daemon'
+ssh release.echo 'mkdir -p /opt/echo-launcher-logs'
+scp log_upload.py requirements-log-upload.txt release.echo:/opt/echo-launcher-logs/
+scp echo-launcher-logs.service release.echo:/etc/systemd/system/
+ssh release.echo 'cd /opt/echo-launcher-logs && python3 -m venv .venv && .venv/bin/pip install -r requirements-log-upload.txt'
 # Before going live: real Echo VR and EchoXR logs must pass (copy some over first).
-ssh files.echo "$L --check /tmp/sample-logs/*"
-ssh files.echo 'systemctl daemon-reload && systemctl enable --now echo-launcher-logs'
+ssh release.echo "$L --check /tmp/sample-logs/*"
+ssh release.echo 'systemctl daemon-reload && systemctl enable --now echo-launcher-logs'
 ```
 
-Apache (`a2enmod proxy proxy_http headers`), in the `files.echovr.de` virtual host, before
-any other `ProxyPass` for that path; then `apache2ctl configtest && systemctl reload
-apache2`:
+nginx, in the `release.echovr.de` server (`/etc/nginx/sites-available/release.echovr.de`,
+which takes the player's address from Pangolin's `X-Forwarded-For` with `set_real_ip_from
+127.0.0.1`); then `nginx -t && systemctl reload nginx`:
 
-```apache
-<Location /launcher/logs>
-    LimitRequestBody 35651584
-    RequestHeader set X-Real-IP "expr=%{REMOTE_ADDR}"
-    ProxyPass http://127.0.0.1:8787/launcher/logs timeout=600
-</Location>
+```nginx
+location = /launcher/logs {
+    client_max_body_size 34m;
+    proxy_request_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Host $host;
+    proxy_pass http://127.0.0.1:8787;
+}
 ```
 
 `X-Real-IP` is what the rate limit counts by, and the service only believes it from
@@ -104,12 +113,12 @@ The chosen messages are kept in `config.json` next to the bot.
 ## Deploy
 
 ```sh
-ssh files.echo 'mkdir -p /root/EchoLauncherFeed'
-scp feed_bot.py status_feed.py requirements.txt files.echo:/root/EchoLauncherFeed/
-scp echo-launcher-feed.service echo-launcher-status.service files.echo:/etc/systemd/system/
-ssh files.echo 'cd /root/EchoLauncherFeed && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'
-# The token goes into /root/EchoLauncherFeed/.bot.creds (chmod 600): the bare token,
+ssh release.echo 'mkdir -p /opt/echo-launcher-feed /var/www/release/launcher/feed /var/log/echo-launcher && chmod 700 /opt/echo-launcher-feed'
+scp feed_bot.py status_feed.py echovrce.py requirements.txt release.echo:/opt/echo-launcher-feed/
+scp echo-launcher-feed.service echo-launcher-status.service release.echo:/etc/systemd/system/
+ssh release.echo 'cd /opt/echo-launcher-feed && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'
+# The token goes into /opt/echo-launcher-feed/.bot.creds (chmod 600): the bare token,
 # TOKEN=... lines or JSON with a "token" key.
-ssh files.echo 'cd /root/EchoLauncherFeed && .venv/bin/python feed_bot.py --dump'
-ssh files.echo 'systemctl daemon-reload && systemctl enable --now echo-launcher-status echo-launcher-feed'
+ssh release.echo 'cd /opt/echo-launcher-feed && .venv/bin/python feed_bot.py --dump'
+ssh release.echo 'systemctl daemon-reload && systemctl enable --now echo-launcher-status echo-launcher-feed'
 ```

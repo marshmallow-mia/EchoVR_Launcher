@@ -16,19 +16,19 @@ use super::http::{self, Cancelled};
 use super::manifest::Manifest;
 
 pub const PC_MANIFEST_URL: &str = "https://files.echovr.de/updates/update.manifest";
-/// Where to try a PC update before it goes live: another manifest on files.echovr.de
-/// (e.g. `https://files.echovr.de/updates-nevr/update.manifest`) in place of the live one.
+/// Where to try a PC update before it goes live: another manifest on release.echovr.de or
+/// files.echovr.de (e.g. `https://release.echovr.de/updates-nevr/update.manifest`) in place
+/// of the live one.
 pub const MANIFEST_OVERRIDE: &str = "ECHOVR_UPDATE_MANIFEST";
 
 /// `url`, or for the live PC update the one `ECHOVR_UPDATE_MANIFEST` names (only on
-/// files.echovr.de).
+/// release.echovr.de or files.echovr.de).
 pub fn manifest_for(url: &str) -> String {
     if url == PC_MANIFEST_URL {
         if let Ok(o) = std::env::var(MANIFEST_OVERRIDE) {
             // Asked for every frame: said once.
             static SAID: std::sync::Once = std::sync::Once::new();
-            let ok = o.starts_with("https://files.echovr.de/updates-")
-                && o.ends_with("/update.manifest");
+            let ok = override_ok(&o);
             SAID.call_once(|| {
                 if ok {
                     tracing::warn!(
@@ -36,7 +36,7 @@ pub fn manifest_for(url: &str) -> String {
                     );
                 } else {
                     tracing::warn!(
-                        "{MANIFEST_OVERRIDE} ignored: not https://files.echovr.de/updates-*/update.manifest"
+                        "{MANIFEST_OVERRIDE} ignored: not https://release.echovr.de/updates-*/update.manifest"
                     );
                 }
             });
@@ -46,6 +46,13 @@ pub fn manifest_for(url: &str) -> String {
         }
     }
     url.to_string()
+}
+
+/// A staging manifest: `https://{release,files}.echovr.de/updates-*/update.manifest`.
+fn override_ok(url: &str) -> bool {
+    (url.starts_with("https://release.echovr.de/updates-")
+        || url.starts_with("https://files.echovr.de/updates-"))
+        && url.ends_with("/update.manifest")
 }
 
 /// A failure worth its own dialog title.
@@ -185,4 +192,28 @@ pub fn apply_skipping(
 
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staging_manifests_on_our_hosts_only() {
+        assert!(override_ok(
+            "https://release.echovr.de/updates-nevr/update.manifest"
+        ));
+        assert!(override_ok(
+            "https://files.echovr.de/updates-nevr/update.manifest"
+        ));
+        for bad in [
+            "https://release.echovr.de/updates/update.manifest",
+            "http://release.echovr.de/updates-nevr/update.manifest",
+            "https://release.echovr.de.evil.example/updates-nevr/update.manifest",
+            "https://evr.echo.taxi/updates-nevr/update.manifest",
+            "https://release.echovr.de/updates-nevr/other.manifest",
+        ] {
+            assert!(!override_ok(bad), "{bad}");
+        }
+    }
 }

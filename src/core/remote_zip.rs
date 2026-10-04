@@ -216,7 +216,7 @@ mod tests {
     #[test]
     #[ignore = "network"]
     fn reads_one_file_out_of_the_live_build() {
-        let m = crate::core::manifest::Manifest::fetch("https://files.echovr.de/pc.zip.manifest")
+        let m = crate::core::manifest::Manifest::fetch("https://release.echovr.de/pc.zip.manifest")
             .unwrap();
         let e = m
             .adds()

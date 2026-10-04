@@ -1,6 +1,6 @@
 # Launcher catalogues
 
-The launcher reads `https://files.echovr.de/launcher/versions.json` (this folder has the
+The launcher reads `https://release.echovr.de/launcher/versions.json` (this folder has the
 current draft). Until it is published, a built-in list with the same content is used.
 
 Rules the launcher enforces (see `src/core/launcher/catalog.rs`):
@@ -9,9 +9,10 @@ Rules the launcher enforces (see `src/core/launcher/catalog.rs`):
   name inside the library, so it must never change for a published version.
 - `url` / `data_url`: either a path relative to the download mirrors
   (`files.echovr.de` / `evr.echo.taxi`, the fastest is picked, and the other is asked
-  when it doesn't have the file), or an absolute `https://` URL on one of those hosts.
+  when it doesn't have the file), or an absolute `https://` URL on one of those hosts or `release.echovr.de` (the event
+  builds, `pc.zip` and their manifests).
   An empty `url` lists a build that can't be downloaded yet: INSTALL says so.
-- `update_manifest`: absolute `https://` URL on those hosts, in the usual
+- `update_manifest`: absolute `https://` URL on those three hosts, in the usual
   `add <path> <sha256>` / `del <path>` format. Applied after install and by "Update".
 - `sha256`: optional; when set, the downloaded zip must match before it is extracted.
 - `files_manifest`: optional absolute `https://` URL of the build's file manifest
