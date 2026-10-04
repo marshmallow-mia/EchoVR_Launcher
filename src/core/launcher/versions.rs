@@ -234,8 +234,9 @@ fn update_after(
     let Some(m) = &entry.update_manifest else {
         return Ok(None);
     };
+    let m = pc_update::manifest_for(m);
     on(Step::Status("Applying update...".into()));
-    match pc_update::apply_skipping(m, &v.bin_dir(), keep(v), cancel, &mut |s| {
+    match pc_update::apply_skipping(&m, &v.bin_dir(), keep(v), cancel, &mut |s| {
         on(Step::Status(s))
     }) {
         Ok(()) => Ok(None),
@@ -282,11 +283,14 @@ impl Checksums {
             .unwrap_or_else(|_| "bin/win10".into());
         let mut skip = HashSet::new();
         if let Some(update) = manifest_url(v) {
-            let update = Manifest::fetch(update)
+            let update = Manifest::fetch(&update)
                 .with_context(|| "Couldn't read the update's checksums from the server")?;
+            // What the update replaces, and what it takes out (the build's own
+            // dbgcore.dll, which nEVR won't start beside): neither is the build's file.
             skip.extend(
                 update
                     .adds()
+                    .chain(update.dels())
                     .map(|e| format!("{bin}/{}", e.path).to_ascii_lowercase()),
             );
         }
@@ -406,11 +410,12 @@ fn download_and_extract(
 
 /// `v`'s update, if it gets one: its own, or the live build's for a live install that
 /// doesn't name one (an added folder). Event builds and old folders get none.
-fn manifest_url(v: &InstalledVersion) -> Option<&str> {
+fn manifest_url(v: &InstalledVersion) -> Option<String> {
     let live = v.publisher_lock.is_none() && v.bin_dir().ends_with("win10");
     v.update_manifest
         .as_deref()
         .or(live.then_some(pc_update::PC_MANIFEST_URL))
+        .map(pc_update::manifest_for)
 }
 
 /// Whether `v` gets updates (event builds don't).
@@ -434,7 +439,7 @@ fn keep(v: &InstalledVersion) -> &'static [&'static str] {
 pub fn update(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
     ensure_present(v)?;
     let url = manifest_url(v).ok_or_else(|| no_updates(v))?;
-    pc_update::apply_skipping(url, &v.bin_dir(), keep(v), cancel, &mut |s| {
+    pc_update::apply_skipping(&url, &v.bin_dir(), keep(v), cancel, &mut |s| {
         on(Step::Status(s))
     })
 }
@@ -446,7 +451,7 @@ pub fn verify(
     on: &mut dyn FnMut(Step),
 ) -> Result<Vec<String>> {
     ensure_present(v)?;
-    let m = Manifest::fetch(manifest_url(v).ok_or_else(|| no_updates(v))?)?;
+    let m = Manifest::fetch(&manifest_url(v).ok_or_else(|| no_updates(v))?)?;
     let bin = v.bin_dir();
     let adds: Vec<_> = m
         .adds()

@@ -16,6 +16,24 @@ use super::http::{self, Cancelled};
 use super::manifest::Manifest;
 
 pub const PC_MANIFEST_URL: &str = "https://files.echovr.de/updates/update.manifest";
+/// Where to try a PC update before it goes live: another manifest on files.echovr.de
+/// (e.g. `https://files.echovr.de/updates-nevr/update.manifest`) in place of the live one.
+pub const MANIFEST_OVERRIDE: &str = "ECHOVR_UPDATE_MANIFEST";
+
+/// `url`, or for the live PC update the one `ECHOVR_UPDATE_MANIFEST` names (only on
+/// files.echovr.de).
+pub fn manifest_for(url: &str) -> String {
+    if url == PC_MANIFEST_URL {
+        if let Ok(o) = std::env::var(MANIFEST_OVERRIDE) {
+            if o.starts_with("https://files.echovr.de/") && o.ends_with(".manifest") {
+                tracing::warn!("PC update from {o} ({MANIFEST_OVERRIDE}) instead of the live one");
+                return o;
+            }
+            tracing::warn!("{MANIFEST_OVERRIDE} ignored: not a manifest on files.echovr.de");
+        }
+    }
+    url.to_string()
+}
 
 /// A failure worth its own dialog title.
 #[derive(Debug, thiserror::Error)]
