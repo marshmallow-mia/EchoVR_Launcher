@@ -237,6 +237,32 @@ pub fn process_running(exe_name: &str) -> bool {
         .any(|p| p.name().to_string_lossy().eq_ignore_ascii_case(exe_name))
 }
 
+/// Whether a process runs from a program named `file_name`, by its executable or its
+/// command line: for processes that rename themselves (SteamVR's `vrserver` shows up as
+/// "2676033: vrwebh").
+pub fn program_running(file_name: &str) -> bool {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_exe(UpdateKind::OnlyIfNotSet)
+            .with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    let named = |p: &std::path::Path| {
+        p.file_name()
+            .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(file_name))
+    };
+    sys.processes().values().any(|p| {
+        p.name().to_string_lossy().eq_ignore_ascii_case(file_name)
+            || p.exe().is_some_and(named)
+            || p.cmd()
+                .first()
+                .is_some_and(|c| named(std::path::Path::new(c)))
+    })
+}
+
 /// A process, as pid and start (Unix seconds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Owned {
