@@ -1,0 +1,21 @@
+# The Windows exe cross-built with mingw-w64 (`--target x86_64-pc-windows-gnu`) links the
+# C++ runtime that openh264 (the background video) needs statically, so the exe doesn't
+# need libstdc++-6.dll next to it: cc links none, and libstdc++.a goes last. CI's MSVC,
+# macOS and Linux builds are unaffected.
+[env]
+CXXSTDLIB_x86_64_pc_windows_gnu = ""
+
+[target.x86_64-pc-windows-gnu]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-Wl,-Bstatic",
+    "-C", "link-arg=-Wl,--start-group",
+    "-C", "link-arg=-lstdc++",
+    "-C", "link-arg=-lmingwex",
+    "-C", "link-arg=-lmsvcrt",
+    "-C", "link-arg=-l:libpthread.a",
+    "-C", "link-arg=-lgcc_eh",
+    "-C", "link-arg=-lgcc",
+    "-C", "link-arg=-lkernel32",
+    "-C", "link-arg=-Wl,--end-group",
+]

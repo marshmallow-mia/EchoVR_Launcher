@@ -1,0 +1,29 @@
+#include <winver.h>
+1 ICON "../icon.ico"
+1 24 "app.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 0,9,5,1
+PRODUCTVERSION 0,9,5,1
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "CompanyName", "Echo VR Launcher contributors"
+      VALUE "FileDescription", "Echo VR Launcher"
+      VALUE "FileVersion", "0.9.5-001"
+      VALUE "InternalName", "EchoVR_Launcher"
+      VALUE "LegalCopyright", "GPL-3.0-or-later"
+      VALUE "OriginalFilename", "EchoVR_Launcher.exe"
+      VALUE "ProductName", "Echo VR Launcher"
+      VALUE "ProductVersion", "0.9.5-001"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
