@@ -27,8 +27,7 @@ use super::parts::{QuestConn, Worker};
 use super::style::{self, Icon};
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
-use crate::core::ffmpeg;
-use crate::core::launcher::background;
+
 use crate::core::launcher::catalog::{Catalog, Platform, VersionEntry};
 use crate::core::launcher::feed;
 use crate::core::launcher::game::{self, GameState, Local, Monitor};
@@ -56,6 +55,11 @@ const X0: f32 = dz(138.0);
 const CW: f32 = W - X0 - dz(48.0);
 /// The page's header strip under the status bar (design pixels).
 pub(super) const HEADER: Dr = Dr::new(138.0, 80.0, 1734.0, 46.0);
+/// Echo VR on Quest. The first release is PCVR only: the switch's Quest side says it's
+/// coming soon, and nothing looks for a headset.
+pub(super) const QUEST: bool = false;
+/// How long the switch's "coming soon" stays up.
+const QUEST_SOON_FOR: std::time::Duration = std::time::Duration::from_millis(2500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Page {
@@ -65,10 +69,10 @@ pub enum Page {
     Install,
     Mods,
     Servers,
-    /// The community modules (placeholders for now).
-    Spark,
     EchoVrce,
-    Community,
+    Friends,
+    /// Community plugins (the rail's +), not built yet.
+    Plugins,
     Settings,
 }
 
@@ -79,9 +83,9 @@ impl Page {
         Page::Settings,
         Page::Servers,
         Page::Mods,
-        Page::Spark,
         Page::EchoVrce,
-        Page::Community,
+        Page::Friends,
+        Page::Plugins,
     ];
 
     fn title(self) -> &'static str {
@@ -90,9 +94,9 @@ impl Page {
             Page::Install => "Install",
             Page::Mods => "Mods",
             Page::Servers => "Servers",
-            Page::Spark => "Spark",
             Page::EchoVrce => "EchoVRCE",
-            Page::Community => "Community",
+            Page::Friends => "Friends",
+            Page::Plugins => "Plugins",
             Page::Settings => "Settings",
         }
     }
@@ -128,8 +132,6 @@ enum JobResult {
     QuestUpdated,
     /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
     QuestNeedsReinstall(String),
-    /// A custom background is converted and in place.
-    BackgroundSet,
     /// Mods were installed, added or removed: what to say.
     ModsChanged(String),
 }
@@ -300,8 +302,6 @@ enum JobKind {
     Revive,
     QuestInstall,
     QuestUpdate,
-    /// Converting a custom background.
-    Background,
     /// Installing, adding or removing a plugin.
     Mods,
 }
@@ -557,12 +557,10 @@ pub struct Dashboard {
     pending_patch: Option<setup::PendingPatch>,
     /// Pages drawn at least once, seen or not (`prewarm`).
     warmed: std::collections::HashSet<Page>,
+    /// The Quest side of the switch was clicked while Quest is off (`QUEST`): where, and
+    /// when.
+    quest_soon: Option<(egui::Rect, std::time::Instant)>,
     video: super::video::BackgroundVideo,
-    /// The custom background (Settings), and its still once loaded.
-    custom_bg: Option<background::Custom>,
-    custom_still: Option<egui::TextureHandle>,
-    /// A video chosen in Settings, waiting for the answer about downloading ffmpeg.
-    background_pending: Option<PathBuf>,
 }
 
 impl Dashboard {
@@ -603,7 +601,11 @@ impl Dashboard {
         self.relay_server_field = self.state.relay_server.clone();
         self.linux_set_up = cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up();
         self.check_launcher_update(ctx);
-        self.load_custom_background();
+        // The custom background is gone; so is what an older launcher converted for it.
+        let old_background = crate::core::paths::data_dir().join("background");
+        if !self.demo && old_background.is_dir() {
+            let _ = std::fs::remove_dir_all(&old_background);
+        }
         if self.demo {
             self.catalog = Some(demo_catalog());
             return;
@@ -1349,7 +1351,6 @@ impl Dashboard {
                                 j.fraction = Some(p as f32 / 100.0);
                                 let verb = match j.kind {
                                     JobKind::Verify => "Verifying",
-                                    JobKind::Background => "Converting",
                                     _ => "Downloading",
                                 };
                                 j.label = format!("{verb}... {p:.1}%");
@@ -1587,6 +1588,34 @@ impl Dashboard {
     }
 
     /// Shows `text` in the status bar for a few seconds.
+    /// "Quest support is coming soon" above the switch's Quest side, fading out.
+    fn quest_soon(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+        let Some((at, since)) = self.quest_soon else {
+            return;
+        };
+        let age = since.elapsed();
+        if age >= QUEST_SOON_FOR {
+            self.quest_soon = None;
+            return;
+        }
+        ctx.request_repaint();
+        let fade = (QUEST_SOON_FOR - age).as_secs_f32().min(0.4) / 0.4;
+        let g = kit.spaced_galley(
+            "QUEST SUPPORT IS COMING SOON",
+            design::din(13.0),
+            design::TEXT.gamma_multiply(fade),
+            dz(0.5),
+            false,
+        );
+        let pad = egui::vec2(dz(14.0), dz(9.0));
+        let size = g.size() + pad * 2.0;
+        let min = egui::pos2(at.center().x - size.x / 2.0, at.top() - size.y - dz(10.0));
+        let r = egui::Rect::from_min_size(min, size);
+        let p = kit.ui.painter();
+        p.rect_filled(r, dz(6.0), design::BLUE.gamma_multiply(fade));
+        p.galley(r.min + pad, g, design::TEXT);
+    }
+
     fn notify(&mut self, text: &str) {
         self.notice = Some((text.to_string(), std::time::Instant::now()));
     }
@@ -1730,10 +1759,6 @@ impl Dashboard {
                 self.mods.changed();
                 self.notify(&notice);
             }
-            JobResult::BackgroundSet => {
-                self.load_custom_background();
-                self.notify("Your background is set");
-            }
             JobResult::ReviveReady(notes) => {
                 self.revive = Probe::default();
                 self.notify("SteamVR is ready: PLAY starts Echo VR through it");
@@ -1867,6 +1892,7 @@ impl Dashboard {
 
         self.top_bar(kit, &ctx);
         self.rail(kit);
+        self.quest_soon(kit, &ctx);
         kit.blocked = blocked;
         setup::draw_overlay(self, kit, &ctx);
         self.prewarm(kit, &ctx);
@@ -1881,28 +1907,15 @@ impl Dashboard {
         }
     }
 
-    /// The designer's video, or its first frame (animation off, snapshots), covering the
-    /// window. It holds while the window isn't focused and while Echo VR runs.
+    /// The designer's video, or its first frame (snapshots, and until the first frame is
+    /// decoded), covering the window. It holds while the window isn't focused and while
+    /// Echo VR runs.
     fn background(&mut self, kit: &mut Kit, ctx: &egui::Context) {
         let window = kit.window();
-        // A custom picture has no video.
-        let has_video = self.custom_bg.as_ref().is_none_or(|c| c.video.is_some());
-        if self.state.animated_background && !self.demo && has_video {
+        if !self.demo {
             let focused = ctx.input(|i| i.viewport().focused) != Some(false);
             let play = focused && !self.game().is_running();
-            let speed = self.state.background_speed as f32 / 100.0;
-            if let Some(tex) = self.video.frame(ctx, play, speed) {
-                kit.texture_cover(tex, window, 0.0);
-                return;
-            }
-        } else {
-            self.video.stop();
-        }
-        if let Some(custom) = &self.custom_bg {
-            if self.custom_still.is_none() {
-                self.custom_still = load_still(ctx, &custom.still);
-            }
-            if let Some(tex) = &self.custom_still {
+            if let Some(tex) = self.video.frame(ctx, play) {
                 kit.texture_cover(tex, window, 0.0);
                 return;
             }
@@ -1911,80 +1924,6 @@ impl Dashboard {
         let (w, h) = ((W * s).round() as u32, (H * s).round() as u32);
         let tex = kit.assets.tex(ctx, "main_background.jpg", w, h);
         kit.texture_cover(&tex, window, 0.0);
-    }
-
-    /// Picks up the custom background (Settings), or the built-in one without it.
-    fn load_custom_background(&mut self) {
-        self.custom_bg = if self.demo {
-            None
-        } else {
-            background::current()
-        };
-        self.custom_still = None;
-        let video = self
-            .custom_bg
-            .as_ref()
-            .and_then(|c| c.video.as_ref())
-            .and_then(|p| std::fs::read(p).ok())
-            .map(Arc::<[u8]>::from);
-        self.video.set_source(video);
-    }
-
-    /// Converts `input` into the background, as a job. A video needs ffmpeg: without one,
-    /// this asks before downloading it (`download`: the answer was yes) or says where to
-    /// get it.
-    fn set_background(&mut self, ctx: &egui::Context, input: PathBuf, download: bool) {
-        let picture = background::is_picture(&input);
-        let found = if picture { None } else { ffmpeg::find() };
-        if !picture && found.is_none() && !download {
-            if ffmpeg::can_download() {
-                self.background_pending = Some(input);
-                self.dialogs.confirm(
-                    settings::FFMPEG_KEY,
-                    "Download the video converter?",
-                    &format!(
-                        "Converting a video needs ffmpeg: {} MB, downloaded once from github.com/GyanD/codexffmpeg.\n\nPictures (PNG, JPEG) work without it.",
-                        ffmpeg::DOWNLOAD_MB
-                    ),
-                    crate::ui::dialogs::Icon::Question,
-                );
-            } else {
-                self.dialogs.error(
-                    "ffmpeg is needed",
-                    "Converting a video needs ffmpeg. Install it (for example with Homebrew: brew install ffmpeg) and try again.\n\nPictures (PNG, JPEG) work without it.",
-                    Default::default(),
-                );
-            }
-            return;
-        }
-        self.start_job(
-            ctx,
-            JobKind::Background,
-            settings::BACKGROUND_JOB,
-            "Setting the background",
-            "Starting...",
-            move |cancel, on| {
-                let ffmpeg = match found {
-                    Some(f) => Some(f),
-                    None if !picture => {
-                        let got = ffmpeg::download(cancel, &mut |p| {
-                            if let crate::core::download::Progress::Percent(v) = p {
-                                on(Step::Status(format!("Downloading ffmpeg... {v:.0}%")));
-                            }
-                        });
-                        match got {
-                            Ok(f) => Some(f),
-                            Err(e) => return versions::job_err(e, "Converter Download Failed"),
-                        }
-                    }
-                    None => None,
-                };
-                match background::convert(&input, ffmpeg.as_deref(), cancel, on) {
-                    Ok(()) => JobResult::BackgroundSet,
-                    Err(e) => versions::job_err(e, "Couldn't Set The Background"),
-                }
-            },
-        );
     }
 
     /// A page under the status bar.
@@ -2004,11 +1943,17 @@ impl Dashboard {
             Page::Mods => mods::show(self, kit, ctx),
             Page::Servers => servers::show(self, kit, ctx),
             Page::EchoVrce => echovrce::show(self, kit, ctx),
-            p @ (Page::Spark | Page::Community) => empty_state(
+            Page::Friends => empty_state(
                 kit,
                 Icon::Info,
-                p.title(),
-                &format!("The {} module is coming to the launcher soon.", p.title()),
+                "Friends",
+                "Find players and add them as friends.",
+            ),
+            Page::Plugins => empty_state(
+                kit,
+                Icon::Plus,
+                "Plugins",
+                "Browse community plugins and add them to Echo VR, right here in the launcher.",
             ),
         }
     }
@@ -2036,8 +1981,8 @@ impl Dashboard {
         ctx.request_repaint();
     }
 
-    /// The design's rail: pages, a divider, the community modules, and Settings at the
-    /// bottom. Positions are the icons' centres in design pixels.
+    /// The design's rail: pages, a divider, EchoVRCE, Friends and the plugins' +, and
+    /// Settings at the bottom. Positions are the icons' centres in design pixels.
     fn rail(&mut self, kit: &mut Kit) {
         kit.image("left_sidebar.jpg", 0.0, 0.0, RAIL, H + kit.ey);
         // Settings stays at the bottom.
@@ -2047,17 +1992,17 @@ impl Dashboard {
             (Page::Install, RailIcon::Vector(Icon::Download, 30.0), 335.0),
             (Page::Mods, RailIcon::Vector(Icon::Mods, 30.0), 437.0),
             (Page::Servers, RailIcon::Vector(Icon::Globe, 33.0), 538.0),
-            (Page::Spark, RailIcon::Image("icon_spark.png", 29.0), 692.0),
             (
                 Page::EchoVrce,
                 RailIcon::Image("icon_echovrce.png", 38.0),
-                753.0,
+                692.0,
             ),
             (
-                Page::Community,
+                Page::Friends,
                 RailIcon::Image("icon_community.png", 38.0),
-                814.0,
+                753.0,
             ),
+            (Page::Plugins, RailIcon::Vector(Icon::Plus, 30.0), 814.0),
             (
                 Page::Settings,
                 RailIcon::Vector(Icon::Gear, 34.0),
@@ -2082,7 +2027,7 @@ impl Dashboard {
         );
         // The EchoVRCE session ended: a dot on its icon until signed in again.
         if self.vrce.ended {
-            let c = kit.drect(Dr::new(63.0, 753.0 - 21.0, 0.0, 0.0)).min;
+            let c = kit.drect(Dr::new(63.0, 692.0 - 21.0, 0.0, 0.0)).min;
             kit.ui
                 .painter()
                 .circle_filled(c, dz(6.0), design::QUEST_WARN);
@@ -2268,7 +2213,6 @@ impl Dashboard {
     }
 }
 
-/// A centred card for pages that are not built yet.
 /// The "continue in your browser" dialog while a job waits on Discord's authorization.
 const BROWSER_KEY: &str = "browser-wait";
 
@@ -2287,6 +2231,7 @@ fn browser_dialog(id: &str) -> (&'static str, String) {
     )
 }
 
+/// A centred card for pages that are not built yet.
 fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
     let (w, h) = (dz(780.0), dz(336.0));
     let x = X0 + (CW + kit.ex - w) / 2.0;
@@ -2318,18 +2263,6 @@ fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
         "Coming soon",
         design::BLUE,
     );
-}
-
-/// A custom background's still, as a texture (`None` when it can't be read).
-fn load_still(ctx: &egui::Context, path: &std::path::Path) -> Option<egui::TextureHandle> {
-    let img = image::open(path)
-        .inspect_err(|e| tracing::warn!("custom background {}: {e}", path.display()))
-        .ok()?
-        .to_rgba8();
-    let size = [img.width() as usize, img.height() as usize];
-    let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
-    let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
-    Some(ctx.load_texture("custom-background", color, options))
 }
 
 /// Two made-up versions for UI snapshots.

@@ -1,9 +1,9 @@
 # Echo VR Launcher
 
-Installs, updates and starts Echo VR on PC (Windows, Linux) and on the Quest, and plays it
-on the community's servers (EchoVRCE): PLAY on the Play page, with what's going on and
-your friends to join on the right; the live servers, your match and invites on the
-Servers page; mods on the Mods page.
+Installs, updates and starts Echo VR on PC (Windows, Linux), and plays it on the
+community's servers (EchoVRCE): PLAY on the Play page, with what's going on and your
+friends to join on the right; the live servers, your match and invites on the Servers
+page; mods on the Mods page. Echo VR on Quest is coming soon.
 
 Download it from the [releases](https://github.com/marshmallow-mia/EchoVR_Launcher/releases).
 Help and news are on the [Echo VR Lounge Discord](https://discord.com/invite/echo-vr-lounge).
@@ -23,6 +23,13 @@ INSTALL looks for a copy first (the Meta app's libraries, `C:\EchoVR`, the launc
 library folder, and Wine prefixes on Linux) and offers **Use the copy on this PC**, or
 **Choose echovr.exe** for one somewhere else. That copy is checked against the build's
 checksums and added instead of downloading it again.
+
+## Event builds
+
+The event builds (Halloween 2017, Christmas 2017 and so on) are listed as coming soon.
+To install them anyway, close the launcher and set `"event_builds": true` in its
+`launcher.json` (`%LOCALAPPDATA%\EchoVR_Launcher` on Windows, `~/.local/share/EchoVR_Launcher`
+on Linux). An event build you installed before stays playable either way.
 
 ## SteamVR on Windows
 

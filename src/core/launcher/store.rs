@@ -142,10 +142,6 @@ pub struct LauncherState {
     pub revive_library: bool,
     /// The Play page shows the launch options under PLAY.
     pub show_launch_options: bool,
-    /// The background is the designer's video instead of its first frame.
-    pub animated_background: bool,
-    /// How fast it plays, in percent (100 = as made).
-    pub background_speed: u32,
     /// The Quest's Wi-Fi address: read over USB, typed, or found by a scan.
     pub quest_ip: Option<String>,
     /// Reach the Quest's ADB over the network too (turned on over USB once).
@@ -160,6 +156,9 @@ pub struct LauncherState {
     pub relay_server: String,
     /// Your account there, asked for at an event build's first PLAY.
     pub relay_account: Option<RelayAccount>,
+    /// Event builds can be installed. Off (the default, and the first release's), they
+    /// are listed as coming soon; `"event_builds": true` in this file turns them on.
+    pub event_builds: bool,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -198,14 +197,13 @@ impl Default for LauncherState {
             revive_artwork: true,
             revive_library: true,
             show_launch_options: false,
-            animated_background: true,
-            background_speed: 100,
             quest_ip: None,
             quest_adb_network: false,
             vrce_site_account: None,
             linux_appid: None,
             spark_links_off: false,
             relay_server: super::relay::DEFAULT_SERVER.into(),
+            event_builds: false,
             relay_account: None,
         }
     }
@@ -295,6 +293,20 @@ impl LauncherState {
     }
 
     /// The installed copy of catalogue version `id`, if there is one.
+    /// Whether `e` can be installed: it's on the servers and, for an event build, event
+    /// builds are on (`event_builds`) or it is installed already.
+    pub fn offers(&self, e: &VersionEntry) -> bool {
+        e.downloadable()
+            && (e.publisher_lock.is_none()
+                || self.event_builds
+                || self.installed_from(&e.id).is_some())
+    }
+
+    /// Whether an event build is installed, or can be.
+    pub fn has_event_builds(&self) -> bool {
+        self.event_builds || self.versions.iter().any(|v| v.publisher_lock.is_some())
+    }
+
     pub fn installed_from(&self, id: &str) -> Option<&InstalledVersion> {
         self.versions
             .iter()
@@ -433,6 +445,26 @@ mod tests {
         );
         assert_eq!(s.add_external("D:/Echo", None).unwrap(), "existing-2");
         assert_eq!(s.selected.as_deref(), Some("existing"));
+    }
+
+    #[test]
+    fn event_builds_are_coming_soon_until_turned_on() {
+        let c = Catalog::builtin();
+        let event = c.pc().find(|e| e.publisher_lock.is_some()).unwrap().clone();
+        let live = c.pc().find(|e| e.publisher_lock.is_none()).unwrap();
+        let mut s = LauncherState::default();
+        assert!(s.offers(live) && !s.offers(&event) && !s.has_event_builds());
+        // Installed before: still offered (reinstall).
+        s.upsert(InstalledVersion {
+            id: event.id.clone(),
+            root: "/e".into(),
+            publisher_lock: event.publisher_lock.clone(),
+            ..Default::default()
+        });
+        assert!(s.offers(&event) && s.has_event_builds());
+        // Turned on in launcher.json.
+        let s: LauncherState = serde_json::from_str(r#"{"event_builds":true}"#).unwrap();
+        assert!(s.offers(&event) && s.has_event_builds());
     }
 
     fn catalog() -> Catalog {

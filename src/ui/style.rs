@@ -48,6 +48,7 @@ pub enum Icon {
     Info,
     Close,
     Copy,
+    Plus,
 }
 
 /// What a control reports back.
@@ -261,6 +262,10 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
         Icon::Close => {
             line(vec![pt(0.2, 0.2), pt(0.8, 0.8)]);
             line(vec![pt(0.8, 0.2), pt(0.2, 0.8)]);
+        }
+        Icon::Plus => {
+            line(vec![pt(0.5, 0.14), pt(0.5, 0.86)]);
+            line(vec![pt(0.14, 0.5), pt(0.86, 0.5)]);
         }
         Icon::Copy => {
             let back = Rect::from_min_max(pt(0.14, 0.1), pt(0.62, 0.62));

@@ -27,9 +27,6 @@ const TILE_H: f32 = 170.0;
 const PANEL_W: f32 = 492.0;
 
 const CACHE_KEY: &str = "settings-delete-cache";
-/// Asks before downloading ffmpeg for a background video.
-pub(super) const FFMPEG_KEY: &str = "settings-download-ffmpeg";
-pub(super) const BACKGROUND_JOB: &str = "background";
 const UPLOAD_KEY: &str = "settings-upload-logs";
 const UPLOAD_TEXT: &str = "This sends your logs to the developer, marshmallow-mia, to help with a problem: the launcher's, Echo VR's (from each installed version), EchoXR's, plugins' and the Quest logs you saved last. Only the developer can see them, and they're deleted after 30 days.\n\n\
 They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, your Echo VR account name and the matches you joined, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
@@ -49,11 +46,6 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 
 /// The answers to this page's dialogs.
 fn answers(d: &mut Dashboard, ctx: &egui::Context) {
-    if let Some(a) = d.dialogs.take(FFMPEG_KEY) {
-        if let Some(input) = d.background_pending.take().filter(|_| a.is_yes()) {
-            d.set_background(ctx, input, true);
-        }
-    }
     if d.dialogs.take(CACHE_KEY).is_some_and(|a| a.is_yes()) {
         d.deleting_cache = true;
         let roots = d.cache_roots();
@@ -96,170 +88,6 @@ fn option(
         0.0,
     );
     (flipped, dz(38.0) + h + dz(26.0))
-}
-
-/// BACKGROUND: the launcher's own, or a video or picture of your own (converted to the
-/// launcher's format; `core::launcher::background`). Returns its height.
-fn background_row(
-    d: &mut Dashboard,
-    kit: &mut Kit,
-    ctx: &egui::Context,
-    x: f32,
-    y: f32,
-    w: f32,
-) -> f32 {
-    kit.caption(x, y, "Background");
-    let mut ty = y + dz(28.0);
-    let job = hero::job_view(d, BACKGROUND_JOB);
-    let text = match (&job, &d.custom_bg) {
-        (Some(j), _) => j.label.clone(),
-        (None, Some(c)) if c.video.is_some() => format!("Your video: {}", c.name),
-        (None, Some(c)) => format!("Your picture: {}", c.name),
-        (None, None) => "The launcher's own".into(),
-    };
-    let g = myriad(kit, &text, design::myriad(20.0), design::BODY, w, true);
-    ty += kit.put(x, ty, g).height() + dz(12.0);
-    let half = (w - dz(14.0)) / 2.0;
-    if let Some(j) = &job {
-        let label = if j.cancelling {
-            "Stopping…"
-        } else {
-            "Cancel"
-        };
-        if kit
-            .button(
-                "bg-cancel",
-                x,
-                ty,
-                half,
-                BTN_H,
-                Tone::Dark,
-                Some(Icon::Close),
-                label,
-                !j.cancelling,
-                "Stop converting",
-            )
-            .clicked
-        {
-            d.cancel_job(BACKGROUND_JOB);
-        }
-    } else if kit
-        .button(
-            "bg-choose",
-            x,
-            ty,
-            half,
-            BTN_H,
-            Tone::Panel,
-            Some(Icon::Folder),
-            "Choose file",
-            !d.any_job(),
-            "A video (MP4, MOV, WebM, MKV, GIF) or a picture (PNG, JPEG)",
-        )
-        .clicked
-    {
-        if let Some(input) = pick_background() {
-            d.set_background(ctx, input, false);
-        }
-    }
-    let custom = d.custom_bg.is_some() && job.is_none();
-    if kit
-        .button(
-            "bg-default",
-            x + half + dz(14.0),
-            ty,
-            half,
-            BTN_H,
-            Tone::Dark,
-            None,
-            "Default",
-            custom,
-            "Back to the launcher's own background",
-        )
-        .clicked
-    {
-        match crate::core::launcher::background::reset() {
-            Ok(()) => {
-                d.load_custom_background();
-                d.notify("The launcher's own background is back");
-            }
-            Err(e) => d.dialogs.error(
-                "Couldn't reset the background",
-                &format!("{e:#}"),
-                Default::default(),
-            ),
-        }
-    }
-    ty += BTN_H + dz(12.0);
-    let note = format!(
-        "Videos are cut to {} seconds and cropped to fill the window.",
-        crate::core::launcher::background::MAX_SECONDS
-    );
-    ty += kit.caps_text(x, ty, w, &note, 14.0, design::GREY, 0.0);
-    ty - y
-}
-
-/// A video or picture for the background.
-fn pick_background() -> Option<std::path::PathBuf> {
-    use crate::core::launcher::background::{PICTURE_EXTENSIONS, VIDEO_EXTENSIONS};
-    let all: Vec<&str> = VIDEO_EXTENSIONS
-        .iter()
-        .chain(PICTURE_EXTENSIONS.iter())
-        .copied()
-        .collect();
-    rfd::FileDialog::new()
-        .add_filter("Videos and pictures", &all)
-        .add_filter("Videos", &VIDEO_EXTENSIONS)
-        .add_filter("Pictures", &PICTURE_EXTENSIONS)
-        .pick_file()
-}
-
-/// The background video's speeds, in percent.
-const SPEEDS: [u32; 5] = [50, 100, 150, 200, 300];
-
-/// The background video's speed: one button per step, the current one blue. Returns
-/// its height.
-fn speed_row(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
-    let indent = dz(39.0);
-    kit.caption(x + indent, y, "Speed");
-    let by = y + dz(26.0);
-    let h = dz(40.0);
-    let gap = dz(8.0);
-    let n = SPEEDS.len() as f32;
-    let bw = (w - indent - (n - 1.0) * gap) / n;
-    let on = d.state.animated_background;
-    let current = d.state.background_speed;
-    for (i, speed) in SPEEDS.into_iter().enumerate() {
-        let selected = current == speed;
-        let label = format!("{speed}%");
-        let tone = if selected { Tone::Blue } else { Tone::Dark };
-        let tip = if on {
-            "How fast the background video plays"
-        } else {
-            "Turn on the animated background first"
-        };
-        let bx = x + indent + i as f32 * (bw + gap);
-        if kit
-            .button(
-                &format!("bg-speed-{i}"),
-                bx,
-                by,
-                bw,
-                h,
-                tone,
-                None,
-                &label,
-                on,
-                tip,
-            )
-            .clicked
-            && !selected
-        {
-            d.state.background_speed = speed;
-            d.save();
-        }
-    }
-    dz(26.0) + h
 }
 
 // ---- the cards ----
@@ -429,7 +257,9 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
     if changed {
         d.save();
     }
-    classic_lobbies(d, kit, x, y + dz(26.0), w);
+    if d.state.has_event_builds() {
+        classic_lobbies(d, kit, x, y + dz(26.0), w);
+    }
 }
 
 /// The classic lobbies server the event builds play on, and your account there.
@@ -547,7 +377,7 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         x,
         y,
         w,
-        "Downloaded installers, patches and the video converter, temporary files, and game zips left by cancelled installs.",
+        "Downloaded installers and patches, temporary files, and game zips left by cancelled installs.",
         14.0,
         design::GREY,
         0.0,
@@ -605,24 +435,6 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (x, w) = (dz(panel::X), dz(PANEL_W));
     let mut y = dz(panel::BODY_Y);
 
-    let (flipped, h) = option(
-        kit,
-        "animated-background",
-        &mut d.state.animated_background,
-        "Animated background",
-        "The background video. It pauses while the launcher isn't in front.",
-        x,
-        y,
-        w,
-        true,
-        "",
-    );
-    if flipped {
-        d.save();
-    }
-    y += h - dz(10.0);
-    y += speed_row(d, kit, x, y, w) + dz(26.0);
-    y += background_row(d, kit, ctx, x, y, w) + dz(26.0);
     let (flipped, h) = option(
         kit,
         "minimize",
