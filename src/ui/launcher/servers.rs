@@ -627,9 +627,7 @@ impl Servers {
         self.regions = None;
         let t = token.to_string();
         self.worker.spawn(ctx, move |tx| {
-            let r = game::matches(&t, true)
-                .map(|all| game::regions(&all))
-                .map_err(|e| format!("{e:#}"));
+            let r = game::start_regions(&t).map_err(|e| format!("{e:#}"));
             tx.send(Msg::Regions(r));
         });
     }
@@ -1520,9 +1518,9 @@ fn live_rows(
 
             // Middle: players, score, running time.
             let players = if m.limit > 0 {
-                format!("{} / {}", m.players.len(), m.limit)
+                format!("{} / {}", m.size, m.limit)
             } else {
-                m.players.len().to_string()
+                m.size.to_string()
             };
             let pg = k.label_galley(&players, design::din(20.0), design::TEXT, dz(140.0));
             let cy = ry + (row_h - dz(8.0)) / 2.0;
@@ -1682,7 +1680,7 @@ fn status(d: &Dashboard, account: Option<&Account>, created: Option<&str>) -> St
     if let Some((m, party)) = game::find_me(&d.servers.list, &account.id) {
         return Status {
             title: "In a match".into(),
-            line: format!("{} · {} players", about(Some(m)), m.players.len()),
+            line: format!("{} · {} players", about(Some(m)), m.size),
             chip: Some(("Live", design::QUEST_ON)),
             active: true,
             party: party.iter().map(|p| p.name.clone()).collect(),

@@ -428,7 +428,8 @@ fn list_card(
     }
 }
 
-/// PLAYED WITH: the players of your last matches, the latest first, to add.
+/// PLAYED WITH: the players of your last Arena and Combat matches (on blue or orange),
+/// the latest first, to add.
 fn played_card(
     d: &mut Dashboard,
     k: &mut Kit,
@@ -460,7 +461,7 @@ fn played_card(
             x,
             y,
             w,
-            "The players of your last matches show up here, to add as friends.",
+            "The players of your last Arena and Combat matches show up here, to add as friends. Social lobbies don't count.",
         );
         return;
     }

@@ -142,6 +142,9 @@ pub struct Match {
     pub lobby: Lobby,
     pub open: bool,
     pub players: Vec<Player>,
+    /// How many players are in it, as the service counts them (its list of them isn't
+    /// always given).
+    pub size: u32,
     pub limit: u32,
     /// "Dallas, Texas"-like, or a region code.
     pub location: String,
@@ -165,8 +168,8 @@ impl Match {
     pub fn joinable(&self) -> bool {
         self.lobby == Lobby::Public
             && self.open
-            && !self.players.is_empty()
-            && (self.limit == 0 || (self.players.len() as u32) < self.limit)
+            && self.size > 0
+            && (self.limit == 0 || self.size < self.limit)
     }
 }
 
@@ -312,6 +315,8 @@ pub fn parse_match(entry: &Value) -> Option<Match> {
         lobby,
         open: label.get("open").and_then(Value::as_bool).unwrap_or(true),
         limit: n(&label, &["player_limit", "playerLimit"]).unwrap_or(0.0) as u32,
+        size: (players.len() as u32)
+            .max(n(&label, &["player_count", "size"]).unwrap_or(0.0) as u32),
         players,
         location,
         group_id: s(&label, &["group_id", "groupId", "guild_id", "guildId"]).to_string(),
@@ -324,23 +329,137 @@ pub fn parse_match(entry: &Value) -> Option<Match> {
 
 /// The servers running a match, busiest first (`with_empty`: also the waiting ones,
 /// which new matches are started on).
+/// The service's public status (`/status/matches`): every running match with its
+/// players, scores and server, and every game server. The match list behind the session
+/// (`/v2/match`) names no players any more.
+fn status() -> Result<Value> {
+    let a = api()?;
+    let url = format!(
+        "{}/status/matches",
+        a.base.trim_end_matches('/').trim_end_matches("/v2")
+    );
+    let (code, body) = call(reqwest::Method::GET, &url, None, None)?;
+    answer(code, body)
+}
+
+/// Pure: the matches of the public status, as `parse_match` reads them.
+pub fn parse_status_matches(status: &Value) -> Vec<Match> {
+    status
+        .get("labels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|l| {
+            let id = l.get("id").and_then(Value::as_str)?;
+            parse_match(&json!({ "match_id": id, "label": l }))
+        })
+        .collect()
+}
+
+/// Pure: `with` added to `list` where it has no match of that id yet.
+fn merge_matches(mut list: Vec<Match>, with: Vec<Match>) -> Vec<Match> {
+    for m in with {
+        if !list.iter().any(|x| x.id == m.id) {
+            list.push(m);
+        }
+    }
+    list
+}
+
+/// The running matches, the fullest first: the public status's (with their players),
+/// and the session's list for any it hasn't caught yet. `with_empty`: the empty ones too.
 pub fn matches(token: &str, with_empty: bool) -> Result<Vec<Match>> {
     let a = api()?;
     let min = if with_empty { "&min_size=0" } else { "" };
-    let body = get(
+    let listed = get(
         token,
         &format!("{}/match?limit=100&authoritative=true{min}", a.base),
-    )?;
-    let mut list: Vec<Match> = body
-        .get("matches")
-        .and_then(Value::as_array)
-        .map(|m| m.iter().filter_map(parse_match).collect())
-        .unwrap_or_default();
+    )
+    .map(|body| {
+        body.get("matches")
+            .and_then(Value::as_array)
+            .map(|m| m.iter().filter_map(parse_match).collect::<Vec<_>>())
+            .unwrap_or_default()
+    });
+    let public = status()
+        .map(|s| parse_status_matches(&s))
+        .inspect_err(|e| tracing::warn!("server status: {e:#}"));
+    let mut list = match (public, listed) {
+        (Ok(p), Ok(l)) => merge_matches(p, l),
+        (Ok(p), Err(_)) => p,
+        (Err(_), l) => l?,
+    };
     if !with_empty {
-        list.retain(|m| !m.players.is_empty());
+        list.retain(|m| m.size > 0);
     }
-    list.sort_by_key(|m| std::cmp::Reverse(m.players.len()));
+    list.sort_by_key(|m| std::cmp::Reverse(m.size));
     Ok(list)
+}
+
+/// Pure: where new matches can be started, from the public status's game servers: each
+/// default region once, with the guilds whose servers are there.
+pub fn parse_status_regions(status: &Value) -> Vec<Region> {
+    let mut out: Vec<Region> = Vec::new();
+    for g in status
+        .get("gameservers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let code = s(g, &["default_region"]);
+        let lower = code.to_ascii_lowercase();
+        if code.is_empty()
+            || ["echovrce", "cevr", "pgv"]
+                .iter()
+                .any(|x| lower.contains(x))
+        {
+            continue;
+        }
+        let groups: Vec<String> = g
+            .get("group_ids")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        match out.iter_mut().find(|r| r.code == code) {
+            Some(r) => {
+                for id in groups {
+                    if !r.groups.contains(&id) {
+                        r.groups.push(id);
+                    }
+                }
+            }
+            None => {
+                let location = match (s(g, &["region"]), s(g, &["country_code"])) {
+                    ("", "") => code.to_string(),
+                    (r, "") | ("", r) => r.to_string(),
+                    (r, c) => format!("{r}, {c}"),
+                };
+                out.push(Region {
+                    code: code.to_string(),
+                    location,
+                    groups,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| a.location.cmp(&b.location));
+    out
+}
+
+/// Where new matches can be started: the public status's game servers, or (without it)
+/// the waiting servers of the session's list.
+pub fn start_regions(token: &str) -> Result<Vec<Region>> {
+    if let Ok(r) = status().map(|s| parse_status_regions(&s)) {
+        if !r.is_empty() {
+            return Ok(r);
+        }
+    }
+    matches(token, true).map(|all| regions(&all))
 }
 
 /// Queues `match_id` as your next match: the game's terminal then takes you there (how
@@ -863,7 +982,8 @@ pub struct Summary {
     pub score: Option<(u32, u32)>,
     /// Your team, when you are in its player list.
     pub team: Option<Team>,
-    /// Who played (user id, name), you too.
+    /// Who played on blue or orange (user id, name), you too: not the spectators, and no
+    /// one from a social lobby (its list is everyone who passed through).
     pub players: Vec<(String, String)>,
 }
 
@@ -926,12 +1046,21 @@ pub fn parse_history(body: &Value, nakama_id: &str) -> Vec<Summary> {
                     .map(|d| d as u32)
                     .or_else(|| Some((ended? - played?).max(0) as u32));
                 let mut players: Vec<(String, String)> = Vec::new();
-                let lists = teams
+                // teams[0] and [1] are blue's and orange's players; participants are
+                // everyone, with their team.
+                let on_teams = teams
                     .into_iter()
                     .flatten()
+                    .take(2)
                     .filter_map(|t| t.get("players").and_then(Value::as_array))
-                    .chain(m.get("participants").and_then(Value::as_array));
-                for p in lists.flatten() {
+                    .flatten();
+                let participants = m
+                    .get("participants")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|p| matches!(self::team(p), Team::Blue | Team::Orange));
+                for p in on_teams.chain(participants) {
                     let id = s(p, &["user_id"]);
                     if !id.is_empty() && !players.iter().any(|(i, _)| i == id) {
                         let name = s(p, &["display_name", "username"]).to_string();
@@ -963,10 +1092,13 @@ pub struct Recent {
     pub played: Option<i64>,
 }
 
-/// Pure: the players of `history` but you (`me`), the latest match together first, each
-/// once.
+/// Pure: the players of `history`'s Arena and Combat matches but you (`me`), the latest
+/// match together first, each once.
 pub fn recent_players(history: &[Summary], me: &str) -> Vec<Recent> {
-    let mut matches: Vec<&Summary> = history.iter().collect();
+    let mut matches: Vec<&Summary> = history
+        .iter()
+        .filter(|m| matches!(m.mode, Mode::Arena | Mode::Combat))
+        .collect();
     matches.sort_by_key(|m| std::cmp::Reverse(m.played));
     let mut out: Vec<Recent> = Vec::new();
     for m in matches {
@@ -1058,6 +1190,47 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_public_status() {
+        let status = json!({
+            "labels": [
+                {"id": "m1.n", "lobby_type": "public", "mode": "echo_arena", "player_count": 2, "player_limit": 8,
+                 "players": [{"user_id": "a", "team": 0}, {"user_id": "b", "team": 1}],
+                 "game_state": {"blue_score": 2, "orange_score": 1}},
+                {"lobby_type": "public"}
+            ],
+            "gameservers": [
+                {"default_region": "gb-england", "region": "England", "country_code": "GB", "group_ids": ["g1"]},
+                {"default_region": "gb-england", "region": "England", "country_code": "GB", "group_ids": ["g2", "g1"]},
+                {"default_region": "echovrce-test", "group_ids": ["g3"]},
+                {"default_region": "us-nebraska", "region": "", "country_code": "US", "group_ids": []}
+            ]
+        });
+        let m = parse_status_matches(&status);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            (m[0].id.as_str(), m[0].size, m[0].score),
+            ("m1.n", 2, Some((2, 1)))
+        );
+        // The session's list: a count, no players.
+        let listed = parse_match(&entry(
+            json!({"player_count": 3, "lobby_type": "public", "open": true}),
+        ))
+        .unwrap();
+        assert_eq!((listed.size, listed.players.len()), (3, 0));
+        assert!(listed.joinable());
+        let merged = merge_matches(m.clone(), vec![m[0].clone(), listed]);
+        assert_eq!(merged.len(), 2);
+        let r = parse_status_regions(&status);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].location, "England, GB");
+        assert_eq!(r[0].groups, ["g1", "g2"]);
+        assert_eq!(
+            (r[1].code.as_str(), r[1].location.as_str()),
+            ("us-nebraska", "US")
+        );
+    }
+
+    #[test]
     fn finds_you_and_your_party() {
         let m = parse_match(&entry(json!({"players": [
             {"user_id": "me", "party_id": "p"}, {"user_id": "pal", "party_id": "p"}, {"user_id": "x"}
@@ -1141,15 +1314,20 @@ mod tests {
         let h = parse_history(
             &json!([
                 {"_id": "old", "mode": "echo_arena", "start_time": "2026-10-01T10:00:00Z",
-                 "participants": [{"user_id": "me", "display_name": "Me"}, {"user_id": "p1", "display_name": "One"},
-                                  {"user_id": "p2", "display_name": "Two"}]},
+                 "participants": [{"user_id": "me", "display_name": "Me", "team": 0}, {"user_id": "p1", "display_name": "One", "team": 1},
+                                  {"user_id": "p2", "display_name": "Two", "team": 0},
+                                  {"user_id": "watcher", "display_name": "Watcher", "team": 2}]},
+                {"_id": "lobby", "mode": "social_2.0", "start_time": "2026-10-04T10:00:00Z",
+                 "participants": [{"user_id": "me", "team": 3}, {"user_id": "stranger", "display_name": "Stranger", "team": 3}]},
                 {"_id": "new", "mode": "echo_combat", "start_time": "2026-10-03T10:00:00Z",
                  "teams": [{"players": [{"user_id": "me"}, {"user_id": "p2", "display_name": "Two"}]},
                            {"players": [{"user_id": "p3", "username": "three"}]}]}
             ]),
             "me",
         );
-        assert_eq!(h[1].players.len(), 3);
+        assert_eq!(h[0].players.len(), 3, "no spectators");
+        assert!(h[1].players.is_empty(), "no one from a social lobby");
+        assert_eq!(h[2].players.len(), 3);
         let r = recent_players(&h, "me");
         let who: Vec<(&str, Mode)> = r.iter().map(|r| (r.name.as_str(), r.mode)).collect();
         assert_eq!(
