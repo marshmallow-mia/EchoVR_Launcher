@@ -61,6 +61,8 @@ pub(super) struct Mods {
 struct Editing {
     file: String,
     rows: Vec<(String, String)>,
+    /// The plugin's default arguments: a row that differs gets a reset.
+    defaults: BTreeMap<String, String>,
 }
 
 impl Mods {
@@ -320,9 +322,22 @@ fn loader_card(
                 x,
                 by + dz(5.0),
                 true,
-                "Echo VR starts with no plugin at all (nEVR itself still runs). Turn it off again to have your mods back.",
+                "Echo VR starts with only the plugins it needs (the required ones, with their required patches). Turn it off again to have your mods back.",
             ) {
                 write(d, v, |v| mods::set_enabled(v, !off), |m| m.enabled = !off);
+            }
+            // Your own _local/config.json (another server) instead of nEVR's built-in one.
+            let label = "Use my own config.json";
+            if kit.check(
+                "mods-own-config",
+                &mut d.state.own_game_config,
+                label,
+                x + dz(300.0),
+                by + dz(5.0),
+                true,
+                "Echo VR keeps your _local/config.json (e.g. another server). Off: an EchoVRCE-era one is set aside and nEVR's built-in config, with friends and parties, applies.",
+            ) {
+                d.save();
             }
         }
         Loader::None => {
@@ -413,10 +428,15 @@ fn loader_text(view: &ModView) -> String {
             view.shadowed.as_deref().map(|p| p.display().to_string()).unwrap_or_default()
         ),
         Loader::Nevr { .. } if !view.enabled => {
-            "Mods are off: Echo VR starts without any plugin.".into()
+            "Mods are off: Echo VR starts with only the required plugins.".into()
         }
         Loader::Nevr { version } => {
-            let about = format!("Discord sign-in, friends and parties in the game, and the plugins below. Build {version}.");
+            let config = if view.game_config.is_some() {
+                " The game reads your own _local/config.json."
+            } else {
+                ""
+            };
+            let about = format!("Discord sign-in, friends and parties in the game, and the plugins below. Build {version}.{config}");
             match last {
                 Some(l) => format!("{l} {about}"),
                 None => format!("It hasn't started yet: what it loads shows here after you PLAY. {about}"),
@@ -753,6 +773,7 @@ fn plugin_row(
                 Some(Editing {
                     file: p.file.clone(),
                     rows: p.arg_strings().into_iter().collect(),
+                    defaults: p.default_strings(),
                 })
             };
         }
@@ -768,9 +789,11 @@ fn plugin_row(
 
     // Left: the switch with the name, its source tag; the details under it.
     let mut on = p.enabled;
-    let can = editable && !locked && p.present;
+    let can = editable && !locked && p.present && !p.required;
     let tip = if !editable {
         "Needs nEVR runtime"
+    } else if p.required {
+        "The game needs it: always on, also without mods"
     } else if locked {
         "Mods are off"
     } else if p.enabled {
@@ -793,14 +816,24 @@ fn plugin_row(
             },
         );
     }
-    let (tag, tag_color) = match &p.source {
+    let source = match &p.source {
         Source::Shipped => ("Community update", design::SUBTLE),
         Source::Catalog { .. } => ("Catalogue", design::BLUE),
         Source::Local => ("Your DLL", design::QUEST_WARN),
     };
-    let tag_x = x + dz(INDENT) + name_w + dz(16.0);
-    if tag_x + k.dot_tag_width(tag, 12.0) < right - dz(12.0) {
-        k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, tag_color);
+    let tags = [
+        Some(source),
+        p.required.then_some(("Required", design::QUEST_ON)),
+        p.changed().then_some(("Changed", design::QUEST_WARN)),
+    ];
+    let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
+    for (tag, color) in tags.into_iter().flatten() {
+        let tw = k.dot_tag_width(tag, 12.0);
+        if tag_x + tw >= right - dz(12.0) {
+            break;
+        }
+        k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
+        tag_x += tw + dz(14.0);
     }
     let line = detail(p);
     let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
@@ -835,14 +868,14 @@ fn assets_row(
 ) {
     let mut on_now = on;
     let tip = if can {
-        "Every asset patch on or off (NvrAssetPatches still loads)"
+        "Every optional asset patch on or off (the required ones stay on)"
     } else {
         "Turn NvrAssetPatches on first"
     };
     if k.check(
         "mods-assets",
         &mut on_now,
-        "All asset patches",
+        "All optional asset patches",
         x + dz(INDENT),
         y + dz(8.0),
         can,
@@ -869,20 +902,30 @@ fn asset_row(
     let mut on = a.enabled;
     let label = a.label.replace('_', " ");
     let key = format!("mods-asset-{}", a.label);
-    let tip = if can {
+    let tip = if a.required {
+        "The game needs it: always on"
+    } else if can {
         "Takes effect at the next start"
     } else {
         ""
     };
-    if k.check(
+    let lx = x + dz(INDENT * 2.0);
+    let switched = k.check(
         &key,
         &mut on,
         &label,
-        x + dz(INDENT * 2.0),
+        lx,
         y + dz(8.0),
-        can,
+        can && !a.required,
         tip,
-    ) {
+    );
+    if a.required {
+        // Right of the check's label (box 16, gap 10, then the label in DIN 18).
+        let g = k.label_galley(&label, design::din(18.0), design::TEXT, f32::INFINITY);
+        let tx = lx + 26.0 + g.size().x + dz(14.0);
+        k.dot_tag(tx, y + dz(20.0), "Required", 12.0, design::QUEST_ON);
+    }
+    if switched {
         let l = a.label.clone();
         write(
             d,
@@ -917,8 +960,10 @@ fn options_rows(
     let fh = dz(36.0);
     let kw = fw * 0.35;
     let close = dz(40.0);
-    let vw = fw - kw - close - dz(20.0);
+    let vw = fw - kw - 2.0 * close - dz(30.0);
     let mut gone = None;
+    let mut reset = None;
+    let defaults = e.defaults.clone();
     for (i, (key, value)) in e.rows.iter_mut().enumerate() {
         let ry = y + i as f32 * dz(ARG_H);
         k.field(
@@ -939,10 +984,32 @@ fn options_rows(
             ry,
             vw,
             fh,
-            "value",
+            defaults.get(key.trim()).map_or("value", String::as_str),
             false,
             "Its value (handed on as text)",
         );
+        // Differs from its default (or has none): a reset.
+        let default = defaults.get(key.trim());
+        if default != Some(&*value)
+            && k.button(
+                &format!("mods-arg-r-{i}"),
+                fx + fw - 2.0 * close - dz(10.0),
+                ry,
+                close,
+                fh,
+                Tone::Dark,
+                Some(Icon::Refresh),
+                "",
+                true,
+                match default {
+                    Some(_) => "Back to its default",
+                    None => "Not a default argument: take it out",
+                },
+            )
+            .clicked
+        {
+            reset = Some(i);
+        }
         if k.button(
             &format!("mods-arg-x-{i}"),
             fx + fw - close,
@@ -960,7 +1027,14 @@ fn options_rows(
             gone = Some(i);
         }
     }
-    if let Some(i) = gone {
+    if let Some(i) = reset {
+        match defaults.get(e.rows[i].0.trim()) {
+            Some(dv) => e.rows[i].1 = dv.clone(),
+            None => {
+                e.rows.remove(i);
+            }
+        }
+    } else if let Some(i) = gone {
         e.rows.remove(i);
     }
     let by = y + n as f32 * dz(ARG_H);
@@ -1032,6 +1106,45 @@ fn options_rows(
             return;
         }
         right -= dz(10.0);
+    }
+    // RESET TO DEFAULT: every argument back to the plugin's defaults, saved.
+    let typed: BTreeMap<String, String> = e
+        .rows
+        .iter()
+        .filter(|(key, _)| !key.trim().is_empty())
+        .map(|(key, value)| (key.trim().to_string(), value.clone()))
+        .collect();
+    let label = "Reset to default";
+    let bw = k
+        .button_width(label, Some(Icon::Refresh), bh)
+        .max(dz(190.0));
+    if k.button(
+        "mods-arg-reset",
+        right - bw,
+        by,
+        bw,
+        bh,
+        Tone::Dark,
+        Some(Icon::Refresh),
+        label,
+        typed != defaults,
+        "Every argument back to the plugin's defaults",
+    )
+    .clicked
+    {
+        let file = e.file.clone();
+        d.mods.editing = None;
+        write(
+            d,
+            v,
+            |v| mods::reset_args(v, &file),
+            |m| {
+                if let Some(p) = m.plugins.iter_mut().find(|p| p.file == file) {
+                    p.args = p.defaults.clone();
+                }
+            },
+        );
+        d.notify("Reset: the plugin gets its default arguments at the next start");
     }
 }
 
@@ -1297,9 +1410,11 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         name: name.into(),
         version: st.as_ref().map(|s| s.version.clone()).unwrap_or_default(),
         added: source != Source::Shipped,
+        required: source == Source::Shipped,
         source,
         enabled: true,
         args: Default::default(),
+        defaults: Default::default(),
         present: true,
         status: st,
     };
@@ -1349,6 +1464,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         .as_object()
         .cloned()
         .unwrap_or_default();
+    plugins[0].defaults = plugins[0].args.clone();
     if bare {
         plugins.truncate(1);
         for p in &mut plugins {
@@ -1357,6 +1473,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         }
     }
     let asset = |label: &str, enabled| AssetPatch {
+        required: label.starts_with("netgun"),
         label: label.into(),
         enabled,
     };
@@ -1376,6 +1493,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         }),
         plugins,
         shadowed: None,
+        game_config: None,
         stray_dbgcore: false,
         assets_enabled: true,
         asset_patches: vec![
@@ -1414,6 +1532,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         ..Default::default()
     });
     let editing = (variant == Some(SnapVariant::ModsOptions)).then(|| Editing {
+        defaults: BTreeMap::from([("logging".into(), "normal".into())]),
         file: "NvrAssetPatches.dll".into(),
         rows: vec![
             ("logging".into(), "verbose".into()),
@@ -1465,7 +1584,9 @@ mod tests {
             source: Source::Shipped,
             enabled: true,
             added: false,
+            required: false,
             args: Default::default(),
+            defaults: Default::default(),
             present: true,
             status: None,
         };

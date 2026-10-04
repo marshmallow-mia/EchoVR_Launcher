@@ -4,9 +4,9 @@
     {
       "id": "asset-patches",
       "name": "Asset Patches",
-      "summary": "Fixes the netgun's bullets on every combat map and puts the community's posters into the arena.",
+      "summary": "Fixes the netgun's bullets on every combat map (always on: the game needs it) and puts the community's posters into the arena.",
       "author": "marshmallow-mia",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "file": "NvrAssetPatches.dll",
       "api": 5,
       "capabilities": [
@@ -17,7 +17,23 @@
         "logging": "normal"
       },
       "homepage": "https://github.com/marshmallow-mia/NvrAssetPatches.dll",
-      "shipped": true
+      "shipped": true,
+      "required": true
+    },
+    {
+      "id": "xmlhttp-fix",
+      "name": "XMLHTTP Fix",
+      "summary": "Gives Echo VR the system's XMLHTTP again under nEVR 4.0.0, whose stand-in crashes the game at the main menu in windowed mode.",
+      "author": "marshmallow-mia",
+      "version": "1.0.0",
+      "file": "NvrXmlHttpFix.dll",
+      "api": 5,
+      "capabilities": [
+        "network",
+        "hooks-engine"
+      ],
+      "shipped": true,
+      "required": true
     }
   ]
 }

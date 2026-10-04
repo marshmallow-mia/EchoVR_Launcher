@@ -103,6 +103,8 @@ pub struct Entry {
     pub sha256: Option<String>,
     /// What the launcher noted on an entry it added.
     pub launcher: Option<Added>,
+    /// The game needs it (the catalogue says so): always on.
+    pub required: bool,
 }
 
 /// Where an entry the launcher added came from.
@@ -141,6 +143,7 @@ impl Entry {
                     launcher: o
                         .get("launcher")
                         .and_then(|l| serde_json::from_value(l.clone()).ok()),
+                    required: false,
                     file,
                 })
             }
@@ -314,7 +317,8 @@ impl Overlay {
                 return false;
             };
             if let Some(e) = shipped.iter().find(|e| e.file.eq_ignore_ascii_case(file)) {
-                if o.get("enabled").and_then(Value::as_bool) == Some(e.enabled) {
+                let off = o.get("enabled").and_then(Value::as_bool);
+                if off == Some(e.enabled) || e.required {
                     o.remove("enabled");
                 }
                 if o.get("args").is_some_and(|a| same_args(a, &e.args)) {
@@ -359,6 +363,23 @@ impl Overlay {
             None => {
                 self.overrides_mut(file)
                     .insert("args".into(), Value::Object(args));
+            }
+        }
+    }
+
+    /// Puts `file`'s arguments back to its defaults: an added plugin gets `defaults` (the
+    /// catalogue's), a shipped one loses its override (its defaults come from the
+    /// catalogue again).
+    pub fn reset_args(&mut self, file: &str, defaults: &Map<String, Value>) {
+        match self.added_mut(file) {
+            Some(o) if defaults.is_empty() => {
+                o.remove("args");
+            }
+            Some(o) => {
+                o.insert("args".into(), Value::Object(defaults.clone()));
+            }
+            None => {
+                self.overrides_mut(file).remove("args");
             }
         }
     }
@@ -434,6 +455,9 @@ pub use super::nevr::{PluginStatus, Status};
 pub struct AssetPatch {
     pub label: String,
     pub enabled: bool,
+    /// The game needs it (`"required": true` in the update's manifest): always on, and
+    /// NvrAssetPatches loads it whatever the local choices say.
+    pub required: bool,
 }
 
 /// Pure: the patches of `manifest` (the update's) with `overlay`'s choices, and whether
@@ -450,13 +474,15 @@ pub fn asset_patches(manifest: &str, overlay: &str) -> (bool, Vec<AssetPatch>) {
         .filter_map(|p| {
             let label = p.get("label")?.as_str()?.to_string();
             let shipped = p.get("enabled").and_then(Value::as_bool).unwrap_or(true);
+            let required = p.get("required").and_then(Value::as_bool).unwrap_or(false);
             let chosen = o
                 .get("patches")
                 .and_then(|ps| ps.get(&label))
                 .and_then(|c| c.get("enabled"))
                 .and_then(Value::as_bool);
             Some(AssetPatch {
-                enabled: chosen.unwrap_or(shipped),
+                enabled: required || chosen.unwrap_or(shipped),
+                required,
                 label,
             })
         })
@@ -505,7 +531,8 @@ fn set_asset(manifest: &str, overlay: &str, label: Option<&str>, on: bool) -> Va
                 .insert(label.to_string(), Value::Object(choice));
         }
     }
-    // Only real choices stay: all on is the default, and a patch set as it ships.
+    // Only real choices stay: all on is the default, a patch set as it ships, and none
+    // for a required patch (always on).
     let (_, shipped) = asset_patches(manifest, "");
     if o.get("enabled").and_then(Value::as_bool) == Some(true) {
         o.remove("enabled");
@@ -513,11 +540,9 @@ fn set_asset(manifest: &str, overlay: &str, label: Option<&str>, on: bool) -> Va
     if let Some(ps) = o.get_mut("patches").and_then(Value::as_object_mut) {
         ps.retain(|label, c| {
             let chosen = c.get("enabled").and_then(Value::as_bool);
-            let ships = shipped
-                .iter()
-                .find(|a| &a.label == label)
-                .map(|a| a.enabled);
-            chosen.is_some() && chosen != ships.or(Some(true))
+            let ships = shipped.iter().find(|a| &a.label == label);
+            let required = ships.is_some_and(|a| a.required);
+            !required && chosen.is_some() && chosen != ships.map(|a| a.enabled).or(Some(true))
         });
         if ps.is_empty() {
             o.remove("patches");
@@ -554,6 +579,10 @@ pub struct Plugin {
     /// The launcher added it (from the catalogue or from disk).
     pub added: bool,
     pub args: Map<String, Value>,
+    /// Its default arguments (the catalogue's; none for a DLL from disk).
+    pub defaults: Map<String, Value>,
+    /// The game needs it: always on, also with "Start without mods".
+    pub required: bool,
     /// The file is there.
     pub present: bool,
     /// What the loader did with it at the last start.
@@ -566,19 +595,33 @@ impl Plugin {
         self.added
     }
 
+    /// Its arguments differ from its defaults.
+    pub fn changed(&self) -> bool {
+        !same_args(&Value::Object(self.args.clone()), &self.defaults)
+    }
+
     /// Its arguments as text fields: strings as they are, anything else as JSON.
     pub fn arg_strings(&self) -> BTreeMap<String, String> {
-        self.args
-            .iter()
-            .map(|(k, v)| {
-                let text = match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                (k.clone(), text)
-            })
-            .collect()
+        strings(&self.args)
     }
+
+    /// Its default arguments as text fields.
+    pub fn default_strings(&self) -> BTreeMap<String, String> {
+        strings(&self.defaults)
+    }
+}
+
+/// Arguments as text: strings as they are, anything else as JSON.
+fn strings(args: &Map<String, Value>) -> BTreeMap<String, String> {
+    args.iter()
+        .map(|(k, v)| {
+            let text = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            (k.clone(), text)
+        })
+        .collect()
 }
 
 /// A version's mods, as the Mods page shows them.
@@ -592,6 +635,8 @@ pub struct ModView {
     pub status: Option<Status>,
     /// A `config.yaml` nEVR reads instead of the launcher's.
     pub shadowed: Option<PathBuf>,
+    /// The game's own `_local/config.json` nEVR loads (none: its built-in one).
+    pub game_config: Option<PathBuf>,
     /// A `dbgcore.dll` beside the exe: nEVR won't start with it.
     pub stray_dbgcore: bool,
     /// Asset patches on at all, and each.
@@ -630,16 +675,18 @@ pub fn read(v: &InstalledVersion) -> ModView {
         .and_then(|b| download::sha256_reader(&mut b.as_slice()).ok());
     let loader = classify(slot.as_deref(), slot_sha.as_deref());
     let overlay = Overlay::read(&choices_path(v));
+    let catalog = ModCatalog::cached();
     let status = nevr::log_dir().and_then(|d| Status::read(&d));
     let files = plugin_files(v);
     let read = |p: &str| std::fs::read_to_string(bin.join(p)).unwrap_or_default();
     let (assets_enabled, asset_patches) = asset_patches(&read(ASSETS), &read(ASSETS_OVERLAY));
     ModView {
         enabled: overlay.enabled(),
-        plugins: plugins(&overlay, &files, status.as_ref()),
+        plugins: plugins(&overlay, &files, status.as_ref(), &catalog),
         loader,
         status,
         shadowed: nevr::shadowing_config(v),
+        game_config: nevr::game_config_in_use(v),
         stray_dbgcore: nevr::stray_dbgcore(&bin),
         assets_enabled,
         asset_patches,
@@ -660,26 +707,37 @@ fn dlls_in(dir: &Path) -> Vec<String> {
     out
 }
 
-/// Pure: the update's plugins: the DLLs in the folder the launcher didn't add, on.
-fn shipped(overlay: &Overlay, files: &[String]) -> Vec<Entry> {
+/// Pure: the update's plugins: the DLLs in the folder the launcher didn't add, on, with
+/// the catalogue's default arguments and whether the game needs them.
+fn shipped(overlay: &Overlay, files: &[String], catalog: &ModCatalog) -> Vec<Entry> {
     let added = overlay.added();
     files
         .iter()
         .filter(|f| !added.iter().any(|a| a.file.eq_ignore_ascii_case(f)))
-        .map(|f| Entry {
-            file: f.clone(),
-            enabled: true,
-            ..Default::default()
+        .map(|f| {
+            let known = catalog.entry_for(f);
+            Entry {
+                file: f.clone(),
+                enabled: true,
+                args: known.map(|m| m.args.clone()).unwrap_or_default(),
+                required: known.is_some_and(|m| m.required),
+                ..Default::default()
+            }
         })
         .collect()
 }
 
 /// Pure: the plugins the page lists, and `config.yaml` names: the update's, then those
-/// the launcher added, with its choices applied.
-pub fn plugins(overlay: &Overlay, files: &[String], status: Option<&Status>) -> Vec<Plugin> {
+/// the launcher added, with its choices applied (a required one stays on).
+pub fn plugins(
+    overlay: &Overlay,
+    files: &[String],
+    status: Option<&Status>,
+    catalog: &ModCatalog,
+) -> Vec<Plugin> {
     let has = |f: &str| files.iter().any(|x| x.eq_ignore_ascii_case(f));
     overlay
-        .apply(shipped(overlay, files))
+        .apply(shipped(overlay, files, catalog))
         .into_iter()
         .map(|e| {
             let source = match &e.launcher {
@@ -694,12 +752,25 @@ pub fn plugins(overlay: &Overlay, files: &[String], status: Option<&Status>) -> 
                 Some(_) => Source::Local,
                 None => Source::Shipped,
             };
-            plugin(e, source, has, status)
+            let defaults = match &source {
+                Source::Local => Map::new(),
+                _ => catalog
+                    .entry_for(&e.file)
+                    .map(|m| m.args.clone())
+                    .unwrap_or_default(),
+            };
+            plugin(e, source, defaults, has, status)
         })
         .collect()
 }
 
-fn plugin(e: Entry, source: Source, has: impl Fn(&str) -> bool, status: Option<&Status>) -> Plugin {
+fn plugin(
+    e: Entry,
+    source: Source,
+    defaults: Map<String, Value>,
+    has: impl Fn(&str) -> bool,
+    status: Option<&Status>,
+) -> Plugin {
     let st = status.and_then(|s| s.of(&e.file)).cloned();
     let stem = e
         .file
@@ -718,18 +789,21 @@ fn plugin(e: Entry, source: Source, has: impl Fn(&str) -> bool, status: Option<&
         version: st.as_ref().map(|s| s.version.clone()).unwrap_or_default(),
         added: e.launcher.is_some(),
         source,
-        enabled: e.enabled,
+        enabled: e.enabled || e.required,
+        required: e.required,
         args: e.args,
+        defaults,
         status: st,
         file: e.file,
     }
 }
 
 /// Before starting `v` with nEVR in its slot: takes out a `dbgcore.dll` beside the exe
-/// (the old loader's place, which nEVR won't start beside), moves an EchoRelay-era
-/// `_local/config.json` aside (nEVR's built-in one has friends and parties on), and writes
+/// (the old loader's place, which nEVR won't start beside), arranges the game's
+/// `_local/config.json` (an obsolete EchoVRCE one is set aside so nEVR's built-in one,
+/// with friends and parties, applies; with `own_game_config` yours is used), and writes
 /// `config.yaml`. Without nEVR there is nothing to do.
-pub fn before_start(v: &InstalledVersion) -> Result<()> {
+pub fn before_start(v: &InstalledVersion, own_game_config: bool) -> Result<()> {
     let bin = v.bin_dir();
     if !nevr_in(&bin) {
         return Ok(());
@@ -744,57 +818,84 @@ pub fn before_start(v: &InstalledVersion) -> Result<()> {
         })?;
         tracing::info!("removed {} (nEVR won't start beside it)", path.display());
     }
-    if nevr::set_aside_game_config(v)? {
-        tracing::info!(
-            "moved the EchoRelay-era _local/config.json aside: nEVR's built-in one applies"
-        );
+    match nevr::arrange_game_config(v, own_game_config)? {
+        nevr::GameConfigStep::SetAside => tracing::info!(
+            "moved the EchoVRCE-era _local/config.json aside: nEVR's built-in one applies"
+        ),
+        nevr::GameConfigStep::Restored => {
+            tracing::info!("your _local/config.json is back (Use my own config.json)")
+        }
+        nevr::GameConfigStep::Nothing => {}
     }
     prepare(v)
 }
 
 /// Before a start: writes `v`'s `config.yaml` from its plugins and the launcher's
-/// choices (no plugins with mods off). A plugin the launcher added whose file no longer
+/// choices. With mods off only the required plugins are listed (NvrAssetPatches then
+/// loads only its required patches). A plugin the launcher added whose file no longer
 /// matches the checksum it noted is left out.
 pub fn prepare(v: &InstalledVersion) -> Result<()> {
     let overlay = Overlay::read(&choices_path(v));
-    let mut lines = Vec::new();
-    if overlay.enabled() {
-        let added = overlay.added();
-        for p in plugins(&overlay, &plugin_files(v), None) {
-            if !p.present {
-                continue;
-            }
-            let pinned = added
-                .iter()
-                .find(|a| a.file.eq_ignore_ascii_case(&p.file))
-                .and_then(|a| a.sha256.clone());
-            if let Some(want) = pinned {
-                let have = download::sha256_file(&plugins_dir(v).join(&p.file)).unwrap_or_default();
-                if !have.eq_ignore_ascii_case(&want) {
-                    tracing::warn!("{} changed since it was added: left out", p.file);
-                    continue;
-                }
-            }
-            lines.push(PluginLine {
-                file: p.file,
-                enabled: p.enabled,
-                args: p.args,
-            });
-        }
-    }
-    nevr::write_config(v, &lines)
+    let catalog = ModCatalog::cached();
+    nevr::write_config(v, &config_lines(v, &overlay, &catalog))
 }
 
-// ---- changes ----
+fn config_lines(v: &InstalledVersion, overlay: &Overlay, catalog: &ModCatalog) -> Vec<PluginLine> {
+    let mods_on = overlay.enabled();
+    let added = overlay.added();
+    let mut lines = Vec::new();
+    for p in plugins(overlay, &plugin_files(v), None, catalog) {
+        if !p.present || !(mods_on || p.required) {
+            continue;
+        }
+        let pinned = added
+            .iter()
+            .find(|a| a.file.eq_ignore_ascii_case(&p.file))
+            .and_then(|a| a.sha256.clone());
+        if let Some(want) = pinned {
+            let have = download::sha256_file(&plugins_dir(v).join(&p.file)).unwrap_or_default();
+            if !have.eq_ignore_ascii_case(&want) {
+                tracing::warn!("{} changed since it was added: left out", p.file);
+                continue;
+            }
+        }
+        let mut args = p.args;
+        if !mods_on && p.file.eq_ignore_ascii_case(ASSET_PLUGIN) {
+            args.insert("required_only".into(), Value::String("true".into()));
+        }
+        lines.push(PluginLine {
+            file: p.file,
+            enabled: p.enabled,
+            args,
+        });
+    }
+    lines
+}
 
 /// Mods on or off for `v` (the overlay's "start without mods").
 pub fn set_enabled(v: &InstalledVersion, on: bool) -> Result<()> {
     edit_overlay(v, |o| o.set_enabled(on))
 }
 
-/// `file` on or off.
+/// `file` on or off (a required plugin can't go off).
 pub fn set_plugin_enabled(v: &InstalledVersion, file: &str, on: bool) -> Result<()> {
+    if !on
+        && ModCatalog::cached()
+            .entry_for(file)
+            .is_some_and(|m| m.required)
+    {
+        bail!("{file} is needed by the game: it can't be turned off.");
+    }
     edit_overlay(v, |o| o.set_plugin_enabled(file, on))
+}
+
+/// Puts `file`'s arguments back to its defaults (the catalogue's).
+pub fn reset_args(v: &InstalledVersion, file: &str) -> Result<()> {
+    let defaults = ModCatalog::cached()
+        .entry_for(file)
+        .map(|m| m.args.clone())
+        .unwrap_or_default();
+    edit_overlay(v, |o| o.reset_args(file, &defaults))
 }
 
 /// `file`'s arguments.
@@ -806,7 +907,7 @@ fn edit_overlay(v: &InstalledVersion, f: impl FnOnce(&mut Overlay)) -> Result<()
     let path = choices_path(v);
     let mut o = Overlay::read(&path);
     f(&mut o);
-    o.prune(&shipped(&o, &plugin_files(v)));
+    o.prune(&shipped(&o, &plugin_files(v), &ModCatalog::cached()));
     if !o.is_empty() {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
@@ -932,6 +1033,7 @@ pub fn install(
                 version: e.version.clone(),
                 local: false,
             }),
+            required: false,
         })
     })
 }
@@ -1026,6 +1128,8 @@ pub struct ModEntry {
     pub homepage: String,
     /// It comes with the community update: shown, never downloaded.
     pub shipped: bool,
+    /// The game needs it: always on, also with "Start without mods".
+    pub required: bool,
 }
 
 impl ModEntry {
@@ -1099,14 +1203,43 @@ impl ModCatalog {
         c
     }
 
-    /// The published catalogue, or the built-in one.
+    /// The published catalogue (kept for [`ModCatalog::cached`]), else the last one kept,
+    /// else the built-in one.
     pub fn load() -> ModCatalog {
-        crate::core::http::get_text(CATALOG_URL)
-            .and_then(|t| ModCatalog::parse(&t))
-            .unwrap_or_else(|e| {
-                tracing::info!("mods catalogue unavailable ({e:#}); using the built-in one");
-                ModCatalog::builtin()
-            })
+        let fetched = crate::core::http::get_text(CATALOG_URL)
+            .and_then(|t| ModCatalog::parse(&t).map(|c| (c, t)));
+        match fetched {
+            Ok((c, text)) => {
+                let _ = std::fs::create_dir_all(paths::data_dir());
+                let _ = std::fs::write(Self::cache_path(), text);
+                c
+            }
+            Err(e) => {
+                tracing::info!("mods catalogue unavailable ({e:#}); using the last one kept");
+                ModCatalog::cached()
+            }
+        }
+    }
+
+    fn cache_path() -> PathBuf {
+        paths::data_dir().join("mods.json")
+    }
+
+    /// The last catalogue fetched, else the built-in one: no network, for reading the
+    /// mods and before a start. (Tests always get the built-in one.)
+    pub fn cached() -> ModCatalog {
+        if cfg!(test) {
+            return ModCatalog::builtin();
+        }
+        std::fs::read_to_string(Self::cache_path())
+            .ok()
+            .and_then(|t| ModCatalog::parse(&t).ok())
+            .unwrap_or_else(ModCatalog::builtin)
+    }
+
+    /// The entry of plugin file `file`.
+    pub fn entry_for(&self, file: &str) -> Option<&ModEntry> {
+        self.mods.iter().find(|m| m.file.eq_ignore_ascii_case(file))
     }
 }
 
@@ -1151,7 +1284,7 @@ mod tests {
         let files: Vec<String> = ["NvrAssetPatches.dll", "Mine.dll", "Stray.dll"]
             .map(String::from)
             .into();
-        let ps = plugins(&o, &files, None);
+        let ps = plugins(&o, &files, None, &ModCatalog::default());
         let find = |f: &str| ps.iter().find(|p| p.file == f).unwrap();
         assert_eq!(ps.len(), 3);
         assert!(!find("NvrAssetPatches.dll").enabled);
@@ -1167,7 +1300,7 @@ mod tests {
             &BTreeMap::from([("logging".into(), "verbose".into())]),
         );
         o.set_plugin_enabled("mine.dll", false);
-        let ps = plugins(&o, &files, None);
+        let ps = plugins(&o, &files, None, &ModCatalog::default());
         let find = |f: &str| ps.iter().find(|p| p.file == f).unwrap();
         assert_eq!(find("NvrAssetPatches.dll").args["logging"], "verbose");
         assert!(!find("Mine.dll").enabled);
@@ -1222,6 +1355,7 @@ mod tests {
             &Overlay::default(),
             &["NvrAssetPatches.dll".into(), "Other.dll".into()],
             Some(&s),
+            &ModCatalog::default(),
         );
         assert_eq!(ps[0].version, "1.1.0");
         assert!(ps[0].status.as_ref().unwrap().loaded());
@@ -1263,7 +1397,7 @@ mod tests {
         let mut args = BTreeMap::new();
         args.insert("logging".to_string(), "verbose".to_string());
         o.set_args("NvrAssetPatches.dll", &args);
-        o.prune(&shipped(&o, &files));
+        o.prune(&shipped(&o, &files, &ModCatalog::default()));
         assert!(!o.enabled());
         assert!(!o.is_empty());
         // Everything set back to how it ships: nothing is left.
@@ -1272,10 +1406,89 @@ mod tests {
         let o2 = {
             let mut o2 = o.clone();
             o2.set_args("NvrAssetPatches.dll", &BTreeMap::new());
-            o2.prune(&shipped(&o2, &files));
+            o2.prune(&shipped(&o2, &files, &ModCatalog::default()));
             o2
         };
         assert!(o2.is_empty(), "{:?}", o2.0);
+    }
+
+    fn catalog() -> ModCatalog {
+        ModCatalog::parse(
+            r#"{"schema":1,"mods":[
+              {"id":"asset-patches","file":"NvrAssetPatches.dll","shipped":true,"required":true,
+               "args":{"logging":"normal"}},
+              {"id":"extra","file":"Extra.dll","shipped":true,"args":{"mode":"a"}}]}"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn required_plugins_stay_on() {
+        let files: Vec<String> = ["NvrAssetPatches.dll", "Extra.dll"]
+            .map(String::from)
+            .into();
+        let mut o = Overlay::default();
+        // An old "off" for the required plugin: ignored, and pruned as no choice.
+        o.set_plugin_enabled("NvrAssetPatches.dll", false);
+        o.set_plugin_enabled("Extra.dll", false);
+        let ps = plugins(&o, &files, None, &catalog());
+        let find = |f: &str| ps.iter().find(|p| p.file == f).unwrap();
+        assert!(find("NvrAssetPatches.dll").enabled && find("NvrAssetPatches.dll").required);
+        assert!(!find("Extra.dll").enabled && !find("Extra.dll").required);
+        // Shipped plugins get the catalogue's arguments as their defaults.
+        assert_eq!(find("Extra.dll").args["mode"], "a");
+        assert!(!find("Extra.dll").changed());
+        o.prune(&shipped(&o, &files, &catalog()));
+        assert!(o.overrides("NvrAssetPatches.dll").is_none());
+        assert!(o.overrides("Extra.dll").is_some());
+    }
+
+    #[test]
+    fn arguments_reset_to_the_catalogues() {
+        let files: Vec<String> = ["Extra.dll".to_string()].into();
+        let mut o = Overlay::default();
+        o.set_args("Extra.dll", &BTreeMap::from([("mode".into(), "b".into())]));
+        let p = &plugins(&o, &files, None, &catalog())[0];
+        assert!(p.changed());
+        assert_eq!(p.defaults["mode"], "a");
+        o.reset_args("Extra.dll", &p.defaults);
+        o.prune(&shipped(&o, &files, &catalog()));
+        assert!(o.is_empty(), "{:?}", o.0);
+        // Saving exactly the defaults leaves nothing behind either.
+        o.set_args("Extra.dll", &BTreeMap::from([("mode".into(), "a".into())]));
+        o.prune(&shipped(&o, &files, &catalog()));
+        assert!(o.is_empty(), "{:?}", o.0);
+        // An added plugin gets its catalogue arguments back.
+        o.add(&Entry {
+            file: "Mine.dll".into(),
+            enabled: true,
+            args: serde_json::json!({"x":"1"}).as_object().cloned().unwrap(),
+            launcher: Some(Added {
+                catalog_id: Some("mine".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let defaults = serde_json::json!({"x":"0"}).as_object().cloned().unwrap();
+        o.reset_args("Mine.dll", &defaults);
+        assert_eq!(o.added()[0].args["x"], "0");
+    }
+
+    #[test]
+    fn required_asset_patches_stay_on() {
+        let manifest = r#"{"patches":[{"label":"netgun_base","required":true},
+            {"label":"poster_a_tex"}]}"#;
+        let o = set_asset(manifest, "", Some("netgun_base"), false);
+        assert_eq!(o, serde_json::json!({"version": 1}));
+        let o = set_asset(manifest, &o.to_string(), Some("poster_a_tex"), false);
+        // A stale "off" written by hand for a required patch: shown on anyway, dropped.
+        let stale = r#"{"version":1,"patches":{"netgun_base":{"enabled":false}}}"#;
+        let (_, ps) = asset_patches(manifest, stale);
+        assert!(ps[0].enabled && ps[0].required);
+        let o2 = set_asset(manifest, stale, Some("poster_a_tex"), false);
+        assert!(o2["patches"].get("netgun_base").is_none());
+        let (_, ps) = asset_patches(manifest, &o.to_string());
+        assert!(ps[0].enabled && !ps[1].enabled);
     }
 
     /// A live version with nEVR in its slot, the update's plugin, and EchoRelay's patch
@@ -1304,7 +1517,7 @@ mod tests {
         let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
         // The old loader's place: nEVR won't start beside it, so it goes.
         std::fs::write(bin.join("dbgcore.dll"), "MZ EchoLoader 1").unwrap();
-        before_start(&v).unwrap();
+        before_start(&v, false).unwrap();
         assert!(!bin.join("dbgcore.dll").exists());
         assert!(bin.join("plugins/dbgcore.dll").exists());
         let text = std::fs::read_to_string(&yaml).unwrap();
@@ -1329,16 +1542,18 @@ mod tests {
         prepare(&v).unwrap();
         assert!(!std::fs::read_to_string(&yaml).unwrap().contains("MyMod"));
 
+        // Mods off: only the required ones, NvrAssetPatches with its required patches.
         set_enabled(&v, false).unwrap();
         prepare(&v).unwrap();
-        assert!(std::fs::read_to_string(&yaml)
-            .unwrap()
-            .ends_with("plugins: []\n"));
+        let text = std::fs::read_to_string(&yaml).unwrap();
+        assert!(text.contains("file: \"NvrAssetPatches.dll\"\n    enabled: true"));
+        assert!(text.contains("\"required_only\":\"true\""));
+        assert!(!text.contains("MyMod"));
 
         // Without nEVR, nothing is written.
         std::fs::write(bin.join(SLOT), "MZ stock").unwrap();
         std::fs::remove_file(&yaml).unwrap();
-        before_start(&v).unwrap();
+        before_start(&v, false).unwrap();
         assert!(!yaml.exists());
     }
 
@@ -1370,15 +1585,18 @@ mod tests {
         std::fs::write(&relay, "MZ").unwrap();
         assert!(add_local(&v, &relay).is_err());
 
-        set_plugin_enabled(&v, "NvrAssetPatches.dll", false).unwrap();
+        // The game needs it: it can't be turned off, and stays on with mods off.
+        assert!(set_plugin_enabled(&v, "NvrAssetPatches.dll", false).is_err());
         set_enabled(&v, false).unwrap();
         let view = read(&v);
         assert!(!view.enabled);
         let shipped = view
             .plugins
             .iter()
-            .find(|p| p.file == "NvrAssetPatches.dll");
-        assert!(!shipped.unwrap().enabled);
+            .find(|p| p.file == "NvrAssetPatches.dll")
+            .unwrap();
+        assert!(shipped.enabled && shipped.required);
+        assert_eq!(shipped.defaults["logging"], "normal");
 
         remove(&v, "MyMod.dll").unwrap();
         assert!(!bin.join("plugins/MyMod.dll").exists());

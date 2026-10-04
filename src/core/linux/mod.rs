@@ -179,7 +179,7 @@ pub fn play_from_steam() -> i32 {
         return 2;
     }
     // Started from Steam without the launcher's window too: nEVR's plugin list.
-    if let Err(e) = crate::core::launcher::mods::before_start(&v) {
+    if let Err(e) = crate::core::launcher::mods::before_start(&v, state.own_game_config) {
         tracing::warn!("--play: mods not prepared: {e:#}");
     }
     let playing = Playing {
