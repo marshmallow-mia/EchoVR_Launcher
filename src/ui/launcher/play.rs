@@ -950,9 +950,9 @@ fn cards(
     let main = main.unwrap_or_else(|| {
         text(
             "Welcome",
-            "Your launcher for Echo VR, on PC and on your Quest.\n\n\
+            "Your launcher for Echo VR on PC (Quest is coming soon).\n\n\
              - Install, update and play from one place\n\
-             - Switch between PCVR and Quest next to PLAY\n\
+             - Friends, servers and matches to join, on the left\n\
              - Server status and this week's best on the right\n\n\
              Community news appears here when there is some.",
         )
