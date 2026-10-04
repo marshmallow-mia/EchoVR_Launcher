@@ -13,6 +13,7 @@ use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::feed::NewsItem;
+use crate::core::launcher::login_watch::LoginWatch;
 use crate::core::launcher::store::{InstalledVersion, Runtime, SteamVrVia, Target};
 use crate::core::launcher::{launch, quest, relay};
 use crate::core::revive;
@@ -1167,6 +1168,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
                     m.launched(None, &v.id, &v.bin_dir());
                 }
                 d.launched = Some(super::Launched::now());
+                d.login_watch = Some(LoginWatching::new(&v.root));
             }
             Err(e) => d.dialogs.error(
                 "Couldn't start Echo VR",
@@ -1231,6 +1233,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
                 && profile.steamvr_via == SteamVrVia::EchoXr
                 && v.publisher_lock.is_none();
             d.launched = Some(super::Launched::now());
+            d.login_watch = Some(LoginWatching::new(&v.root));
             if d.state.minimize_on_launch {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
@@ -1240,5 +1243,176 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             &format!("{e:#}"),
             Default::default(),
         ),
+    }
+}
+
+// ---- what EchoVRCE says to a login ----
+
+/// The login watch of the start PLAY made: polled once a second while the game may run.
+pub(super) struct LoginWatching {
+    watch: LoginWatch,
+    at: std::time::Instant,
+    since: std::time::Instant,
+}
+
+impl LoginWatching {
+    pub fn new(root: &str) -> LoginWatching {
+        // A little slack: the game may open its log in the same second PLAY ran.
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
+        LoginWatching {
+            watch: LoginWatch::new(root, since),
+            at: std::time::Instant::now(),
+            since: std::time::Instant::now(),
+        }
+    }
+}
+
+/// Every frame: reads the game's log once a second while the launcher's game runs. When
+/// EchoVRCE turned the login down, the game is closed and the card says what it wants
+/// (the code to pick in its Discord DM). Done when the game is gone.
+pub(super) fn watch_login(d: &mut Dashboard, ctx: &egui::Context) {
+    let ours = d.ours();
+    let Some(w) = d.login_watch.as_mut() else {
+        return;
+    };
+    let starting = w.since.elapsed() < crate::core::launcher::game::LAUNCH_WAIT;
+    if !ours && !starting {
+        d.login_watch = None;
+        return;
+    }
+    ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    if w.at.elapsed() < std::time::Duration::from_secs(1) {
+        return;
+    }
+    w.at = std::time::Instant::now();
+    let Some(notice) = w.watch.poll().into_iter().next() else {
+        return;
+    };
+    tracing::info!(
+        "EchoVRCE turned the login down{}: closing the game",
+        if notice.confirm_location() {
+            " (confirm this location)"
+        } else {
+            ""
+        }
+    );
+    d.login_watch = None;
+    stop(d);
+    d.overlay = Some(setup::Overlay::LoginNotice(notice));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
+/// The card for a login EchoVRCE turned down: the code to pick in its Discord DM, or its
+/// message; START AGAIN once it's done.
+pub(super) fn login_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let Some(setup::Overlay::LoginNotice(n)) = d.overlay.clone() else {
+        return;
+    };
+    let location = n.confirm_location();
+    let (w, h) = (dz(900.0), dz(if location { 400.0 } else { 360.0 }));
+    let title = if location {
+        "Confirm this PC"
+    } else {
+        "EchoVRCE turned the login down"
+    };
+    let (x, y, cw, bottom) = setup::card(k, w, h, title);
+    let mut ty = y;
+    if location {
+        ty += k.caps_text(
+            x,
+            ty,
+            cw,
+            "EchoVRCE doesn't know this location yet. Open its direct message in Discord (from @EchoVRCE) and pick this code:",
+            17.0,
+            design::BODY,
+            0.0,
+        ) + dz(24.0);
+        let code = n.code.clone().unwrap_or_else(|| "?".into());
+        let g = k.label_galley(&code, design::conthrax(54.0), design::TEXT, cw);
+        let gw = g.size().x;
+        k.put(x + (cw - gw) / 2.0, ty, g);
+        ty += dz(84.0);
+        k.caps_text(
+            x,
+            ty,
+            cw,
+            "Then start Echo VR again: the login goes through.",
+            15.0,
+            design::GREY,
+            0.0,
+        );
+    } else {
+        ty += k.caps_text(
+            x,
+            ty,
+            cw,
+            "Echo VR was closed. EchoVRCE says:",
+            17.0,
+            design::BODY,
+            0.0,
+        ) + dz(18.0);
+        k.caps_text(x, ty, cw, &n.message, 16.0, design::TEXT, dz(4.0));
+    }
+
+    let by = bottom - BTN_H;
+    let right = x + cw;
+    let close_w = k.button_width("Close", None, BTN_H).max(dz(140.0));
+    if k.button(
+        "login-close",
+        right - close_w,
+        by,
+        close_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Close",
+        true,
+        "",
+    )
+    .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        d.overlay = None;
+        return;
+    }
+    let again_w = k.button_width("Start again", None, BTN_H).max(dz(200.0));
+    if k.button(
+        "login-again",
+        right - close_w - dz(10.0) - again_w,
+        by,
+        again_w,
+        BTN_H,
+        Tone::Go,
+        None,
+        "Start again",
+        !d.game().is_running(),
+        "Start Echo VR again",
+    )
+    .clicked
+    {
+        d.overlay = None;
+        try_start(d, ctx, None);
+        return;
+    }
+    if location {
+        let dw = k.button_width("Open Discord", None, BTN_H).max(dz(200.0));
+        if k.button(
+            "login-discord",
+            x,
+            by,
+            dw,
+            BTN_H,
+            Tone::Blue,
+            None,
+            "Open Discord",
+            true,
+            "Open your direct messages in Discord",
+        )
+        .clicked
+            && !d.demo
+        {
+            crate::core::platform::open_url("https://discord.com/channels/@me");
+        }
     }
 }

@@ -397,6 +397,10 @@ pub enum SnapVariant {
     ServersInvites,
     /// Play signed in: RIGHT NOW with friends and an invite.
     PlayFriends,
+    /// EchoVRCE asks to confirm this location: the code card.
+    LoginCode,
+    /// EchoVRCE turned the login down with a message.
+    LoginMessage,
     /// Servers: the card of a match you just started.
     ServersShare,
     /// Settings with Spark opening spark:// links.
@@ -462,6 +466,8 @@ pub struct Dashboard {
     child_echoxr: bool,
     /// The game PLAY started, until it has ended (or never showed up).
     launched: Option<Launched>,
+    /// The game's log of the start PLAY made, for what EchoVRCE says to a login.
+    login_watch: Option<play::LoginWatching>,
     /// The lobby to join once "Launch anyway" is answered.
     pending_lobby: Option<play::Join>,
     /// PC or Quest, on the Play and the Install page alike.
@@ -1003,6 +1009,22 @@ impl Dashboard {
                 self.link_handler = Some(links::Handler::Other("Spark".into()))
             }
             Some(SnapVariant::VrceSignedIn) => self.vrce.demo(true),
+            Some(SnapVariant::LoginCode) => {
+                self.overlay = Some(setup::Overlay::LoginNotice(
+                    crate::core::launcher::login_watch::LoginNotice {
+                        code: Some("58".into()),
+                        message: "Please authorize this new location.\nCheck your Discord DMs from @EchoVRCE.\nSelect code >>> 58 <<<".into(),
+                    },
+                ))
+            }
+            Some(SnapVariant::LoginMessage) => {
+                self.overlay = Some(setup::Overlay::LoginNotice(
+                    crate::core::launcher::login_watch::LoginNotice {
+                        code: None,
+                        message: "Your account is suspended until 2026-10-11.\nReason: unsportsmanlike conduct.".into(),
+                    },
+                ))
+            }
             Some(
                 v @ (SnapVariant::ServersLive
                 | SnapVariant::ServersHistory
@@ -1540,6 +1562,7 @@ impl Dashboard {
             self.notify(&notice);
         }
         servers::follow_up(self, ctx);
+        play::watch_login(self, ctx);
         self.take_link(ctx);
         // Read the headset's version once it is connected.
         // A reinstall asks the install's questions again.

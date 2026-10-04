@@ -65,6 +65,8 @@ pub(super) enum Overlay {
     /// Servers: a match's link to copy, and invites for friends (`started`: you just
     /// started it).
     ShareMatch { match_id: String, started: bool },
+    /// EchoVRCE turned the login down (the game was closed): what it wants.
+    LoginNotice(crate::core::launcher::login_watch::LoginNotice),
 }
 
 /// The Install card's answers, prefilled with the last ones.
@@ -729,6 +731,7 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::RelayAccount { .. }) => relay_account_card(d, k, ctx),
         Some(Overlay::Licence { .. }) => licence_card(d, k, ctx),
         Some(Overlay::JoinLobby { .. }) => super::play::lobby_card(d, k, ctx),
+        Some(Overlay::LoginNotice(_)) => super::play::login_card(d, k, ctx),
         Some(Overlay::VrceTokens { .. }) => super::echovrce::tokens_card(d, k, ctx),
         Some(Overlay::StartServer { .. }) => super::servers::start_card(d, k, ctx),
         Some(Overlay::ShareMatch { .. }) => super::servers::share_card(d, k, ctx),

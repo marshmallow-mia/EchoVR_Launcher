@@ -28,6 +28,13 @@ pub const CONFIG: &str = "config.yaml";
 pub const CREDENTIALS: &str = ".credentials.json";
 /// The file nEVR refuses to start beside.
 pub const DBGCORE: &str = "dbgcore.dll";
+/// The game's own config, which nEVR doesn't need: without one it supplies its built-in
+/// one, which turns on friends, parties, presence and matchmaking.
+pub const GAME_CONFIG: &str = "config.json";
+/// The `_local/config.json` the game's archive brings (pc.zip's file manifest): the
+/// EchoRelay-era service hosts.
+const ARCHIVE_CONFIG_SHA256: &str =
+    "af60567957aa4404c2227ad739897f44330de6e57f9670c009ec19ce87c4d774";
 /// A game sign-in with less than this left is replaced before it runs out.
 const LOGIN_MARGIN_S: i64 = 24 * 3600;
 /// A refresh token's life when it doesn't say (EchoVRCE's are 30 days).
@@ -128,6 +135,17 @@ fn same_file(a: &Path, b: &Path) -> bool {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
+}
+
+/// Takes the archive's own `_local/config.json` out of `v` (one written by hand stays):
+/// nEVR then uses its built-in game config. Returns whether it did.
+pub fn drop_archive_config(v: &InstalledVersion) -> Result<bool> {
+    let path = local_dir(v).join(GAME_CONFIG);
+    if !crate::core::download::sha256_matches(&path, ARCHIVE_CONFIG_SHA256) {
+        return Ok(false);
+    }
+    std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    Ok(true)
 }
 
 // ---- config.yaml ----
@@ -659,6 +677,22 @@ mod tests {
             (p.name.as_str(), p.version.as_str()),
             ("asset_patches", "1.1.0")
         );
+    }
+
+    #[test]
+    fn drops_only_the_archives_game_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = version_at(dir.path());
+        std::fs::create_dir_all(local_dir(&v)).unwrap();
+        let path = local_dir(&v).join(GAME_CONFIG);
+        std::fs::write(&path, r#"{"publisher_lock":"mine"}"#).unwrap();
+        assert!(!drop_archive_config(&v).unwrap());
+        assert!(path.exists());
+        assert!(!drop_archive_config(&InstalledVersion {
+            root: dir.path().join("none").to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap());
     }
 
     #[test]

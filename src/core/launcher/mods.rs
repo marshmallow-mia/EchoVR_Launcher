@@ -726,8 +726,9 @@ fn plugin(e: Entry, source: Source, has: impl Fn(&str) -> bool, status: Option<&
 }
 
 /// Before starting `v` with nEVR in its slot: takes out a `dbgcore.dll` beside the exe
-/// (the old loader's place, which nEVR won't start beside) and writes `config.yaml`.
-/// Without nEVR there is nothing to do.
+/// (the old loader's place, which nEVR won't start beside) and the archive's own
+/// `_local/config.json` (nEVR's built-in one has friends and parties on), and writes
+/// `config.yaml`. Without nEVR there is nothing to do.
 pub fn before_start(v: &InstalledVersion) -> Result<()> {
     let bin = v.bin_dir();
     if !nevr_in(&bin) {
@@ -742,6 +743,9 @@ pub fn before_start(v: &InstalledVersion) -> Result<()> {
             )
         })?;
         tracing::info!("removed {} (nEVR won't start beside it)", path.display());
+    }
+    if nevr::drop_archive_config(v)? {
+        tracing::info!("removed the archive's _local/config.json: nEVR's built-in one applies");
     }
     prepare(v)
 }
