@@ -7,7 +7,6 @@ pub mod echovrce;
 pub mod echoxr;
 pub mod elevation;
 pub mod error;
-pub mod ffmpeg;
 pub mod http;
 pub mod launcher;
 pub mod links;

@@ -46,9 +46,9 @@ pub fn shots() -> Vec<Shot> {
         ("install", Page::Install),
         ("mods", Page::Mods),
         ("servers", Page::Servers),
-        ("spark", Page::Spark),
         ("echovrce", Page::EchoVrce),
-        ("community", Page::Community),
+        ("friends", Page::Friends),
+        ("plugins", Page::Plugins),
         ("settings", Page::Settings),
     ]
     .into_iter()

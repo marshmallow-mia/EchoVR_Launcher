@@ -102,7 +102,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 }
             }
         }
-        hero::switch(k, "hero-switch", extra, &mut d.platform);
+        if let Some(r) = hero::switch(k, "hero-switch", extra, &mut d.platform) {
+            d.quest_soon = Some((r, std::time::Instant::now()));
+        }
     });
 
     match d.platform {
@@ -286,7 +288,8 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
     h.name = hero_name(&e.name, h.logo);
     h.tag = e.hosted;
     h.notes = e.notes.clone();
-    if !e.downloadable() {
+    let offered = d.state.offers(&e);
+    if !offered {
         h.chips.push(("Coming soon", design::QUEST_OFF));
     }
     let installed = d.state.installed_from(&e.id).cloned();
@@ -368,7 +371,14 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
             if let Some(b) = &busy {
                 h.tip = b.clone();
             }
-            h.enabled = !short && !external && busy.is_none();
+            if !offered {
+                h.tip = if e.downloadable() {
+                    "Event builds are coming soon".into()
+                } else {
+                    "This build isn't on the download servers yet".into()
+                };
+            }
+            h.enabled = offered && !short && !external && busy.is_none();
             h.grey = !h.enabled;
             if missing {
                 h.face = Face::Label("REINSTALL");
@@ -621,7 +631,7 @@ fn version_list(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                     ),
                     design::BLUE,
                 ),
-                _ if !e.downloadable() => ("Coming soon".into(), design::QUEST_OFF),
+                _ if !d.state.offers(e) => ("Coming soon".into(), design::QUEST_OFF),
                 _ if d.state.installed_from(&e.id).is_some() => {
                     ("Installed".into(), design::QUEST_ON)
                 }

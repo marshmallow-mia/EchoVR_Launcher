@@ -1,12 +1,9 @@
 //! The animated background: the designer's loop (`assets/video/background.h264`, raw
-//! H.264 at 1280×720 and `FPS`), or a custom one converted to the same format
-//! (`core::launcher::background`), decoded on a thread and shown as one texture, updated
-//! as its frames come due. `main_background.jpg` (or the custom still) is its first
-//! frame, drawn until the first one is decoded and whenever the animation is off. It
-//! plays at the speed set in Settings.
+//! H.264 at 1280×720 and `FPS`), decoded on a thread and shown as one texture, updated
+//! as its frames come due. `main_background.jpg` is its first frame, drawn until the
+//! first one is decoded.
 
 use std::sync::mpsc::{sync_channel, Receiver, TryRecvError};
-use std::sync::Arc;
 
 use egui::{ColorImage, Context, TextureHandle, TextureOptions};
 use openh264::decoder::Decoder;
@@ -25,19 +22,16 @@ pub struct BackgroundVideo {
     texture: Option<TextureHandle>,
     /// When the frame on screen came due (`egui::InputState::time`).
     shown_at: f64,
-    /// A custom background's stream (`None`: the built-in one).
-    source: Option<Arc<[u8]>>,
 }
 
 impl BackgroundVideo {
     /// The frame to draw, moving on to the next one when it is due and `play` is set
-    /// (else the picture holds, and so does the decoder). `speed` 2 plays twice as fast.
-    /// `None` until the first frame is decoded.
-    pub fn frame(&mut self, ctx: &Context, play: bool, speed: f32) -> Option<&TextureHandle> {
-        let source = self.source.clone();
-        let frames = self.frames.get_or_insert_with(|| start(source));
+    /// (else the picture holds, and so does the decoder). `None` until the first frame is
+    /// decoded.
+    pub fn frame(&mut self, ctx: &Context, play: bool) -> Option<&TextureHandle> {
+        let frames = self.frames.get_or_insert_with(start);
         let now = ctx.input(|i| i.time);
-        let dt = 1.0 / (FPS * f64::from(speed.clamp(0.25, 4.0)));
+        let dt = 1.0 / FPS;
         if self.texture.is_none() || (play && now - self.shown_at >= dt) {
             // Every frame that came due since the last one shown: more than one when the
             // screen refreshes slower than the video plays.
@@ -82,28 +76,16 @@ impl BackgroundVideo {
         }
         self.texture.as_ref()
     }
-
-    /// Animation off: stops the decoder and frees the frame.
-    pub fn stop(&mut self) {
-        self.frames = None;
-        self.texture = None;
-    }
-
-    /// Plays `source` from now on (`None`: the built-in loop).
-    pub fn set_source(&mut self, source: Option<Arc<[u8]>>) {
-        self.stop();
-        self.source = source;
-    }
 }
 
 /// The decoder thread: the loop over and over, until the receiver is dropped (or the
 /// stream has no pictures).
-fn start(source: Option<Arc<[u8]>>) -> Receiver<ColorImage> {
+fn start() -> Receiver<ColorImage> {
     let (tx, rx) = sync_channel(AHEAD);
     let spawned = std::thread::Builder::new()
         .name("background-video".into())
         .spawn(move || loop {
-            let bytes = source.as_deref().unwrap_or(BYTES);
+            let bytes = BYTES;
             let mut decoded = 0;
             let mut decoder = match Decoder::new() {
                 Ok(d) => d,

@@ -56,7 +56,7 @@ const CAPTION_ASCENT: f32 = 0.2;
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     // Look for a headset quietly once, so the Quest chip has something to say.
-    if !d.quest_auto_checked && !d.demo && !kit.ghost {
+    if super::QUEST && !d.quest_auto_checked && !d.demo && !kit.ghost {
         d.quest_auto_checked = true;
         if d.quest_conn.status.is_none() && !d.quest_conn.checking {
             d.check_quest(ctx, false);
@@ -93,7 +93,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         None => buttons(d, kit, ctx, a),
     }
-    hero::switch(kit, "side", 0.0, &mut d.platform);
+    if let Some(r) = hero::switch(kit, "side", 0.0, &mut d.platform) {
+        d.quest_soon = Some((r, std::time::Instant::now()));
+    }
     if d.platform == Platform::Pc {
         version_picker(d, kit);
     }
@@ -471,7 +473,6 @@ pub(super) fn job_state(job: &JobView) -> String {
         JobKind::Patch => "Patching".into(),
         JobKind::Unpatch => "Removing the patch".into(),
         JobKind::Licence => "Licence patch".into(),
-        JobKind::Background => "Converting".into(),
         JobKind::Revive | JobKind::QuestUpdate | JobKind::Mods => job.title.clone(),
     }
 }
@@ -674,7 +675,7 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
         .as_ref()
         .map(|c| {
             c.pc()
-                .filter(|e| d.state.installed_from(&e.id).is_none())
+                .filter(|e| d.state.installed_from(&e.id).is_none() && d.state.offers(e))
                 .cloned()
                 .collect()
         })

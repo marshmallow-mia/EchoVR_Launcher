@@ -81,10 +81,6 @@ const IMAGES: &[(&str, &[u8])] = &[
         include_bytes!("../../assets/img/icon_play.png"),
     ),
     (
-        "icon_spark.png",
-        include_bytes!("../../assets/img/icon_spark.png"),
-    ),
-    (
         "icon_echovrce.png",
         include_bytes!("../../assets/img/icon_echovrce.png"),
     ),

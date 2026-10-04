@@ -86,10 +86,15 @@ fn verify(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
 }
 
 pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
-    if !e.downloadable() {
+    if !d.state.offers(&e) {
+        let why = if e.downloadable() {
+            "Event builds are coming soon."
+        } else {
+            "This build isn't on the download servers yet."
+        };
         d.dialogs.error(
             &format!("Couldn't download {}", e.name),
-            "This build isn't on the download servers yet.",
+            why,
             Default::default(),
         );
         return;
