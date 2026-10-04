@@ -1,16 +1,18 @@
 //! What Echo VR needs on Linux, the way EchoXR does it (github.com/EchoTools/EchoXR, its
 //! OpenXR layer only): a private GE-Proton, whose `wineopenxr` passes OpenXR on to the
-//! runtime the system uses (SteamVR, Monado, WiVRn); a Wine prefix; and EchoXR
+//! runtime you play with (SteamVR or WiVRn, `Xr`); a Wine prefix; and EchoXR
 //! (`core::echoxr`) in the game's `bin/win10`, with Meta's Platform SDK loader beside the
 //! game (a prefix has no Meta app). Everything lives in `<data dir>/linux`; every
 //! download is pinned by its SHA-256.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
 use crate::core::echoxr;
+use crate::core::launcher::store::Runtime;
 use crate::core::launcher::versions::Step;
 use crate::core::paths;
 
@@ -61,45 +63,165 @@ pub fn is_set_up() -> bool {
         && echoxr::is_fetched()
 }
 
-/// The OpenXR runtime games are to use: `XR_RUNTIME_JSON` when set, else the system's
-/// active one.
-pub fn openxr_runtime() -> Option<PathBuf> {
+/// The OpenXR runtime Echo VR plays with on Linux, through EchoXR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Xr {
+    SteamVr,
+    Wivrn,
+}
+
+impl Xr {
+    /// The runtime a launch profile's choice means: WiVRn's tile, else SteamVR (what
+    /// Linux's single "VR" choice was before).
+    pub fn of(runtime: Runtime) -> Xr {
+        if runtime == Runtime::Wivrn {
+            Xr::Wivrn
+        } else {
+            Xr::SteamVr
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Xr::SteamVr => "SteamVR",
+            Xr::Wivrn => "WiVRn",
+        }
+    }
+
+    /// Its OpenXR manifest, where it's installed.
+    pub fn manifest(self) -> Option<PathBuf> {
+        let home = dirs::home_dir().unwrap_or_default();
+        let candidates: Vec<PathBuf> = match self {
+            Xr::SteamVr => {
+                let mut roots: Vec<PathBuf> = super::steam::root().into_iter().collect();
+                roots.extend([
+                    home.join(".local/share/Steam"),
+                    home.join(".steam/steam"),
+                    home.join(".var/app/com.valvesoftware.Steam/data/Steam"),
+                ]);
+                roots
+                    .into_iter()
+                    .map(|r| r.join("steamapps/common/SteamVR/steamxr_linux64.json"))
+                    .collect()
+            }
+            Xr::Wivrn => {
+                let flatpak = "app/io.github.wivrn.wivrn/current/active/files/share";
+                let mut shares: Vec<PathBuf> = std::env::var("XDG_DATA_DIRS")
+                    .unwrap_or_default()
+                    .split(':')
+                    .filter(|s| !s.is_empty())
+                    .map(PathBuf::from)
+                    .collect();
+                shares.extend([
+                    PathBuf::from("/usr/share"),
+                    PathBuf::from("/usr/local/share"),
+                    home.join(".local/share/flatpak").join(flatpak),
+                    PathBuf::from("/var/lib/flatpak").join(flatpak),
+                ]);
+                shares
+                    .into_iter()
+                    .map(|s| s.join("openxr/1/openxr_wivrn.json"))
+                    .collect()
+            }
+        };
+        candidates.into_iter().find(|p| p.is_file())
+    }
+
+    /// Whether its service runs: SteamVR's `vrserver`, or WiVRn's socket. EchoXR is told
+    /// so; without it, it gives up after 20 s (exit code 5) rather than hanging.
+    fn running(self) -> bool {
+        let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        service_in(
+            self,
+            xdg.as_deref(),
+            crate::core::launcher::game::process_running("vrserver"),
+        )
+    }
+
+    /// Starts its service when it isn't running, and waits for it a while (SteamVR
+    /// takes its time). Returns whether it runs.
+    fn start(self) -> bool {
+        if self.running() {
+            return true;
+        }
+        let quiet = |c: &mut std::process::Command| {
+            c.stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+        };
+        let started = match self {
+            Xr::SteamVr => super::steam::root().is_some_and(|root| {
+                super::steam::open(&root, "steam://run/250820")
+                    .inspect_err(|e| tracing::warn!("--play: SteamVR: {e:#}"))
+                    .is_ok()
+            }),
+            Xr::Wivrn => {
+                let mut c = std::process::Command::new("wivrn-server");
+                quiet(&mut c);
+                c.spawn().is_ok() || {
+                    let mut c = std::process::Command::new("flatpak");
+                    c.args(["run", "--command=wivrn-server", "io.github.wivrn.wivrn"]);
+                    quiet(&mut c);
+                    c.spawn().is_ok()
+                }
+            }
+        };
+        if !started {
+            tracing::warn!("--play: couldn't start {}", self.name());
+            return false;
+        }
+        tracing::info!("--play: started {}, waiting for it", self.name());
+        let wait = match self {
+            Xr::SteamVr => Duration::from_secs(60),
+            Xr::Wivrn => Duration::from_secs(15),
+        };
+        let since = Instant::now();
+        while since.elapsed() < wait {
+            std::thread::sleep(Duration::from_millis(500));
+            if self.running() {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// The runtimes installed here, SteamVR first. Looked up at most every 10 seconds (the
+/// Settings page asks every frame).
+pub fn installed() -> Vec<Xr> {
+    static SEEN: std::sync::Mutex<Option<(Instant, Vec<Xr>)>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, xr)) = seen
+        .as_ref()
+        .filter(|(at, _)| at.elapsed() < Duration::from_secs(10))
+    {
+        let _ = at;
+        return xr.clone();
+    }
+    let xr: Vec<Xr> = [Xr::SteamVr, Xr::Wivrn]
+        .into_iter()
+        .filter(|x| x.manifest().is_some())
+        .collect();
+    *seen = Some((Instant::now(), xr.clone()));
+    xr
+}
+
+/// The OpenXR runtime the game is to use: `XR_RUNTIME_JSON` when set (by hand), else the
+/// chosen one's manifest.
+pub fn openxr_runtime(xr: Xr) -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("XR_RUNTIME_JSON").map(PathBuf::from) {
         return p.is_file().then_some(p);
     }
-    let config = config_dir()?;
-    [
-        config.join("openxr/1/active_runtime.json"),
-        PathBuf::from("/etc/xdg/openxr/1/active_runtime.json"),
-    ]
-    .into_iter()
-    .find(|p| p.is_file())
+    xr.manifest()
 }
 
-fn config_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
-}
-
-/// Whether the OpenXR runtime's service runs: SteamVR's `vrserver`, or Monado's or
-/// WiVRn's socket. EchoXR is told so; without it, it gives up after 20 s (exit code 5)
-/// rather than hanging when there is none.
-fn vr_service_running() -> bool {
-    let xdg = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    vr_service_in(
-        xdg.as_deref(),
-        crate::core::launcher::game::process_running("vrserver"),
-    )
-}
-
-/// Pure but for the file checks: a VR service, given the runtime folder and whether
-/// `vrserver` runs.
-fn vr_service_in(xdg_runtime_dir: Option<&Path>, vrserver: bool) -> bool {
-    vrserver
-        || xdg_runtime_dir.is_some_and(|d| {
-            d.join("monado_comp_ipc").exists() || d.join("wivrn/comp_ipc").exists()
-        })
+/// Pure but for the file checks: whether `xr`'s service runs, given the runtime folder
+/// and whether `vrserver` runs.
+fn service_in(xr: Xr, xdg_runtime_dir: Option<&Path>, vrserver: bool) -> bool {
+    match xr {
+        Xr::SteamVr => vrserver,
+        Xr::Wivrn => xdg_runtime_dir.is_some_and(|d| d.join("wivrn/comp_ipc").exists()),
+    }
 }
 
 /// The environment Proton runs with (for setup steps and the game).
@@ -201,8 +323,8 @@ pub fn setup(steam_root: &Path, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -
 /// How `--play` starts the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Start {
-    /// In the headset, through `EchoXR.exe` and the system's OpenXR runtime.
-    Vr,
+    /// In the headset, through `EchoXR.exe` and this OpenXR runtime.
+    Vr(Xr),
     /// On the monitor with `-noovr`: the demo platform (a `DMO-` login, linked by code).
     Flat,
     /// On the monitor with EchoRelay's `-windowed`, logged in through the Oculus platform
@@ -269,12 +391,17 @@ pub fn game_command(
         .find(|p| p.file_name().is_some_and(|n| n == paths::ARENA_DIR))
         .unwrap_or(bin)
         .to_path_buf();
-    let xr = if start == Start::Vr {
-        Some(openxr_runtime().context(
-            "No OpenXR runtime is set up on this PC. Start SteamVR, Monado or WiVRn once (or set XR_RUNTIME_JSON), then try again.",
-        )?)
-    } else {
-        None
+    let xr = match start {
+        Start::Vr(xr) => {
+            let manifest = openxr_runtime(xr).with_context(|| {
+                format!(
+                    "{} isn't installed on this PC. Install it, or choose the other VR runtime in Settings.",
+                    xr.name()
+                )
+            })?;
+            Some((xr, manifest))
+        }
+        _ => None,
     };
     if start == Start::FlatOculus {
         // The stand-in in place of Meta's loader (put back by the next start in VR).
@@ -293,7 +420,7 @@ pub fn game_command(
     if let Ok(more) = std::env::var("PRESSURE_VESSEL_FILESYSTEMS_RW") {
         rw = format!("{rw}:{more}");
     }
-    let program = if start == Start::Vr {
+    let program = if xr.is_some() {
         bin.join(echoxr::LAUNCHER)
     } else {
         bin.join(paths::DEFAULT_EXE)
@@ -315,13 +442,14 @@ pub fn game_command(
     }
     // nEVR is the game's BugSplat64.dll, which Wine has no builtin of: the game's own
     // folder wins without an override.
-    if let Some(xr) = xr {
-        c.env("XR_RUNTIME_JSON", xr)
+    if let Some((xr, manifest)) = xr {
+        tracing::info!("--play: {} at {}", xr.name(), manifest.display());
+        c.env("XR_RUNTIME_JSON", manifest)
             .env("PRESSURE_VESSEL_IMPORT_OPENXR_1_RUNTIMES", "1");
-        if vr_service_running() {
+        if xr.start() {
             c.env("ECHOXR_VR_SERVICE", "ready");
         } else {
-            tracing::warn!("--play: no VR service seen (SteamVR, monado-service, wivrn-server)");
+            tracing::warn!("--play: {} isn't running", xr.name());
         }
     }
     Ok(c)
@@ -347,11 +475,14 @@ mod tests {
     #[test]
     fn sees_the_vr_service() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(vr_service_in(None, true));
-        assert!(!vr_service_in(None, false));
-        assert!(!vr_service_in(Some(dir.path()), false));
+        assert!(service_in(Xr::SteamVr, None, true));
+        assert!(!service_in(Xr::SteamVr, Some(dir.path()), false));
+        assert!(!service_in(Xr::Wivrn, Some(dir.path()), true));
         std::fs::create_dir_all(dir.path().join("wivrn")).unwrap();
         std::fs::write(dir.path().join("wivrn/comp_ipc"), b"").unwrap();
-        assert!(vr_service_in(Some(dir.path()), false));
+        assert!(service_in(Xr::Wivrn, Some(dir.path()), false));
+        assert!(!service_in(Xr::SteamVr, Some(dir.path()), false));
+        assert_eq!(Xr::of(Runtime::Wivrn), Xr::Wivrn);
+        assert_eq!(Xr::of(Runtime::MetaLink), Xr::SteamVr);
     }
 }

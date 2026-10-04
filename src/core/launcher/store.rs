@@ -20,30 +20,23 @@ pub enum Runtime {
     MetaLink,
     /// echovr.exe while Virtual Desktop's streamer provides the Oculus runtime.
     VirtualDesktop,
-    /// Through ReviveInjector for SteamVR headsets.
+    /// SteamVR headsets: on Windows through ReviveInjector (or EchoXR, `SteamVrVia`), on
+    /// Linux through EchoXR on SteamVR's OpenXR runtime.
     Revive,
+    /// Linux: through EchoXR on WiVRn's OpenXR runtime.
+    Wivrn,
     /// No headset: `-noovr`.
     Flat,
 }
 
 impl Runtime {
-    pub const ALL: [Runtime; 4] = [
+    pub const ALL: [Runtime; 5] = [
         Runtime::MetaLink,
         Runtime::VirtualDesktop,
         Runtime::Revive,
+        Runtime::Wivrn,
         Runtime::Flat,
     ];
-
-    // For the runtime picker, which comes back to the Play page later.
-    #[allow(dead_code)]
-    pub fn label(self) -> &'static str {
-        match self {
-            Runtime::MetaLink => "Meta Link",
-            Runtime::VirtualDesktop => "Virtual Desktop",
-            Runtime::Revive => "SteamVR (Revive)",
-            Runtime::Flat => "Flat / Spectator",
-        }
-    }
 }
 
 /// How the SteamVR choice (`Runtime::Revive`) runs Echo VR on Windows.

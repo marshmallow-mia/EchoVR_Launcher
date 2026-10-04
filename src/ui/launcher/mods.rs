@@ -539,7 +539,8 @@ fn plugins_card(
     let locked = !editable || !view.enabled;
     let current = matches!(view.loader, Loader::Nevr { .. });
     let names = names(d.mods.catalog.as_ref());
-    let rows = rows(view, d.mods.editing.as_ref());
+    let vr = cfg!(any(windows, target_os = "linux")) || d.demo;
+    let rows = rows(view, d.mods.editing.as_ref(), vr);
     let content: f32 = rows.iter().map(|r| r.height()).sum();
     let list_h = bottom - y;
     kit.scroll_area(
@@ -568,6 +569,7 @@ fn plugins_card(
                         };
                         plugin_row(d, k, v, p, &look, x, ry, w)
                     }
+                    Row::Vr(part) => vr_row(d, k, *part, x, ry, w),
                     Row::Assets(on) => assets_row(d, k, v, *on, x, ry, editable && !locked),
                     Row::Asset(a, all_on) => {
                         asset_row(d, k, v, a, x, ry, editable && !locked && *all_on)
@@ -609,7 +611,15 @@ struct Look {
     busy: Option<&'static str>,
 }
 
+/// The VR parts above the plugins: not nEVR's, the launcher puts them in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VrPart {
+    /// EchoXR's OpenXR layer: Linux's VR (always), Windows' SteamVR instead of Revive.
+    EchoXr,
+}
+
 enum Row<'a> {
+    Vr(VrPart),
     Plugin(&'a Plugin),
     /// The asset patches' own switch (on or off).
     Assets(bool),
@@ -622,17 +632,20 @@ enum Row<'a> {
 impl Row<'_> {
     fn height(&self) -> f32 {
         match self {
-            Row::Plugin(_) => dz(ROW_H),
+            Row::Plugin(_) | Row::Vr(_) => dz(ROW_H),
             Row::Assets(_) | Row::Asset(..) => dz(SUB_H),
             Row::Options(n) => dz(ARG_H) * (*n as f32 + 1.0) + dz(12.0),
         }
     }
 }
 
-/// The list's rows: each plugin, its options when open, and the asset patches under
-/// NvrAssetPatches.
-fn rows<'a>(view: &'a ModView, editing: Option<&Editing>) -> Vec<Row<'a>> {
+/// The list's rows: the VR parts (`vr`: Windows and Linux), then each plugin, its options
+/// when open, and the asset patches under NvrAssetPatches.
+fn rows<'a>(view: &'a ModView, editing: Option<&Editing>, vr: bool) -> Vec<Row<'a>> {
     let mut out = Vec::new();
+    if vr {
+        out.push(Row::Vr(VrPart::EchoXr));
+    }
     for p in &view.plugins {
         out.push(Row::Plugin(p));
         if let Some(e) = editing.filter(|e| e.file.eq_ignore_ascii_case(&p.file)) {
@@ -836,6 +849,93 @@ fn plugin_row(
         tag_x += tw + dz(14.0);
     }
     let line = detail(p);
+    let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
+    k.put(x + dz(INDENT), y + dz(43.0), g);
+}
+
+/// A VR part's row, as a plugin's: its switch and name with tags, whether it is ready on
+/// the right, what it does under it. On Linux EchoXR is how VR plays: always on. On
+/// Windows its switch is how SteamVR plays: through EchoXR, or (off) Revive.
+fn vr_row(d: &mut Dashboard, k: &mut Kit, part: VrPart, x: f32, y: f32, w: f32) {
+    use crate::core::echoxr;
+    use crate::core::launcher::store::{Runtime, SteamVrVia};
+    let linux = cfg!(target_os = "linux") && !d.demo;
+    let VrPart::EchoXr = part;
+    let name = "EchoXR";
+    let steamvr = d.state.profile.runtime == Runtime::Revive;
+    let mut on = linux || d.state.profile.steamvr_via == SteamVrVia::EchoXr;
+    let busy = d.any_job();
+    let tip = if linux {
+        "Linux plays VR through it: always on"
+    } else if busy {
+        "Wait until the job is done"
+    } else if on {
+        "Turn it off: SteamVR plays through Revive"
+    } else {
+        "Turn it on: SteamVR plays through EchoXR instead of Revive (no injection, no administrator rights)"
+    };
+    let key = |what: &str| format!("mods-vr-{what}-{name}");
+    let bh = dz(30.0);
+    let by = y + dz(10.0);
+    let mut right = x + w;
+    // Ready, or set up at PLAY, while it is in use.
+    let ready = if linux {
+        Some(d.linux_set_up && echoxr::is_fetched())
+    } else if on && steamvr {
+        Some(!d.echoxr_missing())
+    } else {
+        None
+    };
+    if let Some(ready) = ready {
+        let (chip, color) = if ready {
+            ("Ready", design::QUEST_ON)
+        } else {
+            ("Set up at PLAY", design::QUEST_OFF)
+        };
+        let cw = k.chip_width(chip);
+        right -= cw;
+        k.chip(right, by + (bh - dz(27.0)) / 2.0, chip, color);
+    }
+    let g = k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY);
+    let name_w = g.size().x;
+    if k.check(&key("on"), &mut on, name, x, y + dz(13.0), !linux && !busy, tip) {
+        d.state.profile.steamvr_via = if on {
+            SteamVrVia::EchoXr
+        } else {
+            SteamVrVia::Revive
+        };
+        d.save();
+        d.notify(if on {
+            "SteamVR plays through EchoXR now"
+        } else {
+            "SteamVR plays through Revive now"
+        });
+    }
+    let tags = [
+        Some(("VR", design::BLUE)),
+        linux.then_some(("Required", design::QUEST_ON)),
+        (!linux && on && !steamvr).then_some(("Used with SteamVR", design::QUEST_WARN)),
+    ];
+    let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
+    for (tag, color) in tags.into_iter().flatten() {
+        let tw = k.dot_tag_width(tag, 12.0);
+        if tag_x + tw >= right - dz(12.0) {
+            break;
+        }
+        k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
+        tag_x += tw + dz(14.0);
+    }
+    let line = if linux {
+        format!(
+            "v{}  ·  OpenXR layer: Echo VR in your headset on SteamVR or WiVRn",
+            echoxr::VERSION
+        )
+    } else {
+        format!(
+            "v{}  ·  OpenXR layer: SteamVR without Revive  ·  live build only",
+            echoxr::VERSION
+        )
+    };
     let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
     k.put(x + dz(INDENT), y + dz(43.0), g);
 }

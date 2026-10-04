@@ -115,45 +115,16 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             d.save();
         }
     }
-    if d.state.profile.runtime == Runtime::Revive {
-        let ay = top + dz(TILE_H) + dz(24.0);
-        // SteamVR through Revive's injector, or EchoXR's OpenXR runtime in the game's
-        // folder; Revive's own options beside them.
-        let cap = kit.caption(x, ay + dz(9.0), "SteamVR through");
-        let mut bx = x + cap.width() + dz(16.0);
-        // Lower than a card's buttons: the row is the card's last.
-        let bh = dz(42.0);
-        let choices = [
-            (
-                SteamVrVia::Revive,
-                "Revive",
-                "Revive injects itself into Echo VR; the launcher installs it (asks for administrator rights)",
-            ),
-            (
-                SteamVrVia::EchoXr,
-                "EchoXR",
-                "EchoXR's OpenXR runtime in the game's folder: no injection and no administrator rights. Live build only.",
-            ),
-        ];
-        for (via, label, tip) in choices {
-            let on = d.state.profile.steamvr_via == via;
-            let bw = kit.button_width(label, None, bh).max(dz(130.0));
-            let tone = if on { Tone::Blue } else { Tone::Dark };
-            let key = format!("steamvr-via-{label}");
-            if kit
-                .button(&key, bx, ay - dz(4.0), bw, bh, tone, None, label, true, tip)
-                .clicked
-                && !on
-            {
-                d.state.profile.steamvr_via = via;
-                d.save();
-            }
-            bx += bw + dz(10.0);
-        }
-        if d.state.profile.steamvr_via != SteamVrVia::Revive {
+    // SteamVR through Revive (on Windows; EchoXR instead is its switch on the Mods
+    // page): Revive's own options.
+    if cfg!(windows) || d.demo {
+        if d.state.profile.runtime != Runtime::Revive
+            || d.state.profile.steamvr_via != SteamVrVia::Revive
+        {
             return;
         }
-        let cx = bx + dz(30.0);
+        let ay = top + dz(TILE_H) + dz(24.0);
+        let cx = x;
         let cy = ay;
         if kit.check(
             "artwork",

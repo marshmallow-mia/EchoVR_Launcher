@@ -34,7 +34,7 @@ on Linux). An event build you installed before stays playable either way.
 ## SteamVR on Windows
 
 The SteamVR choice runs Echo VR through [Revive](https://github.com/LibreVR/Revive)
-(installed by the launcher) or, picked under Settings → Game, through
+(installed by the launcher) or, with **EchoXR** switched on on the Mods page, through
 [EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer in the game's folder: no
 injection and no administrator rights (the Meta library's copy excepted). EchoXR runs
 only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
@@ -47,8 +47,11 @@ answers Echo's Oculus calls over OpenXR, so SteamVR, Monado or WiVRn drive the h
 reads Meta's Platform SDK loader and P2P library out of Meta's own runtime package, and
 adds Echo VR to Steam as a non-Steam game (Steam restarts for that). PLAY then starts it
 through Steam.
-It needs an active OpenXR runtime (SteamVR, Monado or WiVRn) and its service running; no
-OpenVR runtime is needed. Only the live build runs this way; the event builds don't yet.
+How you play (Settings, or the Install card) is **SteamVR** or **WiVRn**, whichever is
+installed, or Flat. In VR, EchoXR is required (the Mods page shows it locked on), and PLAY
+points it at that runtime: it starts SteamVR when it isn't running, and WiVRn's server
+(connect your headset in WiVRn's app). `XR_RUNTIME_JSON`, when set, still wins. No OpenVR
+runtime is needed. Only the live build runs this way; the event builds don't yet.
 
 ## Mods
 
