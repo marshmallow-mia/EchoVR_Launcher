@@ -9,7 +9,6 @@ use crate::core::launcher::store::{Runtime, SteamVrVia};
 use crate::core::links::Handler;
 use crate::core::{logs, paths, platform};
 use crate::ui::design::{self, dz, Dr};
-use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::markdown;
 use crate::ui::parts;
@@ -27,8 +26,7 @@ const TILE_H: f32 = 170.0;
 const PANEL_W: f32 = 492.0;
 
 const CACHE_KEY: &str = "settings-delete-cache";
-const UPLOAD_KEY: &str = "settings-upload-logs";
-const UPLOAD_TEXT: &str = "This sends your logs to the developer, marshmallow-mia, to help with a problem: the launcher's, Echo VR's (from each installed version), EchoXR's, plugins' and the Quest logs you saved last. Only the developer can see them, and they're deleted after 30 days.\n\n\
+const UPLOAD_TEXT: &str = "This sends the logs checked above to the developer, marshmallow-mia, to help with a problem. Only the developer can see them, and they're deleted after 30 days.\n\n\
 They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, your Echo VR account name and the matches you joined, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
 To have them deleted, message marshmallow-mia on Discord or email echo@mia-hentschel.de.";
 
@@ -52,12 +50,6 @@ fn answers(d: &mut Dashboard, ctx: &egui::Context) {
         d.worker.spawn(ctx, move |tx| {
             tx.send(Msg::CacheDeleted(crate::core::cache::delete_all(&roots)))
         });
-    }
-    if d.dialogs
-        .take(UPLOAD_KEY)
-        .is_some_and(|a| a == crate::ui::dialogs::Answer::Button(0))
-    {
-        upload(d, ctx);
     }
 }
 
@@ -606,7 +598,7 @@ pub(super) fn ask_delete_cache(d: &mut Dashboard) {
     );
 }
 
-/// What uploading the logs shares, and with whom; asks before it happens.
+/// Finds the logs and asks which go (`upload_card`), saying what that shares and with whom.
 pub(super) fn ask_upload(d: &mut Dashboard) {
     d.upload_sources = if d.demo {
         demo_sources()
@@ -620,14 +612,127 @@ pub(super) fn ask_upload(d: &mut Dashboard) {
         );
         return;
     }
-    let text = format!("{}\n\n{UPLOAD_TEXT}", what_goes(&d.upload_sources));
-    d.dialogs.options(
-        UPLOAD_KEY,
-        "Upload your logs?",
-        &text,
-        DlgIcon::Info,
-        &["Upload", "Cancel"],
-    );
+    d.overlay = Some(setup::Overlay::UploadLogs { off: Vec::new() });
+}
+
+/// The order of the upload card's rows.
+const UPLOAD_ROWS: [logs::Kind; 5] = [
+    logs::Kind::Echo,
+    logs::Kind::Launcher,
+    logs::Kind::Plugin,
+    logs::Kind::EchoXr,
+    logs::Kind::Quest,
+];
+
+/// UPLOAD LOGS: a check for each kind of log found (all on), what goes, and what that
+/// shares.
+pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let sources = &d.upload_sources;
+    let Some(setup::Overlay::UploadLogs { off }) = &mut d.overlay else {
+        return;
+    };
+    let (w, h) = (dz(1000.0), dz(580.0));
+    let (x, y, cw, bottom) = setup::card(k, w, h, "Upload logs");
+    let mut ry = y;
+    ry += k.caps_text(
+        x,
+        ry,
+        cw,
+        "Choose which logs go. All of them help the most.",
+        17.0,
+        design::BODY,
+        0.0,
+    ) + dz(18.0);
+    for kind in UPLOAD_ROWS {
+        let of_kind: Vec<&logs::Source> = sources.iter().filter(|s| s.kind == kind).collect();
+        if of_kind.is_empty() {
+            continue;
+        }
+        let mut on = !off.contains(&kind);
+        let names: Vec<&str> = of_kind.iter().map(|s| s.name.as_str()).collect();
+        let bytes: u64 = of_kind.iter().map(|s| s.bytes).sum();
+        let size = if bytes < 100_000 {
+            format!("{} KB", bytes.div_ceil(1000))
+        } else {
+            format!("{:.1} MB", bytes as f64 / 1_000_000.0)
+        };
+        let label = format!(
+            "{} ({} {}, {size})",
+            kind.title(),
+            of_kind.len(),
+            if of_kind.len() == 1 { "file" } else { "files" },
+        );
+        if k.check(
+            &format!("upload-{}", kind.title()),
+            &mut on,
+            &label,
+            x,
+            ry,
+            true,
+            &names.join("\n"),
+        ) {
+            off.retain(|o| *o != kind);
+            if !on {
+                off.push(kind);
+            }
+        }
+        ry += dz(36.0);
+    }
+    let chosen: Vec<logs::Source> = sources
+        .iter()
+        .filter(|s| !off.contains(&s.kind))
+        .cloned()
+        .collect();
+    ry += dz(8.0);
+    let goes = if chosen.is_empty() {
+        "Nothing is checked.".to_string()
+    } else {
+        what_goes(&chosen)
+    };
+    ry += k.caps_text(x, ry, cw, &goes, 16.0, design::TEXT, 0.0) + dz(18.0);
+    k.caps_text(x, ry, cw, UPLOAD_TEXT, 14.0, design::GREY, 0.0);
+
+    let by = bottom - BTN_H;
+    let cancel_w = k.button_width("Cancel", None, BTN_H).max(110.0);
+    let up_w = k.button_width("Upload", None, BTN_H).max(140.0);
+    let right = x + cw;
+    if k.button(
+        "upload-cancel",
+        right - cancel_w,
+        by,
+        cancel_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Cancel",
+        true,
+        "",
+    )
+    .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        d.overlay = None;
+        d.upload_sources.clear();
+        return;
+    }
+    if k.button(
+        "upload-go",
+        right - cancel_w - 8.0 - up_w,
+        by,
+        up_w,
+        BTN_H,
+        Tone::Go,
+        None,
+        "Upload",
+        !chosen.is_empty(),
+        "Send the checked logs",
+    )
+    .clicked
+    {
+        d.overlay = None;
+        d.upload_sources = chosen;
+        upload(d, ctx);
+    }
 }
 
 /// Pure: "It sends 8 log files (6.3 MB): from the launcher (2), Echo VR (5) and EchoXR (1)."
@@ -668,10 +773,12 @@ fn demo_sources() -> Vec<logs::Source> {
         s(logs::Kind::Echo, "pc-latest.r14-1.log", 2_400_000),
         s(logs::Kind::Echo, "pc-latest.r14-2.log", 1_900_000),
         s(logs::Kind::Echo, "pc-latest.r14-3.log", 1_550_000),
+        s(logs::Kind::Plugin, "nevr-20261004-171702.jsonl", 820_000),
+        s(logs::Kind::Plugin, "NvrAssetPatches.log", 6_000),
     ]
 }
 
-/// Sends the logs the dialog listed, in the background.
+/// Sends the logs the card left checked, in the background.
 fn upload(d: &mut Dashboard, ctx: &egui::Context) {
     if d.demo || d.uploading_logs {
         return;
@@ -730,7 +837,7 @@ mod tests {
     fn says_what_goes() {
         assert_eq!(
             what_goes(&demo_sources()),
-            "It sends 6 log files (6.3 MB): from the launcher (1), EchoXR (2) and Echo VR (3)."
+            "It sends 8 log files (7.1 MB): from the launcher (1), EchoXR (2), Echo VR (3) and nEVR and its plugins (2)."
         );
         assert_eq!(
             what_goes(&demo_sources()[..1]),
