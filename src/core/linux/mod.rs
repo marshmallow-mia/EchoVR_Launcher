@@ -149,6 +149,67 @@ pub fn launcher_exe() -> Option<PathBuf> {
         .or_else(|| std::env::current_exe().ok())
 }
 
+/// A silent microphone for one game run, on a PC without any: Echo VR (with nEVR)
+/// crashes at its start when no capture device is there. A null sink and a source made
+/// of its monitor (PipeWire's pulse server, or PulseAudio), unloaded when dropped.
+struct Microphone(Vec<String>);
+
+impl Microphone {
+    fn ensure() -> Option<Microphone> {
+        let list = std::process::Command::new("pactl")
+            .args(["list", "short", "sources"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())?;
+        if has_microphone(&String::from_utf8_lossy(&list.stdout)) {
+            return None;
+        }
+        let load = |args: &[&str]| -> Option<String> {
+            let o = std::process::Command::new("pactl")
+                .arg("load-module")
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())?;
+            Some(String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|id| !id.is_empty())
+        };
+        let sink = load(&[
+            "module-null-sink",
+            "sink_name=echovr_mic_sink",
+            "sink_properties=device.description=EchoVR-Silence",
+        ])?;
+        let mut modules = vec![sink];
+        if let Some(source) = load(&[
+            "module-remap-source",
+            "master=echovr_mic_sink.monitor",
+            "source_name=echovr_mic",
+            "source_properties=device.description=EchoVR-Microphone",
+        ]) {
+            modules.push(source);
+        }
+        tracing::info!("--play: no microphone here; a silent one for this run ({modules:?})");
+        Some(Microphone(modules))
+    }
+}
+
+impl Drop for Microphone {
+    fn drop(&mut self) {
+        for id in self.0.iter().rev() {
+            let _ = std::process::Command::new("pactl")
+                .args(["unload-module", id])
+                .status();
+        }
+    }
+}
+
+/// Pure: whether `pactl list short sources` lists a capture device (not just the
+/// monitors of outputs).
+fn has_microphone(list: &str) -> bool {
+    list.lines()
+        .filter_map(|l| l.split('\t').nth(1))
+        .any(|name| !name.is_empty() && !name.ends_with(".monitor"))
+}
+
 /// `--play`: starts the version PLAY would start, with the launch options, through Proton
 /// and EchoXR, and waits for the game to end. Returns the exit code.
 pub fn play_from_steam() -> i32 {
@@ -213,6 +274,8 @@ pub fn play_from_steam() -> i32 {
         echoxr::Start::Flat
     };
     tracing::info!("--play: {} {start:?}", v.id);
+    // Echo VR crashes at its start without any microphone: a silent one for this run.
+    let mic = Microphone::ensure();
     // EchoXR Hands: its finger bridge through Proton beside the game, until it ends.
     let mut bridge = None;
     if hands && start != echoxr::Start::Flat && start != echoxr::Start::FlatOculus {
@@ -231,6 +294,7 @@ pub fn play_from_steam() -> i32 {
         let _ = b.kill();
         let _ = b.wait();
     }
+    drop(mic);
     let _ = std::fs::remove_file(playing_file());
     match result {
         Ok(status) => {
@@ -244,5 +308,19 @@ pub fn play_from_steam() -> i32 {
             tracing::error!("--play: {e:#}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sees_a_microphone() {
+        assert!(!has_microphone(""));
+        assert!(!has_microphone(
+            "57\talsa_output.pci.analog-stereo.monitor\tPipeWire\ts32le 2ch 48000Hz\tSUSPENDED\n"
+        ));
+        assert!(has_microphone("57\talsa_output.monitor\tPipeWire\tx\tIDLE\n58\talsa_input.usb-mic\tPipeWire\tx\tIDLE\n"));
     }
 }
