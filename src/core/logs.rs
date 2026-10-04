@@ -23,7 +23,7 @@ use super::launcher::store::InstalledVersion;
 use super::paths;
 
 /// Where the bundle goes.
-pub const UPLOAD_URL: &str = "https://files.echovr.de/launcher/logs";
+pub const UPLOAD_URL: &str = "https://release.echovr.de/launcher/logs";
 /// What the service takes at most: per file, files, all files' bytes, per line.
 pub const MAX_FILE: usize = 8 << 20;
 pub const MAX_FILES: usize = 24;

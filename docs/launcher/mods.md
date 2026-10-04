@@ -85,7 +85,7 @@ nEVR's logs are in the prefix's `drive_c/users/steamuser/AppData/Local/EchoVR/lo
 
 ## The mods catalogue
 
-The launcher reads `https://files.echovr.de/launcher/mods.json` (this folder has the
+The launcher reads `https://release.echovr.de/launcher/mods.json` (this folder has the
 current draft, which is also built in for when it can't be fetched):
 
 ```json
@@ -102,7 +102,7 @@ current draft, which is also built in for when it can't be fetched):
 - `file`: the plugin's file name in `plugins/`: letters, digits, `.`, `-`, `_`, ending
   in `.dll`; never `BugSplat64.dll`.
 - `url`: relative to the download mirrors (`files.echovr.de` / `evr.echo.taxi`), or an
-  absolute `https://` URL on one of them. Required, with `sha256`, unless `shipped`.
+  absolute `https://` URL on one of them or `release.echovr.de`. Required, with `sha256`, unless `shipped`.
 - `sha256`: the file's checksum. The launcher checks the download against it and notes it
   in `launcher-mods.json`, so a file changed later is left out of `config.yaml`.
 - `shipped`: the community update brings it; the page shows it (INSTALLED, or "with the

@@ -28,7 +28,7 @@ use super::store::InstalledVersion;
 use super::versions::Step;
 use crate::core::{download, paths};
 
-pub const CATALOG_URL: &str = "https://files.echovr.de/launcher/mods.json";
+pub const CATALOG_URL: &str = "https://release.echovr.de/launcher/mods.json";
 /// The loader's slot: the crash reporter the game imports.
 pub const SLOT: &str = "BugSplat64.dll";
 /// The game's own crash reporter (the live build's, from its file manifest).
@@ -1123,7 +1123,7 @@ pub fn remove(v: &InstalledVersion, file: &str) -> Result<()> {
     })
 }
 
-// ---- the mods catalogue (mods.json on files.echovr.de) ----
+// ---- the mods catalogue (mods.json on release.echovr.de) ----
 
 /// A mod in the catalogue.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

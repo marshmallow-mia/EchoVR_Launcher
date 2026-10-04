@@ -1,4 +1,4 @@
-//! The Play page's feed, from static files on files.echovr.de: the overview atop RIGHT NOW
+//! The Play page's feed, from static files on release.echovr.de: the overview atop RIGHT NOW
 //! (`servers.json`, aggregated from the EchoVRCE status API by the feed bot)
 //! and Community News (`news.json`, mirrored from Discord by the feed bot).
 //! News images are referenced by content-hashed file names, so a name that didn't change
@@ -12,7 +12,7 @@ use time::{OffsetDateTime, UtcOffset};
 
 use crate::core::http;
 
-pub const BASE: &str = "https://files.echovr.de/launcher/feed/";
+pub const BASE: &str = "https://release.echovr.de/launcher/feed/";
 
 /// What is going on: players online, the queue, the matches per mode, the week's top 3.
 #[derive(Debug, Clone, Default, Deserialize)]

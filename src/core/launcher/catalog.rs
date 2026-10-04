@@ -1,4 +1,4 @@
-//! The versions catalogue (`versions.json` on files.echovr.de).
+//! The versions catalogue (`versions.json` on release.echovr.de).
 //!
 //! ```json
 //! { "schema": 1,
@@ -29,10 +29,11 @@ use serde::{Deserialize, Serialize};
 use super::quest;
 use crate::core::{pc_update, quest_update};
 
-pub const CATALOG_URL: &str = "https://files.echovr.de/launcher/versions.json";
-/// The live PC build's file manifest (its zip is `pc.zip`, the old name kept as a link).
-pub const PC_FILES_MANIFEST: &str = "https://files.echovr.de/pc.zip.manifest";
-const TRUSTED_HOSTS: [&str; 2] = ["files.echovr.de", "evr.echo.taxi"];
+pub const CATALOG_URL: &str = "https://release.echovr.de/launcher/versions.json";
+/// The live PC build's file manifest (its zip is `pc.zip`; on files.echovr.de it is also
+/// `ready-at-dawn-echo-arena.zip`, the installer's download).
+pub const PC_FILES_MANIFEST: &str = "https://release.echovr.de/pc.zip.manifest";
+const TRUSTED_HOSTS: [&str; 3] = ["release.echovr.de", "files.echovr.de", "evr.echo.taxi"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -192,7 +193,7 @@ impl VersionEntry {
     }
 }
 
-/// An event build's archive on files.echovr.de and what the relay knows it by.
+/// An event build's archive on release.echovr.de and what the relay knows it by.
 struct Event {
     archive: &'static str,
     size: u64,
@@ -252,8 +253,8 @@ impl Catalog {
             name: name.into(),
             channel: "event".into(),
             platform: Platform::Pc,
-            url: format!("https://files.echovr.de/{}", ev.archive),
-            files_manifest: Some(format!("https://files.echovr.de/{}.manifest", ev.archive)),
+            url: format!("https://release.echovr.de/{}", ev.archive),
+            files_manifest: Some(format!("https://release.echovr.de/{}.manifest", ev.archive)),
             size: Some(ev.size),
             notes: format!("The {name} event build, on the community's classic lobbies server."),
             hosted: Some(Hosted::Event),
@@ -421,6 +422,8 @@ mod tests {
             r#"{"versions":[{"id":"Upper","url":"a.zip"}]}"#,
             r#"{"versions":[{"id":"a","url":"https://evil.example/a.zip"}]}"#,
             r#"{"versions":[{"id":"a","url":"http://files.echovr.de/a.zip"}]}"#,
+            r#"{"versions":[{"id":"a","url":"http://release.echovr.de/a.zip"}]}"#,
+            r#"{"versions":[{"id":"a","url":"https://release.echovr.de.evil.example/a.zip"}]}"#,
             r#"{"versions":[{"id":"a","url":"../a.zip"}]}"#,
             r#"{"versions":[{"id":"a","url":"a.zip","update_manifest":"update.manifest"}]}"#,
             r#"{"versions":[{"id":"a","url":"a.zip","sha256":"xyz"}]}"#,
