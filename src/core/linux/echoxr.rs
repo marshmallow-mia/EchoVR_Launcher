@@ -134,7 +134,7 @@ impl Xr {
         service_in(
             self,
             xdg.as_deref(),
-            crate::core::launcher::game::process_running("vrserver"),
+            crate::core::launcher::game::program_running("vrserver"),
         )
     }
 
