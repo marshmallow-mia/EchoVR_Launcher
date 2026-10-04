@@ -1042,9 +1042,9 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         return;
     };
     let ask = &mut **ask;
+    // Offered, not chosen: the location shown (maybe one just picked) stays the answer.
     if let Some(copy) = found {
         ask.copy = Some(copy);
-        ask.use_copy = true;
     }
     let use_copy = ask.use_copy && ask.copy.is_some();
     let (title, root) = match &ask.target {
@@ -1067,7 +1067,8 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     let (w, pad, gap) = (dz(1100.0), dz(30.0), dz(16.0));
     let inner = w - 2.0 * pad;
     let (q_h, owner_h, runtime_h, place_h) = (dz(40.0), dz(110.0), dz(130.0), dz(50.0));
-    let where_h = dz(100.0);
+    // The line naming a copy on this PC, under the install location.
+    let found_h = dz(28.0);
 
     // Measured first: the card fits what it shows.
     let mut h = if event {
@@ -1082,8 +1083,8 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         h += text_height(k, QUEST_WARNING, inner) + dz(24.0);
     } else {
         h += q_h + runtime_h + dz(24.0) + place_h + dz(24.0);
-        if ask.copy.is_some() {
-            h += q_h + where_h + dz(24.0);
+        if ask.copy.is_some() && !use_copy && !reinstall {
+            h += found_h;
         }
     }
     let h = dz(46.0) + 2.0 * pad + h + BTN_H;
@@ -1150,43 +1151,6 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             }
         }
         y += runtime_h + dz(24.0);
-        // Echo VR already on this PC: take it in, or download it anyway.
-        if ask.copy.is_some() {
-            question(k, x, y, cw, "Where is Echo VR?");
-            y += q_h;
-            let tw = (cw - gap) / 2.0;
-            let size = match &ask.target {
-                InstallFor::Pc(e) => e.size.map(super::play::gb),
-                InstallFor::Quest => None,
-            };
-            let download = size.map_or_else(
-                || "Downloads it into your library".to_string(),
-                |s| format!("Downloads {s} into your library"),
-            );
-            let tiles = [
-                (false, "Download it", download.as_str()),
-                (true, "Use the copy on this PC", COPY_NOTE),
-            ];
-            for (i, (copy, label, note)) in tiles.into_iter().enumerate() {
-                let tx = x + i as f32 * (tw + gap);
-                if k.tile(
-                    &format!("install-where-{i}"),
-                    tx,
-                    y,
-                    tw,
-                    where_h,
-                    label,
-                    note,
-                    use_copy == copy,
-                )
-                .clicked
-                {
-                    ask.use_copy = copy;
-                    ask.copy_decided = true;
-                }
-            }
-            y += where_h + dz(24.0);
-        }
         let (caption, path) = match &ask.copy {
             Some(copy) if use_copy => ("Echo VR is in", copy.as_str()),
             _ => ("Install location", root.as_str()),
@@ -1205,27 +1169,43 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                 )
                 .clicked;
         }
-        // Anyone who has Echo VR already says where, instead of downloading it again.
+        // One choice on this line: the copy found on this PC, or downloading (the
+        // location's own); without a copy found, an echovr.exe of your own.
         if !reinstall {
-            let text = if ask.copy.is_some() {
-                "Not this one? Choose echovr.exe"
-            } else {
-                "Already have it? Choose echovr.exe"
+            let (text, tip) = match (&ask.copy, use_copy) {
+                (Some(_), true) => (
+                    "Download it instead",
+                    "Download Echo VR into your library instead of using this copy",
+                ),
+                (Some(_), false) => (
+                    "Use the copy on this PC",
+                    "Echo VR is already on this PC: add it instead of downloading it again",
+                ),
+                (None, _) => (
+                    "Already have it? Choose echovr.exe",
+                    "Use an Echo VR that is already on this PC: choose its echovr.exe",
+                ),
             };
             let lw = k.link_width(text, 14.0);
-            choose = k
-                .link(
-                    "install-choose",
-                    x + cw - lw,
-                    y - dz(2.0),
-                    text,
-                    14.0,
-                    "Use an Echo VR that is already on this PC: choose its echovr.exe",
-                )
-                .clicked;
+            if k.link("install-choose", x + cw - lw, y - dz(2.0), text, 14.0, tip)
+                .clicked
+            {
+                match &ask.copy {
+                    Some(_) => {
+                        ask.use_copy = !use_copy;
+                        ask.copy_decided = true;
+                    }
+                    None => choose = true,
+                }
+            }
         }
         let path = super::install::myriad(k, path, design::myriad(18.0), design::TEXT, cw, true);
         k.put(x, y + dz(24.0), path);
+        if let (Some(copy), false, false) = (&ask.copy, use_copy, reinstall) {
+            let line = format!("Echo VR is already on this PC: {copy}");
+            let g = super::install::myriad(k, &line, design::myriad(15.0), design::GREY, cw, true);
+            k.put(x, y + dz(50.0), g);
+        }
     } else {
         k.caps_text(x, y, cw, QUEST_WARNING, 17.0, design::BODY, dz(PARA));
     }
@@ -1494,7 +1474,6 @@ const PC_LICENCE: &str = "New players need a personal licence patch. Authorize w
 const PC_OPTIONS: &str = "New players need a personal licence patch. Authorize with Discord while Echo VR downloads: the Echo VR Patcher bot builds one for your account (you need to be a member of its server), and it goes in once Echo VR is installed.";
 const QUEST_OPTIONS: &str = "New players install a personal patched build. Authorize with Discord and the Echo VR Patcher bot builds it for your account; you need to be a member of its server.";
 /// The Install card's tile for a copy of Echo VR already on this PC.
-const COPY_NOTE: &str = "Already on this PC: nothing to download";
 const QUEST_WARNING: &str = "Installing replaces Echo VR on your Quest: the installed app and its local data are removed first.";
 
 #[cfg(test)]
