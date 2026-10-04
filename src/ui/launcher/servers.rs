@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use super::{hero, panel, setup, Dashboard, Page};
 use crate::core::echovrce::game::{
-    self, Friend, Invite, Lobby, Match, Mode, Region, Role, Summary, Ticket,
+    self, Found, Friend, FriendState, Invite, Lobby, Match, Mode, Region, Role, Summary, Ticket,
 };
 use crate::core::echovrce::{Account, Tokens};
 use crate::core::launcher::catalog::Platform;
@@ -32,6 +32,8 @@ const TICKETS_AWAY: Duration = Duration::from_secs(30);
 const FRIENDS_EVERY: Duration = Duration::from_secs(60);
 /// Whether or not the page is shown.
 const INVITES_EVERY: Duration = Duration::from_secs(30);
+/// Your match history (its tab, and Friends' PLAYED WITH).
+const HISTORY_EVERY: Duration = Duration::from_secs(5 * 60);
 /// A match you started that never showed up on the list is forgotten after this.
 const CREATED_UNLISTED: Duration = Duration::from_secs(10 * 60);
 
@@ -51,11 +53,13 @@ const ROW_H: f32 = 76.0;
 const ROW_PAD: f32 = 12.0;
 
 /// Which page shows the game service's data: the Servers page (all of it, often), Play
-/// (RIGHT NOW: your friends and the matches they are in), or neither.
+/// (RIGHT NOW: your friends and the matches they are in), Friends (them, requests and the
+/// players of your last matches), or neither.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Shown {
     Servers,
     Play,
+    Friends,
     Neither,
 }
 
@@ -79,6 +83,11 @@ enum Msg {
     Invited(String, String, String, Result<(), String>),
     /// A join or start finished.
     Done(Result<Done, String>),
+    /// What a search for players found (the text searched for).
+    Found(String, Result<Vec<Found>, String>),
+    /// A friend added, accepted, removed or turned down (or not): the player (user id,
+    /// name), what was done ("add", "remove"), and how it went.
+    FriendChanged(String, String, &'static str, Result<(), String>),
 }
 
 /// What a finished join or start leads to.
@@ -111,7 +120,22 @@ pub(super) struct Servers {
     pub tab: Tab,
     pub role: Option<Role>,
     pub guilds: Vec<(String, String)>,
+    /// Your friends (accepted).
     pub friends: Vec<Friend>,
+    /// Friend requests you sent and got.
+    pub requests: Vec<Friend>,
+    /// Friends: the search field, and what the last search found (for which text).
+    pub search: String,
+    pub found: Option<(String, Result<Vec<Found>, String>)>,
+    pub searching: bool,
+    /// Players whose friendship is being changed (user ids).
+    pub changing: HashSet<String>,
+    /// Friends' lists, scrolled: found players, requests, friends; and PLAYED WITH.
+    pub friends_page_scroll: [f32; 3],
+    pub played_scroll: f32,
+    /// A friend's remove button was clicked (user id, name), and the question asked.
+    pub remove_clicked: Option<(String, String)>,
+    pub remove_asked: Option<(String, String)>,
     pub tickets: Vec<Ticket>,
     pub history: Option<Result<Vec<Summary>, String>>,
     pub regions: Option<Result<Vec<Region>, String>>,
@@ -121,7 +145,8 @@ pub(super) struct Servers {
     tickets_at: Option<Instant>,
     friends_at: Option<Instant>,
     role_asked: bool,
-    history_asked: bool,
+    /// When your match history was last asked for (`None`: never, or Refresh).
+    history_at: Option<Instant>,
     pub scroll: f32,
     /// A join waiting for the game to start into this match (lobby id).
     pub launch: Option<String>,
@@ -204,7 +229,11 @@ impl Servers {
                         Err(e) => self.error = Some(e),
                     }
                 }
-                Msg::Friends(f) => self.friends = f,
+                Msg::Friends(f) => {
+                    (self.friends, self.requests) = f
+                        .into_iter()
+                        .partition(|f| f.state == game::FriendState::Friend);
+                }
                 Msg::Tickets(t) => self.tickets = t,
                 Msg::Role(r, g) => {
                     self.role = Some(r);
@@ -234,6 +263,44 @@ impl Servers {
                             format!("Invited {name}")
                         }
                         Err(e) => format!("Couldn't invite {name}: {e}"),
+                    });
+                }
+                Msg::Found(text, r) => {
+                    self.searching = false;
+                    self.found = Some((text, r));
+                }
+                Msg::FriendChanged(user, name, what, r) => {
+                    self.changing.remove(&user);
+                    self.friends_at = None;
+                    notice = Some(match r {
+                        Ok(()) => {
+                            let asked = self.requests.iter().position(|f| f.user_id == user);
+                            match (what, asked) {
+                                ("add", Some(i))
+                                    if self.requests[i].state == FriendState::Received =>
+                                {
+                                    let mut f = self.requests.remove(i);
+                                    f.state = FriendState::Friend;
+                                    self.friends.push(f);
+                                    format!("You and {name} are friends now")
+                                }
+                                ("add", _) => {
+                                    self.requests.push(Friend {
+                                        user_id: user,
+                                        name: name.clone(),
+                                        state: FriendState::Sent,
+                                        ..Default::default()
+                                    });
+                                    format!("Sent {name} a friend request")
+                                }
+                                _ => {
+                                    self.friends.retain(|f| f.user_id != user);
+                                    self.requests.retain(|f| f.user_id != user);
+                                    format!("{name} is off your list")
+                                }
+                            }
+                        }
+                        Err(e) => format!("Couldn't change your friendship with {name}: {e}"),
                     });
                 }
                 Msg::Done(r) => {
@@ -300,8 +367,10 @@ impl Servers {
                 }
             });
         }
-        if visible && self.tab == Tab::History && !self.history_asked {
-            self.history_asked = true;
+        if ((visible && self.tab == Tab::History) || shown == Shown::Friends)
+            && due(self.history_at, HISTORY_EVERY)
+        {
+            self.history_at = Some(Instant::now());
             let (t, me) = (token, account.id);
             self.worker.spawn(ctx, move |tx| {
                 tx.send(Msg::History(
@@ -315,6 +384,58 @@ impl Servers {
             ctx.request_repaint_after(LIST_ON_PLAY);
         }
         notice
+    }
+
+    /// Friends: looks for players named like `text`.
+    pub(super) fn search_players(&mut self, ctx: &egui::Context, token: &str, text: &str) {
+        if self.demo || game::search_pattern(text).is_none() {
+            return;
+        }
+        self.searching = true;
+        let (t, text) = (token.to_string(), text.trim().to_string());
+        self.worker.spawn(ctx, move |tx| {
+            let r = game::search(&t, &text).map_err(|e| format!("{e:#}"));
+            tx.send(Msg::Found(text, r));
+        });
+    }
+
+    /// Friends: asks player `user` to be your friend, or accepts their request (`add`),
+    /// or removes them, turns their request down or takes yours back.
+    pub(super) fn change_friend(
+        &mut self,
+        ctx: &egui::Context,
+        token: &str,
+        user: &str,
+        name: &str,
+        add: bool,
+    ) {
+        if self.demo || !self.changing.insert(user.to_string()) {
+            return;
+        }
+        let (t, user, name) = (token.to_string(), user.to_string(), name.to_string());
+        self.worker.spawn(ctx, move |tx| {
+            let r = if add {
+                game::add_friend(&t, &user)
+            } else {
+                game::remove_friend(&t, &user)
+            };
+            let what = if add { "add" } else { "remove" };
+            tx.send(Msg::FriendChanged(
+                user,
+                name,
+                what,
+                r.map_err(|e| format!("{e:#}")),
+            ));
+        });
+    }
+
+    /// Where you stand with player `user`, if anywhere.
+    pub(super) fn friendship(&self, user: &str) -> Option<FriendState> {
+        self.friends
+            .iter()
+            .chain(&self.requests)
+            .find(|f| f.user_id == user)
+            .map(|f| f.state)
     }
 
     /// Snapshots: servers, a party in the queue, friends and a history, all made up.
@@ -347,16 +468,33 @@ impl Servers {
                 user_id: "pal".into(),
                 discord_id: String::new(),
                 name: "Ace".into(),
+                ..Default::default()
             },
             Friend {
                 user_id: "x1".into(),
                 discord_id: String::new(),
                 name: "Pebbles".into(),
+                ..Default::default()
             },
             Friend {
                 user_id: "x2".into(),
                 discord_id: String::new(),
                 name: "Wrench".into(),
+                ..Default::default()
+            },
+        ];
+        self.requests = vec![
+            Friend {
+                user_id: "x3".into(),
+                name: "Nova".into(),
+                state: game::FriendState::Received,
+                ..Default::default()
+            },
+            Friend {
+                user_id: "x4".into(),
+                name: "Glitch".into(),
+                state: game::FriendState::Sent,
+                ..Default::default()
             },
         ];
         self.tickets = vec![Ticket {
@@ -393,6 +531,16 @@ impl Servers {
             duration_s: Some(540),
             score: Some(score),
             team: Some(team),
+            players: [
+                ("demo", "Marshmallow"),
+                ("pal", "Ace"),
+                ("x5", "Rookie"),
+                ("x6", "Sprocket"),
+                ("x3", "Nova"),
+            ]
+            .iter()
+            .map(|(i, n)| (i.to_string(), n.to_string()))
+            .collect(),
         };
         self.history = Some(Ok(vec![
             summary(Mode::Arena, 3600, (5, 3), game::Team::Blue),
@@ -401,6 +549,25 @@ impl Servers {
         ]));
         self.tab = tab;
         self.demo = true;
+    }
+
+    /// Snapshots, after [`Servers::demo`]: a search for players and what it found.
+    pub(super) fn demo_search(&mut self) {
+        self.search = "mars".into();
+        let found = |id: &str, name: &str, username: &str| Found {
+            user_id: id.into(),
+            name: name.into(),
+            username: username.into(),
+        };
+        self.found = Some((
+            "mars".into(),
+            Ok(vec![
+                found("x7", "Mars", "mars_orbit"),
+                found("x8", "marsisthegoat", "marsisthegoat"),
+                found("x4", "Glitch", "mars2"),
+                found("pal", "Ace", "marsh"),
+            ]),
+        ));
     }
 
     /// Snapshots, after [`Servers::demo`]: an invite to you, a friend invited, and you in
@@ -1218,7 +1385,7 @@ fn list_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, tokens: &Tok
             d.servers.refresh(ctx, &tokens.token);
         } else {
             d.servers.history = None;
-            d.servers.history_asked = false;
+            d.servers.history_at = None;
         }
     }
     if live {
@@ -1826,6 +1993,7 @@ fn friends_card(
         "friends",
         (x, y, w, bottom),
         &mut scroll,
+        false,
     );
     d.servers.friends_scroll = scroll;
     // How many are playing, on the title row's right.
@@ -1842,8 +2010,10 @@ fn friends_card(
 
 /// The friends in `area` (left, top, width, bottom), scrolled by `scroll` (`key` names the
 /// scroll area): a tile each, those in a match first, with JOIN when it can be joined or
-/// INVITE into your match. Returns how many are in a match, or `None` without friends (it
-/// says how to add some instead).
+/// INVITE into your match, and (`removable`, the Friends page) a button to remove them
+/// (`Servers::remove_clicked`). Returns how many are in a match, or `None` without friends
+/// (it says how to add some instead).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn friend_tiles(
     d: &mut Dashboard,
     k: &mut Kit,
@@ -1852,6 +2022,7 @@ pub(super) fn friend_tiles(
     key: &str,
     area: (f32, f32, f32, f32),
     scroll: &mut f32,
+    removable: bool,
 ) -> Option<usize> {
     let (x, y, w, bottom) = area;
     let servers = d.servers.list.clone();
@@ -1867,26 +2038,24 @@ pub(super) fn friend_tiles(
         .collect();
     friends.sort_by_key(|(f, m)| (m.is_none(), f.name.to_ascii_lowercase()));
     if friends.is_empty() {
-        let th = k.caps_text(
-            x,
-            y,
-            w,
-            "No friends yet: add them on EchoVRCE.",
-            15.0,
-            design::GREY,
-            0.0,
-        );
-        if k.link(
-            &format!("{key}-open-vrce"),
-            x,
-            y + th + dz(16.0),
-            "Open EchoVRCE",
-            14.0,
-            "",
-        )
-        .clicked
+        let text = if removable {
+            "No friends yet: find players by name, or add the players of your last matches."
+        } else {
+            "No friends yet: find players and add them on the Friends page."
+        };
+        let th = k.caps_text(x, y, w, text, 15.0, design::GREY, 0.0);
+        if !removable
+            && k.link(
+                &format!("{key}-open-friends"),
+                x,
+                y + th + dz(16.0),
+                "Find friends",
+                14.0,
+                "",
+            )
+            .clicked
         {
-            d.page = Page::EchoVrce;
+            d.page = Page::Friends;
         }
         return None;
     }
@@ -1909,6 +2078,8 @@ pub(super) fn friend_tiles(
     let pad = dz(TILE_PAD);
     let mut join_it = None;
     let mut invite_it = None;
+    let mut remove_it = None;
+    let changing = &d.servers.changing;
     k.clipped(x, y, w, list_h, |k| {
         for (i, (f, m)) in friends.iter().enumerate() {
             let ty = y - scroll + i as f32 * pitch;
@@ -1936,6 +2107,23 @@ pub(super) fn friend_tiles(
             let wg = k.label_galley(&what, design::din(13.0), design::GREY, text_w);
             k.put(tx, ty + dz(35.0), wg);
             let (right, by) = (x + w - pad, ty + (h - dz(36.0)) / 2.0);
+            if removable
+                && k.button(
+                    &format!("remove-friend-{}", f.user_id),
+                    right - dz(120.0 + 8.0 + 36.0),
+                    by,
+                    dz(36.0),
+                    dz(36.0),
+                    Tone::Dark,
+                    Some(Icon::Close),
+                    "",
+                    !changing.contains(&f.user_id),
+                    "Remove from your friends",
+                )
+                .clicked
+            {
+                remove_it = Some((f.user_id.clone(), f.name.clone()));
+            }
             match (m.as_ref().filter(|m| m.joinable() && !with_you), &shared) {
                 (Some(m), _) => {
                     let bw = dz(120.0);
@@ -1974,6 +2162,9 @@ pub(super) fn friend_tiles(
     }
     if let Some((f, id)) = invite_it {
         invite(d, ctx, &f, &id);
+    }
+    if remove_it.is_some() {
+        d.servers.remove_clicked = remove_it;
     }
     Some(playing)
 }

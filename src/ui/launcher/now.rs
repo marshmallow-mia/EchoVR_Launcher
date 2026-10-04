@@ -52,6 +52,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         "now-friends",
         (x, y, w, bottom),
         &mut scroll,
+        false,
     );
     d.servers.now_scroll = scroll;
     if let Some(n) = playing {

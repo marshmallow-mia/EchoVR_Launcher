@@ -137,6 +137,7 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("servers_share", Page::Servers, SnapVariant::ServersShare),
         ("play_friends", Page::Play, SnapVariant::PlayFriends),
+        ("friends_signed_in", Page::Friends, SnapVariant::FriendsPage),
         ("play_login_code", Page::Play, SnapVariant::LoginCode),
         ("play_login_message", Page::Play, SnapVariant::LoginMessage),
         ("settings_links", Page::Settings, SnapVariant::SettingsLinks),
