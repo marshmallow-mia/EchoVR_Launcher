@@ -23,15 +23,17 @@ use crate::ui::parts::Worker;
 use crate::ui::style::Icon;
 use crate::ui::widgets::{Tone, BTN_H};
 
-const LIST_EVERY: Duration = Duration::from_secs(15);
+const LIST_EVERY: Duration = Duration::from_secs(5);
 /// While Play shows RIGHT NOW: for the matches your friends are in.
-const LIST_ON_PLAY: Duration = Duration::from_secs(30);
+const LIST_ON_PLAY: Duration = Duration::from_secs(15);
 const TICKETS_EVERY: Duration = Duration::from_secs(5);
 /// While the page isn't shown: for the queue line in the status bar.
 const TICKETS_AWAY: Duration = Duration::from_secs(30);
-const FRIENDS_EVERY: Duration = Duration::from_secs(60);
+const FRIENDS_EVERY: Duration = Duration::from_secs(30);
+/// While the Friends page is shown: requests come and go.
+const FRIENDS_ON_PAGE: Duration = Duration::from_secs(5);
 /// Whether or not the page is shown.
-const INVITES_EVERY: Duration = Duration::from_secs(30);
+const INVITES_EVERY: Duration = Duration::from_secs(15);
 /// Your match history (its tab, and Friends' PLAYED WITH).
 const HISTORY_EVERY: Duration = Duration::from_secs(5 * 60);
 /// A match you started that never showed up on the list is forgotten after this.
@@ -106,6 +108,8 @@ pub(super) struct Created {
     at: Instant,
     /// Seen on the server list (gone from it later: ended).
     listed: bool,
+    /// You were seen in it (out of it later: left, and it's no longer yours to share).
+    joined: bool,
 }
 
 /// The page's data and what is being fetched.
@@ -216,9 +220,16 @@ impl Servers {
                     match r {
                         Ok(list) => {
                             if let Some(c) = &mut self.created {
-                                if list.iter().any(|m| m.id == c.id) {
+                                let lobby = game::lobby_id(&c.id);
+                                let in_it = game::find_me(&list, &account.id)
+                                    .is_some_and(|(m, _)| m.lobby_id() == lobby);
+                                c.joined |= in_it;
+                                if list.iter().any(|m| m.lobby_id() == lobby) {
                                     c.listed = true;
-                                } else if c.listed || c.at.elapsed() > CREATED_UNLISTED {
+                                }
+                                let ended = !list.iter().any(|m| m.lobby_id() == lobby)
+                                    && (c.listed || c.at.elapsed() > CREATED_UNLISTED);
+                                if ended || (c.joined && !in_it) {
                                     self.created = None;
                                 }
                             }
@@ -314,6 +325,7 @@ impl Servers {
                                 id: id.clone(),
                                 at: Instant::now(),
                                 listed: false,
+                                joined: false,
                             });
                             self.ready = Some(id);
                         }
@@ -327,7 +339,12 @@ impl Servers {
         if social && !self.loading && due(self.list_at, list_every) {
             self.refresh(ctx, &token);
         }
-        if social && due(self.friends_at, FRIENDS_EVERY) {
+        let friends_every = if shown == Shown::Friends {
+            FRIENDS_ON_PAGE
+        } else {
+            FRIENDS_EVERY
+        };
+        if social && due(self.friends_at, friends_every) {
             self.friends_at = Some(Instant::now());
             let t = token.clone();
             self.worker.spawn(ctx, move |tx| {
@@ -378,7 +395,7 @@ impl Servers {
                 ))
             });
         }
-        if visible {
+        if visible || shown == Shown::Friends {
             ctx.request_repaint_after(Duration::from_secs(1));
         } else if social {
             ctx.request_repaint_after(LIST_ON_PLAY);
@@ -596,6 +613,7 @@ impl Servers {
                 id: private.clone(),
                 at: Instant::now(),
                 listed: true,
+                joined: false,
             });
             private
         };
