@@ -83,7 +83,18 @@ impl Kind {
         }
     }
 
-    /// Whose logs, for the consent dialog.
+    /// Its row in the upload card.
+    pub fn title(self) -> &'static str {
+        match self {
+            Kind::Launcher => "Launcher",
+            Kind::EchoXr => "EchoXR",
+            Kind::Echo => "Echo VR",
+            Kind::Plugin => "nEVR and plugins",
+            Kind::Quest => "Quest",
+        }
+    }
+
+    /// Whose logs, in a sentence.
     pub fn label(self) -> &'static str {
         match self {
             Kind::Launcher => "the launcher",
