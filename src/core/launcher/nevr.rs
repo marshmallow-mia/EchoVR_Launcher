@@ -1,0 +1,639 @@
+//! nEVR runtime (github.com/EchoTools/nevr-runtime) in the live PC build's slot,
+//! `bin/win10/BugSplat64.dll`. It points the game at EchoVRCE, signs it in, brings friends
+//! and parties into the game, and loads the plugins `_local/config.yaml` lists from
+//! `plugins/`. The launcher:
+//! - writes that `config.yaml` before every start (the Mods page's choices);
+//! - hands the game a sign-in of its own (`_local/.credentials.json`, a device of the
+//!   EchoVRCE account the launcher is signed in with), so it never asks in the browser;
+//! - reads what nEVR did with the plugins from its log
+//!   (`%LOCALAPPDATA%\EchoVR\logs\nevr-<time>.jsonl`).
+//!
+//! nEVR looks for `_local` beside the game's exe, then one and two folders up (the
+//! game's own `_local`, where the launcher writes); the first `config.yaml` found wins.
+//! It refuses to start with a `dbgcore.dll` beside the exe (EchoLoader 1's place); one in
+//! `plugins/` is fine.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+
+use super::store::InstalledVersion;
+use crate::core::paths;
+
+/// What every nEVR build logs at its start.
+pub const MARKER: &[u8] = b"[NEVR.BOOT]";
+pub const CONFIG: &str = "config.yaml";
+pub const CREDENTIALS: &str = ".credentials.json";
+/// The file nEVR refuses to start beside.
+pub const DBGCORE: &str = "dbgcore.dll";
+/// A game sign-in with less than this left is replaced before it runs out.
+const LOGIN_MARGIN_S: i64 = 24 * 3600;
+/// A refresh token's life when it doesn't say (EchoVRCE's are 30 days).
+const REFRESH_LIFE_S: i64 = 30 * 24 * 3600;
+
+// ---- the DLL ----
+
+/// Pure: nEVR's version in its DLL `bytes`: its build identity (`4.0.0+182.e418eaa`), else
+/// its `git describe` (`v4.0.0-182-ge418eaa-dirty`) without the `v`.
+pub fn version_in(bytes: &[u8]) -> Option<String> {
+    let runs = || {
+        bytes
+            .split(|b| !(0x20..0x7f).contains(b))
+            .filter(|r| (5..=48).contains(&r.len()))
+            .filter_map(|r| std::str::from_utf8(r).ok())
+    };
+    runs()
+        .find(|s| build_identity(s))
+        .or_else(|| runs().find(|s| describe(s)).map(|s| &s[1..]))
+        .map(str::to_string)
+}
+
+/// `X.Y.Z+N.hash`.
+fn build_identity(s: &str) -> bool {
+    let Some((ver, build)) = s.split_once('+') else {
+        return false;
+    };
+    let Some((n, hash)) = build.split_once('.') else {
+        return false;
+    };
+    semver(ver)
+        && !n.is_empty()
+        && n.bytes().all(|b| b.is_ascii_digit())
+        && (7..=40).contains(&hash.len())
+        && hash.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// `vX.Y.Z`, `vX.Y.Z-N-ghash`, either with `-dirty`.
+fn describe(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix('v') else {
+        return false;
+    };
+    let rest = rest.strip_suffix("-dirty").unwrap_or(rest);
+    let mut parts = rest.splitn(3, '-');
+    let ver = parts.next().unwrap_or_default();
+    match (parts.next(), parts.next()) {
+        (None, None) => semver(ver),
+        (Some(n), Some(g)) => {
+            semver(ver)
+                && n.bytes().all(|b| b.is_ascii_digit())
+                && g.strip_prefix('g')
+                    .is_some_and(|h| h.len() >= 7 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+        }
+        _ => false,
+    }
+}
+
+fn semver(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Whether the game folder `bin` has a `dbgcore.dll` beside the exe, which nEVR refuses.
+pub fn stray_dbgcore(bin: &Path) -> bool {
+    bin.join(DBGCORE).is_file()
+}
+
+// ---- where nEVR looks ----
+
+/// The game's own `_local`, where the launcher writes.
+pub fn local_dir(v: &InstalledVersion) -> PathBuf {
+    Path::new(&v.root).join(paths::ARENA_DIR).join("_local")
+}
+
+/// The `_local` folders nEVR looks in, in its order: beside the exe, one up, two up.
+fn search(v: &InstalledVersion) -> [PathBuf; 3] {
+    let bin = v.bin_dir();
+    let up = bin.parent().map(Path::to_path_buf).unwrap_or(bin.clone());
+    let up2 = up.parent().map(Path::to_path_buf).unwrap_or(up.clone());
+    [bin.join("_local"), up.join("_local"), up2.join("_local")]
+}
+
+/// A `config.yaml` nEVR reads instead of the launcher's (one nearer the exe), if any.
+pub fn shadowing_config(v: &InstalledVersion) -> Option<PathBuf> {
+    let ours = local_dir(v).join(CONFIG);
+    search(v)
+        .into_iter()
+        .map(|d| d.join(CONFIG))
+        .take_while(|p| !same_file(p, &ours))
+        .find(|p| p.is_file())
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+// ---- config.yaml ----
+
+/// A plugin as `config.yaml` lists it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginLine {
+    pub file: String,
+    pub enabled: bool,
+    pub args: Map<String, Value>,
+}
+
+/// Pure: the launcher's `config.yaml`: the plugins (none with mods off). Values are
+/// written as JSON, which YAML reads as it is.
+pub fn render_config(plugins: &[PluginLine]) -> String {
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+    let mut out = String::from(
+        "# Written by the Echo VR launcher before every start, from its Mods page.\n\
+         # Changes here are replaced: change mods in the launcher.\n",
+    );
+    if plugins.is_empty() {
+        out.push_str("plugins: []\n");
+        return out;
+    }
+    out.push_str("plugins:\n");
+    for p in plugins {
+        let name = p.file.rsplit_once('.').map_or(p.file.as_str(), |(s, _)| s);
+        out.push_str(&format!("  - name: {}\n", q(name)));
+        out.push_str(&format!("    file: {}\n", q(&p.file)));
+        out.push_str(&format!("    enabled: {}\n", p.enabled));
+        if !p.args.is_empty() {
+            out.push_str(&format!("    args: {}\n", Value::Object(p.args.clone())));
+        }
+    }
+    out
+}
+
+/// Writes `v`'s `config.yaml` (only when it changed).
+pub fn write_config(v: &InstalledVersion, plugins: &[PluginLine]) -> Result<()> {
+    let dir = local_dir(v);
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let path = dir.join(CONFIG);
+    let text = render_config(plugins);
+    if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
+        return Ok(());
+    }
+    let part = path.with_extension("yaml.part");
+    std::fs::write(&part, &text).with_context(|| format!("Couldn't write {}", part.display()))?;
+    std::fs::rename(&part, &path).with_context(|| {
+        let _ = std::fs::remove_file(&part);
+        format!("Couldn't replace {}", path.display())
+    })
+}
+
+// ---- the game's sign-in ----
+
+/// What nEVR keeps of its EchoVRCE sign-in: the refresh token (it never stores the
+/// session token), until when it is good (Unix seconds), and whose it is.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GameLogin {
+    #[serde(default)]
+    pub refresh_token: String,
+    #[serde(default)]
+    pub refresh_token_expiry: i64,
+    #[serde(default)]
+    pub user_id: String,
+    #[serde(default)]
+    pub username: String,
+}
+
+impl std::fmt::Debug for GameLogin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print a token.
+        f.debug_struct("GameLogin")
+            .field("refresh_token_expiry", &self.refresh_token_expiry)
+            .field("user_id", &self.user_id)
+            .finish()
+    }
+}
+
+impl GameLogin {
+    /// A sign-in for the game from a session linked for it: `refresh_token` (a JWT, whose
+    /// expiry it carries) for `account`.
+    pub fn new(refresh_token: &str, user_id: &str, username: &str, now: i64) -> GameLogin {
+        GameLogin {
+            refresh_token: refresh_token.to_string(),
+            refresh_token_expiry: crate::core::echovrce::jwt_exp(refresh_token)
+                .unwrap_or(now + REFRESH_LIFE_S),
+            user_id: user_id.to_string(),
+            username: username.to_string(),
+        }
+    }
+
+    /// Whether it is `user_id`'s and good for a while yet.
+    pub fn good_for(&self, user_id: &str, now: i64) -> bool {
+        self.user_id == user_id
+            && !self.refresh_token.is_empty()
+            && self.refresh_token_expiry - now > LOGIN_MARGIN_S
+    }
+}
+
+/// The sign-in nEVR would use for `v` (the first `.credentials.json` in its search).
+pub fn read_login(v: &InstalledVersion) -> Option<GameLogin> {
+    search(v)
+        .into_iter()
+        .map(|d| d.join(CREDENTIALS))
+        .find(|p| p.is_file())
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| serde_json::from_str(&t).ok())
+}
+
+/// Gives `v`'s game `login`: in the game's `_local`, beside `config.yaml`, with any other
+/// sign-in nEVR would read first removed.
+pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
+    let dir = local_dir(v);
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let ours = dir.join(CREDENTIALS);
+    for d in search(v) {
+        let p = d.join(CREDENTIALS);
+        // nEVR hides the file, and Windows won't overwrite a hidden file in place.
+        if p.is_file() {
+            std::fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;
+        }
+    }
+    let text = serde_json::to_string_pretty(login)?;
+    write_private(&ours, text.as_bytes())
+}
+
+/// Removes `v`'s game sign-ins that are `user_id`'s (signing out of the launcher signs
+/// the game out too).
+pub fn forget_login(v: &InstalledVersion, user_id: &str) {
+    for d in search(v) {
+        let p = d.join(CREDENTIALS);
+        let theirs = std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<GameLogin>(&t).ok())
+            .is_some_and(|l| l.user_id == user_id);
+        if theirs {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("Couldn't write {}", path.display()))?;
+    f.write_all(bytes)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    std::fs::write(path, bytes).with_context(|| format!("Couldn't write {}", path.display()))
+}
+
+// ---- what it did ----
+
+/// Where nEVR logs: `%LOCALAPPDATA%\EchoVR\logs` (on Linux, the Wine prefix's).
+pub fn log_dir() -> Option<PathBuf> {
+    let local = if cfg!(target_os = "linux") {
+        Some(crate::core::linux::echoxr::local_app_data())
+    } else {
+        dirs::data_local_dir()
+    };
+    local.map(|d| d.join("EchoVR").join("logs"))
+}
+
+/// Its log of a start's first moments, beside the exe.
+pub fn boot_log(bin: &Path) -> PathBuf {
+    bin.join("logs").join("nevr-boot.jsonl")
+}
+
+/// Whether `name` is one of nEVR's logs of a start (`nevr-<time>.jsonl`).
+pub fn is_run_log(name: &str) -> bool {
+    name.starts_with("nevr-") && name.ends_with(".jsonl") && name != "nevr-boot.jsonl"
+}
+
+/// Whether `name` is one of nEVR's crash records.
+pub fn is_crash_log(name: &str) -> bool {
+    name.starts_with("nevr-crash-") && name.ends_with(".txt")
+}
+
+/// The newest log of a start in `dir` (by its name, which is the time it started).
+pub fn newest_run_log(dir: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| is_run_log(n))
+        .max()
+        .map(|n| dir.join(n))
+}
+
+/// What nEVR did with one plugin at a start.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PluginStatus {
+    /// Its file (`NvrAssetPatches.dll`), as far as the log says.
+    pub file: String,
+    /// The name it reports.
+    pub name: String,
+    pub version: String,
+    pub api: u32,
+    pub capabilities: u32,
+    /// `loaded`, `skipped` or `failed`.
+    pub status: String,
+    pub error: String,
+}
+
+impl PluginStatus {
+    pub fn loaded(&self) -> bool {
+        self.status == "loaded"
+    }
+
+    /// Whether this is about plugin file `file`.
+    pub fn is(&self, file: &str) -> bool {
+        let stem = file.rsplit_once('.').map_or(file, |(s, _)| s);
+        self.file.eq_ignore_ascii_case(file) || self.name.eq_ignore_ascii_case(stem)
+    }
+}
+
+/// What nEVR did at a start, from its log.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Status {
+    /// When it started, as its log is named (`2026-10-04T18-00-00.123`).
+    pub started: String,
+    pub plugins: Vec<PluginStatus>,
+    /// `plugin load complete: N/M loaded` was logged.
+    pub complete: bool,
+}
+
+impl Status {
+    pub fn of(&self, file: &str) -> Option<&PluginStatus> {
+        self.plugins.iter().rev().find(|p| p.is(file))
+    }
+
+    /// Reads the newest start's log in `dir`.
+    pub fn read(dir: &Path) -> Option<Status> {
+        let path = newest_run_log(dir)?;
+        let text = std::fs::read_to_string(&path).ok()?;
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        let started = name
+            .trim_start_matches("nevr-")
+            .trim_end_matches(".jsonl")
+            .to_string();
+        Some(Status {
+            started,
+            ..Status::parse(&text)
+        })
+    }
+
+    /// Pure: the plugin lines of a log (JSON lines with a `msg`, or plain lines).
+    pub fn parse(text: &str) -> Status {
+        let mut st = Status::default();
+        for line in text.lines() {
+            let msg = message(line);
+            let Some(rest) = msg.split("[NEVR.PLUGIN]").nth(1) else {
+                continue;
+            };
+            let rest = rest.trim();
+            if rest.starts_with("plugin load complete") {
+                st.complete = true;
+            } else if let Some(p) = loaded(rest) {
+                st.plugins.push(p);
+            } else if let Some(r) = rest.strip_prefix("SKIPPED ") {
+                let (name, why) = r.split_once(" — ").unwrap_or((r, ""));
+                st.plugins.push(PluginStatus {
+                    file: file_of(name.trim()),
+                    name: name.trim().to_string(),
+                    status: "skipped".into(),
+                    error: why.trim().to_string(),
+                    ..Default::default()
+                });
+            } else if let Some(p) = failed(rest) {
+                st.plugins.push(p);
+            }
+        }
+        st
+    }
+}
+
+/// A JSON log line's message, or the line.
+fn message(line: &str) -> String {
+    let t = line.trim();
+    if t.starts_with('{') {
+        if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(t) {
+            for k in ["msg", "message"] {
+                if let Some(m) = o.get(k).and_then(Value::as_str) {
+                    return m.to_string();
+                }
+            }
+        }
+    }
+    t.to_string()
+}
+
+/// A path's file name (`plugins\X.dll` → `X.dll`); a bare name gets `.dll`.
+fn file_of(path: &str) -> String {
+    let base = path.rsplit(['\\', '/']).next().unwrap_or(path).trim();
+    if base.to_ascii_lowercase().ends_with(".dll") {
+        base.to_string()
+    } else {
+        format!("{base}.dll")
+    }
+}
+
+/// `Loaded: NAME vX.Y.Z (API vN) caps=0xCC… via PATH`.
+fn loaded(rest: &str) -> Option<PluginStatus> {
+    let r = rest.strip_prefix("Loaded: ")?;
+    let (head, via) = r.split_once(" via ").unwrap_or((r, ""));
+    let (name, after) = head.split_once(" v")?;
+    let (version, after) = after.split_once(' ').unwrap_or((after, ""));
+    let api = after
+        .split_once("(API v")
+        .and_then(|(_, a)| a.split(')').next())
+        .and_then(|a| a.parse().ok())
+        .unwrap_or_default();
+    let capabilities = after
+        .split_once("caps=0x")
+        .map(|(_, c)| {
+            c.chars()
+                .take_while(char::is_ascii_hexdigit)
+                .collect::<String>()
+        })
+        .and_then(|c| u32::from_str_radix(&c, 16).ok())
+        .unwrap_or_default();
+    let via = via.split_whitespace().next().unwrap_or_default();
+    Some(PluginStatus {
+        file: if via.is_empty() {
+            file_of(name)
+        } else {
+            file_of(via)
+        },
+        name: name.to_string(),
+        version: version.to_string(),
+        api,
+        capabilities,
+        status: "loaded".into(),
+        error: String::new(),
+    })
+}
+
+/// `NAME (PATH): ERROR` and `Required plugin NAME (PATH) failed: ERROR`.
+fn failed(rest: &str) -> Option<PluginStatus> {
+    let r = rest.strip_prefix("Required plugin ").unwrap_or(rest);
+    let (name, after) = r.split_once(" (")?;
+    let (path, why) = after.split_once(')')?;
+    let why = why
+        .trim_start_matches(" failed")
+        .trim_start_matches(':')
+        .trim();
+    if name.contains(' ') || why.is_empty() {
+        return None;
+    }
+    Some(PluginStatus {
+        file: file_of(path),
+        name: name.to_string(),
+        status: "failed".into(),
+        error: why.to_string(),
+        ..Default::default()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_version() {
+        let mut dll = b"MZ\0\0junk\0".to_vec();
+        dll.extend_from_slice(b"\0v4.0.0-182-ge418eaa-dirty\0\x01x\0");
+        assert_eq!(
+            version_in(&dll).as_deref(),
+            Some("4.0.0-182-ge418eaa-dirty")
+        );
+        dll.extend_from_slice(b"\x024.0.0+182.e418eaa\0");
+        assert_eq!(version_in(&dll).as_deref(), Some("4.0.0+182.e418eaa"));
+        assert_eq!(version_in(b"\0v3.2.0\0").as_deref(), Some("3.2.0"));
+        assert_eq!(version_in(b"\0vertex\0v1.2\0"), None);
+    }
+
+    /// The DLL Mia ships, when it's on this machine.
+    #[test]
+    fn reads_the_real_dll() {
+        let Some(home) = dirs::home_dir() else { return };
+        let Ok(dll) = std::fs::read(home.join("Downloads/BugSplat64.dll")) else {
+            return;
+        };
+        assert!(dll.windows(MARKER.len()).any(|w| w == MARKER));
+        assert_eq!(version_in(&dll).as_deref(), Some("4.0.0+182.e418eaa"));
+    }
+
+    #[test]
+    fn writes_the_plugins() {
+        let mut args = Map::new();
+        args.insert("logging".into(), Value::String("normal".into()));
+        let text = render_config(&[
+            PluginLine {
+                file: "NvrAssetPatches.dll".into(),
+                enabled: true,
+                args,
+            },
+            PluginLine {
+                file: "Other.dll".into(),
+                enabled: false,
+                args: Map::new(),
+            },
+        ]);
+        assert!(text.contains(
+            "plugins:\n  - name: \"NvrAssetPatches\"\n    file: \"NvrAssetPatches.dll\"\n    enabled: true\n    args: {\"logging\":\"normal\"}\n"
+        ));
+        assert!(text.contains("  - name: \"Other\"\n    file: \"Other.dll\"\n    enabled: false\n"));
+        assert!(render_config(&[]).ends_with("plugins: []\n"));
+    }
+
+    #[test]
+    fn reads_the_plugin_lines() {
+        let log = [
+            r#"{"ts":"x","level":"info","msg":"[NEVR.PLUGIN] 2 plugin(s) configured; loading in list order from C:\\g\\_local\\config.yaml"}"#,
+            r#"{"ts":"x","level":"info","msg":"[NEVR.PLUGIN] Loaded: NvrAssetPatches v1.1.0 (API v5) caps=0x22 via plugins\\NvrAssetPatches.dll"}"#,
+            "[NEVR.PLUGIN] SKIPPED log_filter — superseded by the built-in log filter.",
+            r#"{"msg":"[NEVR.PLUGIN] Broken (plugins\\Broken.dll): missing NvrPluginGetInfo export"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] plugin load complete: 1/3 loaded"}"#,
+        ]
+        .join("\n");
+        let st = Status::parse(&log);
+        assert!(st.complete);
+        let p = st.of("NvrAssetPatches.dll").unwrap();
+        assert!(p.loaded());
+        assert_eq!(
+            (p.version.as_str(), p.api, p.capabilities),
+            ("1.1.0", 5, 0x22)
+        );
+        assert_eq!(st.of("log_filter.dll").unwrap().status, "skipped");
+        let b = st.of("Broken.dll").unwrap();
+        assert_eq!(
+            (b.status.as_str(), b.error.as_str()),
+            ("failed", "missing NvrPluginGetInfo export")
+        );
+        assert!(st.of("Missing.dll").is_none());
+    }
+
+    fn version_at(root: &Path) -> InstalledVersion {
+        let bin = root.join(paths::ARENA_DIR).join("bin/win10");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("echovr.exe"), b"").unwrap();
+        InstalledVersion {
+            id: "pc-latest".into(),
+            root: root.to_string_lossy().into_owned(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn hands_the_game_its_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = version_at(dir.path());
+        // One nEVR made itself beside the exe would be read first: it goes.
+        let near = v.bin_dir().join("_local");
+        std::fs::create_dir_all(&near).unwrap();
+        std::fs::write(
+            near.join(CREDENTIALS),
+            r#"{"refresh_token":"old","user_id":"b"}"#,
+        )
+        .unwrap();
+        assert_eq!(read_login(&v).unwrap().user_id, "b");
+        let login = GameLogin::new("rt", "a", "Ace", 1_000);
+        assert_eq!(login.refresh_token_expiry, 1_000 + REFRESH_LIFE_S);
+        write_login(&v, &login).unwrap();
+        assert!(!near.join(CREDENTIALS).exists());
+        let read = read_login(&v).unwrap();
+        assert_eq!(read, login);
+        assert!(read.good_for("a", 1_000));
+        assert!(!read.good_for("b", 1_000));
+        assert!(!read.good_for("a", 1_000 + REFRESH_LIFE_S));
+        let text = std::fs::read_to_string(local_dir(&v).join(CREDENTIALS)).unwrap();
+        for key in [
+            "refresh_token",
+            "refresh_token_expiry",
+            "user_id",
+            "username",
+        ] {
+            assert!(text.contains(&format!("\"{key}\"")));
+        }
+        forget_login(&v, "b");
+        assert!(read_login(&v).is_some());
+        forget_login(&v, "a");
+        assert!(read_login(&v).is_none());
+    }
+
+    #[test]
+    fn notices_a_config_read_before_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = version_at(dir.path());
+        write_config(&v, &[]).unwrap();
+        assert_eq!(shadowing_config(&v), None);
+        let near = v.bin_dir().join("_local");
+        std::fs::create_dir_all(&near).unwrap();
+        std::fs::write(near.join(CONFIG), "plugins: []\n").unwrap();
+        assert_eq!(shadowing_config(&v), Some(near.join(CONFIG)));
+    }
+}

@@ -1,0 +1,41 @@
+[Unit]
+Description=Echo VR launcher log uploads (files.echovr.de/launcher/logs, behind Apache)
+After=network-online.target clamav-daemon.service
+Wants=network-online.target clamav-daemon.service
+
+[Service]
+Type=simple
+ExecStart=/opt/echo-launcher-logs/.venv/bin/python /opt/echo-launcher-logs/log_upload.py --dir /var/lib/echo-launcher-logs
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+# Untrusted input: its own throwaway user, nothing but its state directory writable.
+DynamicUser=yes
+StateDirectory=echo-launcher-logs
+StateDirectoryMode=0700
+UMask=0077
+SupplementaryGroups=clamav
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryMax=1G
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

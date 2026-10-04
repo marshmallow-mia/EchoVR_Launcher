@@ -1,0 +1,16 @@
+[Unit]
+Description=Echo VR launcher feed (Discord -> files.echovr.de/launcher/feed)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/EchoLauncherFeed
+ExecStart=/root/EchoLauncherFeed/.venv/bin/python /root/EchoLauncherFeed/feed_bot.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

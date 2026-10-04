@@ -1,0 +1,8 @@
+/target/
+.idea/
+.opencode/
+.sisyphus/
+.android/
+echo_ideas.md
+*.kate-swp
+echovr/

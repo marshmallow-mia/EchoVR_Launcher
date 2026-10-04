@@ -1,0 +1,44 @@
+# Builds the portable launcher for every OS when a GitHub release is created and attaches
+# the zips to that release.
+name: Release
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: macos
+          # Pinned: sets the oldest glibc the Linux build runs on (see rust.yml).
+          - os: ubuntu-22.04
+            platform: linux
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.release.tag_name }}"
+          ASSET="Echo_VR_Launcher-${TAG}-${{ matrix.platform }}.zip"
+          scripts/package.sh "${{ matrix.platform }}" "${ASSET}"
+          echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
+      - name: Attach zip to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.package.outputs.asset }}" --clobber

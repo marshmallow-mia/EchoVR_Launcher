@@ -1,0 +1,16 @@
+[Unit]
+Description=Echo VR launcher status (EchoVRCE API -> files.echovr.de/launcher/feed/servers.json)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/EchoLauncherFeed
+ExecStart=/usr/bin/python3 /root/EchoLauncherFeed/status_feed.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,95 @@
+[package]
+name = "echovr-launcher"
+version = "0.10.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Echo VR Launcher"
+repository = "https://github.com/marshmallow-mia/EchoVR_Launcher"
+build = "build.rs"
+
+[[bin]]
+name = "EchoVR_Launcher"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+base64 = "0.23"
+crc32fast = "1.5"
+# Linux setup: GE-Proton and RiftLift's DXVK come as .tar.gz.
+flate2 = "1"
+tar = "0.4"
+bytes = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+arboard = { version = "3", default-features = false }
+dirs = "7.0.0"
+# persistence: the window's size, position and full screen are remembered.
+eframe = { version = "0.36.2", features = ["persistence"] }
+egui = "0.36.2"
+hex = "0.4.3"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
+open = "5.4.4"
+# The animated background (H.264, built from Cisco's source).
+openh264 = "0.9.8"
+rand = "0.10.3"
+rfd = "0.17.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.21"
+time = { version = "0.3.55", features = ["formatting", "local-offset", "parsing"] }
+tiny_http = "0.12.0"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["fmt", "env-filter"] }
+url = "2.5.8"
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk"] }
+
+# TLS: the OS stack on Windows (SChannel) and macOS (Security.framework); rustls+ring on
+# Linux so the portable build does not depend on a particular libssl.so.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "native-tls", "http2", "system-proxy"] }
+# The EchoVRCE page shows echovrce.com in the window (WebView2 / WKWebView, both built
+# into the OS). Not on Linux: WebKitGTK would become a hard dependency of the portable build.
+wry = "0.57.0"
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls-no-provider", "http2", "system-proxy"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+
+[target.'cfg(windows)'.dependencies]
+# The EchoVRCE session in the Windows Credential Manager. (macOS and Linux keep it in a file
+# only the user can read: the Keychain asks for access whenever an unsigned build changes.)
+keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }
+winreg = "0.56.0"
+mslnk = "0.1.8"
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_IO",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[build-dependencies]
+embed-resource = "3.0.11"
+
+[dev-dependencies]
+tempfile = "3"
+# Headless UI snapshots (an ignored test; see ui::headless).
+egui_kittest = { version = "0.36.2", features = ["wgpu", "eframe"] }
+
+# Dependencies optimized in dev builds too: in debug, scaling a panel image to a new size
+# takes seconds (release: ~50 ms), which made pages slow to open the first time.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
