@@ -25,7 +25,6 @@ const STORE_ASSETS_SUBDIR: &str =
     "CoreData\\Software\\StoreAssets\\ready-at-dawn-echo-arena_assets";
 pub const ARTWORK_ZIP_URL: &str =
     "https://files.echovr.de/stuff/patches/ready-at-dawn-echo-arena_assets.zip";
-pub const SHORTCUT_NAME: &str = "Echo VR (Revive)";
 
 /// The directory if it contains ReviveInjector.exe, trailing separators trimmed.
 fn verify_revive_dir(dir: &str) -> Option<String> {
@@ -101,14 +100,19 @@ pub fn injector_arguments(exe: &str, game_args: &str) -> String {
     format!("\"{exe}\" -nosymbollookup{args} /app {APP_ID}")
 }
 
-/// Creates the desktop shortcut launching Echo VR through the Revive injector, with the
-/// launch options (`game_args`, joined as a command line).
-pub fn create_injector_shortcut(revive_dir: &str, exe: &Path, game_args: &str) -> Result<()> {
+/// Creates the desktop shortcut `name` launching Echo VR through the Revive injector, with
+/// the launch options (`game_args`, joined as a command line).
+pub fn create_injector_shortcut(
+    name: &str,
+    revive_dir: &str,
+    exe: &Path,
+    game_args: &str,
+) -> Result<()> {
     let injector = Path::new(revive_dir).join(REVIVE_INJECTOR);
     let exe_abs = std::path::absolute(exe).unwrap_or_else(|_| exe.to_path_buf());
     let exe_str = exe_abs.to_string_lossy().replace('/', "\\");
     super::platform::create_shortcut(
-        SHORTCUT_NAME,
+        name,
         &injector,
         Some(&injector_arguments(&exe_str, game_args)),
         Some(Path::new(revive_dir)),
@@ -121,6 +125,11 @@ pub fn create_injector_shortcut(revive_dir: &str, exe: &Path, game_args: &str) -
 pub fn store_assets_dir() -> PathBuf {
     let base = super::platform::oculus_base_path().unwrap_or_else(|| DEFAULT_META_DIR.into());
     Path::new(base.trim_end_matches(['\\', '/'])).join(STORE_ASSETS_SUBDIR)
+}
+
+/// Whether the game artwork is in place (its folder has files).
+pub fn artwork_installed() -> bool {
+    std::fs::read_dir(store_assets_dir()).is_ok_and(|mut d| d.next().is_some())
 }
 
 /// Downloads the game artwork and extracts it into the Meta Horizon store assets.

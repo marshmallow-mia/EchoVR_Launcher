@@ -898,7 +898,15 @@ fn vr_row(d: &mut Dashboard, k: &mut Kit, part: VrPart, x: f32, y: f32, w: f32) 
     }
     let g = k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY);
     let name_w = g.size().x;
-    if k.check(&key("on"), &mut on, name, x, y + dz(13.0), !linux && !busy, tip) {
+    if k.check(
+        &key("on"),
+        &mut on,
+        name,
+        x,
+        y + dz(13.0),
+        !linux && !busy,
+        tip,
+    ) {
         d.state.profile.steamvr_via = if on {
             SteamVrVia::EchoXr
         } else {
