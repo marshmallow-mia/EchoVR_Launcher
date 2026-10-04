@@ -149,6 +149,31 @@ pub fn launcher_exe() -> Option<PathBuf> {
         .or_else(|| std::env::current_exe().ok())
 }
 
+/// Whether Steam started this launcher for its Echo VR shortcut (Steam's `SteamGameId`
+/// is the shortcut's game id): PLAY's start, even when Steam has lost the shortcut's
+/// `--play`, as it does when it saves its own copy of the shortcuts at a start.
+pub fn started_for_shortcut() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    let Some(appid) = LauncherState::load().linux_appid else {
+        return false;
+    };
+    let ids: Vec<String> = ["SteamGameId", "SteamOverlayGameId", "SteamAppId"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .collect();
+    is_our_shortcut(&ids, appid)
+}
+
+/// Pure: whether one of Steam's ids (`SteamGameId` and the like) is shortcut `appid`'s.
+fn is_our_shortcut(ids: &[String], appid: u32) -> bool {
+    let game = steam::game_id(appid);
+    ids.iter()
+        .filter_map(|v| v.trim().parse::<u64>().ok())
+        .any(|v| v == game || v == u64::from(appid))
+}
+
 /// A silent microphone for one game run, on a PC without any: Echo VR (with nEVR)
 /// crashes at its start when no capture device is there. A null sink and a source made
 /// of its monitor (PipeWire's pulse server, or PulseAudio), unloaded when dropped.
@@ -314,6 +339,16 @@ pub fn play_from_steam() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn knows_its_shortcut() {
+        let appid = 4_071_750_601;
+        let game = steam::game_id(appid).to_string();
+        assert!(is_our_shortcut(&[game], appid));
+        assert!(is_our_shortcut(&["0".into(), appid.to_string()], appid));
+        assert!(!is_our_shortcut(&["0".into(), "250820".into()], appid));
+        assert!(!is_our_shortcut(&[], appid));
+    }
 
     #[test]
     fn sees_a_microphone() {
