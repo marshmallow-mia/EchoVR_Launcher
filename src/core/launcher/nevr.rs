@@ -386,18 +386,37 @@ impl Status {
         })
     }
 
-    /// Pure: the plugin lines of a log (JSON lines with a `msg`, or plain lines).
+    /// Pure: the plugin lines of a log (JSON lines with a `msg`, or plain lines). A
+    /// plugin is named by the name it reports (`asset_patches`); its file comes from the
+    /// path when the line has one, else from the load order logged before (the config's
+    /// names, in the order the results follow).
     pub fn parse(text: &str) -> Status {
         let mut st = Status::default();
+        let mut order: Vec<String> = Vec::new();
         for line in text.lines() {
             let msg = message(line);
             let Some(rest) = msg.split("[NEVR.PLUGIN]").nth(1) else {
                 continue;
             };
             let rest = rest.trim();
-            if rest.starts_with("plugin load complete") {
+            let next_file = |st: &Status, order: &[String]| {
+                order
+                    .get(st.plugins.len())
+                    .map(|n| file_of(n))
+                    .unwrap_or_default()
+            };
+            if let Some(list) = rest.strip_prefix("load order (priority-sorted):") {
+                order = list
+                    .split(',')
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .collect();
+            } else if rest.starts_with("plugin load complete") {
                 st.complete = true;
-            } else if let Some(p) = loaded(rest) {
+            } else if let Some(mut p) = loaded(rest) {
+                if p.file.is_empty() {
+                    p.file = next_file(&st, &order);
+                }
                 st.plugins.push(p);
             } else if let Some(r) = rest.strip_prefix("SKIPPED ") {
                 let (name, why) = r.split_once(" — ").unwrap_or((r, ""));
@@ -461,13 +480,11 @@ fn loaded(rest: &str) -> Option<PluginStatus> {
         })
         .and_then(|c| u32::from_str_radix(&c, 16).ok())
         .unwrap_or_default();
+    // `via plugins\X.dll`, or how it was initialized (`via InitEx`): no file then.
     let via = via.split_whitespace().next().unwrap_or_default();
+    let is_path = via.to_ascii_lowercase().ends_with(".dll");
     Some(PluginStatus {
-        file: if via.is_empty() {
-            file_of(name)
-        } else {
-            file_of(via)
-        },
+        file: if is_path { file_of(via) } else { String::new() },
         name: name.to_string(),
         version: version.to_string(),
         api,
@@ -623,6 +640,25 @@ mod tests {
         assert!(read_login(&v).is_some());
         forget_login(&v, "a");
         assert!(read_login(&v).is_none());
+    }
+
+    #[test]
+    fn names_a_plugin_by_the_load_order() {
+        // As nEVR 4.0.0 logs it on the Linux test box.
+        let log = [
+            r#"{"msg":"[NEVR.PLUGIN] 1 plugin(s) configured; loading in list order from X:\\g\\plugins\\\n"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] load order (priority-sorted): NvrAssetPatches\n"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] Loaded: asset_patches v1.1.0 (API v5) caps=0x22 via InitEx\n"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] plugin load complete: 1/1 loaded\n"}"#,
+        ]
+        .join("\n");
+        let st = Status::parse(&log);
+        let p = st.of("NvrAssetPatches.dll").unwrap();
+        assert!(p.loaded());
+        assert_eq!(
+            (p.name.as_str(), p.version.as_str()),
+            ("asset_patches", "1.1.0")
+        );
     }
 
     #[test]
