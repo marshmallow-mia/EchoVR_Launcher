@@ -31,10 +31,22 @@ pub const DBGCORE: &str = "dbgcore.dll";
 /// The game's own config, which nEVR doesn't need: without one it supplies its built-in
 /// one, which turns on friends, parties, presence and matchmaking.
 pub const GAME_CONFIG: &str = "config.json";
-/// The `_local/config.json` the game's archive brings (pc.zip's file manifest): the
-/// EchoRelay-era service hosts.
-const ARCHIVE_CONFIG_SHA256: &str =
-    "af60567957aa4404c2227ad739897f44330de6e57f9670c009ec19ce87c4d774";
+/// Where a game config nEVR replaces is kept.
+pub const GAME_CONFIG_ASIDE: &str = "config.json.pre-nevr";
+/// What the EchoRelay-era game config held (the archive's, and the personalized copies
+/// with a Discord id in the login host): services nEVR points elsewhere anyway.
+const SERVICE_KEYS: [&str; 9] = [
+    "apiservice_host",
+    "configservice_host",
+    "loginservice_host",
+    "matchingservice_host",
+    "serverdb_host",
+    "transactionservice_host",
+    "graphservice_host",
+    "publisher_lock",
+    "api_host",
+];
+
 /// A game sign-in with less than this left is replaced before it runs out.
 const LOGIN_MARGIN_S: i64 = 24 * 3600;
 /// A refresh token's life when it doesn't say (EchoVRCE's are 30 days).
@@ -137,14 +149,27 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Takes the archive's own `_local/config.json` out of `v` (one written by hand stays):
-/// nEVR then uses its built-in game config. Returns whether it did.
-pub fn drop_archive_config(v: &InstalledVersion) -> Result<bool> {
+/// Pure: whether a game config (its text) holds only the EchoRelay-era service settings.
+pub fn service_only_config(text: &str) -> bool {
+    match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(o)) => o.keys().all(|k| SERVICE_KEYS.contains(&k.as_str())),
+        _ => false,
+    }
+}
+
+/// Moves `v`'s `_local/config.json` aside (to `config.json.pre-nevr`) when it holds only
+/// the EchoRelay-era service settings: nEVR then uses its built-in game config. One with
+/// anything else in it stays. Returns whether it moved.
+pub fn set_aside_game_config(v: &InstalledVersion) -> Result<bool> {
     let path = local_dir(v).join(GAME_CONFIG);
-    if !crate::core::download::sha256_matches(&path, ARCHIVE_CONFIG_SHA256) {
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(false);
+    };
+    if !service_only_config(&text) {
         return Ok(false);
     }
-    std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    let aside = local_dir(v).join(GAME_CONFIG_ASIDE);
+    std::fs::rename(&path, &aside).with_context(|| format!("move {} aside", path.display()))?;
     Ok(true)
 }
 
@@ -680,19 +705,25 @@ mod tests {
     }
 
     #[test]
-    fn drops_only_the_archives_game_config() {
+    fn sets_aside_only_the_old_service_config() {
+        // The archive's, and a personalized copy (a Discord id in the login host).
+        let archive = r#"{"apiservice_host":"http://g.echovrce.com:80/api","configservice_host":"ws://g.echovrce.com:80/config","loginservice_host":"ws://g.echovrce.com:80/login","matchingservice_host":"ws://g.echovrce.com:80/matching","serverdb_host":"ws://g.echovrce.com:80/serverdb","transactionservice_host":"ws://g.echovrce.com:80/transaction","publisher_lock":"echovrce"}"#;
+        assert!(service_only_config(archive));
+        assert!(!service_only_config(r#"{"publisher_lock":"x","fov":90}"#));
+        assert!(!service_only_config("not json"));
+
         let dir = tempfile::tempdir().unwrap();
         let v = version_at(dir.path());
+        assert!(!set_aside_game_config(&v).unwrap());
         std::fs::create_dir_all(local_dir(&v)).unwrap();
         let path = local_dir(&v).join(GAME_CONFIG);
-        std::fs::write(&path, r#"{"publisher_lock":"mine"}"#).unwrap();
-        assert!(!drop_archive_config(&v).unwrap());
+        std::fs::write(&path, archive).unwrap();
+        assert!(set_aside_game_config(&v).unwrap());
+        assert!(!path.exists());
+        assert!(local_dir(&v).join(GAME_CONFIG_ASIDE).exists());
+        std::fs::write(&path, r#"{"publisher_lock":"x","fov":90}"#).unwrap();
+        assert!(!set_aside_game_config(&v).unwrap());
         assert!(path.exists());
-        assert!(!drop_archive_config(&InstalledVersion {
-            root: dir.path().join("none").to_string_lossy().into_owned(),
-            ..Default::default()
-        })
-        .unwrap());
     }
 
     #[test]
