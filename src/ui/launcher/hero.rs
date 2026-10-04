@@ -394,9 +394,11 @@ pub(super) fn job_row(kit: &mut Kit, key: &str, extra: f32, job: &JobView) -> bo
         play_body(kit, extra, false, 0.0);
         kit.ui.set_clip_rect(saved);
     }
-    if let Some(f) = job.fraction {
-        play_label(kit, &format!("{:.0}%", f * 100.0), true, 0.0, extra);
-    }
+    let label = match job.fraction {
+        Some(f) => format!("{:.0}%", f * 100.0),
+        None => "PREPARING".into(),
+    };
+    play_label(kit, &label, true, 0.0, extra);
 
     // CANCEL on the blue button.
     let shape = design::shifted(UPDATE_SHAPE, extra, 0.0);

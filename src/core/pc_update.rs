@@ -25,11 +25,23 @@ pub const MANIFEST_OVERRIDE: &str = "ECHOVR_UPDATE_MANIFEST";
 pub fn manifest_for(url: &str) -> String {
     if url == PC_MANIFEST_URL {
         if let Ok(o) = std::env::var(MANIFEST_OVERRIDE) {
-            if o.starts_with("https://files.echovr.de/") && o.ends_with(".manifest") {
-                tracing::warn!("PC update from {o} ({MANIFEST_OVERRIDE}) instead of the live one");
+            // Asked for every frame: said once.
+            static SAID: std::sync::Once = std::sync::Once::new();
+            let ok = o.starts_with("https://files.echovr.de/") && o.ends_with(".manifest");
+            SAID.call_once(|| {
+                if ok {
+                    tracing::warn!(
+                        "PC update from {o} ({MANIFEST_OVERRIDE}) instead of the live one"
+                    );
+                } else {
+                    tracing::warn!(
+                        "{MANIFEST_OVERRIDE} ignored: not a manifest on files.echovr.de"
+                    );
+                }
+            });
+            if ok {
                 return o;
             }
-            tracing::warn!("{MANIFEST_OVERRIDE} ignored: not a manifest on files.echovr.de");
         }
     }
     url.to_string()

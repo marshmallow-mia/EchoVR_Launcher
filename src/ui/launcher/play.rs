@@ -246,7 +246,8 @@ fn pc_action(d: &mut Dashboard) -> Action {
     let job = id
         .and_then(|id| setup::job_for(d, &id))
         .or_else(|| hero::job_view(d, setup::REVIVE_JOB))
-        .or_else(|| hero::job_view(d, setup::ECHOXR_JOB));
+        .or_else(|| hero::job_view(d, setup::ECHOXR_JOB))
+        .or_else(|| hero::job_view(d, setup::LINUX_JOB));
     let mut a = Action::new();
     let needs_steamvr = d.steamvr_missing();
     let echoxr = d.state.profile.runtime == Runtime::Revive
