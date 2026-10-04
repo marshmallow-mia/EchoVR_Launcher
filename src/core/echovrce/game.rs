@@ -276,10 +276,18 @@ pub fn parse_match(entry: &Value) -> Option<Match> {
         city
     };
     let region = s(&label, &["server_region"]);
-    let region = if region.is_empty() {
-        s(server, &["default_region", "region"])
-    } else {
+    // The status's servers: a readable region ("England") and the country, else the code.
+    let named = match (s(server, &["region"]), s(server, &["country_code"])) {
+        ("", _) => String::new(),
+        (r, "") => r.to_string(),
+        (r, c) => format!("{r}, {c}"),
+    };
+    let region = if !region.is_empty() {
         region
+    } else if !named.is_empty() {
+        named.as_str()
+    } else {
+        s(server, &["default_region"])
     };
     let location = match (city, region) {
         ("", r) => r.to_string(),
@@ -315,8 +323,12 @@ pub fn parse_match(entry: &Value) -> Option<Match> {
         lobby,
         open: label.get("open").and_then(Value::as_bool).unwrap_or(true),
         limit: n(&label, &["player_limit", "playerLimit"]).unwrap_or(0.0) as u32,
-        size: (players.len() as u32)
-            .max(n(&label, &["player_count", "size"]).unwrap_or(0.0) as u32),
+        // Its players without the spectators when they're listed, else its count.
+        size: if players.is_empty() {
+            n(&label, &["player_count", "size"]).unwrap_or(0.0) as u32
+        } else {
+            players.iter().filter(|p| p.team != Team::Spectator).count() as u32
+        },
         players,
         location,
         group_id: s(&label, &["group_id", "groupId", "guild_id", "guildId"]).to_string(),
@@ -355,10 +367,11 @@ pub fn parse_status_matches(status: &Value) -> Vec<Match> {
         .collect()
 }
 
-/// Pure: `with` added to `list` where it has no match of that id yet.
+/// Pure: `with` added to `list` where it has no match of that lobby yet (the two lists
+/// write the node part of an id differently).
 fn merge_matches(mut list: Vec<Match>, with: Vec<Match>) -> Vec<Match> {
     for m in with {
-        if !list.iter().any(|x| x.id == m.id) {
+        if !list.iter().any(|x| x.lobby_id() == m.lobby_id()) {
             list.push(m);
         }
     }
