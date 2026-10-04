@@ -752,13 +752,14 @@ pub fn plugins(
                 Some(_) => Source::Local,
                 None => Source::Shipped,
             };
+            let known = catalog.entry_for(&e.file);
             let defaults = match &source {
                 Source::Local => Map::new(),
-                _ => catalog
-                    .entry_for(&e.file)
-                    .map(|m| m.args.clone())
-                    .unwrap_or_default(),
+                _ => known.map(|m| m.args.clone()).unwrap_or_default(),
             };
+            // Required by its name, however it got there (the update, or added by hand).
+            let mut e = e;
+            e.required |= known.is_some_and(|m| m.required);
             plugin(e, source, defaults, has, status)
         })
         .collect()
@@ -806,6 +807,10 @@ fn plugin(
 pub fn before_start(v: &InstalledVersion, own_game_config: bool) -> Result<()> {
     let bin = v.bin_dir();
     if !nevr_in(&bin) {
+        // Without nEVR the game needs its config again (Verify put the stock DLL back).
+        if nevr::restore_game_config(v)? == nevr::GameConfigStep::Restored {
+            tracing::info!("no nEVR: the _local/config.json set aside for it is back");
+        }
         return Ok(());
     }
     if nevr::stray_dbgcore(&bin) {
@@ -861,6 +866,10 @@ fn config_lines(v: &InstalledVersion, overlay: &Overlay, catalog: &ModCatalog) -
         }
         let mut args = p.args;
         if !mods_on && p.file.eq_ignore_ascii_case(ASSET_PLUGIN) {
+            // An older build loads every patch whatever it's told: none of it, then.
+            if !knows_required_only(&plugins_dir(v).join(&p.file)) {
+                continue;
+            }
             args.insert("required_only".into(), Value::String("true".into()));
         }
         lines.push(PluginLine {
@@ -870,6 +879,11 @@ fn config_lines(v: &InstalledVersion, overlay: &Overlay, catalog: &ModCatalog) -
         });
     }
     lines
+}
+
+/// Whether the NvrAssetPatches build at `path` takes `required_only` (1.2.0 on).
+fn knows_required_only(path: &Path) -> bool {
+    std::fs::read(path).is_ok_and(|b| find(&b, b"required_only").is_some())
 }
 
 /// Mods on or off for `v` (the overlay's "start without mods").
@@ -889,12 +903,21 @@ pub fn set_plugin_enabled(v: &InstalledVersion, file: &str, on: bool) -> Result<
     edit_overlay(v, |o| o.set_plugin_enabled(file, on))
 }
 
-/// Puts `file`'s arguments back to its defaults (the catalogue's).
+/// Puts `file`'s arguments back to its defaults: the catalogue's, none for a DLL added
+/// from disk (as [`plugins`] shows them).
 pub fn reset_args(v: &InstalledVersion, file: &str) -> Result<()> {
-    let defaults = ModCatalog::cached()
-        .entry_for(file)
-        .map(|m| m.args.clone())
-        .unwrap_or_default();
+    let local = Overlay::read(&choices_path(v))
+        .added()
+        .iter()
+        .any(|a| a.file.eq_ignore_ascii_case(file) && a.launcher.as_ref().is_some_and(|l| l.local));
+    let defaults = if local {
+        Map::new()
+    } else {
+        ModCatalog::cached()
+            .entry_for(file)
+            .map(|m| m.args.clone())
+            .unwrap_or_default()
+    };
     edit_overlay(v, |o| o.reset_args(file, &defaults))
 }
 
@@ -1499,7 +1522,12 @@ mod tests {
         std::fs::create_dir_all(bin.join("plugins")).unwrap();
         std::fs::write(bin.join("echovr.exe"), "MZ").unwrap();
         std::fs::write(bin.join(SLOT), "MZ [NEVR.BOOT] \x004.0.0+1.abcdef0\0").unwrap();
-        std::fs::write(bin.join("plugins/NvrAssetPatches.dll"), "MZ shipped").unwrap();
+        // 1.2.0 on: it takes required_only.
+        std::fs::write(
+            bin.join("plugins/NvrAssetPatches.dll"),
+            "MZ shipped required_only",
+        )
+        .unwrap();
         std::fs::write(bin.join("plugins/dbgcore.dll"), "MZ relay").unwrap();
         InstalledVersion {
             id: "pc-latest".into(),
@@ -1549,6 +1577,17 @@ mod tests {
         assert!(text.contains("file: \"NvrAssetPatches.dll\"\n    enabled: true"));
         assert!(text.contains("\"required_only\":\"true\""));
         assert!(!text.contains("MyMod"));
+        // An older NvrAssetPatches would load every patch: left out with mods off.
+        std::fs::write(bin.join("plugins/NvrAssetPatches.dll"), "MZ 1.1.0").unwrap();
+        prepare(&v).unwrap();
+        assert!(!std::fs::read_to_string(&yaml)
+            .unwrap()
+            .contains("NvrAssetPatches"));
+        std::fs::write(
+            bin.join("plugins/NvrAssetPatches.dll"),
+            "MZ shipped required_only",
+        )
+        .unwrap();
 
         // Without nEVR, nothing is written.
         std::fs::write(bin.join(SLOT), "MZ stock").unwrap();
@@ -1597,6 +1636,24 @@ mod tests {
             .unwrap();
         assert!(shipped.enabled && shipped.required);
         assert_eq!(shipped.defaults["logging"], "normal");
+
+        // A required plugin added by hand (the update doesn't ship it yet) is required
+        // all the same: on, also with mods off, and it can't be turned off.
+        let fix = dir.path().join("NvrXmlHttpFix.dll");
+        std::fs::write(&fix, "MZ fix").unwrap();
+        add_local(&v, &fix).unwrap();
+        let p = read(&v)
+            .plugins
+            .into_iter()
+            .find(|p| p.file == "NvrXmlHttpFix.dll")
+            .unwrap();
+        assert!(p.required && p.enabled);
+        assert!(set_plugin_enabled(&v, "NvrXmlHttpFix.dll", false).is_err());
+        prepare(&v).unwrap();
+        let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
+        assert!(std::fs::read_to_string(&yaml)
+            .unwrap()
+            .contains("NvrXmlHttpFix.dll"));
 
         remove(&v, "MyMod.dll").unwrap();
         assert!(!bin.join("plugins/MyMod.dll").exists());

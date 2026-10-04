@@ -164,13 +164,10 @@ pub fn obsolete_echovrce_config(text: &str) -> bool {
 
 /// Whether `url`'s host is echovrce.com or one of its subdomains.
 fn on_echovrce(url: &str) -> bool {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    let host = authority
-        .rsplit_once(':')
-        .map_or(authority, |(h, _)| h)
-        .to_ascii_lowercase();
-    host == "echovrce.com" || host.ends_with(".echovrce.com")
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|h| h == "echovrce.com" || h.ends_with(".echovrce.com"))
 }
 
 /// What [`arrange_game_config`] did.
@@ -183,28 +180,43 @@ pub enum GameConfigStep {
     Restored,
 }
 
-/// Before a start of `v`: with `own` (Settings: "Use my own config.json") the game's
-/// config stays, and one set aside earlier is put back; otherwise an obsolete EchoVRCE
-/// config is set aside, so nEVR uses its built-in one (friends and parties on).
+/// Before a start of `v` with nEVR in its slot: with `own` (Mods page: "Use my own
+/// config.json") the game's config stays, and one set aside earlier is put back;
+/// otherwise an obsolete EchoVRCE config is set aside, so nEVR uses its built-in one
+/// (friends and parties on). Every `_local` nEVR looks in counts.
 pub fn arrange_game_config(v: &InstalledVersion, own: bool) -> Result<GameConfigStep> {
-    let path = local_dir(v).join(GAME_CONFIG);
-    let aside = local_dir(v).join(GAME_CONFIG_ASIDE);
     if own {
+        return restore_game_config(v);
+    }
+    let mut step = GameConfigStep::Nothing;
+    for dir in search(v) {
+        let path = dir.join(GAME_CONFIG);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if !obsolete_echovrce_config(&text) {
+            continue;
+        }
+        std::fs::rename(&path, dir.join(GAME_CONFIG_ASIDE))
+            .with_context(|| format!("move {} aside", path.display()))?;
+        step = GameConfigStep::SetAside;
+    }
+    Ok(step)
+}
+
+/// Puts a game config set aside for nEVR back where it was (when that place has none):
+/// for "Use my own config.json", and before a start without nEVR, which needs it.
+pub fn restore_game_config(v: &InstalledVersion) -> Result<GameConfigStep> {
+    let mut step = GameConfigStep::Nothing;
+    for dir in search(v) {
+        let (path, aside) = (dir.join(GAME_CONFIG), dir.join(GAME_CONFIG_ASIDE));
         if !path.exists() && aside.is_file() {
             std::fs::rename(&aside, &path)
                 .with_context(|| format!("put {} back", path.display()))?;
-            return Ok(GameConfigStep::Restored);
+            step = GameConfigStep::Restored;
         }
-        return Ok(GameConfigStep::Nothing);
     }
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(GameConfigStep::Nothing);
-    };
-    if !obsolete_echovrce_config(&text) {
-        return Ok(GameConfigStep::Nothing);
-    }
-    std::fs::rename(&path, &aside).with_context(|| format!("move {} aside", path.display()))?;
-    Ok(GameConfigStep::SetAside)
+    Ok(step)
 }
 
 /// The game config nEVR loads for `v` (the first `config.json` in its search), if any.
@@ -484,11 +496,11 @@ impl Status {
                 continue;
             };
             let rest = rest.trim();
+            // The load order lists what nEVR goes on to load: its results (loaded or
+            // failed, not the skipped ones) follow it in that order.
             let next_file = |st: &Status, order: &[String]| {
-                order
-                    .get(st.plugins.len())
-                    .map(|n| file_of(n))
-                    .unwrap_or_default()
+                let tried = st.plugins.iter().filter(|p| p.status != "skipped").count();
+                order.get(tried).map(|n| file_of(n)).unwrap_or_default()
             };
             if let Some(list) = rest.strip_prefix("load order (priority-sorted):") {
                 order = list
@@ -744,6 +756,14 @@ mod tests {
             (p.name.as_str(), p.version.as_str()),
             ("asset_patches", "1.1.0")
         );
+        // A plugin skipped before the load order doesn't shift it.
+        let skipped = format!(
+            "{}\n{log}",
+            r#"{"msg":"[NEVR.PLUGIN] SKIPPED Extra — disabled\n"}"#
+        );
+        let st = Status::parse(&skipped);
+        assert!(st.of("NvrAssetPatches.dll").unwrap().loaded());
+        assert_eq!(st.of("Extra.dll").unwrap().status, "skipped");
     }
 
     #[test]
@@ -792,6 +812,18 @@ mod tests {
             GameConfigStep::Nothing
         );
         assert!(path.exists());
+        // One beside the exe (read first) is set aside too, and comes back without nEVR.
+        std::fs::remove_file(&path).unwrap();
+        let near = v.bin_dir().join("_local");
+        std::fs::create_dir_all(&near).unwrap();
+        std::fs::write(near.join(GAME_CONFIG), archive).unwrap();
+        assert_eq!(
+            arrange_game_config(&v, false).unwrap(),
+            GameConfigStep::SetAside
+        );
+        assert!(game_config_in_use(&v).is_none());
+        assert_eq!(restore_game_config(&v).unwrap(), GameConfigStep::Restored);
+        assert_eq!(game_config_in_use(&v), Some(near.join(GAME_CONFIG)));
     }
 
     #[test]
