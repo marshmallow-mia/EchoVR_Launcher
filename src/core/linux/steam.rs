@@ -148,6 +148,34 @@ pub fn with_shortcut(mut pairs: Vec<(String, Bin)>, s: &Shortcut) -> (Vec<(Strin
     (pairs, appid)
 }
 
+/// Pure: the appid of the launcher's shortcut in `shortcuts.vdf`'s pairs when it runs
+/// `s`'s executable (Steam keeps it; it may drop the launch options, which `--play` copes
+/// with): then Steam needs no change, and no restart.
+pub fn shortcut_in(pairs: &[(String, Bin)], s: &Shortcut) -> Option<u32> {
+    let exe = quoted(&s.exe);
+    let (_, Bin::Map(games)) = pairs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("shortcuts"))?
+    else {
+        return None;
+    };
+    games.iter().find_map(|(_, g)| {
+        let ours = g.get("AppName").and_then(Bin::as_str) == Some(SHORTCUT_NAME)
+            && g.get("Exe").and_then(Bin::as_str) == Some(exe.as_str());
+        match g.get("appid") {
+            Some(Bin::Int(id)) if ours => Some(*id),
+            _ => None,
+        }
+    })
+}
+
+/// The launcher's shortcut for the current Steam user, when it is in place (see
+/// [`shortcut_in`]).
+pub fn installed_shortcut(root: &Path, s: &Shortcut) -> Option<u32> {
+    let file = user_dir(root)?.join("config/shortcuts.vdf");
+    shortcut_in(&vdf::parse_bin(&std::fs::read(file).ok()?).ok()?, s)
+}
+
 /// Writes `bytes` to `path` in one step, keeping the first original as `<name>.echovr-bak`.
 fn replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.is_file() {
@@ -277,6 +305,20 @@ mod tests {
         assert!(id & 0x8000_0000 != 0);
         assert_eq!(id, crc32fast::hash(b"\"/usr/bin/game\"Game") | 0x8000_0000);
         assert_eq!(game_id(0x8000_0001), 0x8000_0001_0200_0000);
+    }
+
+    #[test]
+    fn knows_its_shortcut_is_in_place() {
+        let (pairs, appid) = with_shortcut(Vec::new(), &shortcut());
+        assert_eq!(shortcut_in(&pairs, &shortcut()), Some(appid));
+        // Steam dropped the launch options: still in place.
+        let mut other = shortcut();
+        other.launch_options.clear();
+        assert_eq!(shortcut_in(&pairs, &other), Some(appid));
+        // The launcher moved: not its shortcut any more.
+        other.exe = PathBuf::from("/opt/EchoVR_Launcher");
+        assert_eq!(shortcut_in(&pairs, &other), None);
+        assert_eq!(shortcut_in(&[], &shortcut()), None);
     }
 
     #[test]

@@ -79,8 +79,8 @@ Settings → Game → SteamVR, and **EchoXR** got from Additional Plugins on the
 (Remove in its Plugins row goes back to Revive).
 With EchoXR:
 
-- **SET UP** downloads EchoXR and Meta's loader, then puts EchoXR into the selected
-  version's folder.
+- **PLAY** first downloads EchoXR and Meta's loader when they're missing, puts EchoXR
+  into the selected version's folder, then starts the game.
   - The Meta library's folder (under Program Files) needs administrator rights. The
     launcher's elevated helper does that step, only for the Meta library's Echo VR,
     from the pinned zip. It runs `EchoXR.exe --setup-only` to make the copy there.

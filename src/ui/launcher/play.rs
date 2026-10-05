@@ -26,6 +26,8 @@ use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 use egui::pos2;
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
+/// PLAY on Linux would add Echo VR to Steam (Steam restarts): asked once.
+const PREPARE_LINUX: &str = "prepare-linux";
 
 /// The info line's right limit (design pixels).
 const INFO_RIGHT: f32 = 1282.0;
@@ -63,6 +65,10 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
     }
     if !kit.ghost {
+        if d.dialogs.take(PREPARE_LINUX).is_some_and(|a| a.is_yes()) {
+            d.play_after_prep = true;
+            setup::linux_setup(d, ctx);
+        }
         if let Some(answer) = d.dialogs.take(LAUNCH_ANYWAY) {
             let lobby = d.pending_lobby.take();
             if answer.is_yes() {
@@ -108,11 +114,12 @@ enum Main {
     Play,
     Stop,
     Patch(String),
-    SetUpRevive,
-    /// SteamVR through EchoXR (Windows).
-    SetUpEchoXr,
-    /// Linux: GE-Proton, EchoXR and the Steam shortcut.
-    SetUpLinux,
+    /// PLAY, after installing Revive (SteamVR on Windows).
+    PrepareRevive,
+    /// PLAY, after putting EchoXR into the game's folder (SteamVR on Windows).
+    PrepareEchoXr,
+    /// PLAY, after GE-Proton, EchoXR and the Steam shortcut (Linux) are in place.
+    PrepareLinux,
     QuestConnect,
     QuestPlay,
     /// Close Echo VR on the headset.
@@ -311,15 +318,13 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.tip =
                     "New players need a personal licence patch: get yours through Discord".into();
             } else if needs_steamvr && echoxr {
-                (a.label, a.main) = ("SET UP", Main::SetUpEchoXr);
+                a.main = Main::PrepareEchoXr;
                 a.enabled = !d.any_job();
-                a.tip =
-                    "Set up SteamVR through EchoXR: its OpenXR runtime goes into the game's folder"
-                        .into();
+                a.tip = "Start Echo VR on SteamVR: EchoXR's OpenXR runtime goes into the game's folder first".into();
             } else if needs_steamvr {
-                (a.label, a.main) = ("SET UP", Main::SetUpRevive);
+                a.main = Main::PrepareRevive;
                 a.enabled = !d.any_job();
-                a.tip = "Set up SteamVR: installs Revive, which runs Echo VR on SteamVR (asks for administrator rights)".into();
+                a.tip = "Start Echo VR on SteamVR: Revive, which runs it there, is installed first (asks for administrator rights)".into();
             } else if echoxr && cfg!(windows) && v.publisher_lock.is_some() {
                 (a.main, a.enabled, a.grey) = (Main::Play, false, true);
                 a.tip =
@@ -330,9 +335,9 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.tip =
                     "Event builds don't run on Linux yet: EchoXR runs only the live build".into();
             } else if cfg!(target_os = "linux") && !setup::pc_play_supported(d) {
-                (a.label, a.main) = ("SET UP", Main::SetUpLinux);
+                a.main = Main::PrepareLinux;
                 a.enabled = !d.any_job();
-                a.tip = "Set up Echo VR for Linux: GE-Proton and EchoXR's OpenXR runtime (about 0.5 GB of downloads), then a shortcut in Steam that starts it (Steam restarts)".into();
+                a.tip = "Start Echo VR: GE-Proton and EchoXR's OpenXR runtime are downloaded or updated first (about 0.5 GB the first time), and Echo VR is added to Steam once".into();
             } else if !setup::pc_play_supported(d) {
                 (a.main, a.enabled, a.grey) = (Main::Play, false, true);
                 a.tip = "Echo VR for PC doesn't run on macOS: play it on Windows, or on your Quest"
@@ -502,9 +507,24 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
             Main::Play => try_start(d, ctx, None),
             Main::Stop => stop(d),
             Main::Patch(id) => d.overlay = Some(setup::licence(&id)),
-            Main::SetUpRevive => setup::revive(d, ctx),
-            Main::SetUpEchoXr => setup::echoxr_windows(d, ctx),
-            Main::SetUpLinux => setup::linux_setup(d, ctx),
+            Main::PrepareRevive => {
+                d.play_after_prep = true;
+                setup::revive(d, ctx);
+            }
+            Main::PrepareEchoXr => {
+                d.play_after_prep = true;
+                setup::echoxr_windows(d, ctx);
+            }
+            Main::PrepareLinux if setup::linux_needs_shortcut() => d.dialogs.confirm(
+                PREPARE_LINUX,
+                "Add Echo VR to Steam",
+                "On Linux, Echo VR starts through Steam: it is added to your Steam library once, and Steam closes and restarts for that.\n\nThen Echo VR starts.",
+                crate::ui::dialogs::Icon::Info,
+            ),
+            Main::PrepareLinux => {
+                d.play_after_prep = true;
+                setup::linux_setup(d, ctx);
+            }
             Main::QuestConnect => d.check_quest(ctx, true),
             Main::QuestPlay => quest_launch(d, ctx),
             Main::QuestStop => quest_stop(d, ctx),
@@ -1187,7 +1207,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         _ => None,
     };
     // SteamVR through EchoXR: EchoXR into the game's folder and its copy of the game
-    // current. Where that needs administrator rights (the Meta library's), SET UP's job
+    // current. Where that needs administrator rights (the Meta library's), PLAY's preparation
     // does it.
     if cfg!(windows)
         && d.state.profile.runtime == Runtime::Revive

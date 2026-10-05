@@ -422,7 +422,7 @@ fn launch_args(d: &Dashboard, v: &InstalledVersion) -> String {
 /// Puts Echo VR into SteamVR's library (`add`) or takes it out, asking for administrator
 /// rights when Revive's folder needs them.
 /// Installs the game artwork for SteamVR's library on its own (Revive was there before
-/// the launcher, so its SET UP never ran), asking for administrator rights if needed.
+/// the launcher, so PLAY never prepared it), asking for administrator rights if needed.
 pub(super) fn revive_artwork(d: &mut Dashboard, ctx: &egui::Context) {
     let mut consent = consent_asker(d.worker.tx(ctx));
     d.start_job(
@@ -482,7 +482,7 @@ pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::Revive,
         ECHOXR_JOB,
-        "Setting up SteamVR through EchoXR",
+        "Preparing SteamVR (EchoXR)",
         "Downloading EchoXR...",
         move |cancel, on| {
             let r = echoxr::fetch(cancel, on).and_then(|()| match &bin {
@@ -513,7 +513,7 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::Revive,
         REVIVE_JOB,
-        "Setting up SteamVR",
+        "Preparing SteamVR (Revive)",
         "Downloading Revive...",
         move |cancel, on| {
             // Installed already (by hand, or before): only the artwork and library entry.
@@ -674,8 +674,24 @@ pub(super) fn linux_ready(d: &Dashboard) -> bool {
 
 pub(super) const LINUX_JOB: &str = "linux-setup";
 
-/// Sets up Echo VR for Linux: a private GE-Proton, EchoXR's OpenXR runtime and Meta's
-/// Platform SDK loader, then (closing Steam meanwhile) the shortcut in Steam that starts it.
+/// Whether preparing Linux would add Echo VR to Steam (and restart Steam for it): its
+/// shortcut isn't in Steam, or not with this launcher.
+pub(super) fn linux_needs_shortcut() -> bool {
+    use crate::core::linux::{self, steam};
+    let (Some(root), Some(exe)) = (steam::root(), linux::launcher_exe()) else {
+        return true;
+    };
+    let shortcut = steam::Shortcut {
+        exe,
+        launch_options: linux::PLAY_FLAG.into(),
+        icon: None,
+    };
+    steam::installed_shortcut(&root, &shortcut).is_none()
+}
+
+/// Prepares Echo VR for Linux: a private GE-Proton, EchoXR's OpenXR runtime and Meta's
+/// Platform SDK loader, then (closing Steam meanwhile) the shortcut in Steam that starts it,
+/// unless it is there already.
 pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
     use crate::core::linux::{self, echoxr, steam};
     let Some(root) = steam::root() else {
@@ -690,7 +706,7 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::Revive,
         LINUX_JOB,
-        "Setting up Echo VR for Linux",
+        "Preparing Echo VR for Linux",
         "Preparing...",
         move |cancel, on| {
             if let Err(e) = echoxr::setup(&root, cancel, on) {
@@ -702,14 +718,18 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
                     "Linux Setup Failed",
                 );
             };
-            on(Step::Status(
-                "Adding Echo VR to Steam (Steam restarts)...".into(),
-            ));
             let shortcut = steam::Shortcut {
                 exe,
                 launch_options: linux::PLAY_FLAG.into(),
                 icon: None,
             };
+            // In Steam already (an update of GE-Proton or EchoXR): Steam stays as it is.
+            if let Some(appid) = steam::installed_shortcut(&root, &shortcut) {
+                return JobResult::LinuxReady(appid);
+            }
+            on(Step::Status(
+                "Adding Echo VR to Steam (Steam restarts)...".into(),
+            ));
             let r = steam::shutdown(&root)
                 .and_then(|()| steam::install_shortcut(&root, &shortcut))
                 .and_then(|appid| steam::start(&root).map(|()| appid));
