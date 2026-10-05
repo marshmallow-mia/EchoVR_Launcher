@@ -17,6 +17,12 @@ fn main() {
         std::process::exit(core::elevation::helper_main(&args));
     }
 
+    // The tray: an icon, looking for updates while the launcher is closed (no window).
+    if args.get(1).map(String::as_str) == Some(core::tray::FLAG) {
+        core::log::init("tray.log");
+        std::process::exit(ui::tray::main());
+    }
+
     // A spark:// link clicked elsewhere: for the launcher already running (this one then
     // exits), or for this one once it is up.
     if let Some(link) = args.get(1).filter(|a| core::links::parse(a).is_some()) {

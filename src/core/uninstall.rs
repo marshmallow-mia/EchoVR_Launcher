@@ -74,7 +74,7 @@ impl Part {
             Part::DesktopShortcuts => "The Echo VR shortcuts the launcher made.",
             Part::LinkHandler => "The launcher stops opening spark:// links.",
             Part::SignIn => "EchoVRCE's sign-in, and the game's own in each version.",
-            Part::LauncherData => "Everything else the launcher keeps; it closes afterwards.",
+            Part::LauncherData => "Everything else the launcher keeps, and its tray (with its start at login); it closes afterwards.",
         }
     }
 }
@@ -277,6 +277,11 @@ pub fn run(
                 Ok(())
             }
             Part::LauncherData => {
+                // The tray goes first: it reads the data folder.
+                super::tray::quit();
+                if let Err(e) = super::tray::set_autostart(false) {
+                    out.notes.push(format!("The tray's start at login: {e:#}"));
+                }
                 let data = paths::data_dir();
                 let keep = kept_in_data(&data, Path::new(&state.library), has(Part::Versions));
                 let r = remove_dir_except(&data, keep.as_deref())

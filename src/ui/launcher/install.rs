@@ -144,7 +144,7 @@ enum Main {
 #[derive(Clone)]
 enum SideAct {
     ChangeFolder,
-    UpdatePc(InstalledVersion),
+    UpdatePc(Box<InstalledVersion>),
     Help(&'static str),
     QuestLink,
     QuestCheck,
@@ -337,7 +337,7 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
                 (None, Some(why), _) => why.into(),
                 (None, None, _) => "Download any changed game files".into(),
             };
-            h.side_act = SideAct::UpdatePc(v);
+            h.side_act = SideAct::UpdatePc(Box::new(v));
         }
         gone => {
             let missing = gone.is_some();
@@ -496,7 +496,7 @@ fn do_main(d: &mut Dashboard, ctx: &egui::Context, main: Main) {
 fn do_side(d: &mut Dashboard, ctx: &egui::Context, act: SideAct) {
     match act {
         SideAct::ChangeFolder => hero::choose_library(d),
-        SideAct::UpdatePc(v) => versions::update(d, ctx, v),
+        SideAct::UpdatePc(v) => versions::update(d, ctx, *v),
         SideAct::Help(url) => platform::open_url(url),
         SideAct::QuestLink => setup::ask_quest_install(d, true),
         SideAct::QuestCheck => d.check_quest(ctx, true),

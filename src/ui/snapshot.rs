@@ -102,6 +102,12 @@ pub fn shots() -> Vec<Shot> {
         ("settings_logs_sent", Page::Settings, SnapVariant::LogsSent),
         ("settings_credits", Page::Settings, SnapVariant::Credits),
         ("play_rail_open", Page::Play, SnapVariant::RailOpen),
+        ("play_updates", Page::Play, SnapVariant::UpdatesFound),
+        (
+            "settings_updates",
+            Page::Settings,
+            SnapVariant::UpdatesFound,
+        ),
         ("install_rail_open", Page::Install, SnapVariant::RailOpen),
         ("mods_rail_open", Page::Mods, SnapVariant::RailOpen),
         ("settings_rail_open", Page::Settings, SnapVariant::RailOpen),

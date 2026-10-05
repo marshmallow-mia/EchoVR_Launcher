@@ -426,6 +426,78 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
     }
 }
 
+/// The update announcements' switches; returns where the next part starts.
+fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
+    use crate::core::tray;
+    let mut y = y;
+    let (flipped, h) = option(
+        kit,
+        "desktop-notifications",
+        &mut d.state.desktop_notifications,
+        "Update notifications",
+        "A desktop notification when the launcher, Echo VR or a plugin has an update (the launcher looks every 15 minutes).",
+        x,
+        y,
+        w,
+        true,
+        "",
+    );
+    if flipped {
+        d.save();
+    }
+    y += h + dz(6.0);
+    let (flipped, h) = option(
+        kit,
+        "tray",
+        &mut d.state.tray,
+        "Keep looking in the tray",
+        "While the launcher is closed, its icon in the tray looks for updates and opens it.",
+        x,
+        y,
+        w,
+        true,
+        "",
+    );
+    if flipped {
+        // Off, it doesn't start at login either.
+        if !d.state.tray && d.state.tray_at_login && !d.demo {
+            let _ = tray::set_autostart(false);
+            d.state.tray_at_login = false;
+        }
+        d.save();
+        if !d.demo {
+            let on = d.state.tray;
+            std::thread::spawn(move || if on { tray::start() } else { tray::quit() });
+        }
+    }
+    y += h + dz(6.0);
+    let mut login = d.state.tray_at_login;
+    let (flipped, h) = option(
+        kit,
+        "tray-login",
+        &mut login,
+        "Start the tray at login",
+        "Updates are found from the moment you log in, without opening the launcher.",
+        x,
+        y,
+        w,
+        d.state.tray,
+        "Needs \"Keep looking in the tray\"",
+    );
+    if flipped && !d.demo {
+        match tray::set_autostart(login) {
+            Ok(()) => {
+                d.state.tray_at_login = login;
+                d.save();
+            }
+            Err(e) => d
+                .dialogs
+                .error("Couldn't change it", &format!("{e:#}"), Default::default()),
+        }
+    }
+    y + h + dz(12.0)
+}
+
 // ---- uninstalling ----
 
 const UNINSTALL_KEY: &str = "uninstall";
@@ -672,6 +744,11 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             d.set_spark_links(ctx, on);
         }
         y += h + dz(6.0);
+    }
+
+    // Updates: found every 15 minutes; how they are announced.
+    if cfg!(any(windows, target_os = "linux")) || d.demo {
+        y = update_options(d, kit, x, y, w);
     }
 
     // Support.

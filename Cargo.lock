@@ -258,7 +258,7 @@ version = "0.38.0+1.3.281"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1076,7 +1076,7 @@ version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
- "libloading",
+ "libloading 0.8.9",
 ]
 
 [[package]]
@@ -1154,7 +1154,9 @@ dependencies = [
  "hex",
  "image",
  "keyring",
+ "ksni",
  "mslnk",
+ "notify-rust",
  "open",
  "openh264",
  "rand",
@@ -1173,6 +1175,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "tray-icon",
  "url",
  "windows-sys 0.61.2",
  "winreg 0.56.0",
@@ -1979,7 +1982,7 @@ dependencies = [
  "glutin_egl_sys",
  "glutin_glx_sys",
  "glutin_wgl_sys",
- "libloading",
+ "libloading 0.8.9",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
@@ -2638,6 +2641,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyboard-types"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fbe853b403ae61a04233030ae8a79d94975281ed9770a1f9e246732b534b28d"
+dependencies = [
+ "bitflags 2.13.2",
+ "serde",
+]
+
+[[package]]
 name = "keyring"
 version = "3.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2656,7 +2669,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "pkg-config",
 ]
 
@@ -2674,6 +2687,19 @@ checksum = "90ceaa75eb0036a32b6b9833962eb18137449e9817e2e586006471925b727fd5"
 dependencies = [
  "accesskit",
  "accesskit_consumer 0.35.0",
+]
+
+[[package]]
+name = "ksni"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "814b44c24cd2cb236c3b8a41c7f08237b452a8e76ecaa81f1cec40b5b678215b"
+dependencies = [
+ "futures-util",
+ "pastey",
+ "serde",
+ "tokio",
+ "zbus",
 ]
 
 [[package]]
@@ -2695,10 +2721,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
+name = "libappindicator"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03589b9607c868cc7ae54c0b2a22c8dc03dd41692d48f2d7df73615c6a95dc0a"
+dependencies = [
+ "glib",
+ "gtk",
+ "gtk-sys",
+ "libappindicator-sys",
+ "log",
+]
+
+[[package]]
+name = "libappindicator-sys"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e9ec52138abedcc58dc17a7c6c0c00a2bdb4f3427c7f63fa97fd0d859155caf"
+dependencies = [
+ "gtk-sys",
+ "libloading 0.7.4",
+ "once_cell",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
+
+[[package]]
+name = "libloading"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
+dependencies = [
+ "cfg-if",
+ "winapi",
+]
 
 [[package]]
 name = "libloading"
@@ -2772,6 +2832,20 @@ name = "log"
 version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
+
+[[package]]
+name = "mac-notification-sys"
+version = "0.6.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd604973958ddcc11b561193c0fb96ba146506ef2f231ef2e7c35fd2cbc9beca"
+dependencies = [
+ "cc",
+ "log",
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
+ "time",
+ "uuid",
+]
 
 [[package]]
 name = "markup5ever"
@@ -2867,6 +2941,27 @@ dependencies = [
  "bitflags 1.3.2",
  "byteorder",
  "log",
+]
+
+[[package]]
+name = "muda"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6744ab645ebe79f9c428455c7cb9dfa4275fa3b50a25408e08f927da8dc618c"
+dependencies = [
+ "crossbeam-channel",
+ "dpi",
+ "gtk",
+ "keyboard-types",
+ "libc",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "png",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2974,6 +3069,20 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "notify-rust"
+version = "4.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe430c879247371c47fdedd328ad4e301e6b30b533c5fd5db1c06d75253d0e46"
+dependencies = [
+ "futures-lite",
+ "log",
+ "mac-notification-sys",
+ "serde",
+ "tauri-winrt-notification",
+ "zbus",
+]
 
 [[package]]
 name = "ntapi"
@@ -3216,6 +3325,7 @@ checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
@@ -3562,6 +3672,12 @@ dependencies = [
  "smallvec",
  "windows-link",
 ]
+
+[[package]]
+name = "pastey"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "peniko"
@@ -4810,6 +4926,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
 
 [[package]]
+name = "tauri-winrt-notification"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f37a6c354fd28fc9e322ed9bd47e3959576dad28c9d58ea1cf888cce1c7ccb36"
+dependencies = [
+ "thiserror 2.0.21",
+ "windows",
+ "windows-version",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4992,8 +5119,22 @@ dependencies = [
  "libc",
  "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "socket2",
+ "tokio-macros",
+ "tracing",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
 ]
 
 [[package]]
@@ -5234,6 +5375,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tray-icon"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c764a26ff2bb23f8d05e6079398303f249eeef0ad0277c13cdb02d900798f6c3"
+dependencies = [
+ "crossbeam-channel",
+ "dirs",
+ "libappindicator",
+ "muda",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "once_cell",
+ "png",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5337,6 +5499,7 @@ version = "1.26.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2ef6dac1e96601b4fb3acccccff2139741fcb757cb9a36089bf5be91cfb285ce"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",
@@ -5902,7 +6065,7 @@ dependencies = [
  "js-sys",
  "khronos-egl",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "log",
  "naga",
  "naga-types",
@@ -6540,7 +6703,7 @@ dependencies = [
  "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading",
+ "libloading 0.8.9",
  "once_cell",
  "rustix 1.1.5",
  "x11rb-protocol",
@@ -6641,6 +6804,7 @@ dependencies = [
  "rustix 1.1.5",
  "serde",
  "serde_repr",
+ "tokio",
  "tracing",
  "uds_windows",
  "uuid",
