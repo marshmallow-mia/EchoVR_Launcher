@@ -105,13 +105,19 @@ current draft, which is also built in for when it can't be fetched):
   absolute `https://` URL on one of them or `release.echovr.de`. Required, with `sha256`, unless `shipped`.
 - `sha256`: the file's checksum. The launcher checks the download against it and notes it
   in `launcher-mods.json`, so a file changed later is left out of `config.yaml`.
-- `shipped`: the community update brings it; the page shows it (INSTALLED, or "with the
-  update"), never downloads it.
-- `required`: the game needs it: always on, also with mods off.
-- `version`: shown, and compared with the installed one: a different version offers
-  UPDATE.
+- `shipped`: the community update brings it; the page lists it under Plugins when it is
+  there, never downloads it, and never offers it under Additional Plugins.
+- `required`: the game needs it: always on, also with mods off, and never offered under
+  Additional Plugins.
+- `version`: shown, and compared with the installed one: a different version puts UPDATE
+  on its row under Plugins.
 - `api`, `capabilities` (`observes-only`, `cosmetic`, `alters-gameplay`, `alters-rules`,
   `network`, `hooks-engine`), `args` (its default arguments), `homepage`, `author`,
   `summary`, `size`: optional, shown on the page.
 
 An entry that breaks a rule is left out; the rest of the list is still used.
+
+The page's **Plugins** card lists only what is installed. **Additional Plugins** offers
+the catalogue's entries that are neither required nor shipped and aren't in `plugins/`
+(GET; "Coming soon" without a `url`), plus the VR parts not in use: EchoXR Hands, and on
+Windows EchoXR while SteamVR plays through Revive. Remove on a row puts it back there.
