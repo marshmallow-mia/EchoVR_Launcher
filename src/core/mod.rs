@@ -24,6 +24,7 @@ pub mod quest_install;
 pub mod quest_update;
 pub mod remote_zip;
 pub mod revive;
+pub mod uninstall;
 pub mod zip;
 
 /// The Echo VR Lounge, the community's main Discord.

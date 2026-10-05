@@ -71,6 +71,10 @@ pub(super) enum Overlay {
     UploadLogs { off: Vec<crate::core::logs::Kind> },
     /// Settings: who made the launcher and what it brings along (`scroll`: the list's).
     Credits { scroll: f32 },
+    /// Settings and Install: what to uninstall (`picked`: the parts ticked).
+    Uninstall {
+        picked: Vec<crate::core::uninstall::Part>,
+    },
 }
 
 /// The Install card's answers, prefilled with the last ones.
@@ -324,7 +328,7 @@ pub(super) fn job_for(d: &Dashboard, id: &str) -> Option<JobView> {
 }
 
 /// A job's way to ask for administrator rights: the dialog answers on a channel.
-fn consent_asker(tx: Tx<Msg>) -> impl FnMut() -> bool + Send + 'static {
+pub(super) fn consent_asker(tx: Tx<Msg>) -> impl FnMut() -> bool + Send + 'static {
     move || {
         let (s, r) = sync_channel(1);
         tx.send(Msg::Consent(s));
@@ -808,6 +812,7 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::ShareMatch { .. }) => super::servers::share_card(d, k, ctx),
         Some(Overlay::UploadLogs { .. }) => super::settings::upload_card(d, k, ctx),
         Some(Overlay::Credits { .. }) => super::settings::credits_card(d, k, ctx),
+        Some(Overlay::Uninstall { .. }) => super::settings::uninstall_card(d, k, ctx),
         None => {}
     });
 }

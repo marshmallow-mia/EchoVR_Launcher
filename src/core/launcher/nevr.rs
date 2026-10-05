@@ -131,6 +131,15 @@ fn search(v: &InstalledVersion) -> [PathBuf; 3] {
     [bin.join("_local"), up.join("_local"), up2.join("_local")]
 }
 
+/// The game sign-ins the launcher wrote for `v` (in each `_local` nEVR looks in).
+pub fn logins(v: &InstalledVersion) -> Vec<PathBuf> {
+    search(v)
+        .into_iter()
+        .map(|d| d.join(CREDENTIALS))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
 /// A `config.yaml` nEVR reads instead of the launcher's (one nearer the exe), if any.
 pub fn shadowing_config(v: &InstalledVersion) -> Option<PathBuf> {
     let ours = local_dir(v).join(CONFIG);

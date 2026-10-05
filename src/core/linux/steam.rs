@@ -176,6 +176,44 @@ pub fn installed_shortcut(root: &Path, s: &Shortcut) -> Option<u32> {
     shortcut_in(&vdf::parse_bin(&std::fs::read(file).ok()?).ok()?, s)
 }
 
+/// Pure: `shortcuts.vdf`'s pairs without the launcher's shortcut (found by its name), the
+/// other games renumbered; and whether it was there.
+pub fn without_shortcut(mut pairs: Vec<(String, Bin)>) -> (Vec<(String, Bin)>, bool) {
+    let mut found = false;
+    for (k, list) in pairs.iter_mut() {
+        if !k.eq_ignore_ascii_case("shortcuts") {
+            continue;
+        }
+        if let Bin::Map(games) = list {
+            let before = games.len();
+            games.retain(|(_, g)| g.get("AppName").and_then(Bin::as_str) != Some(SHORTCUT_NAME));
+            found |= games.len() != before;
+            for (i, (k, _)) in games.iter_mut().enumerate() {
+                *k = i.to_string();
+            }
+        }
+    }
+    (pairs, found)
+}
+
+/// Takes the launcher's shortcut out of the current Steam user's games. Steam must be
+/// closed. False when it wasn't there.
+pub fn remove_shortcut(root: &Path) -> Result<bool> {
+    let Some(user) = user_dir(root) else {
+        return Ok(false);
+    };
+    let file = user.join("config/shortcuts.vdf");
+    let Ok(bytes) = std::fs::read(&file) else {
+        return Ok(false);
+    };
+    let pairs = vdf::parse_bin(&bytes).with_context(|| format!("read {}", file.display()))?;
+    let (pairs, found) = without_shortcut(pairs);
+    if found {
+        replace_file(&file, &vdf::write_bin(&pairs))?;
+    }
+    Ok(found)
+}
+
 /// Writes `bytes` to `path` in one step, keeping the first original as `<name>.echovr-bak`.
 fn replace_file(path: &Path, bytes: &[u8]) -> Result<()> {
     if path.is_file() {
@@ -305,6 +343,25 @@ mod tests {
         assert!(id & 0x8000_0000 != 0);
         assert_eq!(id, crc32fast::hash(b"\"/usr/bin/game\"Game") | 0x8000_0000);
         assert_eq!(game_id(0x8000_0001), 0x8000_0001_0200_0000);
+    }
+
+    #[test]
+    fn takes_its_shortcut_out() {
+        let other = Bin::Map(vec![("AppName".into(), Bin::Str("Other".into()))]);
+        let pairs = vec![("shortcuts".to_string(), Bin::Map(vec![("0".into(), other)]))];
+        let (pairs, _) = with_shortcut(pairs, &shortcut());
+        let (pairs, found) = without_shortcut(pairs);
+        assert!(found);
+        let Bin::Map(games) = &pairs[0].1 else {
+            panic!()
+        };
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].0, "0");
+        assert_eq!(
+            games[0].1.get("AppName").and_then(Bin::as_str),
+            Some("Other")
+        );
+        assert!(!without_shortcut(pairs).1);
     }
 
     #[test]

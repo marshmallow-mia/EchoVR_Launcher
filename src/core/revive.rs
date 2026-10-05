@@ -192,6 +192,33 @@ pub fn manifest_with(text: &str, entry: Option<serde_json::Value>) -> Result<Str
     Ok(serde_json::to_string_pretty(&doc)?)
 }
 
+/// Pure: whether the manifest `text`'s Echo VR entry starts the game in folder `root`.
+pub fn entry_points_into(text: &str, root: &str) -> bool {
+    let norm = |s: &str| s.replace('/', "\\").to_ascii_lowercase();
+    let root = norm(root);
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|doc| {
+            doc.get("applications")?.as_array()?.iter().find_map(|a| {
+                (a.get("app_key")?.as_str()? == APP_KEY)
+                    .then(|| {
+                        a.get("arguments")
+                            .and_then(serde_json::Value::as_str)
+                            .map(norm)
+                    })
+                    .flatten()
+            })
+        })
+        .is_some_and(|args| !root.is_empty() && args.contains(&root))
+}
+
+/// Whether SteamVR's library entry for Echo VR starts the game in folder `root`.
+pub fn library_points_into(root: &str) -> bool {
+    find_revive_dir()
+        .and_then(|dir| std::fs::read_to_string(Path::new(&dir).join(MANIFEST)).ok())
+        .is_some_and(|text| entry_points_into(&text, root))
+}
+
 /// Puts Echo VR into SteamVR's library (`entry`), or takes it out (`None`). Needs
 /// administrator rights where Revive lives in Program Files.
 pub fn set_library_entry(entry: Option<serde_json::Value>) -> Result<()> {
@@ -220,6 +247,17 @@ mod tests {
         assert!(args.starts_with("\"C:\\EchoVR\\versions\\pc-latest\\"));
         assert!(args.ends_with("-nosymbollookup -windowed /app ready-at-dawn-echo-arena"));
         assert_eq!(e["strings"]["en_us"]["name"], "Echo VR");
+    }
+
+    #[test]
+    fn knows_where_its_entry_points() {
+        let exe =
+            Path::new("C:/EchoVR/versions/pc-latest/ready-at-dawn-echo-arena/bin/win10/echovr.exe");
+        let text = manifest_with("", Some(library_entry(exe, ""))).unwrap();
+        assert!(entry_points_into(&text, "C:/EchoVR/versions/pc-latest"));
+        assert!(entry_points_into(&text, "c:\\echovr\\versions\\PC-LATEST"));
+        assert!(!entry_points_into(&text, "C:/EchoVR/versions/echo-2019"));
+        assert!(!entry_points_into("", "C:/EchoVR"));
     }
 
     #[test]

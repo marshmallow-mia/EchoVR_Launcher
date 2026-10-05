@@ -185,6 +185,8 @@ enum JobResult {
     QuestNeedsReinstall(String),
     /// Mods were installed, added or removed: what to say.
     ModsChanged(String),
+    /// Parts of the launcher's things were uninstalled.
+    Uninstalled(crate::core::uninstall::Outcome),
 }
 
 enum Msg {
@@ -355,6 +357,8 @@ enum JobKind {
     QuestUpdate,
     /// Installing, adding or removing a plugin.
     Mods,
+    /// Taking what the launcher put on this PC off it again.
+    Uninstall,
 }
 
 struct Job {
@@ -418,6 +422,8 @@ pub enum SnapVariant {
     Credits,
     /// The rail unfolded.
     RailOpen,
+    /// Settings: what to uninstall.
+    Uninstall,
     /// The Quest side, with Echo VR installed on the headset.
     QuestSide,
     /// The Quest side, a headset without Echo VR.
@@ -607,6 +613,8 @@ pub struct Dashboard {
     launcher_update: LauncherUpdate,
     /// The rail is unfolded: its tabs with their names, over the page.
     rail_open: bool,
+    /// What the uninstall card asked to remove, until its confirmation is answered.
+    uninstall_parts: Vec<crate::core::uninstall::Part>,
     started: bool,
     deleting_cache: bool,
     /// The logs are on their way to the upload service.
@@ -628,7 +636,7 @@ pub struct Dashboard {
 
 impl Dashboard {
     fn save(&self) {
-        if self.demo {
+        if self.demo || crate::core::uninstall::finished() {
             return;
         }
         if let Err(e) = self.state.save() {
@@ -1034,6 +1042,7 @@ impl Dashboard {
             Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
             Some(SnapVariant::RailOpen) => self.rail_open = true,
+            Some(SnapVariant::Uninstall) => settings::ask_uninstall(self),
             Some(SnapVariant::Credits) => {
                 self.overlay = Some(setup::Overlay::Credits { scroll: 0.0 })
             }
@@ -1860,6 +1869,7 @@ impl Dashboard {
                     (_, None) => {}
                 }
             }
+            JobResult::Uninstalled(o) => settings::uninstalled(self, o),
             JobResult::ModsChanged(notice) => {
                 self.mods.changed();
                 self.notify(&notice);
@@ -2004,6 +2014,7 @@ impl Dashboard {
             kit.blocked = true;
         }
         versions::handle_answers(self, &ctx);
+        settings::uninstall_answers(self, &ctx);
         self.page_body(kit, &ctx, self.page);
         self.warmed.insert(self.page);
 

@@ -137,6 +137,31 @@ pub fn create_shortcut(
     }
 }
 
+/// Removes the desktop shortcut (Windows) or application entry (Linux) `name` made by
+/// [`create_shortcut`]. False when there was none.
+pub fn remove_shortcut(name: &str) -> Result<bool> {
+    #[cfg(windows)]
+    let file = dirs::desktop_dir().map(|d| d.join(format!("{name}.lnk")));
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let file = dirs::data_local_dir().map(|d| {
+        d.join("applications")
+            .join(format!("{}.desktop", name.to_lowercase().replace(' ', "-")))
+    });
+    #[cfg(target_os = "macos")]
+    let file: Option<std::path::PathBuf> = {
+        let _ = name;
+        None
+    };
+    match file {
+        Some(f) if f.is_file() => {
+            std::fs::remove_file(&f)
+                .map_err(|e| anyhow::anyhow!("Couldn't remove {}: {e}", f.display()))?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
 /// Free bytes on the disk holding `path`. Windows asks about that folder only: listing
 /// every disk can wait seconds on a sleeping network or optical drive.
 #[cfg(windows)]

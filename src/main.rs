@@ -38,6 +38,7 @@ fn main() {
     core::linux::log_desktop_env(desktop_fix.as_deref());
     let result = ui::run();
     core::elevation::shutdown();
+    core::uninstall::after_exit();
     if let Err(e) = result {
         tracing::error!("fatal: {e}");
         eprintln!("{e}");

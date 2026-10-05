@@ -658,6 +658,21 @@ fn choices_path(v: &InstalledVersion) -> PathBuf {
     nevr::local_dir(v).join(CHOICES)
 }
 
+/// What the launcher put into `v` for mods, to take out when it lets go of `v`: the
+/// plugins it added (that are still its own), its choices file, and the `config.yaml` it
+/// writes for nEVR.
+pub fn launcher_files(v: &InstalledVersion) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Overlay::read(&choices_path(v))
+        .added()
+        .iter()
+        .filter(|a| a.launcher.is_some())
+        .map(|a| plugins_dir(v).join(&a.file))
+        .collect();
+    out.push(choices_path(v));
+    out.push(nevr::local_dir(v).join(nevr::CONFIG));
+    out
+}
+
 /// The plugin files in `v`'s plugins folder.
 fn plugin_files(v: &InstalledVersion) -> Vec<String> {
     dlls_in(&plugins_dir(v))

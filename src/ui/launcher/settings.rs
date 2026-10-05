@@ -3,12 +3,13 @@
 //! About) in the right-hand panel.
 
 use super::install::{myriad, text_link};
-use super::{hero, panel, setup, Dashboard, LauncherUpdate, Msg};
+use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{Runtime, SteamVrVia};
 use crate::core::links::Handler;
 use crate::core::{logs, paths, platform, revive};
 use crate::ui::design::{self, dz, Dr};
+use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::markdown;
 use crate::ui::parts;
@@ -404,6 +405,218 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         .clicked
     {
         open_dir(d, &paths::data_dir());
+    }
+    let uy = y + BTN_H + dz(14.0);
+    if kit
+        .button(
+            "uninstall",
+            x,
+            uy,
+            w,
+            BTN_H,
+            Tone::Danger,
+            Some(Icon::Trash),
+            "Uninstall…",
+            !d.any_job(),
+            "Remove Echo VR, its mods and VR set-up, and the launcher's data (choose what)",
+        )
+        .clicked
+    {
+        ask_uninstall(d);
+    }
+}
+
+// ---- uninstalling ----
+
+const UNINSTALL_KEY: &str = "uninstall";
+const UNINSTALLED_KEY: &str = "uninstalled";
+
+/// Opens the uninstall card with every part ticked.
+pub(super) fn ask_uninstall(d: &mut Dashboard) {
+    d.overlay = Some(setup::Overlay::Uninstall {
+        picked: crate::core::uninstall::Part::all(),
+    });
+}
+
+/// UNINSTALL: each part with what it removes, ticked or not; then a confirmation.
+pub(super) fn uninstall_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    use crate::core::uninstall::Part;
+    let parts = Part::all();
+    let Some(setup::Overlay::Uninstall { picked }) = &mut d.overlay else {
+        return;
+    };
+    let (w, h) = (dz(1100.0), dz(900.0));
+    let (x, y, cw, bottom) = setup::card(k, w, h, "Uninstall");
+    let mut ry = y;
+    ry += k.caps_text(
+        x,
+        ry,
+        cw,
+        "Choose what goes. The launcher's program file stays: delete it yourself afterwards.",
+        16.0,
+        design::BODY,
+        0.0,
+    ) + dz(16.0);
+    for part in &parts {
+        let mut on = picked.contains(part);
+        let (flipped, used) = option(
+            k,
+            &format!("uninstall-{part:?}"),
+            &mut on,
+            part.title(),
+            part.detail(),
+            x,
+            ry,
+            cw,
+            true,
+            "",
+        );
+        if flipped {
+            picked.retain(|p| p != part);
+            if on {
+                picked.push(*part);
+            }
+        }
+        ry += used + dz(10.0);
+    }
+    let chosen: Vec<Part> = parts
+        .iter()
+        .copied()
+        .filter(|p| picked.contains(p))
+        .collect();
+    let by = bottom - BTN_H;
+    let cancel_w = k.button_width("Cancel", None, BTN_H).max(110.0);
+    let go_w = k.button_width("Uninstall", None, BTN_H).max(150.0);
+    let all_w = k.button_width("Everything", None, BTN_H).max(140.0);
+    if k.button(
+        "uninstall-all",
+        x,
+        by,
+        all_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Everything",
+        true,
+        "Tick every part",
+    )
+    .clicked
+    {
+        *picked = parts.clone();
+    }
+    let right = x + cw;
+    if k.button(
+        "uninstall-cancel",
+        right - cancel_w,
+        by,
+        cancel_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Cancel",
+        true,
+        "",
+    )
+    .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        d.overlay = None;
+        return;
+    }
+    if k.button(
+        "uninstall-go",
+        right - cancel_w - 8.0 - go_w,
+        by,
+        go_w,
+        BTN_H,
+        Tone::Danger,
+        Some(Icon::Trash),
+        "Uninstall",
+        !chosen.is_empty(),
+        "Remove the ticked parts (asks once more)",
+    )
+    .clicked
+    {
+        let list = chosen
+            .iter()
+            .map(|p| format!("• {}", p.title()))
+            .collect::<Vec<_>>()
+            .join("\n");
+        d.uninstall_parts = chosen;
+        d.overlay = None;
+        d.dialogs.confirm_danger(
+            UNINSTALL_KEY,
+            "Uninstall",
+            &format!("This removes:\n\n{list}\n\nIt can't be undone."),
+            "Uninstall",
+        );
+    }
+}
+
+/// The answers to the uninstall's confirmation and to its last word.
+pub(super) fn uninstall_answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if let Some(a) = d.dialogs.take(UNINSTALL_KEY) {
+        let parts = std::mem::take(&mut d.uninstall_parts);
+        if a.is_yes() && !parts.is_empty() {
+            let state = d.state.clone();
+            let mut consent = setup::consent_asker(d.worker.tx(ctx));
+            d.start_job(
+                ctx,
+                JobKind::Uninstall,
+                "uninstall",
+                "Uninstalling",
+                "Starting...",
+                move |_, on| {
+                    JobResult::Uninstalled(crate::core::uninstall::run(
+                        &parts,
+                        &state,
+                        &mut consent,
+                        on,
+                    ))
+                },
+            );
+        }
+    }
+    if d.dialogs.take(UNINSTALLED_KEY).is_some() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
+/// The uninstall is done: the versions it removed go from the list; without its data the
+/// launcher says where its program file is and closes.
+pub(super) fn uninstalled(d: &mut Dashboard, o: crate::core::uninstall::Outcome) {
+    d.state.versions.retain(|v| !o.removed.contains(&v.id));
+    if d.state
+        .selected
+        .as_ref()
+        .is_some_and(|s| o.removed.contains(s))
+    {
+        d.state.selected = d.state.versions.first().map(|v| v.id.clone());
+    }
+    let notes = if o.notes.is_empty() {
+        String::new()
+    } else {
+        format!("\n\nNot everything could go:\n{}", o.notes.join("\n"))
+    };
+    if o.data_removed {
+        let exe = std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "the launcher's program file".into());
+        d.dialogs.options(
+            UNINSTALLED_KEY,
+            "Uninstalled",
+            &format!("The launcher's things are gone. It closes now; delete its program file yourself:\n\n{exe}{notes}"),
+            DlgIcon::Info,
+            &["Close the launcher"],
+        );
+    } else {
+        d.save();
+        d.mods.changed();
+        if notes.is_empty() {
+            d.notify("Uninstalled");
+        } else {
+            d.dialogs.info("Uninstalled", notes.trim_start());
+        }
     }
 }
 

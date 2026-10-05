@@ -221,16 +221,46 @@ pub(super) fn find_meta(d: &mut Dashboard) {
     }
 }
 
-fn remove(d: &mut Dashboard, id: &str) {
+/// Removes (deletes or forgets) version `id`, with what the launcher made for it: its
+/// desktop shortcuts, SteamVR's library entry when that starts it, and, in a folder it
+/// only forgets, the files the launcher put there.
+fn remove(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
+    use crate::core::uninstall;
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
-    if !v.external {
-        if let Err(e) = versions::remove(&v, &d.state.library) {
-            d.dialogs
-                .error("Remove Failed", &format!("{e:#}"), Default::default());
-            return;
+    if v.external {
+        let failed = uninstall::clean_version(&v);
+        if !failed.is_empty() {
+            d.dialogs.info(
+                "Forgotten",
+                &format!(
+                    "Some of what the launcher put into {} couldn't be removed:\n\n{}",
+                    v.root,
+                    failed.join("\n")
+                ),
+            );
         }
+    } else if let Err(e) = versions::remove(&v, &d.state.library) {
+        d.dialogs
+            .error("Remove Failed", &format!("{e:#}"), Default::default());
+        return;
+    }
+    // The live build's shortcuts ("Echo VR") only when no other live build is left.
+    let another_live = d
+        .state
+        .versions
+        .iter()
+        .any(|x| x.id != id && x.publisher_lock.is_none());
+    if v.publisher_lock.is_some() || !another_live {
+        for name in uninstall::shortcut_names(&v) {
+            if let Err(e) = platform::remove_shortcut(&name) {
+                tracing::warn!("shortcut {name}: {e:#}");
+            }
+        }
+    }
+    if cfg!(windows) && crate::core::revive::library_points_into(&v.root) {
+        super::setup::steamvr_library(d, ctx, false);
     }
     d.state.versions.retain(|x| x.id != id);
     if d.state.selected.as_deref() == Some(id) {
@@ -243,7 +273,7 @@ fn remove(d: &mut Dashboard, id: &str) {
 pub(super) fn handle_answers(d: &mut Dashboard, ctx: &egui::Context) {
     if let Some(a) = d.dialogs.take(REMOVE_KEY) {
         if let (true, Some(id)) = (a.is_yes(), d.pending_remove.take()) {
-            remove(d, &id);
+            remove(d, ctx, &id);
         }
     }
     if let Some(a) = d.dialogs.take(REPAIR_KEY) {
@@ -279,6 +309,7 @@ pub(super) fn manage_menu(
         Unpatch,
         Account,
         Remove,
+        Uninstall,
     }
     let event = v.publisher_lock.is_some();
     let mut menu = Vec::new();
@@ -344,6 +375,13 @@ pub(super) fn manage_menu(
         ),
         Some(Act::Remove),
     ));
+    menu.push((
+        MenuItem::row(
+            "Uninstall…",
+            "Echo VR, its mods and VR set-up, and the launcher's data: choose what",
+        ),
+        Some(Act::Uninstall),
+    ));
     let (items, acts): (Vec<MenuItem>, Vec<Option<Act>>) = menu.into_iter().unzip();
     let picked = k
         .menu_button(
@@ -374,11 +412,12 @@ pub(super) fn manage_menu(
                 );
             }
         }
+        Some(Act::Uninstall) if !busy => super::settings::ask_uninstall(d),
         Some(Act::Remove) => {
             d.pending_remove = Some(v.id.clone());
             if v.external {
                 let msg = format!(
-                    "Remove {} from the launcher?\n\nThe folder {} stays on disk.",
+                    "Remove {} from the launcher?\n\nThe folder {} stays on disk; what the launcher put into it (EchoXR, the plugins it added, its sign-in) is taken out.",
                     v.name, v.root
                 );
                 d.dialogs
