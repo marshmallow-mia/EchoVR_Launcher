@@ -757,6 +757,34 @@ pub(super) fn myriad(
     kit.ui.ctx().fonts_mut(|f| f.layout_job(job))
 }
 
+/// A path in Myriad on one line, `w` wide at most: too long, it loses its middle, so its
+/// start and its folder's name stay.
+pub(super) fn myriad_path(
+    kit: &Kit,
+    path: &str,
+    font: egui::FontId,
+    color: Color32,
+    w: f32,
+) -> Arc<Galley> {
+    let chars: Vec<char> = path.chars().collect();
+    let mut keep = chars.len();
+    let mut g = myriad(kit, path, font.clone(), color, f32::INFINITY, true);
+    while g.size().x > w && keep > 12 {
+        keep -= 2;
+        let head = keep / 3;
+        let short: String = chars[..head]
+            .iter()
+            .chain(std::iter::once(&'…'))
+            .chain(&chars[chars.len() - (keep - head)..])
+            .collect();
+        g = myriad(kit, &short, font.clone(), color, f32::INFINITY, true);
+    }
+    if g.size().x > w {
+        g = myriad(kit, path, font, color, w, true);
+    }
+    g
+}
+
 /// Clickable Myriad text in the link colour, underlined on hover; returns the click.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn text_link(
