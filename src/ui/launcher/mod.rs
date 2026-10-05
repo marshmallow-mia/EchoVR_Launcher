@@ -497,6 +497,8 @@ pub enum SnapVariant {
     ModsNoLoader,
     /// Mods: a plugin's options open.
     ModsOptions,
+    /// Mods: the loader's longest text (a plugin skipped, your own config.json).
+    ModsLongText,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -1248,7 +1250,9 @@ impl Dashboard {
                 self.install_pick = Some("pc-halloween-2017".into())
             }
             // The Mods page makes its own made-up state (`mods::show`).
-            Some(SnapVariant::ModsNoLoader | SnapVariant::ModsOptions) => {}
+            Some(
+                SnapVariant::ModsNoLoader | SnapVariant::ModsOptions | SnapVariant::ModsLongText,
+            ) => {}
             Some(SnapVariant::QuestFresh) => {
                 self.platform = Platform::Quest;
                 if let Some(i) = &mut self.quest_info {

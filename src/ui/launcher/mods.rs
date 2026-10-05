@@ -310,11 +310,21 @@ fn loader_card(
     let tr = kit.put(x, ty, g);
     let tag_x = tr.max.x - kit.origin.x + dz(18.0);
     kit.dot_tag(tag_x, tr.center().y - kit.origin.y, tag, 14.0, color);
-    let text = loader_text(view);
-    kit.caps_text(x, ty + dz(46.0), w, &text, 15.5, design::BODY, dz(8.0));
-
     // Left: the main action (or the switch); right: the folders.
     let by = bottom - BTN_H;
+    // The text above them, a size smaller when it would reach them (a narrow card, with
+    // the rail unfolded, and a long text: a path, a failed plugin, your own config).
+    let text = loader_text(view);
+    let (text_y, room) = (ty + dz(46.0), by - ty - dz(46.0) - dz(6.0));
+    let height = |size: f32| -> f32 {
+        let g = kit.caps_block(&text, size, design::BODY, w);
+        g.iter().map(|g| g.size().y).sum::<f32>() + dz(8.0) * g.len().saturating_sub(1) as f32
+    };
+    let size = [15.5, 14.5, 13.5, 12.5]
+        .into_iter()
+        .find(|&s| height(s) <= room)
+        .unwrap_or(12.5);
+    kit.caps_text(x, text_y, w, &text, size, design::BODY, dz(8.0));
     match &view.loader {
         Loader::Nevr { .. } => {
             let mut off = !view.enabled;
@@ -1940,6 +1950,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         status: st,
     };
     let bare = variant == Some(SnapVariant::ModsNoLoader);
+    let long = variant == Some(SnapVariant::ModsLongText);
     let mut plugins = vec![
         plugin(
             "NvrAssetPatches.dll",
@@ -1986,6 +1997,15 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         .cloned()
         .unwrap_or_default();
     plugins[0].defaults = plugins[0].args.clone();
+    if long {
+        plugins[1].status = Some(status(
+            "CombatStats.dll",
+            "combat_stats",
+            "0.3.0",
+            "skipped",
+            "",
+        ));
+    }
     if bare {
         plugins.truncate(1);
         for p in &mut plugins {
@@ -2015,7 +2035,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         }),
         plugins,
         shadowed: None,
-        game_config: None,
+        game_config: long.then(|| "_local/config.json".into()),
         stray_dbgcore: false,
         assets_enabled: true,
         asset_patches: vec![

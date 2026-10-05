@@ -6,7 +6,7 @@
 use egui::Color32;
 
 use super::hero::{self, JobView};
-use super::install::{myriad, play_version};
+use super::install::{myriad_path, play_version};
 use super::{panel, play, settings, versions, Dashboard, Msg};
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
@@ -174,7 +174,8 @@ fn version_tile(
     let aw = dz(PLAY_W + ACTION_GAP + MANAGE_W);
     let (sub, color) = folder_line(d, v);
     let sub_w = right - aw - dz(12.0) - tx;
-    let g = myriad(k, &sub, design::myriad(16.0), color, sub_w, true);
+    // The folder's name matters most: a long path loses its middle.
+    let g = myriad_path(k, &sub, design::myriad(16.0), color, sub_w);
     let gy = ay + (dz(ACTION_H) - g.size().y) / 2.0;
     k.put(tx, gy, g);
     actions(d, k, ctx, v, right - aw, ay);

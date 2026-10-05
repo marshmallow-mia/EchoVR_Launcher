@@ -87,6 +87,7 @@ pub fn shots() -> Vec<Shot> {
         ("play_quest_fresh", Page::Play, SnapVariant::QuestFresh),
         ("mods_no_loader", Page::Mods, SnapVariant::ModsNoLoader),
         ("mods_options", Page::Mods, SnapVariant::ModsOptions),
+        ("mods_long_text", Page::Mods, SnapVariant::ModsLongText),
         ("dialog_confirm", Page::Install, SnapVariant::DialogConfirm),
         ("dialog_browser", Page::Play, SnapVariant::DialogBrowser),
         (
