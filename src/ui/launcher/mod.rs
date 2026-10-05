@@ -38,14 +38,76 @@ use crate::core::launcher::update_check;
 use crate::core::launcher::versions::Step;
 use crate::core::links;
 
-pub const CREDITS: &str = "Copyright for Echo VR is by Meta/Ready at Dawn!\n\
-This launcher is not at all associated with them!\n\n\
-Special thanks to Sick and SirDominik for some of the backgrounds!\n\
-Special thanks to F-A-N-G-O-R-N for getting me into Java and helping with this project.\n\
-I know you still feel shame when you have to look at my source code.\n\
-Special thanks to Leon(leon1273) for contributing and cleaning stuff in my code\n\
-This tool is still in early alpha!\n\
-If you have problems, contact me on Discord 'marshmallow_mia'.";
+/// Settings → Credits: who made what the launcher is and brings along.
+pub struct Credit {
+    pub name: &'static str,
+    pub by: &'static str,
+    pub what: &'static str,
+    pub licence: &'static str,
+    pub url: &'static str,
+}
+
+pub const CREDITS: &[Credit] = &[
+    Credit {
+        name: "Echo VR Launcher",
+        by: "marshmallow-mia, with Leon (leon1273); backgrounds by Sick and SirDominik; thanks to F-A-N-G-O-R-N",
+        what: "Installs, updates and starts Echo VR, its mods and VR on Windows and Linux.",
+        licence: "GPL-3.0",
+        url: env!("CARGO_PKG_REPOSITORY"),
+    },
+    Credit {
+        name: "EchoXR",
+        by: crate::core::echoxr::AUTHORS,
+        what: "Echo VR on OpenXR: SteamVR without Revive, and VR on Linux.",
+        licence: "MIT (Revive), Apache-2.0 (OpenXR SDK)",
+        url: "https://github.com/EchoTools/EchoXR",
+    },
+    Credit {
+        name: "EchoXR Hands",
+        by: crate::core::echoxr_hands::AUTHORS,
+        what: "Your own fingers on Echo VR's hands, from OpenXR hand tracking.",
+        licence: "",
+        url: "https://github.com/EchoTools/EchoXR-Hands",
+    },
+    Credit {
+        name: "nEVR runtime",
+        by: "EchoTools",
+        what: "The mod loader in Echo VR: plugins, Discord sign-in, friends and parties.",
+        licence: "Apache-2.0",
+        url: "https://github.com/EchoTools/nevr-runtime",
+    },
+    Credit {
+        name: "EchoVRCE",
+        by: "the EchoVRCE team",
+        what: "The community servers, accounts and matchmaking Echo VR plays on.",
+        licence: "",
+        url: "https://echovrce.com",
+    },
+    Credit {
+        name: "Revive",
+        by: "CrossVR (Jules Blok) and contributors",
+        what: "Runs Oculus games on SteamVR; EchoXR's OpenXR side is built on it.",
+        licence: "MIT",
+        url: "https://github.com/LibreVR/Revive",
+    },
+    Credit {
+        name: "RiftLift",
+        by: "Villagers654",
+        what: "Rift games on Linux: its findings shaped EchoXR's Proton fixes (ideas only, no code).",
+        licence: "GPL-3.0",
+        url: "https://github.com/Villagers654/RiftLift",
+    },
+    Credit {
+        name: "GE-Proton",
+        by: "GloriousEggroll, on Valve's Proton and Wine",
+        what: "Runs Echo VR on Linux, with OpenXR (wineopenxr).",
+        licence: "BSD-3-Clause and LGPL-2.1 (Wine)",
+        url: "https://github.com/GloriousEggroll/proton-ge-custom",
+    },
+];
+
+/// Under the credits.
+pub const CREDITS_NOTE: &str = "Echo VR is by Ready at Dawn and Meta, who have nothing to do with this launcher. Problems? Ask on Discord: marshmallow_mia.";
 
 pub const W: f32 = 1280.0;
 pub const H: f32 = 720.0;
@@ -366,6 +428,8 @@ pub enum SnapVariant {
     UploadLogs,
     /// ...and they were sent: the reference.
     LogsSent,
+    /// Settings: the credits.
+    Credits,
     /// The Quest side, with Echo VR installed on the headset.
     QuestSide,
     /// The Quest side, a headset without Echo VR.
@@ -973,6 +1037,9 @@ impl Dashboard {
             }
             Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
+            Some(SnapVariant::Credits) => {
+                self.overlay = Some(setup::Overlay::Credits { scroll: 0.0 })
+            }
             Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A"),
             Some(
                 v @ (SnapVariant::InstallAsk

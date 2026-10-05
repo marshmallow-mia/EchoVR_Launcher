@@ -3,7 +3,7 @@
 //! About) in the right-hand panel.
 
 use super::install::{myriad, text_link};
-use super::{hero, panel, setup, Dashboard, LauncherUpdate, Msg, CREDITS};
+use super::{hero, panel, setup, Dashboard, LauncherUpdate, Msg};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{Runtime, SteamVrVia};
 use crate::core::links::Handler;
@@ -562,7 +562,7 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
         lx += lw + dz(28.0);
         if clicked {
             match (key, &d.launcher_update) {
-                ("about-credits", _) => d.dialogs.info("Credits", CREDITS),
+                ("about-credits", _) => d.overlay = Some(setup::Overlay::Credits { scroll: 0.0 }),
                 ("about-discord", _) => platform::open_url(crate::core::LOUNGE_INVITE),
                 ("about-source", _) => platform::open_url(env!("CARGO_PKG_REPOSITORY")),
                 (_, LauncherUpdate::Available(r)) => platform::open_url(&r.url),
@@ -721,6 +721,147 @@ pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         d.overlay = None;
         d.upload_sources = chosen;
         upload(d, ctx);
+    }
+}
+
+/// CREDITS: each part of the launcher and what it brings along, with who made it, its
+/// licence and a link; Echo VR's owners under it.
+pub(super) fn credits_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let (w, h) = (dz(1100.0), dz(860.0));
+    let (x, y, cw, bottom) = setup::card(k, w, h, "Credits");
+    let note_h: f32 = k
+        .caps_block(super::CREDITS_NOTE, 14.0, design::GREY, cw)
+        .iter()
+        .map(|g| g.size().y)
+        .sum();
+    let by = bottom - BTN_H;
+    let list_h = by - dz(16.0) - note_h - dz(12.0) - y;
+    let link_w = k
+        .link_width("GitHub", 13.5)
+        .max(k.link_width("Website", 13.5));
+    // Each entry: its name and licence, who made it, what it is.
+    let heights: Vec<f32> = super::CREDITS
+        .iter()
+        .map(|c| {
+            dz(30.0)
+                + k.caps_block(
+                    &format!("by {}", c.by),
+                    15.0,
+                    design::TEXT,
+                    cw - link_w - dz(16.0),
+                )
+                .iter()
+                .map(|g| g.size().y)
+                .sum::<f32>()
+                + dz(4.0)
+                + k.caps_block(c.what, 14.0, design::BODY, cw)
+                    .iter()
+                    .map(|g| g.size().y)
+                    .sum::<f32>()
+                + dz(22.0)
+        })
+        .collect();
+    let content: f32 = heights.iter().sum();
+    let Some(setup::Overlay::Credits { scroll }) = &mut d.overlay else {
+        return;
+    };
+    k.scroll_area("credits", x, y, cw + dz(16.0), list_h, content, scroll);
+    let mut cy = y - *scroll;
+    let mut open = None;
+    k.clipped(x - dz(4.0), y, cw + dz(8.0), list_h, |k| {
+        for (c, eh) in super::CREDITS.iter().zip(&heights) {
+            if cy + eh >= y && cy <= y + list_h {
+                let name = k.label_galley(c.name, design::din(19.0), design::TEXT, cw);
+                let nr = k.put(x, cy, name);
+                if !c.licence.is_empty() {
+                    let lic = k.label_galley(c.licence, design::din(13.0), design::GREY, cw);
+                    k.put(
+                        nr.max.x - k.origin.x + dz(12.0),
+                        nr.center().y - k.origin.y - lic.size().y / 2.0,
+                        lic,
+                    );
+                }
+                let link = if c.url.contains("github.com") {
+                    "GitHub"
+                } else {
+                    "Website"
+                };
+                if k.link(
+                    &format!("credit-{}", c.name),
+                    x + cw - k.link_width(link, 13.5),
+                    cy,
+                    link,
+                    13.5,
+                    c.url,
+                )
+                .clicked
+                {
+                    open = Some(c.url);
+                }
+                let mut ty = cy + dz(30.0);
+                ty += k.caps_text(
+                    x,
+                    ty,
+                    cw - link_w - dz(16.0),
+                    &format!("by {}", c.by),
+                    15.0,
+                    design::TEXT,
+                    0.0,
+                ) + dz(4.0);
+                k.caps_text(x, ty, cw, c.what, 14.0, design::BODY, 0.0);
+            }
+            cy += eh;
+        }
+    });
+    if let Some(url) = open {
+        platform::open_url(url);
+    }
+    k.caps_text(
+        x,
+        by - dz(12.0) - note_h,
+        cw,
+        super::CREDITS_NOTE,
+        14.0,
+        design::GREY,
+        0.0,
+    );
+    let notices_w = k.button_width("Licences", None, BTN_H).max(140.0);
+    if k.button(
+        "credits-notices",
+        x,
+        by,
+        notices_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Licences",
+        true,
+        "The third-party licences of what the launcher is built with",
+    )
+    .clicked
+    {
+        platform::open_url(&format!(
+            "{}/blob/main/THIRD_PARTY_NOTICES.txt",
+            env!("CARGO_PKG_REPOSITORY")
+        ));
+    }
+    let close_w = k.button_width("Close", None, BTN_H).max(110.0);
+    if k.button(
+        "credits-close",
+        x + cw - close_w,
+        by,
+        close_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Close",
+        true,
+        "",
+    )
+    .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        d.overlay = None;
     }
 }
 

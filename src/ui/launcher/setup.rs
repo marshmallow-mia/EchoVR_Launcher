@@ -69,6 +69,8 @@ pub(super) enum Overlay {
     LoginNotice(crate::core::launcher::login_watch::LoginNotice),
     /// Settings: which logs to upload (`off`: the kinds unchecked; all go at first).
     UploadLogs { off: Vec<crate::core::logs::Kind> },
+    /// Settings: who made the launcher and what it brings along (`scroll`: the list's).
+    Credits { scroll: f32 },
 }
 
 /// The Install card's answers, prefilled with the last ones.
@@ -805,6 +807,7 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::StartServer { .. }) => super::servers::start_card(d, k, ctx),
         Some(Overlay::ShareMatch { .. }) => super::servers::share_card(d, k, ctx),
         Some(Overlay::UploadLogs { .. }) => super::settings::upload_card(d, k, ctx),
+        Some(Overlay::Credits { .. }) => super::settings::credits_card(d, k, ctx),
         None => {}
     });
 }
