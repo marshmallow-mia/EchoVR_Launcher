@@ -731,7 +731,8 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
     let (cx, cy) = (dz(PICKER.x), dz(PICKER_CAPTION_Y) - caption_top(kit));
     kit.put(cx, cy, caption);
 
-    let r = kit.drect(PICKER);
+    // Narrower with the page (the rail unfolded), down to a short name's width.
+    let r = kit.drect(PICKER.wider(kit.dx().clamp(-60.0, 0.0)));
     let (resp, t, pressed) = kit.hot(VERSION_MENU, r, enabled, &tip);
     let open = enabled && kit.menu_open(VERSION_MENU);
     let fill = if pressed {

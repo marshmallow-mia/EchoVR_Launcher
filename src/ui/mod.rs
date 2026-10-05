@@ -76,7 +76,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        fit_zoom(&ctx, self.menu.rail_extra(&ctx));
+        fit_zoom(&ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
@@ -106,16 +106,15 @@ impl eframe::App for App {
     }
 }
 
-/// Scales the launcher with its window: the design's 1280×720, `extra` wider (the unfolded
-/// rail's room), fills it on one side, and the room left on the other goes to the layout
-/// (`Kit::ex`, `Kit::ey`). Zooming keeps text and images sharp, as a resize does.
-fn fit_zoom(ctx: &egui::Context, extra: f32) {
+/// Scales the launcher with its window: the design's 1280×720 fills it on one side, and
+/// the room left on the other goes to the layout (`Kit::ex`, `Kit::ey`).
+fn fit_zoom(ctx: &egui::Context) {
     let ppp = ctx.pixels_per_point();
     let native = ctx
         .native_pixels_per_point()
         .unwrap_or(ppp / ctx.zoom_factor());
     let px = ctx.viewport_rect().size() * ppp;
-    let zoom = (px.x / ((launcher::W + extra) * native)).min(px.y / (launcher::H * native));
+    let zoom = (px.x / (launcher::W * native)).min(px.y / (launcher::H * native));
     if zoom.is_finite() && zoom > 0.1 && (zoom - ctx.zoom_factor()).abs() > 0.001 {
         ctx.set_zoom_factor(zoom);
     }

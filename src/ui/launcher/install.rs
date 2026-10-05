@@ -72,7 +72,16 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         Platform::Pc => pc_hero(d),
         Platform::Quest => quest_hero(d),
     };
-    kit.image_d(hr.logo, LOGO.moved(kit.dx() / 2.0));
+    // Smaller when the hero is narrower than the design's (the rail unfolded).
+    let lw = LOGO_W.min(HERO.w + kit.dx() - 120.0);
+    let s = lw / LOGO_W;
+    let logo = Dr::new(
+        LOGO.x + (LOGO_W - lw) / 2.0 + kit.dx() / 2.0,
+        LOGO.y + LOGO.h * (1.0 - s) / 2.0,
+        lw,
+        LOGO.h * s,
+    );
+    kit.image_d(hr.logo, logo);
     hero_text(kit, &hr);
     // One width for every label here, so the button never changes size on this page.
     let extra = hero::extra_for(kit, "INSTALL");

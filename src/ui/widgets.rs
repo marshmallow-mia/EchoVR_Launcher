@@ -392,7 +392,18 @@ impl Kit<'_> {
         }
         // The title and the note, centred in the tile.
         let pad = dz(22.0);
-        let g = self.label_galley(title, design::din(23.0), design::TEXT, w - 2.0 * pad);
+        // A long title in a narrow tile (the rail unfolded) gets smaller before it is cut.
+        let upper = title.to_uppercase();
+        let size = [23.0, 21.0, 19.0, 17.5]
+            .into_iter()
+            .find(|&s| {
+                self.spaced_galley(&upper, design::din(s), design::TEXT, SPACING, false)
+                    .size()
+                    .x
+                    <= w - 2.0 * pad
+            })
+            .unwrap_or(17.5);
+        let g = self.label_galley(title, design::din(size), design::TEXT, w - 2.0 * pad);
         let color = if selected { design::TEXT } else { design::BODY };
         let notes = self.caps_block(note, 15.0, color, w - 2.0 * pad);
         let gap = dz(8.0);

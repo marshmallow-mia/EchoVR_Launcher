@@ -109,7 +109,7 @@ pub const H: f32 = 720.0;
 const RAIL: f32 = dz(RAIL_W);
 /// The rail's width, and how much wider it gets unfolded (design pixels).
 const RAIL_W: f32 = 91.0;
-const RAIL_EXTRA: f32 = 190.0;
+const RAIL_EXTRA: f32 = 150.0;
 /// How long the rail takes to unfold or fold (seconds).
 const RAIL_SLIDE: f32 = 0.22;
 /// Left edge and width of page content.
@@ -2020,8 +2020,9 @@ impl Dashboard {
         }
         versions::handle_answers(self, &ctx);
         settings::uninstall_answers(self, &ctx);
-        // The page right of the unfolded rail, in the room the zoom made for it.
-        let shift = self.rail_extra(&ctx).min(kit.ex);
+        // The page right of the unfolded rail: laid out that much narrower (as for a
+        // narrower window), at the same height.
+        let shift = self.rail_extra(&ctx);
         kit.origin.x += shift;
         kit.ex -= shift;
         self.page_body(kit, &ctx, self.page);
@@ -2164,7 +2165,7 @@ impl Dashboard {
 
     /// How much wider than its icons the rail is right now (logical pixels): the unfolded
     /// rail's room, sliding in and out.
-    pub fn rail_extra(&self, ctx: &egui::Context) -> f32 {
+    fn rail_extra(&self, ctx: &egui::Context) -> f32 {
         let open = self.state.rail_open;
         let t = if self.demo {
             f32::from(u8::from(open))
