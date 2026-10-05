@@ -50,7 +50,7 @@ pub struct Credit {
 pub const CREDITS: &[Credit] = &[
     Credit {
         name: "Echo VR Launcher",
-        by: "marshmallow-mia, with Leon (leon1273); backgrounds by Sick and SirDominik; thanks to F-A-N-G-O-R-N",
+        by: "marshmallow-mia (development) and sickmave (design)",
         what: "Installs, updates and starts Echo VR, its mods and VR on Windows and Linux.",
         licence: "GPL-3.0",
         url: env!("CARGO_PKG_REPOSITORY"),
@@ -89,20 +89,6 @@ pub const CREDITS: &[Credit] = &[
         what: "Runs Oculus games on SteamVR; EchoXR's OpenXR side is built on it.",
         licence: "MIT",
         url: "https://github.com/LibreVR/Revive",
-    },
-    Credit {
-        name: "RiftLift",
-        by: "Villagers654",
-        what: "Rift games on Linux: its findings shaped EchoXR's Proton fixes (ideas only, no code).",
-        licence: "GPL-3.0",
-        url: "https://github.com/Villagers654/RiftLift",
-    },
-    Credit {
-        name: "GE-Proton",
-        by: "GloriousEggroll, on Valve's Proton and Wine",
-        what: "Runs Echo VR on Linux, with OpenXR (wineopenxr).",
-        licence: "BSD-3-Clause and LGPL-2.1 (Wine)",
-        url: "https://github.com/GloriousEggroll/proton-ge-custom",
     },
 ];
 
