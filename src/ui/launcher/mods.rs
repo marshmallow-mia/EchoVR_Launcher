@@ -1405,6 +1405,20 @@ fn options_rows(
                     .filter(|(key, _)| !key.trim().is_empty())
                     .map(|(key, value)| (key.trim().to_string(), value.clone()))
                     .collect();
+                // nEVR reads ${…} as an environment variable: an unset one and no plugin
+                // loads. The options stay open to change it.
+                let env = args.iter().find(|(k, v)| {
+                    crate::core::launcher::nevr::expands_env(k)
+                        || crate::core::launcher::nevr::expands_env(v)
+                });
+                if let Some((key, _)) = env {
+                    d.dialogs.error(
+                        "Couldn't save the arguments",
+                        &format!("{key}: nEVR reads ${{…}} as an environment variable, and when that isn't set it loads no plugins at all. Leave it out."),
+                        Default::default(),
+                    );
+                    return;
+                }
                 d.mods.editing = None;
                 let shown = args.clone();
                 write(

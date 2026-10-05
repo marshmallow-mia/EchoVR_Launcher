@@ -237,6 +237,13 @@ pub struct PluginLine {
     pub args: Map<String, Value>,
 }
 
+/// Pure: whether nEVR reads `text` as an environment variable: a `${` with a `}` after it
+/// (an unterminated `${` it keeps as it is). nEVR has no escape for it, and an unset
+/// variable makes it drop the whole `config.yaml`, so a client loads no plugins at all.
+pub fn expands_env(text: &str) -> bool {
+    text.find("${").is_some_and(|i| text[i + 2..].contains('}'))
+}
+
 /// Pure: the launcher's `config.yaml`: the plugins (none with mods off). Values are
 /// written as JSON, which YAML reads as it is.
 pub fn render_config(plugins: &[PluginLine]) -> String {
@@ -615,6 +622,16 @@ fn failed(rest: &str) -> Option<PluginStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_what_nevr_reads_as_a_variable() {
+        assert!(expands_env("${HOME}"));
+        assert!(expands_env("a ${X:-b} c"));
+        assert!(!expands_env("${X"));
+        assert!(!expands_env("costs $5 {each}"));
+        assert!(!expands_env("{${"));
+        assert!(expands_env("${${A}"));
+    }
 
     #[test]
     fn finds_the_version() {
