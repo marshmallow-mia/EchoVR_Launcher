@@ -131,7 +131,7 @@ enum Main {
 
 /// What CHECK FOR UPDATES does.
 enum Update {
-    Pc(InstalledVersion),
+    Pc(Box<InstalledVersion>),
     Quest,
     Nothing,
 }
@@ -153,6 +153,8 @@ struct Action {
     update_tip: String,
     /// The last update failed: the button shows its orange "!".
     update_alert: bool,
+    /// An update is out: the button says so.
+    update_ready: bool,
 }
 
 impl Action {
@@ -169,6 +171,7 @@ impl Action {
             update_enabled: false,
             update_tip: "Download any changed game files".into(),
             update_alert: false,
+            update_ready: false,
         }
     }
 
@@ -362,7 +365,11 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 .update_note
                 .get(&v.id)
                 .is_some_and(|n| n.contains("failed"));
-            a.update = Update::Pc(v);
+            a.update_ready = updates && d.updates.game(&v.id);
+            if a.update_ready && a.update_enabled {
+                a.update_tip = "An update is out: download the changed game files".into();
+            }
+            a.update = Update::Pc(Box::new(v));
         }
         Target::Missing(_) => {
             a.not_installed("Game files missing", job.as_ref());
@@ -496,8 +503,15 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
         grey: a.grey,
         enabled: a.enabled,
         tip: &a.tip,
-        side: Side::Updates {
-            alert: a.update_alert,
+        side: if a.update_ready && !a.update_alert {
+            Side::Blue {
+                icon: Icon::Download,
+                label: "Update ready",
+            }
+        } else {
+            Side::Updates {
+                alert: a.update_alert,
+            }
         },
         side_enabled: a.update_enabled,
         side_tip: &a.update_tip,
@@ -543,7 +557,7 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
     }
     if update {
         match a.update {
-            Update::Pc(v) => versions::update(d, ctx, v),
+            Update::Pc(v) => versions::update(d, ctx, *v),
             Update::Quest => setup::quest_update(d, ctx),
             Update::Nothing => {}
         }

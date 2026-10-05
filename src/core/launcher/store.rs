@@ -99,6 +99,9 @@ pub struct InstalledVersion {
     pub exe: Option<String>,
     /// An event build, played on the classic lobbies relay as this build.
     pub publisher_lock: Option<String>,
+    /// The sha256 of its update manifest when the launcher last brought it up to date
+    /// (`core::updates`): another manifest means an update is out.
+    pub manifest_sha256: Option<String>,
 }
 
 impl InstalledVersion {
@@ -171,6 +174,12 @@ pub struct LauncherState {
     pub echoxr_hands: bool,
     /// The rail is unfolded: the tabs' names beside their icons (new players start so).
     pub rail_open: bool,
+    /// Updates found are announced on the desktop too.
+    pub desktop_notifications: bool,
+    /// The tray keeps looking for updates while the launcher is closed.
+    pub tray: bool,
+    /// The tray starts at login.
+    pub tray_at_login: bool,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -218,6 +227,9 @@ impl Default for LauncherState {
             event_builds: false,
             echoxr_hands: false,
             rail_open: true,
+            desktop_notifications: true,
+            tray: true,
+            tray_at_login: false,
             relay_account: None,
         }
     }

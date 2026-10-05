@@ -234,6 +234,8 @@ enum Msg {
     QuestNetwork(Result<(), UiError>),
     /// The launcher's latest release, if newer (`Err`: couldn't look).
     LauncherUpdate(Result<Option<update_check::Release>, String>),
+    /// An update check is done.
+    Updates(crate::core::updates::Check),
     /// Who opens spark:// links now (`Err`: registering failed, and why).
     LinkHandler(links::Handler, Option<String>),
     /// The headset's logs were saved into this folder, or why not.
@@ -246,6 +248,39 @@ enum Msg {
 }
 
 /// Whether a newer launcher is out (Settings shows it, the rail marks it).
+/// What the update checks found (`core::updates`).
+#[derive(Default)]
+struct UpdatesFound {
+    findings: Vec<crate::core::updates::Finding>,
+    /// When the last check was done.
+    checked: Option<std::time::Instant>,
+    checking: bool,
+    /// What the status bar has said this run (each finding once).
+    shown: std::collections::BTreeSet<String>,
+}
+
+impl UpdatesFound {
+    /// Look again right away (something was installed or updated).
+    fn check_soon(&mut self) {
+        self.checked = None;
+    }
+
+    /// An update of installed version `id` is ready.
+    fn game(&self, id: &str) -> bool {
+        self.findings
+            .iter()
+            .any(|f| matches!(f, crate::core::updates::Finding::Game { id: g, .. } if g == id))
+    }
+
+    /// How many plugin updates there are.
+    fn plugins(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|f| matches!(f, crate::core::updates::Finding::Plugin { .. }))
+            .count()
+    }
+}
+
 #[derive(Default)]
 enum LauncherUpdate {
     #[default]
@@ -435,6 +470,8 @@ pub enum SnapVariant {
     Credits,
     /// The rail unfolded.
     RailOpen,
+    /// Updates found: the rail's dots, Play's "Update ready".
+    UpdatesFound,
     /// Settings: what to uninstall.
     Uninstall,
     /// Mods: local plugins off (an unverified plugin left out, Add DLL locked).
@@ -630,6 +667,8 @@ pub struct Dashboard {
     launcher_update: LauncherUpdate,
     /// What the uninstall card asked to remove, until its confirmation is answered.
     uninstall_parts: Vec<crate::core::uninstall::Part>,
+    /// What can be updated, as the last check found it.
+    updates: UpdatesFound,
     started: bool,
     deleting_cache: bool,
     /// The logs are on their way to the upload service.
@@ -693,6 +732,14 @@ impl Dashboard {
             self.save();
         }
         self.check_launcher_update(ctx);
+        // The tray looks for updates while the window is closed (and starts at login if
+        // its autostart entry is still there).
+        if !self.demo {
+            self.state.tray_at_login = crate::core::tray::autostart_on();
+        }
+        if !self.demo && self.state.tray {
+            std::thread::spawn(crate::core::tray::start);
+        }
         // The custom background is gone; so is what an older launcher converted for it.
         let old_background = crate::core::paths::data_dir().join("background");
         if !self.demo && old_background.is_dir() {
@@ -733,6 +780,11 @@ impl Dashboard {
         self.link_checked = Some(std::time::Instant::now());
         if cfg!(any(windows, target_os = "linux")) {
             ctx.request_repaint_after(second);
+        }
+        // The tray's "Open Echo VR Launcher" while this one is open.
+        if crate::core::tray::take_window_forward() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         let Some(link) = links::take_incoming().filter(|l| links::parse(l).is_some()) else {
             return;
@@ -913,6 +965,65 @@ impl Dashboard {
         });
     }
 
+    /// At the start and every 15 minutes: looks for updates of the launcher, the installed
+    /// Echo VRs and their catalogue plugins in the background, announcing new ones on the
+    /// desktop (once each; the tray waits while the window is open).
+    fn check_updates(&mut self, ctx: &egui::Context) {
+        if self.demo || self.updates.checking {
+            return;
+        }
+        if self
+            .updates
+            .checked
+            .is_some_and(|t| t.elapsed() < crate::core::updates::INTERVAL)
+        {
+            return;
+        }
+        self.updates.checking = true;
+        let state = self.state.clone();
+        self.worker.spawn(ctx, move |tx| {
+            let check = crate::core::updates::check(&state);
+            let fresh = crate::core::updates::not_yet_announced(&check.findings);
+            if state.desktop_notifications {
+                crate::core::updates::notify_desktop(&fresh);
+            }
+            tx.send(Msg::Updates(check));
+        });
+    }
+
+    /// An update check is done: what it learned is kept, what it found shown.
+    fn updates_done(&mut self, check: crate::core::updates::Check) {
+        use crate::core::updates::Finding;
+        self.updates.checking = false;
+        self.updates.checked = Some(std::time::Instant::now());
+        if crate::core::updates::apply_baselines(&mut self.state, &check) {
+            self.save();
+        }
+        if let Some(c) = check.catalog.clone() {
+            self.mods.catalog_done(c);
+        }
+        for f in &check.findings {
+            if let Finding::Launcher { version, url } = f {
+                self.launcher_update = LauncherUpdate::Available(update_check::Release {
+                    version: version.clone(),
+                    url: url.clone(),
+                });
+            }
+        }
+        // What wasn't there before in this run: in the status bar.
+        let new: Vec<&Finding> = check
+            .findings
+            .iter()
+            .filter(|f| self.updates.shown.insert(f.key()))
+            .collect();
+        match new.as_slice() {
+            [] => {}
+            [one] => self.notify(&one.text()),
+            more => self.notify(&format!("{} updates available", more.len())),
+        }
+        self.updates.findings = check.findings;
+    }
+
     /// Starts the measurements the pages asked for that are due.
     fn probe(&mut self, ctx: &egui::Context) {
         if self.demo {
@@ -1051,6 +1162,28 @@ impl Dashboard {
             Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
             Some(SnapVariant::RailOpen) => self.state.rail_open = true,
+            Some(SnapVariant::UpdatesFound) => {
+                use crate::core::updates::Finding;
+                self.updates.findings = vec![
+                    Finding::Game {
+                        id: "pc-latest".into(),
+                        name: "Echo VR (PC, latest)".into(),
+                        hash: "ab".into(),
+                    },
+                    Finding::Plugin {
+                        version_id: "pc-latest".into(),
+                        version_name: "Echo VR (PC, latest)".into(),
+                        file: "CombatStats.dll".into(),
+                        name: "Combat Stats".into(),
+                        to: "0.3.1".into(),
+                    },
+                ];
+                self.launcher_update = LauncherUpdate::Available(update_check::Release {
+                    version: "0.11.0".into(),
+                    url: concat!(env!("CARGO_PKG_REPOSITORY"), "/releases").into(),
+                });
+                self.state.rail_open = true;
+            }
             Some(SnapVariant::Uninstall) => settings::ask_uninstall(self),
             Some(SnapVariant::ModsLocked) => {}
             Some(SnapVariant::Credits) => {
@@ -1627,6 +1760,7 @@ impl Dashboard {
                         }
                     }
                 }
+                Msg::Updates(check) => self.updates_done(check),
                 Msg::ModView(gen, id, view) => self.mods.read_done(gen, id, view),
                 Msg::ModCatalog(c) => self.mods.catalog_done(c),
                 Msg::Revive(dir) => self.revive.done((), dir),
@@ -1683,6 +1817,7 @@ impl Dashboard {
         servers::follow_up(self, ctx);
         play::watch_login(self, ctx);
         self.take_link(ctx);
+        self.check_updates(ctx);
         // Read the headset's version once it is connected.
         // A reinstall asks the install's questions again.
         if self
@@ -1776,7 +1911,9 @@ impl Dashboard {
                 JobResult::ReviveReady(_) | JobResult::EchoXrReady | JobResult::LinuxReady(_)
             );
         match r {
-            JobResult::Installed(v, update_failed) => {
+            JobResult::Installed(mut v, update_failed) => {
+                crate::core::updates::after_update(&mut v, update_failed.is_none());
+                self.updates.check_soon();
                 let name = v.name.clone();
                 if self.state.selected.is_none() {
                     self.state.selected = Some(v.id.clone());
@@ -1801,8 +1938,10 @@ impl Dashboard {
                     }
                 }
             }
-            JobResult::Reinstalled(r) => {
+            JobResult::Reinstalled(mut r) => {
                 let name = r.version.name.clone();
+                crate::core::updates::after_update(&mut r.version, r.update_failed.is_none());
+                self.updates.check_soon();
                 self.state.upsert(r.version);
                 self.save();
                 setup::apply_pending(self, ctx);
@@ -1827,6 +1966,11 @@ impl Dashboard {
                 }
             }
             JobResult::Updated => {
+                if let Some(v) = self.state.versions.iter_mut().find(|v| v.id == id) {
+                    crate::core::updates::after_update(v, true);
+                    self.save();
+                }
+                self.updates.check_soon();
                 self.mods.changed();
                 self.update_note.insert(id.to_string(), "Up to date".into());
                 self.notify("Echo VR is up to date");
@@ -1885,6 +2029,7 @@ impl Dashboard {
             JobResult::ModsChanged(notice) => {
                 self.mods.changed();
                 self.notify(&notice);
+                self.updates.check_soon();
             }
             JobResult::ReviveReady(notes) => {
                 self.revive = Probe::default();
@@ -2160,10 +2305,34 @@ impl Dashboard {
                 design::QUEST_ON,
             ));
         }
+        let games: Vec<&str> = self
+            .updates
+            .findings
+            .iter()
+            .filter_map(|f| match f {
+                crate::core::updates::Finding::Game { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        // Short: the reason fits under the name in the unfolded rail.
+        match games.as_slice() {
+            [] => {}
+            [_] => out.push((Page::Play, "Update ready".into(), design::QUEST_ON)),
+            more => out.push((
+                Page::Play,
+                format!("{} updates ready", more.len()),
+                design::QUEST_ON,
+            )),
+        }
+        match self.updates.plugins() {
+            0 => {}
+            1 => out.push((Page::Mods, "1 plugin update".into(), design::QUEST_ON)),
+            n => out.push((Page::Mods, format!("{n} plugin updates"), design::QUEST_ON)),
+        }
         if matches!(self.launcher_update, LauncherUpdate::Available(_)) {
             out.push((
                 Page::Settings,
-                "Launcher update available".to_string(),
+                "Launcher update".to_string(),
                 design::QUEST_WARN,
             ));
         }

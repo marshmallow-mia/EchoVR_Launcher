@@ -52,11 +52,20 @@ reqwest = { version = "0.13.5", default-features = false, features = ["blocking"
 # into the OS). Not on Linux: WebKitGTK would become a hard dependency of the portable build.
 wry = "0.57.0"
 
+# Update notifications on the desktop (D-Bus on Linux, toasts on Windows).
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+notify-rust = "4.18.1"
+
+# The tray icon: StatusNotifierItem over D-Bus (KDE, GNOME with AppIndicator), pure Rust.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.6", features = ["blocking"] }
+
 [target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
 reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "json", "rustls-no-provider", "http2", "system-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 
 [target.'cfg(windows)'.dependencies]
+tray-icon = "0.26.0"
 # The EchoVRCE session in the Windows Credential Manager. (macOS and Linux keep it in a file
 # only the user can read: the Keychain asks for access whenever an unsigned build changes.)
 keyring = { version = "3.6.3", default-features = false, features = ["windows-native"] }

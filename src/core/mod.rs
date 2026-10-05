@@ -2,6 +2,7 @@
 
 pub mod adb;
 pub mod cache;
+pub mod desktop_notify;
 pub mod download;
 pub mod echovrce;
 pub mod echoxr;
@@ -24,7 +25,9 @@ pub mod quest_install;
 pub mod quest_update;
 pub mod remote_zip;
 pub mod revive;
+pub mod tray;
 pub mod uninstall;
+pub mod updates;
 pub mod zip;
 
 /// The Echo VR Lounge, the community's main Discord.

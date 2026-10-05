@@ -126,6 +126,7 @@ fn from_entry(entry: &VersionEntry, id: &str, root: &str) -> InstalledVersion {
         patched: false,
         exe: entry.exe.clone(),
         publisher_lock: entry.publisher_lock.clone(),
+        manifest_sha256: None,
     }
 }
 
@@ -410,7 +411,7 @@ fn download_and_extract(
 
 /// `v`'s update, if it gets one: its own, or the live build's for a live install that
 /// doesn't name one (an added folder). Event builds and old folders get none.
-fn manifest_url(v: &InstalledVersion) -> Option<String> {
+pub fn manifest_url(v: &InstalledVersion) -> Option<String> {
     let live = v.publisher_lock.is_none() && v.bin_dir().ends_with("win10");
     v.update_manifest
         .as_deref()

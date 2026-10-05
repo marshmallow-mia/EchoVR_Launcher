@@ -251,26 +251,10 @@ fn take(file: &std::path::Path) -> Option<String> {
     Some(link).filter(|l| !l.trim().is_empty())
 }
 
-/// Whether another process of this executable runs for this user.
+/// Whether another launcher window of this user runs (the tray and Linux' PLAY don't
+/// count: they take no links).
 fn another_launcher_running() -> bool {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let Ok(me) = std::env::current_exe() else {
-        return false;
-    };
-    let Some(name) = me.file_name().map(|n| n.to_os_string()) else {
-        return false;
-    };
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_user(UpdateKind::OnlyIfNotSet),
-    );
-    let own = Pid::from_u32(std::process::id());
-    let user = sys.process(own).and_then(|p| p.user_id().cloned());
-    sys.processes()
-        .values()
-        .any(|p| p.pid() != own && p.name() == name && p.user_id().cloned() == user)
+    super::tray::window_running()
 }
 
 #[cfg(test)]

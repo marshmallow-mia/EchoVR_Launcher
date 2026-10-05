@@ -85,6 +85,22 @@ Only verified plugins load: the community update's and the catalogue's. A DLL of
 version's loader config (`x-local-plugins: true` in `_local/config.yaml`); writing a plugin
 and loading it is in [docs/plugins/local-plugins.md](docs/plugins/local-plugins.md).
 
+## Updates
+
+The launcher looks for updates when it starts and every 15 minutes: a newer launcher (its
+GitHub releases), an update of each installed Echo VR that gets updates (its update
+manifest changed since the launcher last brought it up to date), and a new version of a
+plugin installed from the catalogue. Nothing installs by itself: a dot on the rail (Play,
+Mods, Settings) and the status bar say what is out, PLAY's side button becomes **Update
+ready**, and the Mods page has **Update** on the plugin; the launcher's own update is a
+download link in Settings. EchoXR and EchoXR Hands come with the launcher, so a launcher
+update brings theirs.
+
+Each update is also announced once as a desktop notification (Linux: the desktop's
+notifications; Windows: a toast). While the launcher is closed, its icon in the tray
+(`EchoVR_Launcher --tray`, started by the launcher) keeps looking and opens it; it can
+start at login. Settings → Launcher turns each of these off. No tray on macOS.
+
 ## Building from source
 
 The launcher is written in Rust (GUI: [egui](https://github.com/emilk/egui)). With a stable

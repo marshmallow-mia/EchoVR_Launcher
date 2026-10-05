@@ -13,6 +13,7 @@ mod parts;
 mod snapshot;
 mod style;
 mod theme;
+pub mod tray;
 mod video;
 mod web;
 mod widgets;
