@@ -470,10 +470,13 @@ fn plugins_card(
     let bw = kit
         .button_width(label, Some(Icon::Folder), BTN_H)
         .max(dz(160.0));
-    let tip = match (editable, busy) {
-        (false, _) => "Needs the mod loader (nEVR)",
-        (true, Some(why)) => why,
-        (true, None) => "Add a plugin DLL from your computer",
+    // Plugins from disk aren't verified: only with local plugins on.
+    let local = view.is_some_and(|v| v.local_plugins);
+    let tip = match (editable, busy, local) {
+        (false, ..) => "Needs the mod loader (nEVR)",
+        (true, Some(why), _) => why,
+        (true, None, false) => "Local plugins are off: x-local-plugins: true in this version's _local/config.yaml turns them on (see docs/plugins/local-plugins.md)",
+        (true, None, true) => "Add a plugin DLL from your computer",
     };
     if kit
         .button(
@@ -485,7 +488,7 @@ fn plugins_card(
             Tone::Dark,
             Some(Icon::Folder),
             label,
-            editable && busy.is_none(),
+            editable && busy.is_none() && local,
             tip,
         )
         .clicked
@@ -552,6 +555,7 @@ fn plugins_card(
                             locked,
                             current,
                             busy,
+                            held: !p.verified && !view.local_plugins,
                         };
                         plugin_row(d, k, v, p, &look, x, ry, w)
                     }
@@ -630,7 +634,12 @@ struct Look {
     /// nEVR (its log tells what happened at the last start).
     current: bool,
     busy: Option<&'static str>,
+    /// Not verified, and local plugins are off: it isn't loaded.
+    held: bool,
 }
+
+/// Why a plugin that isn't verified doesn't load, and how to change that.
+const HELD_TIP: &str = "Not from the community update or the catalogue: it loads only with local plugins on (x-local-plugins: true in this version's _local/config.yaml, see docs/plugins/local-plugins.md)";
 
 /// The VR parts above the plugins: not nEVR's, the launcher puts them in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -854,7 +863,12 @@ fn plugin_row(
         right -= dz(14.0);
     }
     // Only nEVR says what it loaded.
-    if look.current {
+    if look.held {
+        let chip = "Not loaded";
+        let cw = k.chip_width(chip);
+        right -= cw;
+        k.chip(right, by + (bh - dz(27.0)) / 2.0, chip, design::QUEST_WARN);
+    } else if look.current {
         let (chip, color) = state(p);
         let cw = k.chip_width(&chip);
         right -= cw;
@@ -863,9 +877,11 @@ fn plugin_row(
 
     // Left: the switch with the name, its source tag; the details under it.
     let mut on = p.enabled;
-    let can = editable && !locked && p.present && !p.required;
+    let can = editable && !locked && p.present && !p.required && !look.held;
     let tip = if !editable {
         "Needs the mod loader (nEVR)"
+    } else if look.held {
+        HELD_TIP
     } else if p.required {
         "The game needs it: always on, also without mods"
     } else if locked {
@@ -891,6 +907,7 @@ fn plugin_row(
         );
     }
     let source = match &p.source {
+        Source::Shipped if !p.verified => ("Unverified", design::QUEST_WARN),
         Source::Shipped => ("Community update", design::SUBTLE),
         Source::Catalog { .. } => ("Catalogue", design::BLUE),
         Source::Local => ("Your DLL", design::QUEST_WARN),
@@ -1914,6 +1931,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         version: st.as_ref().map(|s| s.version.clone()).unwrap_or_default(),
         added: source != Source::Shipped,
         required: source == Source::Shipped,
+        verified: source != Source::Local,
         source,
         enabled: true,
         args: Default::default(),
@@ -1981,6 +1999,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         enabled,
     };
     let view = ModView {
+        local_plugins: variant != Some(SnapVariant::ModsLocked),
         loader: if bare {
             Loader::None
         } else {
@@ -2088,6 +2107,7 @@ mod tests {
             enabled: true,
             added: false,
             required: false,
+            verified: true,
             args: Default::default(),
             defaults: Default::default(),
             present: true,

@@ -158,6 +158,7 @@ pub fn shots() -> Vec<Shot> {
             SnapVariant::SettingsEchoXr,
         ),
         ("mods_echoxr", Page::Mods, SnapVariant::SettingsEchoXr),
+        ("mods_locked", Page::Mods, SnapVariant::ModsLocked),
         (
             "install_placeholder",
             Page::Install,

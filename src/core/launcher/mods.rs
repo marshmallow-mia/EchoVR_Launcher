@@ -564,6 +564,11 @@ pub enum Source {
     Local,
 }
 
+/// The loader config's switch for plugins that aren't verified (see [`Plugin::verified`]):
+/// `x-local-plugins: true` at the top of `_local/config.yaml` (nEVR leaves `x-` keys to
+/// others; the launcher keeps it when it writes the file).
+pub const LOCAL_PLUGINS_KEY: &str = "x-local-plugins";
+
 /// A plugin as the Mods page shows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plugin {
@@ -578,6 +583,10 @@ pub struct Plugin {
     pub enabled: bool,
     /// The launcher added it (from the catalogue or from disk).
     pub added: bool,
+    /// It comes from the community update or the mods catalogue (a file they name), or it
+    /// is EchoXR Hands' (pinned by checksum). Anything else (added from disk, or put into
+    /// the folder by hand) loads only with local plugins on ([`LOCAL_PLUGINS_KEY`]).
+    pub verified: bool,
     pub args: Map<String, Value>,
     /// Its default arguments (the catalogue's; none for a DLL from disk).
     pub defaults: Map<String, Value>,
@@ -642,6 +651,8 @@ pub struct ModView {
     /// Asset patches on at all, and each.
     pub assets_enabled: bool,
     pub asset_patches: Vec<AssetPatch>,
+    /// Unverified plugins load ([`LOCAL_PLUGINS_KEY`] in the loader's config).
+    pub local_plugins: bool,
 }
 
 /// The folder its plugins are in.
@@ -705,6 +716,7 @@ pub fn read(v: &InstalledVersion) -> ModView {
         stray_dbgcore: nevr::stray_dbgcore(&bin),
         assets_enabled,
         asset_patches,
+        local_plugins: nevr::local_plugins(v),
     }
 }
 
@@ -772,10 +784,21 @@ pub fn plugins(
                 Source::Local => Map::new(),
                 _ => known.map(|m| m.args.clone()).unwrap_or_default(),
             };
+            let verified = match &source {
+                Source::Catalog { .. } => true,
+                Source::Shipped => {
+                    known.is_some()
+                        || e.file
+                            .eq_ignore_ascii_case(crate::core::echoxr_hands::PLUGIN)
+                }
+                Source::Local => false,
+            };
             // Required by its name, however it got there (the update, or added by hand).
             let mut e = e;
             e.required |= known.is_some_and(|m| m.required);
-            plugin(e, source, defaults, has, status)
+            let mut p = plugin(e, source, defaults, has, status);
+            p.verified = verified;
+            p
         })
         .collect()
 }
@@ -804,6 +827,7 @@ fn plugin(
         name,
         version: st.as_ref().map(|s| s.version.clone()).unwrap_or_default(),
         added: e.launcher.is_some(),
+        verified: false,
         source,
         enabled: e.enabled || e.required,
         required: e.required,
@@ -861,15 +885,28 @@ pub fn before_start(v: &InstalledVersion, own_game_config: bool, hands: bool) ->
 pub fn prepare(v: &InstalledVersion) -> Result<()> {
     let overlay = Overlay::read(&choices_path(v));
     let catalog = ModCatalog::cached();
-    nevr::write_config(v, &config_lines(v, &overlay, &catalog))
+    let local = nevr::local_plugins(v);
+    nevr::write_config(v, &config_lines(v, &overlay, &catalog, local), local)
 }
 
-fn config_lines(v: &InstalledVersion, overlay: &Overlay, catalog: &ModCatalog) -> Vec<PluginLine> {
+fn config_lines(
+    v: &InstalledVersion,
+    overlay: &Overlay,
+    catalog: &ModCatalog,
+    local: bool,
+) -> Vec<PluginLine> {
     let mods_on = overlay.enabled();
     let added = overlay.added();
     let mut lines = Vec::new();
     for p in plugins(overlay, &plugin_files(v), None, catalog) {
         if !p.present || !(mods_on || p.required) {
+            continue;
+        }
+        if !p.verified && !local {
+            tracing::info!(
+                "{}: not verified, and local plugins are off: left out",
+                p.file
+            );
             continue;
         }
         let pinned = added
@@ -1593,14 +1630,30 @@ mod tests {
             }
         );
 
-        // Added plugins are listed while their file is the one added.
+        // A plugin added from disk isn't verified: left out while local plugins are off,
+        // and a DLL put into the folder by hand too.
         let src = dir.path().join("MyMod.dll");
         std::fs::write(&src, "MZ mine").unwrap();
         add_local(&v, &src).unwrap();
+        std::fs::write(bin.join("plugins/Dropped.dll"), "MZ dropped").unwrap();
         prepare(&v).unwrap();
-        assert!(std::fs::read_to_string(&yaml)
-            .unwrap()
-            .contains("\"MyMod.dll\""));
+        let text = std::fs::read_to_string(&yaml).unwrap();
+        assert!(!text.contains("MyMod") && !text.contains("Dropped"));
+        let view = read(&v);
+        assert!(!view.local_plugins);
+        assert!(view.plugins.iter().filter(|p| !p.verified).count() == 2);
+        assert!(view
+            .plugins
+            .iter()
+            .any(|p| p.file == "NvrAssetPatches.dll" && p.verified));
+        // With local plugins on in the loader's config they're listed, while their file is
+        // the one added; the switch stays when the launcher writes the file again.
+        std::fs::write(&yaml, format!("{text}x-local-plugins: true\n")).unwrap();
+        prepare(&v).unwrap();
+        let text = std::fs::read_to_string(&yaml).unwrap();
+        assert!(text.contains("\"MyMod.dll\"") && text.contains("\"Dropped.dll\""));
+        assert!(nevr::local_plugins_in(&text) && read(&v).local_plugins);
+        std::fs::remove_file(bin.join("plugins/Dropped.dll")).unwrap();
         std::fs::write(bin.join("plugins/MyMod.dll"), "MZ swapped").unwrap();
         prepare(&v).unwrap();
         assert!(!std::fs::read_to_string(&yaml).unwrap().contains("MyMod"));
@@ -1709,8 +1762,15 @@ mod tests {
             .unwrap();
         assert!(p.required && p.enabled);
         assert!(set_plugin_enabled(&v, "NvrXmlHttpFix.dll", false).is_err());
+        // It came from disk: listed only with local plugins on.
+        assert!(!p.verified);
         prepare(&v).unwrap();
         let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
+        assert!(!std::fs::read_to_string(&yaml)
+            .unwrap()
+            .contains("NvrXmlHttpFix.dll"));
+        std::fs::write(&yaml, "x-local-plugins: true\n").unwrap();
+        prepare(&v).unwrap();
         assert!(std::fs::read_to_string(&yaml)
             .unwrap()
             .contains("NvrXmlHttpFix.dll"));

@@ -437,6 +437,8 @@ pub enum SnapVariant {
     RailOpen,
     /// Settings: what to uninstall.
     Uninstall,
+    /// Mods: local plugins off (an unverified plugin left out, Add DLL locked).
+    ModsLocked,
     /// The Quest side, with Echo VR installed on the headset.
     QuestSide,
     /// The Quest side, a headset without Echo VR.
@@ -1048,6 +1050,7 @@ impl Dashboard {
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
             Some(SnapVariant::RailOpen) => self.state.rail_open = true,
             Some(SnapVariant::Uninstall) => settings::ask_uninstall(self),
+            Some(SnapVariant::ModsLocked) => {}
             Some(SnapVariant::Credits) => {
                 self.overlay = Some(setup::Overlay::Credits { scroll: 0.0 })
             }

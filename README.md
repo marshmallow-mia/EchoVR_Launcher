@@ -80,6 +80,11 @@ Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask 
 browser. See
 [docs/launcher/mods.md](docs/launcher/mods.md).
 
+Only verified plugins load: the community update's and the catalogue's. A DLL of your own
+(or one put into the plugins folder by hand) loads once local plugins are on in that
+version's loader config (`x-local-plugins: true` in `_local/config.yaml`); writing a plugin
+and loading it is in [docs/plugins/local-plugins.md](docs/plugins/local-plugins.md).
+
 ## Building from source
 
 The launcher is written in Rust (GUI: [egui](https://github.com/emilk/egui)). With a stable

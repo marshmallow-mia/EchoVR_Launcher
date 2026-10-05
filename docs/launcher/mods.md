@@ -30,6 +30,15 @@ disk. That is what makes it removable: REMOVE deletes only such files, never one
 ships. Before every start the launcher checks an added plugin against its `sha256` and
 leaves it out of `config.yaml` when the file changed.
 
+**Verified plugins only.** A plugin is verified when it comes from the mods catalogue, or
+its file is one the catalogue names (the community update's), or it is EchoXR Hands'
+(pinned by checksum). Anything else (a DLL added from disk, or one put into `plugins/` by
+hand) is listed as not loaded and left out of `config.yaml`, and Add DLL is off, until the
+version's loader config turns local plugins on: a top-level `x-local-plugins: true` in
+`_local/config.yaml`, which nEVR ignores (it leaves `x-` keys to others) and the launcher
+keeps when it writes the file. Writing a plugin and loading it:
+[docs/plugins/local-plugins.md](../plugins/local-plugins.md).
+
 **Required plugins.** The catalogue marks plugins the game needs (`"required": true`:
 NvrAssetPatches for the netgun fixes, NvrXmlHttpFix for windowed mode under nEVR 4.0.0).
 They can't be turned off, an old "off" choice is ignored and dropped, and they stay in

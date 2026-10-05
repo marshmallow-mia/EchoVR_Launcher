@@ -253,14 +253,40 @@ pub fn expands_env(text: &str) -> bool {
     text.find("${").is_some_and(|i| text[i + 2..].contains('}'))
 }
 
-/// Pure: the launcher's `config.yaml`: the plugins (none with mods off). Values are
-/// written as JSON, which YAML reads as it is.
-pub fn render_config(plugins: &[PluginLine]) -> String {
+/// Pure: whether a `config.yaml` turns local (unverified) plugins on: a top-level
+/// `x-local-plugins: true` (or yes / on).
+pub fn local_plugins_in(text: &str) -> bool {
+    text.lines().any(|l| {
+        l.strip_prefix(super::mods::LOCAL_PLUGINS_KEY)
+            .and_then(|r| r.trim_start().strip_prefix(':'))
+            .map(|v| {
+                v.split('#')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches(['"', '\''])
+            })
+            .is_some_and(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "on"))
+    })
+}
+
+/// Whether `v`'s loader config turns local plugins on.
+pub fn local_plugins(v: &InstalledVersion) -> bool {
+    std::fs::read_to_string(local_dir(v).join(CONFIG)).is_ok_and(|t| local_plugins_in(&t))
+}
+
+/// Pure: the launcher's `config.yaml`: the plugins (none with mods off), and the local
+/// plugins switch when it is on. Values are written as JSON, which YAML reads as it is.
+pub fn render_config(plugins: &[PluginLine], local: bool) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
     let mut out = String::from(
         "# Written by the Echo VR launcher before every start, from its Mods page.\n\
-         # Changes here are replaced: change mods in the launcher.\n",
+         # Changes here are replaced: change mods in the launcher. Kept: the line below,\n\
+         # x-local-plugins: true, which lets plugins load that aren't verified.\n",
     );
+    if local {
+        out.push_str(&format!("{}: true\n", super::mods::LOCAL_PLUGINS_KEY));
+    }
     if plugins.is_empty() {
         out.push_str("plugins: []\n");
         return out;
@@ -279,11 +305,11 @@ pub fn render_config(plugins: &[PluginLine]) -> String {
 }
 
 /// Writes `v`'s `config.yaml` (only when it changed).
-pub fn write_config(v: &InstalledVersion, plugins: &[PluginLine]) -> Result<()> {
+pub fn write_config(v: &InstalledVersion, plugins: &[PluginLine], local: bool) -> Result<()> {
     let dir = local_dir(v);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join(CONFIG);
-    let text = render_config(plugins);
+    let text = render_config(plugins, local);
     if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
         return Ok(());
     }
@@ -671,23 +697,51 @@ mod tests {
     fn writes_the_plugins() {
         let mut args = Map::new();
         args.insert("logging".into(), Value::String("normal".into()));
-        let text = render_config(&[
-            PluginLine {
-                file: "NvrAssetPatches.dll".into(),
-                enabled: true,
-                args,
-            },
-            PluginLine {
-                file: "Other.dll".into(),
-                enabled: false,
-                args: Map::new(),
-            },
-        ]);
+        let text = render_config(
+            &[
+                PluginLine {
+                    file: "NvrAssetPatches.dll".into(),
+                    enabled: true,
+                    args,
+                },
+                PluginLine {
+                    file: "Other.dll".into(),
+                    enabled: false,
+                    args: Map::new(),
+                },
+            ],
+            false,
+        );
         assert!(text.contains(
             "plugins:\n  - name: \"NvrAssetPatches\"\n    file: \"NvrAssetPatches.dll\"\n    enabled: true\n    args: {\"logging\":\"normal\"}\n"
         ));
         assert!(text.contains("  - name: \"Other\"\n    file: \"Other.dll\"\n    enabled: false\n"));
-        assert!(render_config(&[]).ends_with("plugins: []\n"));
+        assert!(render_config(&[], false).ends_with("plugins: []\n"));
+        assert!(!local_plugins_in(&text));
+    }
+
+    #[test]
+    fn keeps_the_local_plugins_switch() {
+        let on = render_config(&[], true);
+        assert!(on.contains("\nx-local-plugins: true\n"));
+        assert!(local_plugins_in(&on));
+        for yes in [
+            "x-local-plugins: true",
+            "x-local-plugins:yes",
+            "x-local-plugins: \"on\" # dev",
+            "x-local-plugins: True",
+        ] {
+            assert!(local_plugins_in(yes), "{yes}");
+        }
+        for no in [
+            "x-local-plugins: false",
+            "  x-local-plugins: true",
+            "# x-local-plugins: true",
+            "x-local-plugins-x: true",
+            "",
+        ] {
+            assert!(!local_plugins_in(no), "{no}");
+        }
     }
 
     #[test]
@@ -856,7 +910,7 @@ mod tests {
     fn notices_a_config_read_before_ours() {
         let dir = tempfile::tempdir().unwrap();
         let v = version_at(dir.path());
-        write_config(&v, &[]).unwrap();
+        write_config(&v, &[], false).unwrap();
         assert_eq!(shadowing_config(&v), None);
         let near = v.bin_dir().join("_local");
         std::fs::create_dir_all(&near).unwrap();
