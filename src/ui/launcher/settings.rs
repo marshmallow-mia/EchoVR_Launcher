@@ -27,7 +27,7 @@ const TILE_H: f32 = 170.0;
 const PANEL_W: f32 = 492.0;
 
 const CACHE_KEY: &str = "settings-delete-cache";
-const UPLOAD_TEXT: &str = "This sends the logs checked above to the developer, marshmallow-mia, and selected Echo VR Lounge moderators, to help with a problem. Only they can see them, and they're deleted after 30 days.\n\n\
+const UPLOAD_TEXT: &str = "This sends the logs checked above to the developer, marshmallow-mia, and selected Echo VR Lounge moderators, to help with a problem. Only they can see them, and they're deleted after 30 days. Your EchoVRCE account's ID, its Discord ID and this PC's Echo VR account (OVR-ORG) go with them, so they know whose logs they are.\n\n\
 They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, your Echo VR account name and the matches you joined, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
 To have them deleted, message marshmallow-mia on Discord or email echo@mia-hentschel.de.";
 
@@ -802,6 +802,15 @@ pub(super) fn ask_delete_cache(d: &mut Dashboard) {
 
 /// Finds the logs and asks which go (`upload_card`), saying what that shares and with whom.
 pub(super) fn ask_upload(d: &mut Dashboard) {
+    // Uploads are for players signed in with EchoVRCE (the service checks it).
+    if !d.demo && upload_token(d).is_none() {
+        d.page = super::Page::EchoVrce;
+        d.dialogs.info(
+            "Sign in with EchoVRCE first",
+            "Logs can be uploaded by players signed in with EchoVRCE: sign in here, then upload them again from Settings.",
+        );
+        return;
+    }
     d.upload_sources = if d.demo {
         demo_sources()
     } else {
@@ -1140,15 +1149,35 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
     if d.demo || d.uploading_logs {
         return;
     }
+    let Some(token) = upload_token(d) else {
+        ask_upload(d);
+        return;
+    };
     d.uploading_logs = true;
     d.notify("Uploading your logs…");
     let sources = std::mem::take(&mut d.upload_sources);
+    let versions = d.state.versions.clone();
     d.worker.spawn(ctx, move |tx| {
+        let who = logs::Uploader {
+            token,
+            oid: logs::find_oid(&versions),
+        };
         let r = logs::bundle(&sources)
-            .and_then(logs::upload)
+            .and_then(|b| logs::upload(b, &who))
             .map_err(|e| format!("{e:#}"));
         tx.send(Msg::LogsUploaded(r));
     });
+}
+
+/// The EchoVRCE session's token while signed in (kept renewed by the EchoVRCE page).
+fn upload_token(d: &Dashboard) -> Option<String> {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    d.vrce.account.as_ref()?;
+    d.vrce
+        .tokens
+        .as_ref()
+        .filter(|t| t.expires().map_or(true, |e| e > now + 30))
+        .map(|t| t.token.clone())
 }
 
 /// The logs arrived: their reference, copied, to give the developer.

