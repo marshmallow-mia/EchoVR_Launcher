@@ -503,6 +503,8 @@ pub struct Dashboard {
     game_sign_in: echovrce::GameSignIn,
     /// Linux: GE-Proton and EchoXR are in place (checked at start).
     linux_set_up: bool,
+    /// Linux: when `--play`'s word on a failed start was last looked for.
+    linux_outcome_at: Option<std::time::Instant>,
     /// The job whose "continue in your browser" dialog is up (Discord's authorization).
     browser_job: Option<String>,
     /// echovrce.com inside the window, on the EchoVRCE page.
@@ -1303,6 +1305,16 @@ impl Dashboard {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        // Linux: Steam's start (`--play`) failed: what it found, once.
+        let due = self
+            .linux_outcome_at
+            .is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(2));
+        if cfg!(target_os = "linux") && !self.demo && due {
+            self.linux_outcome_at = Some(std::time::Instant::now());
+            if let Some(o) = crate::core::linux::take_outcome() {
+                self.dialogs.error(&o.title, &o.message, Default::default());
+            }
+        }
         // Forget our child once it exited, and the game we started once it has ended
         // (or never showed up).
         if let Some(c) = self.child.as_mut() {

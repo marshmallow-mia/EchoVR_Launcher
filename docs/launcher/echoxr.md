@@ -7,11 +7,12 @@ that: the OpenXR layer of heisthecat31's EchoXR, without the hand tracking.
 [RiftLift](https://github.com/Villagers654/RiftLift) solves the same problem for any Rift
 game on Linux. This page covers how the launcher uses EchoXR, and what each of the two
 does. It was written against EchoXR 0.3.0 (`2057ecb`) and RiftLift 0.10.2.5 (`66454d0`),
-as of 2026-10, and updated for EchoXR 0.4.0 (`v0.4.0-rc1`), which the launcher pins now.
+as of 2026-10, and updated for EchoXR 0.4.0 and 0.4.1 (`v0.4.1-rc1`), which the launcher
+pins now.
 
 ## How the launcher uses EchoXR
 
-The pinned `EchoXR-OpenXR-v0.4.0.zip` (EchoXR's GitHub release, SHA-256 checked, as is
+The pinned `EchoXR-OpenXR-v0.4.1.zip` (EchoXR's GitHub release, SHA-256 checked, as is
 each file in it) is unpacked into the game's `bin/win10`:
 
 | File | What it is |
@@ -20,7 +21,7 @@ each file in it) is unpacked into the game's `bin/win10`:
 | `EchoXR/LibOVRRT64_1.dll` | ReviveXR's LibOVR on OpenXR |
 | `EchoXR/openxr_loader.dll` | Khronos' loader |
 
-0.4.0 is built with the static C runtime, so it needs no Visual C++ runtime. It has no
+Since 0.4.0 it is built with the static C runtime, so it needs no Visual C++ runtime. It has no
 `echoxr.ini` any more; the launcher deletes the one older launchers wrote (only if it's
 exactly theirs).
 
@@ -105,18 +106,25 @@ GE-Proton runs `EchoXR.exe` (`proton waitforexitandrun`) with:
   `wivrn/comp_ipc` socket (`wivrn-server`, or the Flatpak's, started when it isn't).
   Without a VR service EchoXR gives up after 20 s (exit code 5) instead of hanging.
 
-Checked on the Linux test box (2026-10-05, SteamVR 2.17.10, GE-Proton11-3), EchoXR 0.4.0
-stops with exit code 5 there although SteamVR answers:
+Tested with a Quest 3 (2026-10-05, GE-Proton11-3, NVIDIA RTX 2080 Ti):
 
-- GE-Proton patches `wineopenxr`: its `wineopenxr_init_registry` writes OpenXR's Vulkan
-  extensions into `HKCU\Software\Wine\XR`, not `Wine\VR` where 0.4.0 looks for them.
-- Under Wine, the field-of-view probe's `XR_MND_headless` session fails (-2): `wineopenxr`
-  builds every session from its graphics binding.
+- **EchoXR 0.4.0 doesn't start under GE-Proton** (exit code 5 although the runtime answers):
+  GE-Proton patches `wineopenxr`, whose `wineopenxr_init_registry` writes OpenXR's Vulkan
+  extensions into `HKCU\Software\Wine\XR`, not `Wine\VR` where 0.4.0 looks. With that
+  fixed, Echo stopped at its first swapchain: GE's `wineopenxr` (D3D12) refuses an acquire
+  before the images were enumerated (`XR_ERROR_CALL_ORDER_INVALID`). **0.4.1** fixes both.
+- **0.4.1 plays** on SteamVR 2.16.7 (Steam Link) and on WiVRn 26.9: session `FOCUSED`, Touch
+  controllers bound, quitting from Echo's menu ends the session cleanly.
+- **SteamVR 2.17.9 and 2.17.10 lose the GPU** on NVIDIA under load: the compositor reuses
+  command buffers the GPU is still using (`Xid 32`, `vkerror=-4`;
+  [SteamVR-for-Linux#952](https://github.com/ValveSoftware/SteamVR-for-Linux/issues/952)).
+  SteamVR's "previous" branch (2.16.7) doesn't. When the compositor's log shows this during a
+  start, `--play` says so in `play.log` and the launcher's window tells to choose "previous".
 
-Both are fixed in EchoXR on the branch `ge-proton-xr-key`, which needs a release before the
-launcher pins it. With it, the start gets as far as the session: SteamVR's runtime and
-headset answer, Echo starts, and only SteamVR's null headset (no display to lease) keeps
-the session from opening; a real headset is still the last check.
+How a start ended: EchoXR passes Echo's own exit code on, and Echo's codes overlap with
+EchoXR's (2-7), so `--play` takes a code as EchoXR's only when `EchoXR\launcher.log` has no
+"Echo exited with code" for that start. A failed start (EchoXR's reason, or SteamVR losing
+the GPU) is written to `linux/last-start.json`, which the launcher's window shows once.
 
 See `src/core/linux/echoxr.rs`.
 
