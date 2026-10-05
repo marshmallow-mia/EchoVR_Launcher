@@ -27,7 +27,7 @@ const TILE_H: f32 = 170.0;
 const PANEL_W: f32 = 492.0;
 
 const CACHE_KEY: &str = "settings-delete-cache";
-const UPLOAD_TEXT: &str = "This sends the logs checked above to the developer, marshmallow-mia, to help with a problem. Only the developer can see them, and they're deleted after 30 days.\n\n\
+const UPLOAD_TEXT: &str = "This sends the logs checked above to the developer, marshmallow-mia, and selected Echo VR Lounge moderators, to help with a problem. Only they can see them, and they're deleted after 30 days.\n\n\
 They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, your Echo VR account name and the matches you joined, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
 To have them deleted, message marshmallow-mia on Discord or email echo@mia-hentschel.de.";
 
