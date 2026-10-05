@@ -10,7 +10,7 @@ parties into the game. This page covers what the launcher does with it
 
 ## Who writes what
 
-The community update (`https://files.echovr.de/updates/update.manifest`) owns
+The community update (`https://release.echovr.de/updates/update.manifest`, mirrored from files.echovr.de) owns
 `BugSplat64.dll`, the plugins it ships and `asset_patches/manifest.json`: Update and Repair
 put them back, Verify reports any change. The launcher never edits them. It writes:
 
@@ -101,7 +101,7 @@ current draft, which is also built in for when it can't be fetched):
 - `id`: lowercase letters, digits, `.`, `-`, `_` (max 64).
 - `file`: the plugin's file name in `plugins/`: letters, digits, `.`, `-`, `_`, ending
   in `.dll`; never `BugSplat64.dll`.
-- `url`: relative to the download mirrors (`files.echovr.de` / `evr.echo.taxi`), or an
+- `url`: relative to the download mirrors (`release.echovr.de` / `evr.echo.taxi`), or an
   absolute `https://` URL on one of them or `release.echovr.de`. Required, with `sha256`, unless `shipped`.
 - `sha256`: the file's checksum. The launcher checks the download against it and notes it
   in `launcher-mods.json`, so a file changed later is left out of `config.yaml`.

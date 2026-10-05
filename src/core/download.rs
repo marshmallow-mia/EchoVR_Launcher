@@ -25,7 +25,10 @@ use anyhow::{anyhow, bail, Context, Result};
 
 use super::http;
 
-pub const MIRRORS: [&str; 2] = ["https://files.echovr.de/", "https://evr.echo.taxi/"];
+/// The live builds (relative catalogue URLs): release.echovr.de (mirrored from
+/// files.echovr.de, which the old installer uses) and the evr.echo.taxi bucket, as the
+/// installer has it; the faster is asked first, the other is the fallback.
+pub const MIRRORS: [&str; 2] = ["https://release.echovr.de/", "https://evr.echo.taxi/"];
 const MIRROR_TEST_FILE: &str = "randomDownloadTestFile";
 
 /// Shown for network failures, as in the Java dialogs.

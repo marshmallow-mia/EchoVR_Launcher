@@ -15,7 +15,13 @@ use super::download::{redact, sha256_matches};
 use super::http::{self, Cancelled};
 use super::manifest::Manifest;
 
-pub const PC_MANIFEST_URL: &str = "https://files.echovr.de/updates/update.manifest";
+/// The live PC update. files.echovr.de publishes it (and keeps it for the old installer);
+/// release.echovr.de mirrors it every 10 minutes, and the launcher reads
+/// it there.
+pub const PC_MANIFEST_URL: &str = "https://release.echovr.de/updates/update.manifest";
+/// Where the update channels were read before; installs keep such a URL.
+const FILES_UPDATES: &str = "https://files.echovr.de/updates/";
+const RELEASE_UPDATES: &str = "https://release.echovr.de/updates/";
 /// Where to try a PC update before it goes live: another manifest on release.echovr.de or
 /// files.echovr.de (e.g. `https://release.echovr.de/updates-nevr/update.manifest`) in place
 /// of the live one.
@@ -24,6 +30,11 @@ pub const MANIFEST_OVERRIDE: &str = "ECHOVR_UPDATE_MANIFEST";
 /// `url`, or for the live PC update the one `ECHOVR_UPDATE_MANIFEST` names (only on
 /// release.echovr.de or files.echovr.de).
 pub fn manifest_for(url: &str) -> String {
+    // An install's files.echovr.de update channel is read from the mirror.
+    let moved = url
+        .strip_prefix(FILES_UPDATES)
+        .map(|rest| format!("{RELEASE_UPDATES}{rest}"));
+    let url = moved.as_deref().unwrap_or(url);
     if url == PC_MANIFEST_URL {
         if let Ok(o) = std::env::var(MANIFEST_OVERRIDE) {
             // Asked for every frame: said once.
@@ -196,6 +207,22 @@ fn file_name(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn reads_files_echovr_channels_from_the_mirror() {
+        assert_eq!(
+            manifest_for("https://files.echovr.de/updates/update.manifest"),
+            PC_MANIFEST_URL
+        );
+        assert_eq!(
+            manifest_for("https://files.echovr.de/updates/quest/update.manifest"),
+            "https://release.echovr.de/updates/quest/update.manifest"
+        );
+        assert_eq!(
+            manifest_for("https://release.echovr.de/halloween2017.zip.manifest"),
+            "https://release.echovr.de/halloween2017.zip.manifest"
+        );
+    }
     use super::*;
 
     #[test]

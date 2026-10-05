@@ -24,7 +24,7 @@ const DEFAULT_META_DIR: &str = "C:\\Program Files\\Meta Horizon";
 const STORE_ASSETS_SUBDIR: &str =
     "CoreData\\Software\\StoreAssets\\ready-at-dawn-echo-arena_assets";
 pub const ARTWORK_ZIP_URL: &str =
-    "https://files.echovr.de/stuff/patches/ready-at-dawn-echo-arena_assets.zip";
+    "https://release.echovr.de/stuff/patches/ready-at-dawn-echo-arena_assets.zip";
 
 /// The directory if it contains ReviveInjector.exe, trailing separators trimmed.
 fn verify_revive_dir(dir: &str) -> Option<String> {

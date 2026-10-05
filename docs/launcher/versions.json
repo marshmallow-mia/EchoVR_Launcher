@@ -9,7 +9,7 @@
       "url": "ready-at-dawn-echo-arena.zip",
       "size": null,
       "sha256": null,
-      "update_manifest": "https://files.echovr.de/updates/update.manifest",
+      "update_manifest": "https://release.echovr.de/updates/update.manifest",
       "files_manifest": "https://release.echovr.de/pc.zip.manifest",
       "notes": "The current PC client with community updates.",
       "hosted": "live",
@@ -99,7 +99,7 @@
       "platform": "quest",
       "url": "echo_quest_27-08-2026.001.apk",
       "data_url": "_data.zip",
-      "update_manifest": "https://files.echovr.de/updates/quest/update.manifest",
+      "update_manifest": "https://release.echovr.de/updates/quest/update.manifest",
       "notes": "Installed over USB from the Quest side of Play."
     }
   ]
