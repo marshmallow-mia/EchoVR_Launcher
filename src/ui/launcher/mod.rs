@@ -319,6 +319,11 @@ struct Job {
     cancel: Arc<AtomicBool>,
 }
 
+// Named snapshot fractions distinguish the full-button boundary render from the mid-job
+// render used to inspect partial-fill width at each viewport.
+const SNAPSHOT_PROGRESS_FULL: f32 = 1.0;
+const SNAPSHOT_PROGRESS_42_PERCENT: f32 = 0.42;
+
 /// Snapshot mode: extra states to capture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapVariant {
@@ -370,6 +375,10 @@ pub enum SnapVariant {
     QuestSide,
     /// The Quest side, a headset without Echo VR.
     QuestFresh,
+    /// The Quest side while an install job is in progress.
+    QuestInstalling,
+    /// The Quest side while an install job is 42% complete.
+    QuestInstalling42,
     /// The Quest side, Echo VR running on the headset (seen through its API).
     QuestRunning,
     /// PLAY was clicked; the game isn't up yet.
@@ -926,7 +935,10 @@ impl Dashboard {
             Some(v @ (SnapVariant::Installing | SnapVariant::Extracting)) => {
                 self.state.selected = None;
                 let (label, fraction) = if v == SnapVariant::Installing {
-                    ("Downloading... 42.0%", Some(0.42))
+                    (
+                        "Downloading... 42.0%",
+                        Some(SNAPSHOT_PROGRESS_42_PERCENT),
+                    )
                 } else {
                     ("Extracting...", None)
                 };
@@ -1176,6 +1188,27 @@ impl Dashboard {
                     i.installed = false;
                     i.marker = None;
                 }
+            }
+            Some(SnapVariant::QuestInstalling | SnapVariant::QuestInstalling42) => {
+                self.platform = Platform::Quest;
+                if let Some(i) = &mut self.quest_info {
+                    i.installed = false;
+                    i.marker = None;
+                }
+                self.jobs.insert(
+                    setup::QUEST_JOB.into(),
+                    Job {
+                        kind: JobKind::QuestInstall,
+                        title: "Installing Echo VR on Quest".into(),
+                        label: "Copying game files".into(),
+                        fraction: Some(if self.snap_variant == Some(SnapVariant::QuestInstalling42) {
+                            SNAPSHOT_PROGRESS_42_PERCENT
+                        } else {
+                            SNAPSHOT_PROGRESS_FULL
+                        }),
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    },
+                );
             }
             // The concept's orange "!" on CHECK FOR UPDATES.
             None => {

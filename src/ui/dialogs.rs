@@ -76,6 +76,13 @@ pub(crate) const USB_DEBUGGING_URL: &str =
     "https://developers.meta.com/horizon/documentation/native/android/mobile-device-setup/";
 
 impl DialogHost {
+    #[cfg(test)]
+    pub(crate) fn top_text_for_test(&self) -> Option<(&str, &str)> {
+        self.stack
+            .last()
+            .map(|dialog| (dialog.title.as_str(), dialog.message.as_str()))
+    }
+
     pub fn is_open(&self) -> bool {
         !self.stack.is_empty()
     }

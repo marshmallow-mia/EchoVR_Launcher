@@ -50,6 +50,11 @@ impl Dr {
         Dr::new(self.x + dx, self.y, self.w, self.h)
     }
 
+    /// Moved down by `dy`.
+    pub fn lower(self, dy: f32) -> Dr {
+        Dr::new(self.x, self.y + dy, self.w, self.h)
+    }
+
     /// `dx` wider.
     pub fn wider(self, dx: f32) -> Dr {
         Dr::new(self.x, self.y, self.w + dx, self.h)
@@ -101,7 +106,7 @@ pub const POPUP: Color32 = Color32::from_rgba_unmultiplied_const(30, 16, 56, 248
 pub const SCRIM: Color32 = Color32::from_rgba_unmultiplied_const(6, 2, 16, 170);
 
 /// Even-odd point-in-polygon.
-fn inside(p: Pos2, poly: &[Pos2]) -> bool {
+pub(super) fn inside(p: Pos2, poly: &[Pos2]) -> bool {
     let mut hit = false;
     let mut j = poly.len().wrapping_sub(1);
     for i in 0..poly.len() {
@@ -173,7 +178,7 @@ impl Kit<'_> {
         self.rect(dz(r.x), dz(r.y), dz(r.w), dz(r.h))
     }
 
-    fn dpos(&self, x: f32, y: f32) -> Pos2 {
+    pub fn dpos(&self, x: f32, y: f32) -> Pos2 {
         self.origin + vec2(dz(x), dz(y))
     }
 
