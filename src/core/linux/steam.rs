@@ -269,10 +269,72 @@ fn steam_command(root: &Path) -> std::process::Command {
     }
 }
 
-/// Closes Steam and waits (up to a minute) until it is gone.
+/// Whether SteamVR runs. Closing Steam under it leaves its processes behind, and the
+/// Steam started next comes up broken (a second client for the next `steam://` link).
+pub fn vr_running() -> bool {
+    ["vrserver", "vrmonitor", "vrcompositor"]
+        .iter()
+        .any(|p| crate::core::launcher::game::program_running(p))
+}
+
+/// Where Steam notes the pid of its running client.
+fn pid_file(root: &Path) -> Option<std::path::PathBuf> {
+    if root.to_string_lossy().contains("com.valvesoftware.Steam") {
+        return dirs::home_dir()
+            .map(|h| h.join(".var/app/com.valvesoftware.Steam/.steam/steam.pid"));
+    }
+    dirs::home_dir().map(|h| h.join(".steam/steam.pid"))
+}
+
+/// Pure: Steam is up when the client its pid file names runs and its web helper (the
+/// window, which Steam starts last) does too.
+fn ready(pid_text: Option<&str>, alive: impl Fn(u32) -> bool, webhelper: bool) -> bool {
+    pid_text
+        .and_then(|t| t.trim().parse::<u32>().ok())
+        .is_some_and(|pid| pid > 0 && alive(pid))
+        && webhelper
+}
+
+/// Whether Steam is up now (see [`ready`]).
+pub fn is_ready(root: &Path) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let pid_text = pid_file(root).and_then(|f| std::fs::read_to_string(f).ok());
+    let alive = |pid: u32| {
+        sys.process(Pid::from_u32(pid))
+            .is_some_and(|p| p.name().to_str() == Some("steam"))
+    };
+    let webhelper = sys
+        .processes()
+        .values()
+        .any(|p| p.name().to_str() == Some("steamwebhelper"));
+    ready(pid_text.as_deref(), alive, webhelper)
+}
+
+/// Waits (up to `limit`) until Steam is up, so a `steam://` link goes to that client
+/// instead of starting another. Returns whether it is.
+pub fn wait_ready(root: &Path, limit: Duration) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        if is_ready(root) {
+            return true;
+        }
+        if started.elapsed() >= limit {
+            tracing::warn!("Steam isn't up after {}s", limit.as_secs());
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
+/// Closes Steam and waits (up to a minute) until it is gone. Not under SteamVR.
 pub fn shutdown(root: &Path) -> Result<()> {
     if !running() {
         return Ok(());
+    }
+    if vr_running() {
+        bail!("SteamVR is running. Close SteamVR first: Steam has to restart once for this.");
     }
     steam_command(root)
         .arg("-shutdown")
@@ -292,7 +354,7 @@ pub fn shutdown(root: &Path) -> Result<()> {
     bail!("Steam didn't close. Close it yourself and try again.")
 }
 
-/// Starts Steam again, in the background.
+/// Starts Steam again, in the background, and waits (up to 90 seconds) until it is up.
 pub fn start(root: &Path) -> Result<()> {
     steam_command(root)
         .arg("-silent")
@@ -301,11 +363,19 @@ pub fn start(root: &Path) -> Result<()> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .context("Couldn't start Steam")?;
+    if wait_ready(root, Duration::from_secs(90)) {
+        // Up, and a moment more for it to take links.
+        std::thread::sleep(Duration::from_secs(3));
+    }
     Ok(())
 }
 
-/// Starts the shortcut `appid` through Steam.
+/// Starts the shortcut `appid` through Steam. Not while Steam is still starting: the
+/// link would start a second client instead of reaching it.
 pub fn run(root: &Path, appid: u32) -> Result<()> {
+    if running() && !is_ready(root) {
+        bail!("Steam is still starting. Press PLAY again in a moment.");
+    }
     open(root, &format!("steam://rungameid/{}", game_id(appid)))
         .context("Couldn't ask Steam to start Echo VR")
 }
@@ -325,6 +395,17 @@ pub fn open(root: &Path, link: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steam_is_up_with_its_client_and_web_helper() {
+        let alive = |pid: u32| pid == 42;
+        assert!(ready(Some("42\n"), alive, true));
+        assert!(!ready(Some("42"), alive, false));
+        assert!(!ready(Some("7"), alive, true));
+        assert!(!ready(Some(""), alive, true));
+        assert!(!ready(None, alive, true));
+        assert!(!ready(Some("0"), |_| true, true));
+    }
 
     fn shortcut() -> Shortcut {
         Shortcut {
