@@ -869,6 +869,15 @@ fn config_lines(v: &InstalledVersion, overlay: &Overlay, catalog: &ModCatalog) -
             }
         }
         let mut args = p.args;
+        // An argument nEVR would read as an environment variable could keep every plugin
+        // from loading (one saved before the launcher refused them).
+        args.retain(|key, value| {
+            let env = nevr::expands_env(key) || nevr::expands_env(&value.to_string());
+            if env {
+                tracing::warn!("{}: argument {key} holds ${{…}}: left out", p.file);
+            }
+            !env
+        });
         if !mods_on && p.file.eq_ignore_ascii_case(ASSET_PLUGIN) {
             // An older build loads every patch whatever it's told: none of it, then.
             if !knows_required_only(&plugins_dir(v).join(&p.file)) {
@@ -925,8 +934,15 @@ pub fn reset_args(v: &InstalledVersion, file: &str) -> Result<()> {
     edit_overlay(v, |o| o.reset_args(file, &defaults))
 }
 
-/// `file`'s arguments.
+/// `file`'s arguments. None may hold `${…}`: nEVR would read it as an environment
+/// variable, and an unset one makes it load no plugins at all.
 pub fn set_args(v: &InstalledVersion, file: &str, args: &BTreeMap<String, String>) -> Result<()> {
+    if let Some((key, _)) = args
+        .iter()
+        .find(|(k, v)| nevr::expands_env(k) || nevr::expands_env(v))
+    {
+        bail!("{key}: nEVR reads ${{…}} as an environment variable, and loads no plugins at all when it isn't set. Leave it out.");
+    }
     edit_overlay(v, |o| o.set_args(file, args))
 }
 
@@ -1598,6 +1614,31 @@ mod tests {
         std::fs::remove_file(&yaml).unwrap();
         before_start(&v, false, false).unwrap();
         assert!(!yaml.exists());
+    }
+
+    #[test]
+    fn no_argument_nevr_reads_as_a_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
+        let args = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        // Refused when saved...
+        let env = args(&[("logging", "verbose"), ("log_dir", "${HOME}/logs")]);
+        assert!(set_args(&v, ASSET_PLUGIN, &env).is_err());
+        // ...and one saved before is left out of config.yaml, the plugin and the rest stay.
+        edit_overlay(&v, |o| o.set_args(ASSET_PLUGIN, &env)).unwrap();
+        prepare(&v).unwrap();
+        let text = std::fs::read_to_string(&yaml).unwrap();
+        assert!(text.contains("\"NvrAssetPatches.dll\""));
+        assert!(text.contains("\"logging\":\"verbose\""));
+        assert!(!text.contains("${"));
+        // An unterminated ${ is no variable to nEVR.
+        set_args(&v, ASSET_PLUGIN, &args(&[("note", "costs ${5")])).unwrap();
     }
 
     #[test]
