@@ -5,6 +5,9 @@
 
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+use std::cell::RefCell;
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -225,7 +228,29 @@ pub fn default_library() -> String {
 }
 
 pub fn state_file() -> PathBuf {
+    #[cfg(test)]
+    if let Some(path) = STATE_FILE_OVERRIDE.with(|p| p.borrow().clone()) {
+        return path;
+    }
     paths::data_dir().join("launcher.json")
+}
+
+#[cfg(test)]
+thread_local! {
+    static STATE_FILE_OVERRIDE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub fn with_state_file_for_test<T>(path: PathBuf, f: impl FnOnce() -> T) -> T {
+    struct Restore(Option<PathBuf>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            STATE_FILE_OVERRIDE.with(|p| *p.borrow_mut() = self.0.take());
+        }
+    }
+    let previous = STATE_FILE_OVERRIDE.with(|p| p.borrow_mut().replace(path));
+    let _restore = Restore(previous);
+    f()
 }
 
 impl LauncherState {
