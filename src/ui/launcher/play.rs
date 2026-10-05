@@ -402,7 +402,7 @@ fn version_choices(d: &Dashboard) -> (Vec<InstalledVersion>, Vec<VersionEntry>) 
         .as_ref()
         .map(|c| {
             c.pc()
-                .filter(|e| d.state.installed_from(&e.id).is_none())
+                .filter(|e| d.state.installed_from(&e.id).is_none() && d.state.offers(e))
                 .cloned()
                 .collect()
         })
@@ -1288,6 +1288,7 @@ mod split_info_tests {
                 id: "long-name".into(),
                 name: full_name.clone(),
                 platform: Platform::Pc,
+                url: "long-name.zip".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1311,6 +1312,7 @@ mod split_info_tests {
             id: "pc-beta".into(),
             name: "Echo VR (PC, Beta)".into(),
             platform: Platform::Pc,
+            url: "pc-beta.zip".into(),
             ..Default::default()
         });
         let mut h = play_harness(d);
@@ -1372,6 +1374,7 @@ mod split_info_tests {
                 id: "pc-beta".into(),
                 name: "Echo VR (PC, Beta)".into(),
                 platform: Platform::Pc,
+                url: "pc-beta.zip".into(),
                 ..Default::default()
             });
             d
@@ -1784,6 +1787,7 @@ mod split_info_tests {
                 id: "only-choice".into(),
                 name: "Only PC version".into(),
                 platform: Platform::Pc,
+                url: "only-choice.zip".into(),
                 ..Default::default()
             }],
             ..Default::default()
@@ -1798,6 +1802,59 @@ mod split_info_tests {
         click_at(&mut h, egui::pos2(220.0, 181.0));
         assert_eq!(h.state().page, Page::Install);
         assert!(!h.ctx.data(|data| data
+            .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
+            .unwrap_or(false)));
+    }
+
+    #[test]
+    fn version_menu_hides_unavailable_and_disabled_event_builds() {
+        let mut d = play_dashboard();
+        d.catalog.as_mut().unwrap().versions.extend([
+            VersionEntry {
+                id: "pc-beta".into(),
+                name: "Echo VR (PC, Beta)".into(),
+                platform: Platform::Pc,
+                url: "pc-beta.zip".into(),
+                ..Default::default()
+            },
+            VersionEntry {
+                id: "pc-not-published".into(),
+                name: "Unpublished PC build".into(),
+                platform: Platform::Pc,
+                url: String::new(),
+                ..Default::default()
+            },
+            VersionEntry {
+                id: "pc-event-disabled".into(),
+                name: "Disabled event build".into(),
+                platform: Platform::Pc,
+                url: "pc-event.zip".into(),
+                publisher_lock: Some("event-lock".into()),
+                ..Default::default()
+            },
+        ]);
+        d.state.event_builds = false;
+
+        let (installed, available) = version_choices(&d);
+        let available_ids: Vec<_> = available.iter().map(|entry| entry.id.as_str()).collect();
+        assert!(available_ids.contains(&"pc-beta"));
+        assert!(!available_ids.contains(&"pc-not-published"));
+        assert!(!available_ids.contains(&"pc-event-disabled"));
+        let menu_items = version_menu_items(&d, &installed, &available);
+        assert!(menu_items.iter().any(|item| matches!(
+            item,
+            MenuItem::Pick { label, .. } if label == "Echo VR (PC, Beta)"
+        )));
+        assert!(!menu_items.iter().any(|item| matches!(
+            item,
+            MenuItem::Pick { label, .. }
+                if label == "Unpublished PC build" || label == "Disabled event build"
+        )));
+
+        let mut h = play_harness(d);
+        h.run_steps(2);
+        arrow_open(&mut h);
+        assert!(h.ctx.data(|data| data
             .get_temp::<bool>(crate::ui::widgets::menu_id(VERSION_MENU))
             .unwrap_or(false)));
     }
@@ -1997,6 +2054,7 @@ mod split_info_tests {
                         id: format!("choice-{i}"),
                         name: format!("PC archived build {i}"),
                         platform: Platform::Pc,
+                        url: format!("choice-{i}.zip"),
                         ..Default::default()
                     })
                     .collect(),
@@ -2100,6 +2158,7 @@ mod split_info_tests {
             id: "pc-beta".into(),
             name: "Echo VR (PC, Beta)".into(),
             platform: Platform::Pc,
+            url: "pc-beta.zip".into(),
             ..Default::default()
         });
         let mut h = play_harness(d);
