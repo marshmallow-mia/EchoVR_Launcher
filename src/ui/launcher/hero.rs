@@ -191,13 +191,13 @@ impl InfoLine {
 pub(super) fn info_line(d: &mut Dashboard, kit: &mut Kit, key: &str, line: &InfoLine) {
     let sep = "  ·  ";
     let color = line.color;
-    let layout = |scale: f32| {
+    let layout = |scale: f32, shown: Option<&str>| {
         let size = INFO_SIZE * scale;
         let mut before = LayoutJob::default();
         design::caps_append(&mut before, &line.parts.join(sep), size, color, false);
         let mut path = LayoutJob::default();
         let mut after = LayoutJob::default();
-        if let Some(p) = &line.path {
+        if let Some(p) = shown {
             if !line.parts.is_empty() {
                 design::caps_append(&mut before, sep, size, color, false);
             }
@@ -213,10 +213,27 @@ pub(super) fn info_line(d: &mut Dashboard, kit: &mut Kit, key: &str, line: &Info
     let right = line.right + kit.dx();
     let max_w = dz(right - INFO_X);
     let width = |g: &[Arc<Galley>; 3]| g.iter().map(|g| g.size().x).sum::<f32>();
-    let mut parts = layout(1.0);
+    let mut parts = layout(1.0, line.path.as_deref());
     if width(&parts) > max_w {
         let scale = (max_w / width(&parts)).max(0.8);
-        parts = layout(scale * 0.995);
+        parts = layout(scale * 0.995, line.path.as_deref());
+        // Still too long (a narrow column): the path loses its middle, its start and its
+        // folder's name stay (the tip has all of it).
+        if let Some(p) = &line.path {
+            let chars: Vec<char> = p.chars().collect();
+            let mut keep = chars.len();
+            while width(&parts) > max_w && keep > 16 {
+                keep -= 3;
+                let head = keep / 3;
+                let tail = keep - head;
+                let short: String = chars[..head]
+                    .iter()
+                    .chain(std::iter::once(&'…'))
+                    .chain(&chars[chars.len() - tail..])
+                    .collect();
+                parts = layout(scale * 0.995, Some(&short));
+            }
+        }
     }
     let h = parts.iter().map(|g| g.size().y).fold(0.0, f32::max);
     let (x0, y) = (dz(INFO_X), dz(INFO_Y) - h / 2.0);

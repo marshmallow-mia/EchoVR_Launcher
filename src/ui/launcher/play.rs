@@ -731,8 +731,8 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
     let (cx, cy) = (dz(PICKER.x), dz(PICKER_CAPTION_Y) - caption_top(kit));
     kit.put(cx, cy, caption);
 
-    // Narrower with the page (the rail unfolded), down to a short name's width.
-    let r = kit.drect(PICKER.wider(kit.dx().clamp(-60.0, 0.0)));
+    // Narrower with the page (the rail unfolded): to the column's edge.
+    let r = kit.drect(PICKER.wider((INFO_RIGHT + kit.dx() - PICKER.x - PICKER.w).min(0.0)));
     let (resp, t, pressed) = kit.hot(VERSION_MENU, r, enabled, &tip);
     let open = enabled && kit.menu_open(VERSION_MENU);
     let fill = if pressed {
@@ -757,14 +757,19 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
     };
     let chevron = dz(15.0);
     let pad = dz(18.0);
-    let g = kit.spaced_fit(
-        &current_name.to_uppercase(),
-        design::din(17.0),
-        fg,
-        dz(1.2),
-        false,
-        r.width() - 2.0 * pad - chevron - dz(10.0),
-    );
+    // A long name in a narrow picker gets smaller before it is cut.
+    let room = r.width() - 2.0 * pad - chevron - dz(10.0);
+    let name = current_name.to_uppercase();
+    let size = [17.0, 15.5, 14.0]
+        .into_iter()
+        .find(|&s| {
+            kit.spaced_galley(&name, design::din(s), fg, dz(1.2), false)
+                .size()
+                .x
+                <= room
+        })
+        .unwrap_or(14.0);
+    let g = kit.spaced_fit(&name, design::din(size), fg, dz(1.2), false, room);
     let gy = r.center().y - g.size().y / 2.0;
     kit.ui.painter().galley(pos2(r.min.x + pad, gy), g, fg);
     style::icon_at(

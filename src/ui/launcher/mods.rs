@@ -1738,12 +1738,26 @@ fn meta(m: &ModEntry) -> String {
 }
 
 fn entry_height(k: &Kit, m: &ModEntry, w: f32) -> f32 {
-    let summary: f32 = k
-        .caps_block(&m.summary, 14.5, design::BODY, w)
-        .iter()
-        .map(|g| g.size().y)
-        .sum();
-    dz(40.0) + summary + dz(8.0) + dz(22.0)
+    let block = |text: &str, size: f32, w: f32| -> f32 {
+        k.caps_block(text, size, design::BODY, w)
+            .iter()
+            .map(|g| g.size().y)
+            .sum()
+    };
+    dz(40.0)
+        + block(&m.summary, 14.5, w)
+        + dz(8.0)
+        + block(&meta(m), 13.0, meta_room(k, m, w))
+        + dz(8.0)
+}
+
+/// How wide the line with who made it may be: beside Source, when it has one.
+fn meta_room(k: &Kit, m: &ModEntry, w: f32) -> f32 {
+    if m.homepage.is_empty() {
+        w
+    } else {
+        w - k.link_width("Source", 13.5) - dz(16.0)
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1828,14 +1842,8 @@ fn entry(
     }
     let mut ty = y + dz(40.0);
     ty += k.caps_text(x, ty, w, &m.summary, 14.5, design::BODY, 0.0) + dz(8.0);
-    let line = meta(m);
-    let room = if m.homepage.is_empty() {
-        w
-    } else {
-        w - k.link_width("Source", 13.5) - dz(16.0)
-    };
-    let g = k.label_galley(&line, design::din(13.0), design::GREY, room);
-    k.put(x, ty, g);
+    // Who made it and what it does: on as many lines as it takes (a narrow card).
+    k.caps_text(x, ty, meta_room(k, m, w), &meta(m), 13.0, design::GREY, 0.0);
     if !m.homepage.is_empty() {
         let lx = x + w - k.link_width("Source", 13.5);
         if k.link(

@@ -2561,7 +2561,8 @@ fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
 fn demo_state() -> LauncherState {
     let mut s = LauncherState {
         imported: true,
-        rail_open: false,
+        // Snapshots: ECHOVR_SNAPSHOTS_RAIL=1 takes every page with the rail unfolded.
+        rail_open: std::env::var_os("ECHOVR_SNAPSHOTS_RAIL").is_some(),
         ..Default::default()
     };
     s.versions.push(InstalledVersion {
