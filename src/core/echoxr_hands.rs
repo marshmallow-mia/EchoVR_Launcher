@@ -51,7 +51,7 @@ pub fn layer_env(bin: &Path, windows_path: impl Fn(&Path) -> String) -> [(String
 
 /// Whether the package is downloaded (and still the pinned one).
 pub fn is_fetched() -> bool {
-    zip_path().is_file()
+    download::sha256_matches(&zip_path(), SHA256)
 }
 
 /// Downloads the pinned package, once.
@@ -91,12 +91,23 @@ pub fn installed_in(bin: &Path) -> bool {
 /// yours to turn on.
 pub fn install_into(bin: &Path) -> Result<()> {
     let zip = std::fs::File::open(zip_path()).context("EchoXR Hands isn't downloaded")?;
+    unpack(zip, bin)?;
+    plugin_into(bin)
+}
+
+/// The package's files into `bin`: everything under `EchoXR/Hands`, and the folders on
+/// the way there (the package lists `EchoXR/` itself); anything else refuses it.
+fn unpack(zip: impl std::io::Read + std::io::Seek, bin: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(zip)?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let Some(rel) = entry.enclosed_name() else {
             bail!("EchoXR Hands' zip has an unsafe path: {}", entry.name());
         };
+        if entry.is_dir() && Path::new(DIR).starts_with(&rel) {
+            std::fs::create_dir_all(bin.join(&rel))?;
+            continue;
+        }
         if !rel.starts_with(DIR) {
             bail!(
                 "EchoXR Hands' zip has a file outside {DIR}: {}",
@@ -118,6 +129,11 @@ pub fn install_into(bin: &Path) -> Result<()> {
         }
         std::fs::write(&out, &bytes).with_context(|| format!("write {}", out.display()))?;
     }
+    Ok(())
+}
+
+/// The packaged plugin (and, the first time, its settings) into `bin`'s `plugins` folder.
+fn plugin_into(bin: &Path) -> Result<()> {
     let from = dir_in(bin).join(PACKAGED_PLUGIN);
     let plugins = bin.join("plugins");
     std::fs::create_dir_all(&plugins)?;
@@ -232,6 +248,54 @@ mod tests {
         assert!(off.contains("RelayUrl = wss://x") && off.contains("Smoothing = 0.5"));
         let added = with_sharing("Smoothing = 1", true);
         assert_eq!(setting(&added, "Network").as_deref(), Some("1"));
+    }
+
+    /// The published package is the pinned one, and it unpacks.
+    #[test]
+    #[ignore = "network"]
+    fn installs_the_pinned_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let zip = dir.path().join(ZIP);
+        crate::core::http::download_to(URL, &zip, None).unwrap();
+        assert!(download::sha256_matches(&zip, SHA256));
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        unpack(std::fs::File::open(&zip).unwrap(), &bin).unwrap();
+        plugin_into(&bin).unwrap();
+        assert!(bin.join("plugins").join(PLUGIN).is_file());
+        assert!(dir_in(&bin).join("layer").is_dir());
+    }
+
+    /// The package lists the folders on the way (`EchoXR/`, `EchoXR/Hands/`...): taken, and
+    /// anything outside `EchoXR/Hands` still refused.
+    #[test]
+    fn unpacks_with_the_folders_on_the_way() {
+        use std::io::Write;
+        let zip = |extra: Option<&str>| {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+            let opts = zip::write::SimpleFileOptions::default();
+            for d in ["EchoXR/", "EchoXR/Hands/", "EchoXR/Hands/plugin/"] {
+                w.add_directory(d, opts).unwrap();
+            }
+            w.start_file("EchoXR/Hands/plugin/EchoXRHands.dll", opts)
+                .unwrap();
+            w.write_all(b"MZ").unwrap();
+            if let Some(f) = extra {
+                w.start_file(f, opts).unwrap();
+                w.write_all(b"x").unwrap();
+            }
+            w.finish().unwrap()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        unpack(zip(None), dir.path()).unwrap();
+        assert!(dir
+            .path()
+            .join("EchoXR/Hands/plugin/EchoXRHands.dll")
+            .is_file());
+        for bad in ["EchoXR/other.dll", "echovr.exe"] {
+            let err = unpack(zip(Some(bad)), dir.path()).unwrap_err().to_string();
+            assert!(err.contains("outside"), "{bad}: {err}");
+        }
     }
 
     #[test]

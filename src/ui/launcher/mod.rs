@@ -198,6 +198,8 @@ enum JobResult {
     QuestNeedsReinstall(String),
     /// Mods were installed, added or removed: what to say.
     ModsChanged(String),
+    /// EchoXR Hands is installed: it's on now (and EchoXR, which it needs, on Windows).
+    HandsInstalled,
     /// Parts of the launcher's things were uninstalled.
     Uninstalled(crate::core::uninstall::Outcome),
 }
@@ -2071,6 +2073,18 @@ impl Dashboard {
                 self.mods.changed();
                 self.notify(&notice);
                 self.updates.check_soon();
+            }
+            JobResult::HandsInstalled => {
+                self.state.echoxr_hands = true;
+                let echoxr = crate::core::launcher::store::SteamVrVia::EchoXr;
+                if !cfg!(target_os = "linux") && self.state.profile.steamvr_via != echoxr {
+                    self.state.profile.steamvr_via = echoxr;
+                    self.notify("EchoXR Hands is installed, and EchoXR is on: hand tracking needs it");
+                } else {
+                    self.notify("EchoXR Hands is installed: it plays along through EchoXR");
+                }
+                self.save();
+                self.mods.changed();
             }
             JobResult::ReviveReady(notes) => {
                 self.revive = Probe::default();

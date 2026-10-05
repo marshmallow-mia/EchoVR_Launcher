@@ -620,7 +620,8 @@ fn vr_installed(d: &Dashboard) -> VrInstalled {
     VrInstalled {
         echoxr: (cfg!(target_os = "linux") && !d.demo)
             || d.state.profile.steamvr_via == SteamVrVia::EchoXr,
-        hands: d.state.echoxr_hands,
+        // On, and really there (a failed download once marked it on).
+        hands: d.state.echoxr_hands && (d.demo || crate::core::echoxr_hands::is_fetched()),
     }
 }
 
@@ -1764,17 +1765,22 @@ fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Ex
             d.notify("SteamVR plays through EchoXR now");
         }
         Extra::Hands => {
-            d.state.echoxr_hands = true;
-            if !cfg!(target_os = "linux") && d.state.profile.steamvr_via != SteamVrVia::EchoXr {
-                d.state.profile.steamvr_via = SteamVrVia::EchoXr;
-                d.notify("EchoXR is on too: hand tracking needs it");
-            }
-            d.save();
-            run(d, ctx, v, "Installing EchoXR Hands", |v, cancel, on| {
-                hands::fetch(cancel, on)?;
-                hands::install_into(&v.bin_dir())?;
-                Ok("EchoXR Hands is installed: it plays along in SteamVR through EchoXR".into())
-            });
+            // On (and EchoXR with it) only once it is installed: a failed download leaves
+            // it in Additional Plugins.
+            let v = v.clone();
+            d.start_job(
+                ctx,
+                JobKind::Mods,
+                &job_id(&v),
+                "Installing EchoXR Hands",
+                "Starting...",
+                move |cancel, on| match hands::fetch(cancel, on)
+                    .and_then(|()| hands::install_into(&v.bin_dir()))
+                {
+                    Ok(()) => JobResult::HandsInstalled,
+                    Err(e) => versions::job_err(e, "Mods"),
+                },
+            );
         }
     }
 }
