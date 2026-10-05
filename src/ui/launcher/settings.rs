@@ -1176,7 +1176,7 @@ fn upload_token(d: &Dashboard) -> Option<String> {
     d.vrce
         .tokens
         .as_ref()
-        .filter(|t| t.expires().map_or(true, |e| e > now + 30))
+        .filter(|t| t.expires().is_none_or(|e| e > now + 30))
         .map(|t| t.token.clone())
 }
 
