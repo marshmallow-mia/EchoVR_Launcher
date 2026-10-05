@@ -14,6 +14,27 @@ use crate::core::launcher::store::{LauncherState, Runtime, Target};
 /// What Steam's shortcut runs the launcher with.
 pub const PLAY_FLAG: &str = "--play";
 
+/// Cancels a start PLAY made: ends the launcher Steam ran with `--play` (not this one)
+/// and what runs in the game's Wine prefix. Steam then sees the shortcut end.
+pub fn cancel_start() {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let me = std::process::id();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().with_cmd(UpdateKind::OnlyIfNotSet),
+    );
+    for (pid, p) in sys.processes() {
+        let play = p.cmd().iter().any(|a| a.to_str() == Some(PLAY_FLAG));
+        let ours = p.name().to_string_lossy().starts_with("EchoVR_Launche");
+        if play && ours && pid.as_u32() != me && p.kill() {
+            tracing::info!("cancelled the start (pid {pid})");
+        }
+    }
+    echoxr::kill_prefix();
+}
+
 /// Gives xdg-open what it needs on KDE when the launcher was started without the
 /// desktop's full environment (from a terminal over SSH, a systemd unit, some app
 /// launchers): without `KDE_SESSION_VERSION` it falls back to KDE 3's `kfmclient`, which

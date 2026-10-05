@@ -24,6 +24,8 @@ use crate::ui::markdown::{self, Look};
 use crate::ui::style::{self, Icon};
 use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 use egui::pos2;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
 /// PLAY on Linux would add Echo VR to Steam (Steam restarts): asked once.
@@ -313,8 +315,12 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.label = "RUNNING";
                 a.tip = "Echo VR was started outside the launcher.".into();
             } else if ours {
-                // Clicked: the grey PLAY until the game shows up (or its process ends).
-                a.tip = "Starting Echo VR…".into();
+                // Clicked: STOP until the game shows up (or its start ends); it cancels it.
+                (a.label, a.main, a.enabled, a.grey) = ("STOP", Main::Stop, true, true);
+                a.tip = "Echo VR is starting: STOP cancels the start".into();
+                if let Some(n) = &d.launch_note {
+                    a.line.parts.push(format!("{n}…"));
+                }
             } else if setup::needs_patch(d, &v) {
                 (a.label, a.main) = ("PATCH", Main::Patch(v.id.clone()));
                 a.enabled = !d.any_job();
@@ -1146,12 +1152,26 @@ fn servers_here(n: usize) -> Option<String> {
 
 /// STOP: ends what PLAY started -- the starter (Revive's injector, EchoXR.exe) and the
 /// game itself, never a game started some other way, nor a server.
+/// Ends the game PLAY started, or its start while the game hasn't shown up yet.
 fn stop(d: &mut Dashboard) {
+    let starting = d.launched.is_some_and(|l| !l.seen) && d.local().ours.is_none();
+    if let Some(c) = d.launch_cancel.take() {
+        c.store(true, Ordering::Relaxed);
+    }
     if let Some(mut c) = d.child.take() {
         let _ = c.kill();
     }
     if let Some(m) = &d.monitor {
         m.stop_ours();
+    }
+    if starting {
+        if cfg!(target_os = "linux") {
+            // What Steam already started: the launcher it ran with --play, and Proton.
+            std::thread::spawn(crate::core::linux::cancel_start);
+        }
+        d.launched = None;
+        d.launch_note = None;
+        d.notify("Start cancelled");
     }
 }
 
@@ -1207,20 +1227,24 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             return;
         };
         crate::core::linux::set_next_lobby(lobby.as_ref().map(|j| (j.lobby.as_str(), j.spectate)));
-        match crate::core::linux::steam::run(&root, appid) {
-            Ok(()) => {
-                if let Some(m) = &d.monitor {
-                    m.launched(None, &v.id, &v.bin_dir());
-                }
-                d.launched = Some(super::Launched::now());
-                d.login_watch = Some(LoginWatching::new(&v.root));
-            }
-            Err(e) => d.dialogs.error(
-                "Couldn't start Echo VR",
-                &format!("{e:#}"),
-                Default::default(),
-            ),
-        }
+        // Steam may have to start first: on the worker, STOP can cancel it meanwhile.
+        let cancel = Arc::new(AtomicBool::new(false));
+        d.launch_cancel = Some(cancel.clone());
+        d.launch_note = Some("Starting Echo VR".into());
+        d.launched = Some(super::Launched::now());
+        let (version, bin, root_dir) = (v.id.clone(), v.bin_dir(), v.root.clone());
+        d.worker.spawn(ctx, move |tx| {
+            let result = crate::core::linux::steam::run_when_up(&root, appid, &cancel, &mut |n| {
+                tx.send(Msg::LaunchNote(n.to_string()))
+            })
+            .map_err(|e| format!("{e:#}"));
+            tx.send(Msg::LinuxStarted {
+                result,
+                version,
+                bin,
+                root: root_dir,
+            });
+        });
         return;
     }
     let revive_dir = match (d.state.profile.runtime, d.state.profile.steamvr_via) {

@@ -321,6 +321,26 @@ pub fn setup(steam_root: &Path, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -
     Ok(())
 }
 
+/// Ends everything running in the game's Wine prefix (a start STOP cancels: Proton, the
+/// game, EchoXR), without waiting.
+pub fn kill_prefix() {
+    let wineserver = proton_dir().join("files/bin/wineserver");
+    if !wineserver.is_file() || !prefix().is_dir() {
+        return;
+    }
+    match std::process::Command::new(wineserver)
+        .arg("-k")
+        .env("WINEPREFIX", prefix())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => tracing::info!("stopped what runs in the Wine prefix"),
+        Err(e) => tracing::warn!("wineserver -k: {e}"),
+    }
+}
+
 /// How `--play` starts the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Start {

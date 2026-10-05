@@ -242,6 +242,15 @@ enum Msg {
     QuestLogs(Result<PathBuf, UiError>),
     /// The logs were uploaded: the service's reference, or why not.
     LogsUploaded(Result<String, String>),
+    /// Linux: what PLAY's start through Steam waits for.
+    LaunchNote(String),
+    /// Linux: Steam has the link (true), the start was cancelled (false), or it failed.
+    LinuxStarted {
+        result: Result<bool, String>,
+        version: String,
+        bin: PathBuf,
+        root: String,
+    },
     /// A version's mods, read (for the Mods page's read number `gen`).
     ModView(u64, String, crate::core::launcher::mods::ModView),
     ModCatalog(crate::core::launcher::mods::ModCatalog),
@@ -583,6 +592,10 @@ pub struct Dashboard {
     child_echoxr: bool,
     /// The game PLAY started, until it has ended (or never showed up).
     launched: Option<Launched>,
+    /// Linux: PLAY's start through Steam, until Steam has the link (STOP sets it).
+    launch_cancel: Option<Arc<AtomicBool>>,
+    /// What that start waits for ("Starting Steam"...), for the info line.
+    launch_note: Option<String>,
     /// The game's log of the start PLAY made, for what EchoVRCE says to a login.
     login_watch: Option<play::LoginWatching>,
     /// The lobby to join once "Launch anyway" is answered.
@@ -1563,6 +1576,8 @@ impl Dashboard {
         if let Some(l) = self.launched.as_mut() {
             if ours {
                 l.seen = true;
+            } else if self.launch_cancel.is_some() {
+                // Still handing the start to Steam: the wait begins once Steam has it.
             } else if l.seen || l.at.elapsed() > game::LAUNCH_WAIT {
                 self.launched = None;
             }
@@ -1733,6 +1748,32 @@ impl Dashboard {
                             }
                         }
                         Err(e) => self.dialogs.error_ui(&e),
+                    }
+                }
+                Msg::LaunchNote(n) => self.launch_note = Some(n),
+                Msg::LinuxStarted {
+                    result,
+                    version,
+                    bin,
+                    root,
+                } => {
+                    self.launch_cancel = None;
+                    self.launch_note = None;
+                    match result {
+                        Ok(true) => {
+                            if let Some(m) = &self.monitor {
+                                m.launched(None, &version, &bin);
+                            }
+                            // The wait for the game starts now that Steam has the link.
+                            self.launched = Some(Launched::now());
+                            self.login_watch = Some(play::LoginWatching::new(&root));
+                        }
+                        Ok(false) => self.launched = None,
+                        Err(e) => {
+                            self.launched = None;
+                            self.dialogs
+                                .error("Couldn't start Echo VR", &e, Default::default());
+                        }
                     }
                 }
                 Msg::LogsUploaded(r) => {

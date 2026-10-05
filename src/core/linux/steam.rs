@@ -370,14 +370,57 @@ pub fn start(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Starts the shortcut `appid` through Steam. Not while Steam is still starting: the
-/// link would start a second client instead of reaching it.
-pub fn run(root: &Path, appid: u32) -> Result<()> {
-    if running() && !is_ready(root) {
-        bail!("Steam is still starting. Press PLAY again in a moment.");
+/// Starts the shortcut `appid` through Steam, starting Steam first when it doesn't run and
+/// waiting (up to two minutes) until it is up: a link Steam gets before then starts a
+/// second client, or gets lost. `on` hears what it waits for. `Ok(false)`: `cancel` was
+/// set first.
+pub fn run_when_up(
+    root: &Path,
+    appid: u32,
+    cancel: &std::sync::atomic::AtomicBool,
+    on: &mut dyn FnMut(&str),
+) -> Result<bool> {
+    use std::sync::atomic::Ordering;
+    let cancelled = || cancel.load(Ordering::Relaxed);
+    let mut started = false;
+    if !running() {
+        on("Starting Steam");
+        steam_command(root)
+            .arg("-silent")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .context("Couldn't start Steam")?;
+        started = true;
     }
+    let since = std::time::Instant::now();
+    while !is_ready(root) {
+        if cancelled() {
+            return Ok(false);
+        }
+        if since.elapsed() > Duration::from_secs(120) {
+            bail!("Steam didn't come up within two minutes. Start Steam, then press PLAY again.");
+        }
+        on("Waiting for Steam");
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    if started {
+        // Up, and a moment more for it to take links.
+        for _ in 0..6 {
+            if cancelled() {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+    if cancelled() {
+        return Ok(false);
+    }
+    on("Starting Echo VR");
     open(root, &format!("steam://rungameid/{}", game_id(appid)))
-        .context("Couldn't ask Steam to start Echo VR")
+        .context("Couldn't ask Steam to start Echo VR")?;
+    Ok(true)
 }
 
 /// Hands Steam a `steam://` link (say, to start SteamVR).
