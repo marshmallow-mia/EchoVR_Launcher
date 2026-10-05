@@ -45,6 +45,8 @@ pub struct Credit {
     pub what: &'static str,
     pub licence: &'static str,
     pub url: &'static str,
+    /// Its own credits file, everyone and everything it builds on (or "").
+    pub credits: &'static str,
 }
 
 pub const CREDITS: &[Credit] = &[
@@ -54,6 +56,7 @@ pub const CREDITS: &[Credit] = &[
         what: "Installs, updates and starts Echo VR, its mods and VR on Windows and Linux.",
         licence: "GPL-3.0",
         url: env!("CARGO_PKG_REPOSITORY"),
+        credits: "",
     },
     Credit {
         name: "EchoXR",
@@ -61,6 +64,7 @@ pub const CREDITS: &[Credit] = &[
         what: "Echo VR on OpenXR: SteamVR without Revive, and VR on Linux.",
         licence: "MIT (Revive), Apache-2.0 (OpenXR SDK)",
         url: "https://github.com/EchoTools/EchoXR",
+        credits: "https://github.com/EchoTools/EchoXR/blob/main/CREDITS.md",
     },
     Credit {
         name: "EchoXR Hands",
@@ -68,6 +72,7 @@ pub const CREDITS: &[Credit] = &[
         what: "Your own fingers on Echo VR's hands, from OpenXR hand tracking.",
         licence: "",
         url: "https://github.com/EchoTools/EchoXR-Hands",
+        credits: "https://github.com/EchoTools/EchoXR-Hands/blob/main/CREDITS.md",
     },
     Credit {
         name: "nEVR runtime",
@@ -75,6 +80,7 @@ pub const CREDITS: &[Credit] = &[
         what: "The mod loader in Echo VR: plugins, Discord sign-in, friends and parties.",
         licence: "Apache-2.0",
         url: "https://github.com/EchoTools/nevr-runtime",
+        credits: "",
     },
     Credit {
         name: "EchoVRCE",
@@ -82,6 +88,7 @@ pub const CREDITS: &[Credit] = &[
         what: "The community servers, accounts and matchmaking Echo VR plays on.",
         licence: "",
         url: "https://echovrce.com",
+        credits: "",
     },
     Credit {
         name: "Revive",
@@ -89,6 +96,7 @@ pub const CREDITS: &[Credit] = &[
         what: "Runs Oculus games on SteamVR; EchoXR's OpenXR side is built on it.",
         licence: "MIT",
         url: "https://github.com/LibreVR/Revive",
+        credits: "",
     },
 ];
 
@@ -98,7 +106,12 @@ pub const CREDITS_NOTE: &str = "Echo VR is by Ready at Dawn and Meta, who have n
 pub const W: f32 = 1280.0;
 pub const H: f32 = 720.0;
 /// Width of the left navigation rail.
-const RAIL: f32 = dz(91.0);
+const RAIL: f32 = dz(RAIL_W);
+/// The rail's width, and how much wider it gets unfolded (design pixels).
+const RAIL_W: f32 = 91.0;
+const RAIL_EXTRA: f32 = 190.0;
+/// How long the rail takes to unfold or fold (seconds).
+const RAIL_SLIDE: f32 = 0.22;
 /// Left edge and width of page content.
 const X0: f32 = dz(138.0);
 const CW: f32 = W - X0 - dz(48.0);
@@ -611,8 +624,6 @@ pub struct Dashboard {
     /// Snapshots: the copies found.
     snap_found: Vec<String>,
     launcher_update: LauncherUpdate,
-    /// The rail is unfolded: its tabs with their names, over the page.
-    rail_open: bool,
     /// What the uninstall card asked to remove, until its confirmation is answered.
     uninstall_parts: Vec<crate::core::uninstall::Part>,
     started: bool,
@@ -668,12 +679,6 @@ impl Dashboard {
             }
         }
         self.library_field = self.state.library.clone();
-        // The first start shows the tabs' names once.
-        if !self.state.rail_unfolded_once && !self.demo {
-            self.rail_open = true;
-            self.state.rail_unfolded_once = true;
-            self.save();
-        }
         self.quest_ip_field = self.state.quest_ip.clone().unwrap_or_default();
         self.relay_server_field = self.state.relay_server.clone();
         self.linux_set_up = cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up();
@@ -1041,7 +1046,7 @@ impl Dashboard {
             }
             Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
-            Some(SnapVariant::RailOpen) => self.rail_open = true,
+            Some(SnapVariant::RailOpen) => self.state.rail_open = true,
             Some(SnapVariant::Uninstall) => settings::ask_uninstall(self),
             Some(SnapVariant::Credits) => {
                 self.overlay = Some(setup::Overlay::Credits { scroll: 0.0 })
@@ -2010,24 +2015,25 @@ impl Dashboard {
 
         // The dashboard stays visible but inert under an overlay card.
         let blocked = kit.blocked;
-        if self.overlay.is_some() || self.rail_open {
+        if self.overlay.is_some() {
             kit.blocked = true;
         }
         versions::handle_answers(self, &ctx);
         settings::uninstall_answers(self, &ctx);
+        // The page right of the unfolded rail, in the room the zoom made for it.
+        let shift = self.rail_extra(&ctx).min(kit.ex);
+        kit.origin.x += shift;
+        kit.ex -= shift;
         self.page_body(kit, &ctx, self.page);
         self.warmed.insert(self.page);
-
         self.top_bar(kit, &ctx);
-        // The rail answers over its own page (not under a card).
-        if self.overlay.is_none() {
-            kit.blocked = blocked;
-        }
-        self.rail(kit, &ctx);
         self.quest_soon(kit, &ctx);
+        kit.origin.x -= shift;
+        kit.ex += shift;
+        self.rail(kit, &ctx, shift);
         kit.blocked = blocked;
         setup::draw_overlay(self, kit, &ctx);
-        self.prewarm(kit, &ctx);
+        self.prewarm(kit, &ctx, shift);
         self.probe(&ctx);
         if self.any_job() || self.quest_busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
@@ -2088,7 +2094,7 @@ impl Dashboard {
     /// From the second frame on, draws one page that hasn't been shown yet per frame,
     /// unseen and inert, so its images are scaled in the background before it is first
     /// opened.
-    fn prewarm(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+    fn prewarm(&mut self, kit: &mut Kit, ctx: &egui::Context, shift: f32) {
         if kit.assets.sync.get() || ctx.cumulative_frame_nr() == 0 {
             return;
         }
@@ -2102,6 +2108,8 @@ impl Dashboard {
             .new_child(egui::UiBuilder::new().max_rect(rect).invisible());
         let mut ghost = Kit::new(&mut ui, kit.assets, true);
         ghost.ghost = true;
+        ghost.origin.x += shift;
+        ghost.ex = (ghost.ex - shift).max(0.0);
         kit.assets.ghost.set(true);
         self.page_body(&mut ghost, ctx, page);
         kit.assets.ghost.set(false);
@@ -2154,9 +2162,23 @@ impl Dashboard {
         out
     }
 
-    /// The rail: the pages' icons, and the button that unfolds it into a drawer with each
-    /// page's name (and why its icon has a dot) over the dimmed page.
-    fn rail(&mut self, kit: &mut Kit, ctx: &egui::Context) {
+    /// How much wider than its icons the rail is right now (logical pixels): the unfolded
+    /// rail's room, sliding in and out.
+    pub fn rail_extra(&self, ctx: &egui::Context) -> f32 {
+        let open = self.state.rail_open;
+        let t = if self.demo {
+            f32::from(u8::from(open))
+        } else {
+            ctx.animate_bool_with_time(egui::Id::new("rail-open"), open, RAIL_SLIDE)
+        };
+        // Eased: quick out, gentle landing.
+        let t = 1.0 - (1.0 - t).powi(3);
+        t * dz(RAIL_EXTRA)
+    }
+
+    /// The rail: the pages' icons, and the ≡ button that unfolds it (`shift` wider than its
+    /// icons) to show each page's name, and why its icon has a dot, beside it.
+    fn rail(&mut self, kit: &mut Kit, ctx: &egui::Context, shift: f32) {
         // Settings stays at the bottom.
         let settings_y = 1035.0 + kit.dy();
         let items = [
@@ -2183,43 +2205,23 @@ impl Dashboard {
         ];
         let badges = self.rail_badges();
         let badge = |page: Page| badges.iter().find(|(p, ..)| *p == page);
-        let open = self.rail_open && !kit.ghost;
-        // Unfolded: the page is dimmed, and a click on it folds the rail back.
-        const DRAWER: f32 = 330.0;
-        if open {
-            let page = kit.drect(Dr::new(DRAWER, 0.0, 1920.0 + kit.dx(), 1080.0 + kit.dy()));
-            kit.ui.painter().rect_filled(page, 0.0, design::SCRIM);
-            if kit.click_area("rail-fold-away", page, "")
-                || ctx.input(|i| i.key_pressed(egui::Key::Escape))
-            {
-                self.rail_open = false;
-            }
-            let drawer = kit.drect(Dr::new(0.0, 0.0, DRAWER, 1080.0 + kit.dy()));
-            kit.ui
-                .painter()
-                .rect_filled(drawer, 0.0, egui::Color32::from_rgb(22, 12, 42));
-            kit.ui.painter().vline(
-                drawer.max.x,
-                drawer.y_range(),
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(92, 60, 150)),
-            );
-        }
-        kit.image("left_sidebar.jpg", 0.0, 0.0, RAIL, H + kit.ey);
-        // The fold button.
+        // How far it is unfolded, 0..1.
+        let t = (shift / dz(RAIL_EXTRA)).clamp(0.0, 1.0);
+        let width = RAIL + shift;
+        self.rail_background(kit, ctx, width);
+        let open = self.state.rail_open;
         let tip = if open {
-            "Fold the tabs back"
+            "Fold the tabs' names away"
         } else {
             "Show the tabs' names"
         };
-        if kit.rail_item(
-            "rail-fold",
-            RailIcon::Vector(Icon::Menu, 28.0),
-            130.0,
-            open,
-            tip,
-        ) {
-            self.rail_open = !open;
+        if kit.rail_item("rail-fold", RailIcon::Menu(28.0, t), 130.0, false, tip) {
+            self.state.rail_open = !open;
+            self.save();
         }
+        // The names, fading in as the rail opens, cut off at its edge.
+        let names =
+            (t > 0.01).then(|| (kit.window().min.x + width, (t * 1.6 - 0.6).clamp(0.0, 1.0)));
         for (page, icon, cy) in items {
             let tip = match badge(page) {
                 Some((_, why, _)) => format!("{}: {why}", page.title()),
@@ -2232,51 +2234,106 @@ impl Dashboard {
                 self.page == page,
                 &tip,
             );
-            if open {
-                // Its name, and why it has a dot, beside it: clickable too.
-                let x = 100.0;
-                let name = kit.label_galley(
-                    page.title(),
-                    design::din(20.0),
-                    design::TEXT,
-                    dz(DRAWER - x - 16.0),
-                );
+            if let Some((edge, alpha)) = names {
+                let x = 98.0;
+                let room = dz(RAIL_EXTRA + RAIL_W - x - 14.0);
+                let fade = |c: egui::Color32| c.gamma_multiply(alpha);
+                let selected = self.page == page;
+                let color = if selected {
+                    design::TEXT
+                } else {
+                    egui::Color32::from_gray(200)
+                };
+                let name = kit.label_galley(page.title(), design::din(19.0), fade(color), room);
                 let why = badge(page).map(|(_, why, color)| {
-                    kit.label_galley(why, design::din(13.0), *color, dz(DRAWER - x - 16.0))
+                    kit.label_galley(why, design::din(13.0), fade(*color), room)
                 });
                 let name_h = name.size().y;
                 let why_h = why.as_ref().map_or(0.0, |g| g.size().y + dz(2.0));
                 let top = dz(cy) - (name_h + why_h) / 2.0;
-                let r = kit.put(dz(x), top, name);
+                let clip = kit.ui.clip_rect();
+                let mut cut = clip;
+                cut.max.x = cut.max.x.min(edge);
+                kit.ui.set_clip_rect(cut);
+                kit.put(dz(x), top, name);
                 if let Some(g) = why {
                     kit.put(dz(x), top + name_h + dz(2.0), g);
                 }
+                kit.ui.set_clip_rect(clip);
+                // The whole row answers, the name as the icon.
                 let row = egui::Rect::from_min_max(
-                    egui::pos2(r.min.x, kit.drect(Dr::new(0.0, cy - 26.5, 0.0, 53.0)).min.y),
+                    kit.drect(Dr::new(73.0, cy - 26.5, 0.0, 0.0)).min,
                     egui::pos2(
-                        kit.drect(Dr::new(DRAWER, 0.0, 0.0, 0.0)).min.x,
+                        edge - dz(8.0),
                         kit.drect(Dr::new(0.0, cy + 26.5, 0.0, 0.0)).min.y,
                     ),
                 );
-                go |= kit.click_area(&format!("rail-name-{}", page.title()), row, &tip);
+                if row.width() > 0.0 {
+                    go |= kit.click_area(&format!("rail-name-{}", page.title()), row, &tip);
+                }
             }
             if go {
                 self.page = page;
-                self.rail_open = false;
             }
         }
+        // The divider, as wide as the rail.
         kit.ui.painter().rect_filled(
-            kit.drect(Dr::new(17.0, 624.0, 59.0, 3.0)),
+            kit.drect(Dr::new(17.0, 624.0, 59.0, 3.0))
+                .with_max_x(kit.window().min.x + width - dz(17.0)),
             dz(1.5),
             egui::Color32::from_rgb(142, 144, 143),
         );
-        // A dot on an icon whose page has news (its reason in the tip and the drawer).
+        // A dot on an icon whose page has news (its reason in the tip and under its name).
         for (page, _, color) in &badges {
             let Some((_, _, cy)) = items.iter().find(|(p, ..)| p == page) else {
                 continue;
             };
             let c = kit.drect(Dr::new(63.0, cy - 21.0, 0.0, 0.0)).min;
             kit.ui.painter().circle_filled(c, dz(6.0), *color);
+        }
+    }
+
+    /// The rail's backdrop, `width` wide: the design's sidebar image, stretched as it
+    /// unfolds; a shadow on the page side while it is unfolded.
+    fn rail_background(&self, kit: &mut Kit, ctx: &egui::Context, width: f32) {
+        let h = H + kit.ey;
+        let tex = kit.assets.tex(
+            ctx,
+            "left_sidebar.jpg",
+            RAIL.round() as u32,
+            h.round() as u32,
+        );
+        let o = kit.window().min;
+        let rect = egui::Rect::from_min_size(o, egui::vec2(width, h));
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        kit.ui
+            .painter()
+            .image(tex.id(), rect, uv, egui::Color32::WHITE);
+        if width > RAIL + 0.5 {
+            // A soft shadow on the page side, and a thin light edge.
+            let edge = o.x + width;
+            let a = ((width - RAIL) / dz(RAIL_EXTRA)).clamp(0.0, 1.0);
+            let shadow = egui::Rect::from_min_max(
+                egui::pos2(edge, o.y),
+                egui::pos2(edge + dz(24.0), o.y + h),
+            );
+            let mut mesh = egui::Mesh::default();
+            let dark = egui::Color32::from_black_alpha((90.0 * a) as u8);
+            mesh.colored_vertex(shadow.left_top(), dark);
+            mesh.colored_vertex(shadow.right_top(), egui::Color32::TRANSPARENT);
+            mesh.colored_vertex(shadow.right_bottom(), egui::Color32::TRANSPARENT);
+            mesh.colored_vertex(shadow.left_bottom(), dark);
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            kit.ui.painter().add(mesh);
+            kit.ui.painter().vline(
+                edge,
+                o.y..=o.y + h,
+                egui::Stroke::new(
+                    1.0,
+                    egui::Color32::from_rgba_unmultiplied(150, 110, 230, (70.0 * a) as u8),
+                ),
+            );
         }
     }
 
@@ -2503,6 +2560,7 @@ fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
 fn demo_state() -> LauncherState {
     let mut s = LauncherState {
         imported: true,
+        rail_open: false,
         ..Default::default()
     };
     s.versions.push(InstalledVersion {

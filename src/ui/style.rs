@@ -49,8 +49,6 @@ pub enum Icon {
     Close,
     Copy,
     Plus,
-    /// Three lines: unfolds the rail.
-    Menu,
     /// A bin: deletes.
     Trash,
 }
@@ -270,11 +268,6 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
         Icon::Plus => {
             line(vec![pt(0.5, 0.14), pt(0.5, 0.86)]);
             line(vec![pt(0.14, 0.5), pt(0.86, 0.5)]);
-        }
-        Icon::Menu => {
-            for y in [0.24, 0.5, 0.76] {
-                line(vec![pt(0.14, y), pt(0.86, y)]);
-            }
         }
         Icon::Trash => {
             line(vec![pt(0.12, 0.22), pt(0.88, 0.22)]);

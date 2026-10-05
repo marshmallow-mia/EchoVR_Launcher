@@ -169,8 +169,8 @@ pub struct LauncherState {
     pub event_builds: bool,
     /// EchoXR Hands is on (Mods page): it plays along whenever EchoXR runs on SteamVR.
     pub echoxr_hands: bool,
-    /// The rail was unfolded once (by itself at the first start): its tabs' names were seen.
-    pub rail_unfolded_once: bool,
+    /// The rail is unfolded: the tabs' names beside their icons (new players start so).
+    pub rail_open: bool,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -217,7 +217,7 @@ impl Default for LauncherState {
             relay_server: super::relay::DEFAULT_SERVER.into(),
             event_builds: false,
             echoxr_hands: false,
-            rail_unfolded_once: false,
+            rail_open: true,
             relay_account: None,
         }
     }

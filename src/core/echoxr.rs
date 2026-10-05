@@ -30,7 +30,7 @@ const URL: &str =
 const SHA256: &str = "1777c7788458e97d8abcb3b0ec54776ec85310ed88a659d3b5679e045acb4f93";
 /// Who made it, as the Mods page credits it: EchoXR, and what it builds on.
 pub const AUTHORS: &str =
-    "marshmallow-mia, heisthecat31, Villagers654 (RiftLift), CrossVR (Revive)";
+    "heisthecat31, marshmallow-mia, Villagers654 (RiftLift), CrossVR (Revive)";
 /// What starts the game, in its `bin/win10`.
 pub const LAUNCHER: &str = "EchoXR.exe";
 /// The files that do the work, with their hashes.

@@ -951,7 +951,8 @@ pub(super) fn credits_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) 
     let list_h = by - dz(16.0) - note_h - dz(12.0) - y;
     let link_w = k
         .link_width("GitHub", 13.5)
-        .max(k.link_width("Website", 13.5));
+        .max(k.link_width("Website", 13.5))
+        .max(k.link_width("Credits", 13.5));
     // Each entry: its name and licence, who made it, what it is.
     let heights: Vec<f32> = super::CREDITS
         .iter()
@@ -1010,6 +1011,19 @@ pub(super) fn credits_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) 
                 .clicked
                 {
                     open = Some(c.url);
+                }
+                if !c.credits.is_empty()
+                    && k.link(
+                        &format!("credits-{}", c.name),
+                        x + cw - k.link_width("Credits", 13.5),
+                        cy + dz(30.0),
+                        "Credits",
+                        13.5,
+                        c.credits,
+                    )
+                    .clicked
+                {
+                    open = Some(c.credits);
                 }
                 let mut ty = cy + dz(30.0);
                 ty += k.caps_text(

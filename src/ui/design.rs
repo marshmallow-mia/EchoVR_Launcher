@@ -137,6 +137,8 @@ pub enum RailIcon {
     Image(&'static str, f32),
     /// A vector icon and its size in design pixels.
     Vector(Icon, f32),
+    /// The three-line menu icon, its size, turned by `turn` (0..1 = 0..90°).
+    Menu(f32, f32),
 }
 
 impl Kit<'_> {
@@ -477,6 +479,17 @@ impl Kit<'_> {
                     mix(Color32::from_gray(225), TEXT, t)
                 };
                 icon_at(self.ui.painter(), i, o, dz(s), color);
+            }
+            RailIcon::Menu(s, turn) => {
+                let color = mix(Color32::from_gray(225), TEXT, t);
+                let c = self.dpos(cx, cy);
+                let rot = egui::emath::Rot2::from_angle(turn * std::f32::consts::FRAC_PI_2);
+                let st = egui::Stroke::new((dz(s) / 11.0).max(1.5), color);
+                for y in [-0.26, 0.0, 0.26] {
+                    let a = c + rot * vec2(-0.36 * dz(s), y * dz(s));
+                    let b = c + rot * vec2(0.36 * dz(s), y * dz(s));
+                    self.ui.painter().line_segment([a, b], st);
+                }
             }
         }
         resp.clicked
