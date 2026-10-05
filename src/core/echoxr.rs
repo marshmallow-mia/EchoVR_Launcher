@@ -72,7 +72,7 @@ pub const PLATFORM: [(&str, &str); 2] = [
 pub fn exit_message(code: i32) -> Option<&'static str> {
     Some(match code {
         2 => "EchoXR.exe isn't next to echovr.exe in the game's bin\\win10 folder.",
-        3 => "EchoXR's runtime files are missing from the game's folder: set it up again.",
+        3 => "EchoXR's runtime files are missing from the game's folder: PLAY in the launcher puts them back.",
         4 => "EchoXR couldn't make echovr_openxr.exe, its copy of the game (see EchoXR\\launcher.log in the game's bin\\win10 folder).",
         5 => "No OpenXR runtime answered: start SteamVR (or Monado / WiVRn) and wake the headset first.",
         6 => "The OpenXR runtime has no headset: connect it and wake it up, then try again.",
@@ -182,7 +182,7 @@ pub fn fetch(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
 /// SDK loader and P2P library into `platform_to` when given: only what is missing or
 /// differs.
 pub fn install_into(bin: &Path, platform_to: Option<&Path>) -> Result<()> {
-    let zip = std::fs::File::open(zip_path()).context("EchoXR isn't set up: set it up again")?;
+    let zip = std::fs::File::open(zip_path()).context("EchoXR isn't downloaded: PLAY in the launcher downloads it")?;
     install_zip(zip, bin, platform_to)
 }
 

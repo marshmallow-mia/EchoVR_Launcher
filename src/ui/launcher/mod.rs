@@ -503,6 +503,8 @@ pub struct Dashboard {
     game_sign_in: echovrce::GameSignIn,
     /// Linux: GE-Proton and EchoXR are in place (checked at start).
     linux_set_up: bool,
+    /// PLAY started a preparation (Revive, EchoXR, Linux): it starts the game when that's done.
+    play_after_prep: bool,
     /// Linux: when `--play`'s word on a failed start was last looked for.
     linux_outcome_at: Option<std::time::Instant>,
     /// The job whose "continue in your browser" dialog is up (Discord's authorization).
@@ -1686,6 +1688,14 @@ impl Dashboard {
             // Read the headset again once the job is over.
             self.quest_info = None;
         }
+        // PLAY prepared VR first: the game starts once that's done (not after a failure).
+        let play_after = [setup::REVIVE_JOB, setup::ECHOXR_JOB, setup::LINUX_JOB].contains(&id)
+            && std::mem::take(&mut self.play_after_prep);
+        let start_now = play_after
+            && matches!(
+                r,
+                JobResult::ReviveReady(_) | JobResult::EchoXrReady | JobResult::LinuxReady(_)
+            );
         match r {
             JobResult::Installed(v, update_failed) => {
                 let name = v.name.clone();
@@ -1798,7 +1808,9 @@ impl Dashboard {
             }
             JobResult::ReviveReady(notes) => {
                 self.revive = Probe::default();
-                self.notify("SteamVR is ready: PLAY starts Echo VR through it");
+                if !play_after {
+                    self.notify("SteamVR is ready: PLAY starts Echo VR through it");
+                }
                 if !notes.is_empty() {
                     self.dialogs.info(
                         "SteamVR is ready",
@@ -1811,13 +1823,17 @@ impl Dashboard {
             }
             JobResult::EchoXrReady => {
                 self.echoxr = Probe::default();
-                self.notify("SteamVR through EchoXR is ready: PLAY starts Echo VR through it");
+                if !play_after {
+                    self.notify("SteamVR through EchoXR is ready: PLAY starts Echo VR through it");
+                }
             }
             JobResult::LinuxReady(appid) => {
                 self.state.linux_appid = Some(appid);
                 self.linux_set_up = true;
                 self.save();
-                self.notify("Echo VR is set up for Linux: PLAY starts it through Steam");
+                if !play_after {
+                    self.notify("Echo VR is ready on Linux: PLAY starts it through Steam");
+                }
             }
             JobResult::ArtworkInstalled => {
                 self.notify("Echo VR's artwork is installed (restart SteamVR to see it)")
@@ -1853,6 +1869,9 @@ impl Dashboard {
                 }
                 self.dialogs.error_ui(&e);
             }
+        }
+        if start_now {
+            play::try_start(self, ctx, None);
         }
     }
 

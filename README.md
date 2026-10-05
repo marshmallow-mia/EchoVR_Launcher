@@ -51,12 +51,12 @@ your fingers.
 
 ## Linux
 
-The PC version plays on Linux through Steam. **SET UP** on the Play page downloads a
-private GE-Proton and [EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer (it
+The PC version plays on Linux through Steam. The first **PLAY** (and the first after an
+update of them) downloads a private GE-Proton and [EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer (it
 answers Echo's Oculus calls over OpenXR, so SteamVR, Monado or WiVRn drive the headset),
 reads Meta's Platform SDK loader and P2P library out of Meta's own runtime package, and
-adds Echo VR to Steam as a non-Steam game (Steam restarts for that). PLAY then starts it
-through Steam.
+adds Echo VR to Steam as a non-Steam game (it asks first: Steam restarts for that, once),
+then starts it through Steam.
 How you play (Settings, or the Install card) is **SteamVR** or **WiVRn**, whichever is
 installed, or Flat. In VR, EchoXR is required (the Mods page lists it as required), and PLAY
 points it at that runtime: it starts SteamVR when it isn't running, and WiVRn's server

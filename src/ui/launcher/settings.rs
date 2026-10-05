@@ -137,7 +137,7 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         ) {
             d.save();
         }
-        // Revive was there before (its SET UP never ran): the artwork from here.
+        // Revive was there before (PLAY never prepared it): the artwork from here.
         let present = cfg!(windows) && !d.demo && !d.revive_missing();
         if present && d.state.revive_artwork && !d.any_job() && !revive::artwork_installed() {
             let lx = cx + dz(250.0);
