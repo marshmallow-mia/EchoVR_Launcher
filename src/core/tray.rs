@@ -51,13 +51,20 @@ fn others() -> Vec<(sysinfo::Pid, Role)> {
         true,
         ProcessRefreshKind::nothing()
             .with_user(UpdateKind::OnlyIfNotSet)
-            .with_cmd(UpdateKind::OnlyIfNotSet),
+            .with_cmd(UpdateKind::OnlyIfNotSet)
+            .with_exe(UpdateKind::OnlyIfNotSet),
     );
     let own = Pid::from_u32(std::process::id());
     let user = sys.process(own).and_then(|p| p.user_id().cloned());
+    // By the executable's own file name: the process name is cut to 15 characters on
+    // Linux (a renamed copy, "EchoVR_Launcher (1)", wouldn't match itself).
+    let same = |p: &sysinfo::Process| match p.exe().and_then(|e| e.file_name()) {
+        Some(n) => n == name,
+        None => p.name() == name,
+    };
     sys.processes()
         .values()
-        .filter(|p| p.pid() != own && p.name() == name && p.user_id().cloned() == user)
+        .filter(|p| p.pid() != own && p.user_id().cloned() == user && same(p))
         .map(|p| (p.pid(), role(p.cmd().get(1..).unwrap_or_default())))
         .collect()
 }
