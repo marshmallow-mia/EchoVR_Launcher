@@ -105,8 +105,18 @@ GE-Proton runs `EchoXR.exe` (`proton waitforexitandrun`) with:
   `wivrn/comp_ipc` socket (`wivrn-server`, or the Flatpak's, started when it isn't).
   Without a VR service EchoXR gives up after 20 s (exit code 5) instead of hanging.
 
-GE-Proton11-3's `wineopenxr` has to offer what 0.4.0 calls to turn OpenXR on
-(`wineopenxr_init_registry`); that is still to be checked on hardware.
+Checked on the Linux test box (2026-10-05, SteamVR 2.17.10, GE-Proton11-3), EchoXR 0.4.0
+stops with exit code 5 there although SteamVR answers:
+
+- GE-Proton patches `wineopenxr`: its `wineopenxr_init_registry` writes OpenXR's Vulkan
+  extensions into `HKCU\Software\Wine\XR`, not `Wine\VR` where 0.4.0 looks for them.
+- Under Wine, the field-of-view probe's `XR_MND_headless` session fails (-2): `wineopenxr`
+  builds every session from its graphics binding.
+
+Both are fixed in EchoXR on the branch `ge-proton-xr-key`, which needs a release before the
+launcher pins it. With it, the start gets as far as the session: SteamVR's runtime and
+headset answer, Echo starts, and only SteamVR's null headset (no display to lease) keeps
+the session from opening; a real headset is still the last check.
 
 See `src/core/linux/echoxr.rs`.
 
