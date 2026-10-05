@@ -516,7 +516,11 @@ fn plugins_card(
     let locked = !editable || !view.enabled;
     let current = matches!(view.loader, Loader::Nevr { .. });
     let names = names(d.mods.catalog.as_ref());
-    let content: f32 = rows.iter().map(|r| r.height()).sum();
+    let heights: Vec<f32> = rows
+        .iter()
+        .map(|r| r.height() + extra_height(d, kit, r, w))
+        .collect();
+    let content: f32 = heights.iter().sum();
     let list_h = bottom - y;
     kit.scroll_area(
         "mods-list",
@@ -530,8 +534,7 @@ fn plugins_card(
     let scroll = d.mods.list_scroll;
     let mut ry = y - scroll;
     kit.clipped(x - dz(12.0), y, w + dz(24.0), list_h, |k| {
-        for row in &rows {
-            let h = row.height();
+        for (row, &h) in rows.iter().zip(&heights) {
             if ry + h >= y && ry <= y + list_h {
                 match row {
                     Row::Plugin(p) => {
@@ -906,12 +909,17 @@ fn plugin_row(
         k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
         tag_x += tw + dz(14.0);
     }
-    let mut line = detail(p);
-    if let Some(a) = &look.author {
-        line = format!("{line}  ·  by {a}");
-    }
-    let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
+    let line = plugin_detail(p, look.author.as_deref());
+    let g = detail_lines(k, &line, w);
     k.put(x + dz(INDENT), y + dz(43.0), g);
+}
+
+/// A plugin's line under its name: its version and file, and who made it.
+fn plugin_detail(p: &Plugin, author: Option<&str>) -> String {
+    match author {
+        Some(a) => format!("{}  ·  by {a}", detail(p)),
+        None => detail(p),
+    }
 }
 
 /// A VR part's row, as a plugin's: its name with tags, whether it is ready on the right,
@@ -1009,7 +1017,14 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
         k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
         tag_x += tw + dz(14.0);
     }
-    let line = if linux {
+    let g = detail_lines(k, &echoxr_detail(linux), w);
+    k.put(x + dz(INDENT), y + dz(43.0), g);
+}
+
+/// EchoXR's line under its name.
+fn echoxr_detail(linux: bool) -> String {
+    use crate::core::echoxr;
+    if linux {
         format!(
             "v{}  ·  by {}  ·  Echo VR in your headset on SteamVR or WiVRn",
             echoxr::VERSION,
@@ -1021,9 +1036,17 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
             echoxr::VERSION,
             echoxr::AUTHORS
         )
-    };
-    let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
-    k.put(x + dz(INDENT), y + dz(43.0), g);
+    }
+}
+
+/// EchoXR Hands' line under its name.
+fn hands_detail() -> String {
+    use crate::core::echoxr_hands as hands;
+    format!(
+        "v{}  ·  by {}  ·  your own fingers, from OpenXR hand tracking (SteamVR, WiVRn)",
+        hands::VERSION,
+        hands::AUTHORS
+    )
 }
 
 /// EchoXR Hands' row, while it is on (installed): what nEVR did with its plugin, finger
@@ -1166,29 +1189,39 @@ fn hands_row(
         k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
         tag_x += tw + dz(14.0);
     }
-    let line = format!(
-        "v{}  ·  by {}  ·  your own fingers, from OpenXR hand tracking (SteamVR, WiVRn)",
-        hands::VERSION,
-        hands::AUTHORS
-    );
-    let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
+    let g = detail_lines(k, &hands_detail(), w);
     k.put(x + dz(INDENT), y + dz(43.0), g);
 }
 
-/// DMCAPS on one line (file names keep their case), cut with "…" at `w`.
-fn one_line(
-    k: &Kit,
-    text: &str,
-    size: f32,
-    color: Color32,
-    w: f32,
-) -> std::sync::Arc<egui::Galley> {
+/// A row's line under its name in DMCAPS (file names keep their case), on as many lines
+/// as a row `w` wide needs.
+fn detail_lines(k: &Kit, text: &str, w: f32) -> std::sync::Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::default();
-    design::caps_append(&mut job, text, size, color, false);
-    job.wrap.max_width = w;
-    job.wrap.max_rows = 1;
-    job.wrap.overflow_character = Some('…');
+    design::caps_append(&mut job, text, 14.0, design::GREY, false);
+    job.wrap.max_width = w - dz(INDENT);
     k.ui.ctx().fonts_mut(|f| f.layout_job(job))
+}
+
+/// How much taller than a one-line row `row` is, its line under the name wrapping.
+fn extra_height(d: &Dashboard, k: &Kit, row: &Row, w: f32) -> f32 {
+    let text = match row {
+        Row::Plugin(p) => {
+            let author = d
+                .mods
+                .catalog
+                .as_ref()
+                .and_then(|c| c.entry_for(&p.file))
+                .map(|m| m.author.clone())
+                .filter(|a| !a.is_empty());
+            plugin_detail(p, author.as_deref())
+        }
+        Row::Vr(VrPart::EchoXr, _) => echoxr_detail(cfg!(target_os = "linux") && !d.demo),
+        Row::Vr(VrPart::Hands, _) => hands_detail(),
+        _ => return 0.0,
+    };
+    let g = detail_lines(k, &text, w);
+    let one = g.rows.first().map_or(0.0, |r| r.height());
+    (g.size().y - one).max(0.0)
 }
 
 /// The asset patches' own switch, under NvrAssetPatches.
