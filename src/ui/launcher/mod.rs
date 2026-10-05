@@ -416,6 +416,8 @@ pub enum SnapVariant {
     LogsSent,
     /// Settings: the credits.
     Credits,
+    /// The rail unfolded.
+    RailOpen,
     /// The Quest side, with Echo VR installed on the headset.
     QuestSide,
     /// The Quest side, a headset without Echo VR.
@@ -603,6 +605,8 @@ pub struct Dashboard {
     /// Snapshots: the copies found.
     snap_found: Vec<String>,
     launcher_update: LauncherUpdate,
+    /// The rail is unfolded: its tabs with their names, over the page.
+    rail_open: bool,
     started: bool,
     deleting_cache: bool,
     /// The logs are on their way to the upload service.
@@ -656,6 +660,12 @@ impl Dashboard {
             }
         }
         self.library_field = self.state.library.clone();
+        // The first start shows the tabs' names once.
+        if !self.state.rail_unfolded_once && !self.demo {
+            self.rail_open = true;
+            self.state.rail_unfolded_once = true;
+            self.save();
+        }
         self.quest_ip_field = self.state.quest_ip.clone().unwrap_or_default();
         self.relay_server_field = self.state.relay_server.clone();
         self.linux_set_up = cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up();
@@ -1023,6 +1033,7 @@ impl Dashboard {
             }
             Some(SnapVariant::DeleteCache) => settings::ask_delete_cache(self),
             Some(SnapVariant::UploadLogs) => settings::ask_upload(self),
+            Some(SnapVariant::RailOpen) => self.rail_open = true,
             Some(SnapVariant::Credits) => {
                 self.overlay = Some(setup::Overlay::Credits { scroll: 0.0 })
             }
@@ -1989,7 +2000,7 @@ impl Dashboard {
 
         // The dashboard stays visible but inert under an overlay card.
         let blocked = kit.blocked;
-        if self.overlay.is_some() {
+        if self.overlay.is_some() || self.rail_open {
             kit.blocked = true;
         }
         versions::handle_answers(self, &ctx);
@@ -1997,7 +2008,11 @@ impl Dashboard {
         self.warmed.insert(self.page);
 
         self.top_bar(kit, &ctx);
-        self.rail(kit);
+        // The rail answers over its own page (not under a card).
+        if self.overlay.is_none() {
+            kit.blocked = blocked;
+        }
+        self.rail(kit, &ctx);
         self.quest_soon(kit, &ctx);
         kit.blocked = blocked;
         setup::draw_overlay(self, kit, &ctx);
@@ -2054,7 +2069,7 @@ impl Dashboard {
                 kit,
                 Icon::Plus,
                 "Plugins",
-                "Browse community plugins and add them to Echo VR, right here in the launcher.",
+                "Community plugins will be listed here. Until then, Mods → Additional Plugins has the ones you can get.",
             ),
         }
     }
@@ -2084,8 +2099,53 @@ impl Dashboard {
 
     /// The design's rail: pages, a divider, EchoVRCE, Friends and the plugins' +, and
     /// Settings at the bottom. Positions are the icons' centres in design pixels.
-    fn rail(&mut self, kit: &mut Kit) {
-        kit.image("left_sidebar.jpg", 0.0, 0.0, RAIL, H + kit.ey);
+    /// Why a page's rail icon has a dot, if it has one (its colour too).
+    fn rail_badges(&self) -> Vec<(Page, String, egui::Color32)> {
+        use crate::core::echovrce::game::FriendState;
+        let mut out = Vec::new();
+        if self.vrce.ended {
+            out.push((
+                Page::EchoVrce,
+                "Signed out: sign in again".to_string(),
+                design::QUEST_WARN,
+            ));
+        }
+        let requests = self
+            .servers
+            .requests
+            .iter()
+            .filter(|f| f.state == FriendState::Received)
+            .count();
+        if requests > 0 {
+            let s = if requests == 1 { "" } else { "s" };
+            out.push((
+                Page::Friends,
+                format!("{requests} friend request{s}"),
+                design::QUEST_ON,
+            ));
+        }
+        let invites = self.servers.open_invites().len();
+        if invites > 0 {
+            let s = if invites == 1 { "" } else { "s" };
+            out.push((
+                Page::Servers,
+                format!("{invites} match invite{s}"),
+                design::QUEST_ON,
+            ));
+        }
+        if matches!(self.launcher_update, LauncherUpdate::Available(_)) {
+            out.push((
+                Page::Settings,
+                "Launcher update available".to_string(),
+                design::QUEST_WARN,
+            ));
+        }
+        out
+    }
+
+    /// The rail: the pages' icons, and the button that unfolds it into a drawer with each
+    /// page's name (and why its icon has a dot) over the dimmed page.
+    fn rail(&mut self, kit: &mut Kit, ctx: &egui::Context) {
         // Settings stays at the bottom.
         let settings_y = 1035.0 + kit.dy();
         let items = [
@@ -2110,15 +2170,88 @@ impl Dashboard {
                 settings_y,
             ),
         ];
+        let badges = self.rail_badges();
+        let badge = |page: Page| badges.iter().find(|(p, ..)| *p == page);
+        let open = self.rail_open && !kit.ghost;
+        // Unfolded: the page is dimmed, and a click on it folds the rail back.
+        const DRAWER: f32 = 330.0;
+        if open {
+            let page = kit.drect(Dr::new(DRAWER, 0.0, 1920.0 + kit.dx(), 1080.0 + kit.dy()));
+            kit.ui.painter().rect_filled(page, 0.0, design::SCRIM);
+            if kit.click_area("rail-fold-away", page, "")
+                || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+            {
+                self.rail_open = false;
+            }
+            let drawer = kit.drect(Dr::new(0.0, 0.0, DRAWER, 1080.0 + kit.dy()));
+            kit.ui
+                .painter()
+                .rect_filled(drawer, 0.0, egui::Color32::from_rgb(22, 12, 42));
+            kit.ui.painter().vline(
+                drawer.max.x,
+                drawer.y_range(),
+                egui::Stroke::new(1.0, egui::Color32::from_rgb(92, 60, 150)),
+            );
+        }
+        kit.image("left_sidebar.jpg", 0.0, 0.0, RAIL, H + kit.ey);
+        // The fold button.
+        let tip = if open {
+            "Fold the tabs back"
+        } else {
+            "Show the tabs' names"
+        };
+        if kit.rail_item(
+            "rail-fold",
+            RailIcon::Vector(Icon::Menu, 28.0),
+            130.0,
+            open,
+            tip,
+        ) {
+            self.rail_open = !open;
+        }
         for (page, icon, cy) in items {
-            if kit.rail_item(
+            let tip = match badge(page) {
+                Some((_, why, _)) => format!("{}: {why}", page.title()),
+                None => page.title().to_string(),
+            };
+            let mut go = kit.rail_item(
                 &format!("rail-{}", page.title()),
                 icon,
                 cy,
                 self.page == page,
-                page.title(),
-            ) {
+                &tip,
+            );
+            if open {
+                // Its name, and why it has a dot, beside it: clickable too.
+                let x = 100.0;
+                let name = kit.label_galley(
+                    page.title(),
+                    design::din(20.0),
+                    design::TEXT,
+                    dz(DRAWER - x - 16.0),
+                );
+                let why = badge(page).map(|(_, why, color)| {
+                    kit.label_galley(why, design::din(13.0), *color, dz(DRAWER - x - 16.0))
+                });
+                let name_h = name.size().y;
+                let why_h = why.as_ref().map_or(0.0, |g| g.size().y + dz(2.0));
+                let top = dz(cy) - (name_h + why_h) / 2.0;
+                let r = kit.put(dz(x), top, name);
+                if let Some(g) = why {
+                    kit.put(dz(x), top + name_h + dz(2.0), g);
+                }
+                let row = egui::Rect::from_min_max(
+                    egui::pos2(r.min.x, kit.drect(Dr::new(0.0, cy - 26.5, 0.0, 53.0)).min.y),
+                    egui::pos2(
+                        kit.drect(Dr::new(DRAWER, 0.0, 0.0, 0.0)).min.x,
+                        kit.drect(Dr::new(0.0, cy + 26.5, 0.0, 0.0)).min.y,
+                    ),
+                );
+                go |= kit.click_area(&format!("rail-name-{}", page.title()), row, &tip);
+            }
+            if go {
                 self.page = page;
+                self.rail_open = false;
             }
         }
         kit.ui.painter().rect_filled(
@@ -2126,34 +2259,13 @@ impl Dashboard {
             dz(1.5),
             egui::Color32::from_rgb(142, 144, 143),
         );
-        // The EchoVRCE session ended: a dot on its icon until signed in again.
-        if self.vrce.ended {
-            let c = kit.drect(Dr::new(63.0, 692.0 - 21.0, 0.0, 0.0)).min;
-            kit.ui
-                .painter()
-                .circle_filled(c, dz(6.0), design::QUEST_WARN);
-        }
-        // Friend requests to answer: a dot on Friends.
-        if self
-            .servers
-            .requests
-            .iter()
-            .any(|f| f.state == crate::core::echovrce::game::FriendState::Received)
-        {
-            let c = kit.drect(Dr::new(63.0, 753.0 - 21.0, 0.0, 0.0)).min;
-            kit.ui.painter().circle_filled(c, dz(6.0), design::QUEST_ON);
-        }
-        // Invites to a match: a dot on Servers.
-        if !self.servers.open_invites().is_empty() {
-            let c = kit.drect(Dr::new(63.0, 538.0 - 21.0, 0.0, 0.0)).min;
-            kit.ui.painter().circle_filled(c, dz(6.0), design::QUEST_ON);
-        }
-        // A newer launcher is out: a dot on Settings.
-        if matches!(self.launcher_update, LauncherUpdate::Available(_)) {
-            let c = kit.drect(Dr::new(63.0, settings_y - 21.0, 0.0, 0.0)).min;
-            kit.ui
-                .painter()
-                .circle_filled(c, dz(6.0), design::QUEST_WARN);
+        // A dot on an icon whose page has news (its reason in the tip and the drawer).
+        for (page, _, color) in &badges {
+            let Some((_, _, cy)) = items.iter().find(|(p, ..)| p == page) else {
+                continue;
+            };
+            let c = kit.drect(Dr::new(63.0, cy - 21.0, 0.0, 0.0)).min;
+            kit.ui.painter().circle_filled(c, dz(6.0), *color);
         }
     }
 

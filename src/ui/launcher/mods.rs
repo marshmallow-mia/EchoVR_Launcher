@@ -240,7 +240,12 @@ fn add_from_disk(d: &mut Dashboard, ctx: &egui::Context) {
 /// A version where mods don't apply: none installed, or an event build.
 fn not_available(d: &mut Dashboard, kit: &mut Kit, v: Option<&InstalledVersion>) {
     let r = LOADER.wider(kit.dx());
-    let (x, y, w, bottom) = hero::card_frame(kit, r, "Mods");
+    let title = if v.is_some() {
+        "Event build"
+    } else {
+        "No PC version yet"
+    };
+    let (x, y, w, bottom) = hero::card_frame(kit, r, title);
     let text = match v {
         Some(v) => format!(
             "{} is an event build: it runs EchoRelay's patch where the mod loader would be, so it has no mods.\n\nChoose the live build on the Play page to see its mods.",

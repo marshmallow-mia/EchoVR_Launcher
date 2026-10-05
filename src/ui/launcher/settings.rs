@@ -379,7 +379,7 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
             half,
             BTN_H,
             Tone::Dark,
-            Some(Icon::Refresh),
+            Some(Icon::Trash),
             "Delete cache",
             can,
             tip,

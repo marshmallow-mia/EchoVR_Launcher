@@ -101,6 +101,7 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("settings_logs_sent", Page::Settings, SnapVariant::LogsSent),
         ("settings_credits", Page::Settings, SnapVariant::Credits),
+        ("play_rail_open", Page::Play, SnapVariant::RailOpen),
         ("install_menu", Page::Install, SnapVariant::MenuOpen),
         ("install_fresh", Page::Install, SnapVariant::Fresh),
         ("install_extracting", Page::Install, SnapVariant::Extracting),
