@@ -41,13 +41,14 @@ only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
 
 ## Hand tracking
 
-**EchoXR Hands** (Mods page, Additional Plugins) puts your own fingers on Echo VR's hands, from SteamVR
-([EchoXR Hands](https://github.com/heisthecat31/EchoXR-Hands), built as an nEVR plugin).
-It needs EchoXR (getting it turns EchoXR on) and SteamVR, so on Linux it plays with
-the SteamVR choice, not WiVRn. The launcher puts its plugin into the game's `plugins`
-folder and runs its finger bridge beside the game. Finger sharing starts off: on, it sends
-your display name and your match's player names to its relay, so others running it see
-your fingers.
+**EchoXR Hands** (Mods page, Additional Plugins) puts your own fingers on Echo VR's hands
+([EchoXR Hands](https://github.com/EchoTools/EchoXR-Hands) by heisthecat31 and
+marshmallow-mia). It needs EchoXR (getting it turns EchoXR on): its OpenXR layer reads your
+fingers from the runtime's hand tracking in Echo VR's own session, so it plays on SteamVR and
+on WiVRn. The launcher puts its nEVR plugin into the game's `plugins` folder and enables the
+layer for each start (`XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`). Finger sharing starts
+off: on, it sends your display name and your match's player names to its relay, so others
+running it see your fingers.
 
 ## Linux
 

@@ -28,6 +28,9 @@ const ZIP: &str = "EchoXR-OpenXR-v0.4.1.zip";
 const URL: &str =
     "https://github.com/EchoTools/EchoXR/releases/download/v0.4.1-rc1/EchoXR-OpenXR-v0.4.1.zip";
 const SHA256: &str = "1777c7788458e97d8abcb3b0ec54776ec85310ed88a659d3b5679e045acb4f93";
+/// Who made it, as the Mods page credits it: EchoXR, and what it builds on.
+pub const AUTHORS: &str =
+    "marshmallow-mia, heisthecat31, Villagers654 (RiftLift), CrossVR (Revive)";
 /// What starts the game, in its `bin/win10`.
 pub const LAUNCHER: &str = "EchoXR.exe";
 /// The files that do the work, with their hashes.
@@ -182,7 +185,8 @@ pub fn fetch(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
 /// SDK loader and P2P library into `platform_to` when given: only what is missing or
 /// differs.
 pub fn install_into(bin: &Path, platform_to: Option<&Path>) -> Result<()> {
-    let zip = std::fs::File::open(zip_path()).context("EchoXR isn't downloaded: PLAY in the launcher downloads it")?;
+    let zip = std::fs::File::open(zip_path())
+        .context("EchoXR isn't downloaded: PLAY in the launcher downloads it")?;
     install_zip(zip, bin, platform_to)
 }
 

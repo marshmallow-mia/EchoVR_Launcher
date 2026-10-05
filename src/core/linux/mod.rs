@@ -386,34 +386,23 @@ pub fn play_from_steam() -> i32 {
     tracing::info!("--play: {} {start:?}", v.id);
     // Echo VR crashes at its start without any microphone: a silent one for this run.
     let mic = Microphone::ensure();
-    // EchoXR Hands: its finger bridge through Proton beside the game, until it ends.
-    let mut bridge = None;
-    if hands && start != echoxr::Start::Flat && start != echoxr::Start::FlatOculus {
-        let exe =
-            crate::core::echoxr_hands::dir_in(&v.bin_dir()).join(crate::core::echoxr_hands::BRIDGE);
-        match echoxr::proton_run(&steam_root, &exe).spawn() {
-            Ok(b) => bridge = Some(b),
-            Err(e) => tracing::warn!("--play: no finger bridge: {e}"),
-        }
-    }
     let _ = std::fs::remove_file(outcome_file());
     let vr = matches!(start, echoxr::Start::Vr(_));
     let compositor = matches!(start, echoxr::Start::Vr(echoxr::Xr::SteamVr))
         .then(|| CompositorLog::mark(&steam_root));
-    let result = echoxr::game_command(&steam_root, &v.bin_dir(), &args, start).and_then(|mut c| {
-        tracing::info!("--play: {c:?}");
-        // Proton's and the game's own output (OpenXR's warnings among it), for this run.
-        if let Ok(out) = std::fs::File::create(crate::core::paths::log_dir().join("proton.log")) {
-            if let Ok(err) = out.try_clone() {
-                c.stdout(out).stderr(err);
+    // EchoXR Hands: its OpenXR layer in the game's loader (in VR only).
+    let result =
+        echoxr::game_command(&steam_root, &v.bin_dir(), &args, start, hands).and_then(|mut c| {
+            tracing::info!("--play: {c:?}");
+            // Proton's and the game's own output (OpenXR's warnings among it), for this run.
+            if let Ok(out) = std::fs::File::create(crate::core::paths::log_dir().join("proton.log"))
+            {
+                if let Ok(err) = out.try_clone() {
+                    c.stdout(out).stderr(err);
+                }
             }
-        }
-        Ok(c.status()?)
-    });
-    if let Some(mut b) = bridge {
-        let _ = b.kill();
-        let _ = b.wait();
-    }
+            Ok(c.status()?)
+        });
     drop(mic);
     let _ = std::fs::remove_file(playing_file());
     match result {

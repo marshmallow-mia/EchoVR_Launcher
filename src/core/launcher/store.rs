@@ -65,12 +65,16 @@ pub struct LaunchProfile {
 
 impl LaunchProfile {
     /// Whether hand tracking (`wanted`: EchoXR Hands is on) plays along with a start
-    /// like this: in VR through EchoXR on SteamVR, whose finger data it reads. On
-    /// Windows that's SteamVR through EchoXR; on Linux, SteamVR (not WiVRn).
+    /// like this: in VR through EchoXR, whose OpenXR session its layer reads the fingers
+    /// in. On Linux that's SteamVR or WiVRn; on Windows, SteamVR through EchoXR.
     pub fn hands(&self, wanted: bool) -> bool {
+        let linux = cfg!(target_os = "linux");
         wanted
-            && self.runtime == Runtime::Revive
-            && (cfg!(target_os = "linux") || self.steamvr_via == SteamVrVia::EchoXr)
+            && match self.runtime {
+                Runtime::Revive => linux || self.steamvr_via == SteamVrVia::EchoXr,
+                Runtime::Wivrn => linux,
+                _ => false,
+            }
     }
 }
 
@@ -452,6 +456,25 @@ mod tests {
         );
         assert_eq!(s.add_external("D:/Echo", None).unwrap(), "existing-2");
         assert_eq!(s.selected.as_deref(), Some("existing"));
+    }
+
+    #[test]
+    fn hand_tracking_plays_along_through_echoxr() {
+        let mut p = LaunchProfile {
+            runtime: Runtime::Revive,
+            steamvr_via: SteamVrVia::EchoXr,
+            ..Default::default()
+        };
+        assert!(p.hands(true));
+        assert!(!p.hands(false));
+        p.runtime = Runtime::Flat;
+        assert!(!p.hands(true));
+        // WiVRn and SteamVR through Revive: only on Linux, where EchoXR plays both.
+        p.runtime = Runtime::Wivrn;
+        assert_eq!(p.hands(true), cfg!(target_os = "linux"));
+        p.runtime = Runtime::Revive;
+        p.steamvr_via = SteamVrVia::Revive;
+        assert_eq!(p.hands(true), cfg!(target_os = "linux"));
     }
 
     #[test]

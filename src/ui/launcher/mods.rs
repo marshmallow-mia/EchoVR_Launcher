@@ -466,7 +466,7 @@ fn plugins_card(
         .button_width(label, Some(Icon::Folder), BTN_H)
         .max(dz(160.0));
     let tip = match (editable, busy) {
-        (false, _) => "Needs nEVR runtime",
+        (false, _) => "Needs the mod loader (nEVR)",
         (true, Some(why)) => why,
         (true, None) => "Add a plugin DLL from your computer",
     };
@@ -532,6 +532,13 @@ fn plugins_card(
                     Row::Plugin(p) => {
                         let look = Look {
                             name: display_name(p, &names),
+                            author: d
+                                .mods
+                                .catalog
+                                .as_ref()
+                                .and_then(|c| c.entry_for(&p.file))
+                                .map(|m| m.author.clone())
+                                .filter(|a| !a.is_empty()),
                             update: update_for(p, d.mods.catalog.as_ref()),
                             editable,
                             locked,
@@ -604,6 +611,8 @@ struct VrInstalled {
 /// How a plugin's row is drawn.
 struct Look {
     name: String,
+    /// Who made it (the catalogue's word).
+    author: Option<String>,
     /// The catalogue's newer version of it.
     update: Option<ModEntry>,
     /// The launcher can change the mods (nEVR is there).
@@ -745,7 +754,7 @@ fn plugin_row(
             .max(dz(110.0));
         right -= bw;
         let tip = match (editable, busy) {
-            (false, _) => "Needs nEVR runtime in this version",
+            (false, _) => "Needs the mod loader (nEVR) in this version",
             (true, Some(why)) => why,
             (true, None) => "Download its new version (it loads at the next start)",
         };
@@ -808,7 +817,7 @@ fn plugin_row(
         let tip = if editable {
             "The arguments nEVR hands this plugin"
         } else {
-            "Needs nEVR runtime"
+            "Needs the mod loader (nEVR)"
         };
         if k.button(
             &key("options"),
@@ -848,7 +857,7 @@ fn plugin_row(
     let mut on = p.enabled;
     let can = editable && !locked && p.present && !p.required;
     let tip = if !editable {
-        "Needs nEVR runtime"
+        "Needs the mod loader (nEVR)"
     } else if p.required {
         "The game needs it: always on, also without mods"
     } else if locked {
@@ -892,7 +901,10 @@ fn plugin_row(
         k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
         tag_x += tw + dz(14.0);
     }
-    let line = detail(p);
+    let mut line = detail(p);
+    if let Some(a) = &look.author {
+        line = format!("{line}  ·  by {a}");
+    }
     let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
     k.put(x + dz(INDENT), y + dz(43.0), g);
 }
@@ -957,7 +969,7 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
         }
         right -= dz(14.0);
     }
-    // Ready, or set up at PLAY, while it is in use.
+    // Ready, or prepared by PLAY, while it is in use.
     let ready = if linux {
         Some(d.linux_set_up && echoxr::is_fetched())
     } else if steamvr {
@@ -969,7 +981,7 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
         let (chip, color) = if ready {
             ("Ready", design::QUEST_ON)
         } else {
-            ("Set up at PLAY", design::QUEST_OFF)
+            ("PLAY prepares it", design::QUEST_OFF)
         };
         let cw = k.chip_width(chip);
         right -= cw;
@@ -994,13 +1006,15 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     }
     let line = if linux {
         format!(
-            "v{}  ·  OpenXR layer: Echo VR in your headset on SteamVR or WiVRn",
-            echoxr::VERSION
+            "v{}  ·  by {}  ·  Echo VR in your headset on SteamVR or WiVRn",
+            echoxr::VERSION,
+            echoxr::AUTHORS
         )
     } else {
         format!(
-            "v{}  ·  OpenXR layer: SteamVR without Revive  ·  live build only",
-            echoxr::VERSION
+            "v{}  ·  by {}  ·  SteamVR without Revive  ·  live build only",
+            echoxr::VERSION,
+            echoxr::AUTHORS
         )
     };
     let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
@@ -1021,17 +1035,11 @@ fn hands_row(
     w: f32,
 ) {
     use crate::core::echoxr_hands as hands;
-    use crate::core::launcher::store::Runtime;
     let linux = cfg!(target_os = "linux") && !d.demo;
     let bin = v.bin_dir();
     let name = "EchoXR Hands";
-    let wivrn = linux && d.state.profile.runtime == Runtime::Wivrn;
     let busy = busy(d, v);
-    let tip = if wivrn {
-        "Needs SteamVR: its finger bridge reads your fingers from it (choose SteamVR in Settings)"
-    } else {
-        "Your own fingers on Echo VR's hands, from SteamVR (Remove takes it out)"
-    };
+    let tip = "Your own fingers on Echo VR's hands, from your headset's hand tracking (Remove takes it out)";
     let key = |what: &str| format!("mods-vr-{what}-hands");
     let bh = dz(30.0);
     let by = y + dz(10.0);
@@ -1154,8 +1162,9 @@ fn hands_row(
         tag_x += tw + dz(14.0);
     }
     let line = format!(
-        "v{}  ·  your own fingers on Echo VR's hands, from SteamVR  ·  its finger bridge runs with the game",
-        hands::VERSION
+        "v{}  ·  by {}  ·  your own fingers, from OpenXR hand tracking (SteamVR, WiVRn)",
+        hands::VERSION,
+        hands::AUTHORS
     );
     let g = one_line(k, &line, 14.0, design::GREY, w - dz(INDENT));
     k.put(x + dz(INDENT), y + dz(43.0), g);
@@ -1540,7 +1549,7 @@ impl Extra<'_> {
                 id: "echoxr".into(),
                 name: "EchoXR".into(),
                 summary: "SteamVR plays Echo VR through EchoXR's OpenXR layer instead of Revive: no injection, no administrator rights. Live build only.".into(),
-                author: "EchoTools".into(),
+                author: crate::core::echoxr::AUTHORS.into(),
                 version: crate::core::echoxr::VERSION.into(),
                 homepage: "https://github.com/EchoTools/EchoXR".into(),
                 capabilities: vec!["vr".into()],
@@ -1549,10 +1558,10 @@ impl Extra<'_> {
             Extra::Hands => ModEntry {
                 id: "echoxr-hands".into(),
                 name: "EchoXR Hands".into(),
-                summary: "Your own fingers on Echo VR's hands, from SteamVR. It needs EchoXR: getting it turns EchoXR on.".into(),
-                author: "heisthecat31".into(),
+                summary: "Your own fingers on Echo VR's hands, from your headset's hand tracking (SteamVR, WiVRn). It needs EchoXR: getting it turns EchoXR on.".into(),
+                author: crate::core::echoxr_hands::AUTHORS.into(),
                 version: crate::core::echoxr_hands::VERSION.into(),
-                homepage: "https://github.com/heisthecat31/EchoXR-Hands".into(),
+                homepage: "https://github.com/EchoTools/EchoXR-Hands".into(),
                 capabilities: vec!["vr".into(), "network".into()],
                 ..Default::default()
             },
@@ -1746,7 +1755,6 @@ fn entry(
     editable: bool,
     busy: Option<&'static str>,
 ) {
-    use crate::core::launcher::store::Runtime;
     // Right: GET, or that it isn't out yet.
     let bh = dz(30.0);
     let mut right = x + w;
@@ -1760,19 +1768,14 @@ fn entry(
             .button_width(label, Some(Icon::Download), bh)
             .max(dz(110.0));
         right -= bw;
-        let wivrn =
-            cfg!(target_os = "linux") && !d.demo && d.state.profile.runtime == Runtime::Wivrn;
         let why = match e {
             Extra::EchoXr if d.any_job() => Some("Wait until the job is done"),
             Extra::EchoXr => None,
-            Extra::Hands if wivrn => Some(
-                "Needs SteamVR: its finger bridge reads your fingers from it (choose SteamVR in Settings)",
-            ),
-            _ if !editable => Some("Needs nEVR runtime in this version"),
+            _ if !editable => Some("Needs the mod loader (nEVR) in this version"),
             _ => busy,
         };
         let tip = why.unwrap_or(match e {
-            Extra::EchoXr => "SteamVR plays through EchoXR instead of Revive (set up at PLAY)",
+            Extra::EchoXr => "SteamVR plays through EchoXR instead of Revive (PLAY prepares it)",
             Extra::Hands => "Download it into this version (it turns EchoXR on too)",
             Extra::Mod(_) => "Download it into this version (it loads at the next start)",
         });

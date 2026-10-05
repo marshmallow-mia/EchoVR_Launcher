@@ -15,6 +15,8 @@ pub struct Command {
     pub program: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    /// More environment for the game (EchoXR Hands' OpenXR layer).
+    pub env: Vec<(String, String)>,
 }
 
 /// Splits extra arguments like a command line: whitespace separates, double quotes group.
@@ -107,6 +109,7 @@ pub fn build(
                 program: exe.to_path_buf(),
                 args,
                 cwd,
+                env: Vec::new(),
             })
         }
         // EchoXR.exe beside the game starts it (as its copy, echovr_openxr.exe) on
@@ -115,6 +118,7 @@ pub fn build(
             program: cwd.join(echoxr::LAUNCHER),
             args,
             cwd,
+            env: Vec::new(),
         }),
         Runtime::Revive => {
             let Some(dir) = revive_dir else {
@@ -128,6 +132,7 @@ pub fn build(
                 program: Path::new(dir).join(revive::REVIVE_INJECTOR),
                 args: a,
                 cwd: PathBuf::from(dir),
+                env: Vec::new(),
             })
         }
     }
@@ -186,6 +191,7 @@ pub fn spawn(cmd: &Command) -> Result<std::process::Child> {
     let child = crate::core::process::command(&cmd.program)
         .args(&cmd.args)
         .current_dir(&cmd.cwd)
+        .envs(cmd.env.iter().map(|(k, v)| (k, v)))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

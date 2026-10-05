@@ -1,12 +1,10 @@
-//! EchoXR Hands (github.com/heisthecat31/EchoXR-Hands, built as an nEVR plugin): your own
-//! fingers on Echo VR's hands, from SteamVR. Its package goes into the game's
-//! `bin/win10/EchoXR/Hands` (the finger bridge `EchoXRHands.exe`, its SteamVR files and the
-//! settings window); the launcher itself puts the plugin into `plugins/`, where nEVR loads
-//! it like the update's plugins, and takes it out again when hand tracking is off.
-//!
-//! The package has no `install/` folder on purpose: from there EchoXR.exe and the bridge
-//! would set up the plugin themselves, with a `dbgcore.dll` beside the game, which nEVR
-//! won't start next to.
+//! EchoXR Hands (github.com/EchoTools/EchoXR-Hands, by heisthecat31 and marshmallow-mia):
+//! your own fingers on Echo VR's hands, from OpenXR hand tracking. Its package goes into the
+//! game's `bin/win10/EchoXR/Hands`: an OpenXR API layer (`layer/`) that reads your fingers in
+//! the game's own OpenXR session, the nEVR plugin and the settings window. The launcher puts
+//! the plugin into `plugins/`, where nEVR loads it like the update's plugins, takes it out
+//! again when hand tracking is off, and enables the layer for each start ([`layer_env`]).
+//! It plays with EchoXR, on every runtime with hand tracking (SteamVR, WiVRn, Monado).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -16,10 +14,12 @@ use anyhow::{bail, Context, Result};
 use super::launcher::versions::Step;
 use super::{download, paths};
 
-pub const VERSION: &str = "0.3.0";
-const ZIP: &str = "EchoXR-Hands-v0.3.0-nevr.zip";
-const URL: &str = "https://release.echovr.de/launcher/plugins/EchoXR-Hands-v0.3.0-nevr.zip";
-const SHA256: &str = "523d9d54337b423c3854feb49efcab9a798c8c8dd667abc3d0fd110b2181adbc";
+pub const VERSION: &str = "0.4.0";
+const ZIP: &str = "EchoXR-Hands-v0.4.0-nevr.zip";
+const URL: &str = "https://release.echovr.de/launcher/plugins/EchoXR-Hands-v0.4.0-nevr.zip";
+const SHA256: &str = "5871538e6b2bd8832a13c9acd648bc5faaee4f52665ae1bf97050ba35f0807a6";
+/// Who made it, as the Mods page credits it.
+pub const AUTHORS: &str = "heisthecat31, marshmallow-mia";
 /// The plugin, as nEVR loads it from `plugins/`.
 pub const PLUGIN: &str = "EchoXRHands.dll";
 /// Its settings beside it (re-read while the game runs).
@@ -27,11 +27,26 @@ const SETTINGS: &str = "EchoXRHands.txt";
 /// Where the package goes under `bin/win10`, and its plugin inside it.
 const DIR: &str = "EchoXR/Hands";
 const PACKAGED_PLUGIN: &str = "plugin";
-pub const BRIDGE: &str = "EchoXRHands.exe";
+/// The OpenXR API layer's folder (its DLL and manifest) and name.
+const LAYER_DIR: &str = "EchoXR/Hands/layer";
+const LAYER_NAME: &str = "XR_APILAYER_ECHOTOOLS_echoxr_hands";
 pub const SETTINGS_APP: &str = "EchoXRSettings.exe";
 
 fn zip_path() -> PathBuf {
     paths::data_dir().join("echoxr-hands").join(ZIP)
+}
+
+/// The environment that enables the hand tracking layer in the game's OpenXR loader:
+/// `XR_API_LAYER_PATH` names its folder as the game sees it (`windows_path`: a Wine path on
+/// Linux), `XR_ENABLE_API_LAYERS` the layer.
+pub fn layer_env(bin: &Path, windows_path: impl Fn(&Path) -> String) -> [(String, String); 2] {
+    [
+        (
+            "XR_API_LAYER_PATH".into(),
+            windows_path(&bin.join(LAYER_DIR)),
+        ),
+        ("XR_ENABLE_API_LAYERS".into(), LAYER_NAME.into()),
+    ]
 }
 
 /// Whether the package is downloaded (and still the pinned one).
@@ -199,6 +214,14 @@ fn with_sharing(text: &str, on: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enables_its_layer_by_name_and_folder() {
+        let env = layer_env(Path::new("/g/bin/win10"), |p| format!("X:{}", p.display()));
+        assert_eq!(env[0].0, "XR_API_LAYER_PATH");
+        assert_eq!(env[0].1, "X:/g/bin/win10/EchoXR/Hands/layer");
+        assert_eq!(env[1], ("XR_ENABLE_API_LAYERS".into(), LAYER_NAME.into()));
+    }
 
     #[test]
     fn finger_sharing_setting() {

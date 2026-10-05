@@ -469,8 +469,6 @@ pub struct Dashboard {
     child: Option<std::process::Child>,
     /// That is EchoXR.exe, whose exit codes say why the game didn't start.
     child_echoxr: bool,
-    /// EchoXR Hands' finger bridge, started with the game (ended with it).
-    hands_bridge: Option<std::process::Child>,
     /// The game PLAY started, until it has ended (or never showed up).
     launched: Option<Launched>,
     /// The game's log of the start PLAY made, for what EchoVRCE says to a login.
@@ -1331,10 +1329,6 @@ impl Dashboard {
                         .and_then(crate::core::echoxr::exit_message)
                         .filter(|_| self.child_echoxr && starting);
                     self.child = None;
-                    if let Some(mut bridge) = self.hands_bridge.take() {
-                        let _ = bridge.kill();
-                        let _ = bridge.wait();
-                    }
                     if let Some(why) = why {
                         self.launched = None;
                         self.dialogs.error(

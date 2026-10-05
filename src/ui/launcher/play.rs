@@ -1246,6 +1246,20 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             lobby.as_ref().map(|j| j.lobby.as_str()),
         )
     };
+    // EchoXR Hands: its OpenXR layer in the game's loader, when it plays through EchoXR.
+    let through_echoxr = profile.runtime == Runtime::Revive
+        && profile.steamvr_via == SteamVrVia::EchoXr
+        && v.publisher_lock.is_none();
+    let hands = through_echoxr && profile.hands(d.state.echoxr_hands);
+    let command = command.map(|mut c| {
+        if hands {
+            c.env
+                .extend(crate::core::echoxr_hands::layer_env(&v.bin_dir(), |p| {
+                    p.to_string_lossy().replace('/', "\\")
+                }));
+        }
+        c
+    });
     let result = command.and_then(|c| launch::spawn(&c));
     match result {
         Ok(child) => {
@@ -1253,21 +1267,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
                 m.launched(Some(child.id()), &v.id, &v.bin_dir());
             }
             d.child = Some(child);
-            d.child_echoxr = profile.runtime == Runtime::Revive
-                && profile.steamvr_via == SteamVrVia::EchoXr
-                && v.publisher_lock.is_none();
-            // EchoXR Hands: its finger bridge runs beside the game, until the game ends.
-            if d.child_echoxr && profile.hands(d.state.echoxr_hands) {
-                let bridge = crate::core::echoxr_hands::dir_in(&v.bin_dir())
-                    .join(crate::core::echoxr_hands::BRIDGE);
-                match crate::core::process::command(&bridge)
-                    .current_dir(bridge.parent().unwrap_or(&v.bin_dir()))
-                    .spawn()
-                {
-                    Ok(b) => d.hands_bridge = Some(b),
-                    Err(e) => tracing::warn!("hand tracking: no finger bridge: {e}"),
-                }
-            }
+            d.child_echoxr = through_echoxr;
             d.launched = Some(super::Launched::now());
             d.login_watch = Some(LoginWatching::new(&v.root));
             if d.state.minimize_on_launch {

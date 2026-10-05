@@ -377,22 +377,6 @@ fn drives() -> Vec<(char, PathBuf)> {
         .collect()
 }
 
-/// A Windows program run through Proton in Echo VR's prefix, beside the game (EchoXR
-/// Hands' finger bridge).
-pub fn proton_run(steam_root: &Path, program: &Path) -> std::process::Command {
-    let mut c = std::process::Command::new(proton_dir().join("proton"));
-    c.arg("run")
-        .arg(program)
-        .envs(proton_env(steam_root, None))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    if let Some(dir) = program.parent() {
-        c.current_dir(dir);
-    }
-    c
-}
-
 /// The command that starts Echo VR from its bin folder `bin` through Proton, with `args`
 /// for the game, the way `start` says (see [`Start`]). In VR, `EchoXR.exe` makes
 /// `echovr_openxr.exe` on its first run, turns Proton's OpenXR on itself (no OpenVR
@@ -402,6 +386,7 @@ pub fn game_command(
     bin: &Path,
     args: &[String],
     start: Start,
+    hands: bool,
 ) -> Result<std::process::Command> {
     let game_root = bin
         .ancestors()
@@ -467,6 +452,16 @@ pub fn game_command(
             c.env("ECHOXR_VR_SERVICE", "ready");
         } else {
             tracing::warn!("--play: {} isn't running", xr.name());
+        }
+        if hands {
+            // EchoXR Hands' OpenXR layer, in the game's loader (paths as the game sees them).
+            let drives = drives();
+            let env = crate::core::echoxr_hands::layer_env(bin, |p| {
+                let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+                wine_path(&drives, &p)
+            });
+            tracing::info!("--play: hand tracking layer {env:?}");
+            c.envs(env);
         }
     }
     Ok(c)
