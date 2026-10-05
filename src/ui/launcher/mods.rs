@@ -1,7 +1,7 @@
 //! Mods page: the selected PC version's mod loader (nEVR runtime, the game's
 //! `BugSplat64.dll`) and what it did at the last start, its plugins (on or off, their
-//! arguments, the asset patches of NvrAssetPatches) and, in the right-hand card, the mods
-//! catalogue. Everything is read on a worker (`core::launcher::mods`); changes go into the
+//! arguments, the asset patches of NvrAssetPatches) and, in the right-hand card, the
+//! additional plugins that can still be installed. Everything is read on a worker (`core::launcher::mods`); changes go into the
 //! launcher's own files, never into the community update's.
 
 use std::collections::BTreeMap;
@@ -495,12 +495,13 @@ fn plugins_card(
     let Some(view) = view else {
         return;
     };
-    if view.plugins.is_empty() {
+    let rows = rows(view, d.mods.editing.as_ref(), vr_installed(d));
+    if rows.is_empty() {
         kit.caps_text(
             x,
             y,
             w,
-            "No plugins here. The community update brings the asset patches and EchoRelay's patch; Add DLL takes one from your computer.",
+            "No plugins here. The community update brings the asset patches and EchoRelay's patch; Additional Plugins has more, and Add DLL takes one from your computer.",
             15.5,
             design::BODY,
             0.0,
@@ -510,8 +511,6 @@ fn plugins_card(
     let locked = !editable || !view.enabled;
     let current = matches!(view.loader, Loader::Nevr { .. });
     let names = names(d.mods.catalog.as_ref());
-    let vr = cfg!(any(windows, target_os = "linux")) || d.demo;
-    let rows = rows(view, d.mods.editing.as_ref(), vr);
     let content: f32 = rows.iter().map(|r| r.height()).sum();
     let list_h = bottom - y;
     kit.scroll_area(
@@ -533,6 +532,7 @@ fn plugins_card(
                     Row::Plugin(p) => {
                         let look = Look {
                             name: display_name(p, &names),
+                            update: update_for(p, d.mods.catalog.as_ref()),
                             editable,
                             locked,
                             current,
@@ -541,7 +541,7 @@ fn plugins_card(
                         plugin_row(d, k, v, p, &look, x, ry, w)
                     }
                     Row::Vr(VrPart::EchoXr, _) => echoxr_row(d, k, v, x, ry, w),
-                    Row::Vr(VrPart::Hands, p) => hands_row(d, k, ctx, v, *p, x, ry, w),
+                    Row::Vr(VrPart::Hands, p) => hands_row(d, k, v, *p, x, ry, w),
                     Row::Assets(on) => assets_row(d, k, v, *on, x, ry, editable && !locked),
                     Row::Asset(a, all_on) => {
                         asset_row(d, k, v, a, x, ry, editable && !locked && *all_on)
@@ -571,9 +571,41 @@ fn display_name(p: &Plugin, names: &std::collections::HashMap<String, String>) -
         .unwrap_or_else(|| p.name.replace('_', " "))
 }
 
+/// The catalogue's newer version of a plugin it installed (`None`: none, or not from it).
+fn update_for(p: &Plugin, c: Option<&ModCatalog>) -> Option<ModEntry> {
+    let Source::Catalog { version, .. } = &p.source else {
+        return None;
+    };
+    c?.entry_for(&p.file)
+        .filter(|m| m.downloadable() && m.version != *version)
+        .cloned()
+}
+
+/// Which VR parts are installed, so listed with the plugins: EchoXR while it's how VR
+/// plays (always on Linux; on Windows instead of Revive), EchoXR Hands while it's on.
+fn vr_installed(d: &Dashboard) -> VrInstalled {
+    use crate::core::launcher::store::SteamVrVia;
+    if !(cfg!(any(windows, target_os = "linux")) || d.demo) {
+        return VrInstalled::default();
+    }
+    VrInstalled {
+        echoxr: (cfg!(target_os = "linux") && !d.demo)
+            || d.state.profile.steamvr_via == SteamVrVia::EchoXr,
+        hands: d.state.echoxr_hands,
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct VrInstalled {
+    echoxr: bool,
+    hands: bool,
+}
+
 /// How a plugin's row is drawn.
 struct Look {
     name: String,
+    /// The catalogue's newer version of it.
+    update: Option<ModEntry>,
     /// The launcher can change the mods (nEVR is there).
     editable: bool,
     /// Mods are off, or can't be changed: the switches don't work.
@@ -613,16 +645,18 @@ impl Row<'_> {
     }
 }
 
-/// The list's rows: the VR parts (`vr`: Windows and Linux), then each plugin, its options
-/// when open, and the asset patches under NvrAssetPatches.
-fn rows<'a>(view: &'a ModView, editing: Option<&Editing>, vr: bool) -> Vec<Row<'a>> {
+/// The list's rows, only what is installed: the VR parts in use, then each plugin, its
+/// options when open, and the asset patches under NvrAssetPatches.
+fn rows<'a>(view: &'a ModView, editing: Option<&Editing>, vr: VrInstalled) -> Vec<Row<'a>> {
     let mut out = Vec::new();
     let hands = |p: &&Plugin| {
         p.file
             .eq_ignore_ascii_case(crate::core::echoxr_hands::PLUGIN)
     };
-    if vr {
+    if vr.echoxr {
         out.push(Row::Vr(VrPart::EchoXr, None));
+    }
+    if vr.hands {
         out.push(Row::Vr(VrPart::Hands, view.plugins.iter().find(hands)));
     }
     // Hand tracking's plugin is its row above, not one of the plugins.
@@ -700,10 +734,40 @@ fn plugin_row(
         ..
     } = *look;
     let key = |what: &str| format!("mods-{what}-{}", p.file);
-    // Right to left: Remove, Options, the state chip.
+    // Right to left: Update, Remove, Options, the state chip.
     let bh = dz(30.0);
     let by = y + dz(10.0);
     let mut right = x + w;
+    if let Some(m) = &look.update {
+        let label = "Update";
+        let bw = k
+            .button_width(label, Some(Icon::Download), bh)
+            .max(dz(110.0));
+        right -= bw;
+        let tip = match (editable, busy) {
+            (false, _) => "Needs nEVR runtime in this version",
+            (true, Some(why)) => why,
+            (true, None) => "Download its new version (it loads at the next start)",
+        };
+        if k.button(
+            &key("update"),
+            right,
+            by,
+            bw,
+            bh,
+            Tone::Go,
+            Some(Icon::Download),
+            label,
+            editable && busy.is_none(),
+            tip,
+        )
+        .clicked
+        {
+            let ctx = k.ui.ctx().clone();
+            get(d, &ctx, v, m);
+        }
+        right -= dz(10.0);
+    }
     if p.removable() {
         let bw = k.button_width("Remove", None, bh).max(dz(110.0));
         right -= bw;
@@ -833,34 +897,70 @@ fn plugin_row(
     k.put(x + dz(INDENT), y + dz(43.0), g);
 }
 
-/// A VR part's row, as a plugin's: its switch and name with tags, whether it is ready on
-/// the right, what it does under it. On Linux EchoXR is how VR plays: always on. On
-/// Windows its switch is how SteamVR plays: through EchoXR, or (off) Revive.
+/// A VR part's row, as a plugin's: its name with tags, whether it is ready on the right,
+/// what it does under it. It is listed while it is in use: on Linux EchoXR is how VR
+/// plays (always, required); on Windows SteamVR plays through it instead of Revive, and
+/// Remove goes back to Revive (it is in Additional Plugins again).
 fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f32, w: f32) {
     use crate::core::echoxr;
     use crate::core::launcher::store::{Runtime, SteamVrVia};
     let linux = cfg!(target_os = "linux") && !d.demo;
     let name = "EchoXR";
     let steamvr = d.state.profile.runtime == Runtime::Revive;
-    let mut on = linux || d.state.profile.steamvr_via == SteamVrVia::EchoXr;
     let busy = d.any_job();
     let tip = if linux {
         "Linux plays VR through it: always on"
-    } else if busy {
-        "Wait until the job is done"
-    } else if on {
-        "Turn it off: SteamVR plays through Revive"
     } else {
-        "Turn it on: SteamVR plays through EchoXR instead of Revive (no injection, no administrator rights)"
+        "SteamVR plays through it instead of Revive (Remove goes back to Revive)"
     };
     let key = |what: &str| format!("mods-vr-{what}-{name}");
     let bh = dz(30.0);
     let by = y + dz(10.0);
     let mut right = x + w;
+    if !linux {
+        let bw = k.button_width("Remove", None, bh).max(dz(110.0));
+        right -= bw;
+        let tip = if busy {
+            "Wait until the job is done"
+        } else {
+            "SteamVR plays through Revive again (hand tracking, which needs EchoXR, goes too)"
+        };
+        if k.button(
+            &key("remove"),
+            right,
+            by,
+            bw,
+            bh,
+            Tone::Danger,
+            None,
+            "Remove",
+            !busy,
+            tip,
+        )
+        .clicked
+        {
+            d.state.profile.steamvr_via = SteamVrVia::Revive;
+            let hands_off = d.state.echoxr_hands;
+            if hands_off {
+                d.state.echoxr_hands = false;
+                if let Err(e) = crate::core::echoxr_hands::remove_from(&v.bin_dir()) {
+                    tracing::warn!("hand tracking: {e:#}");
+                }
+                d.mods.changed();
+            }
+            d.save();
+            d.notify(if hands_off {
+                "SteamVR plays through Revive now, without hand tracking (it needs EchoXR)"
+            } else {
+                "SteamVR plays through Revive now"
+            });
+        }
+        right -= dz(14.0);
+    }
     // Ready, or set up at PLAY, while it is in use.
     let ready = if linux {
         Some(d.linux_set_up && echoxr::is_fetched())
-    } else if on && steamvr {
+    } else if steamvr {
         Some(!d.echoxr_missing())
     } else {
         None
@@ -877,42 +977,11 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     }
     let g = k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY);
     let name_w = g.size().x;
-    if k.check(
-        &key("on"),
-        &mut on,
-        name,
-        x,
-        y + dz(13.0),
-        !linux && !busy,
-        tip,
-    ) {
-        d.state.profile.steamvr_via = if on {
-            SteamVrVia::EchoXr
-        } else {
-            SteamVrVia::Revive
-        };
-        let hands_off = !on && d.state.echoxr_hands;
-        if hands_off {
-            // Hand tracking needs EchoXR.
-            d.state.echoxr_hands = false;
-            if let Err(e) = crate::core::echoxr_hands::remove_from(&v.bin_dir()) {
-                tracing::warn!("hand tracking: {e:#}");
-            }
-            d.mods.changed();
-        }
-        d.save();
-        d.notify(match (on, hands_off) {
-            (true, _) => "SteamVR plays through EchoXR now",
-            (false, true) => {
-                "SteamVR plays through Revive now, without hand tracking (it needs EchoXR)"
-            }
-            (false, false) => "SteamVR plays through Revive now",
-        });
-    }
+    k.check(&key("on"), &mut true, name, x, y + dz(13.0), false, tip);
     let tags = [
         Some(("VR", design::BLUE)),
         linux.then_some(("Required", design::QUEST_ON)),
-        (!linux && on && !steamvr).then_some(("Used with SteamVR", design::QUEST_WARN)),
+        (!linux && !steamvr).then_some(("Used with SteamVR", design::QUEST_WARN)),
     ];
     let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
     for (tag, color) in tags.into_iter().flatten() {
@@ -938,13 +1007,13 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     k.put(x + dz(INDENT), y + dz(43.0), g);
 }
 
-/// EchoXR Hands' row: its switch (it needs EchoXR, on SteamVR), what nEVR did with its
-/// plugin, finger sharing and its settings window; what it does under it.
+/// EchoXR Hands' row, while it is on (installed): what nEVR did with its plugin, finger
+/// sharing, its settings window and Remove (it goes back to Additional Plugins); what it
+/// does under it.
 #[allow(clippy::too_many_arguments)]
 fn hands_row(
     d: &mut Dashboard,
     k: &mut Kit,
-    ctx: &egui::Context,
     v: &InstalledVersion,
     plugin: Option<&Plugin>,
     x: f32,
@@ -952,30 +1021,56 @@ fn hands_row(
     w: f32,
 ) {
     use crate::core::echoxr_hands as hands;
-    use crate::core::launcher::store::{Runtime, SteamVrVia};
+    use crate::core::launcher::store::Runtime;
     let linux = cfg!(target_os = "linux") && !d.demo;
     let bin = v.bin_dir();
     let name = "EchoXR Hands";
     let wivrn = linux && d.state.profile.runtime == Runtime::Wivrn;
     let busy = busy(d, v);
-    let mut on = d.state.echoxr_hands;
-    let can = busy.is_none() && !wivrn;
     let tip = if wivrn {
         "Needs SteamVR: its finger bridge reads your fingers from it (choose SteamVR in Settings)"
-    } else if let Some(why) = busy {
-        why
-    } else if on {
-        "Turn it off: the plugin comes out of the game's plugins folder"
     } else {
-        "Turn it on: your own fingers on Echo VR's hands, from SteamVR (it turns EchoXR on too)"
+        "Your own fingers on Echo VR's hands, from SteamVR (Remove takes it out)"
     };
     let key = |what: &str| format!("mods-vr-{what}-hands");
     let bh = dz(30.0);
     let by = y + dz(10.0);
     let mut right = x + w;
     let installed = d.demo || hands::installed_in(&bin);
+    {
+        let bw = k.button_width("Remove", None, bh).max(dz(110.0));
+        right -= bw;
+        let tip = busy.unwrap_or("Take its plugin out of the game's plugins folder");
+        if k.button(
+            &key("remove"),
+            right,
+            by,
+            bw,
+            bh,
+            Tone::Danger,
+            None,
+            "Remove",
+            busy.is_none(),
+            tip,
+        )
+        .clicked
+        {
+            d.state.echoxr_hands = false;
+            d.save();
+            match hands::remove_from(&bin) {
+                Ok(()) => d.notify("EchoXR Hands is removed"),
+                Err(e) => d.dialogs.error(
+                    "Couldn't remove EchoXR Hands",
+                    &format!("{e:#}"),
+                    Default::default(),
+                ),
+            }
+            d.mods.changed();
+        }
+        right -= dz(14.0);
+    }
     // Its settings window (Windows), and finger sharing.
-    if on && installed && (cfg!(windows) || d.demo) {
+    if installed && (cfg!(windows) || d.demo) {
         let bw = k.button_width("Settings", None, bh).max(dz(110.0));
         right -= bw;
         if k.button(
@@ -1007,7 +1102,7 @@ fn hands_row(
         }
         right -= dz(14.0);
     }
-    if on && installed {
+    if installed {
         let mut share = !d.demo && hands::sharing(&bin);
         let label = "Share fingers";
         let cw = k
@@ -1032,43 +1127,18 @@ fn hands_row(
         }
         right -= dz(18.0);
     }
-    if on {
-        let (chip, color) = match plugin {
-            Some(p) if d.mods.view.is_some() => state(p),
-            _ if installed => ("Next start".into(), design::QUEST_OFF),
-            _ => ("Not installed".into(), design::QUEST_WARN),
-        };
-        let cw = k.chip_width(&chip);
-        right -= cw;
-        k.chip(right, by + (bh - dz(27.0)) / 2.0, &chip, color);
-    }
+    let (chip, color) = match plugin {
+        Some(p) if d.mods.view.is_some() => state(p),
+        // The plugin goes into plugins/ again at the next start, from the download.
+        _ if installed || d.demo || hands::is_fetched() => ("Next start".into(), design::QUEST_OFF),
+        _ => ("Not downloaded".into(), design::QUEST_WARN),
+    };
+    let cw = k.chip_width(&chip);
+    right -= cw;
+    k.chip(right, by + (bh - dz(27.0)) / 2.0, &chip, color);
     let g = k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY);
     let name_w = g.size().x;
-    if k.check(&key("on"), &mut on, name, x, y + dz(13.0), can, tip) {
-        d.state.echoxr_hands = on;
-        if on && !linux && d.state.profile.steamvr_via != SteamVrVia::EchoXr {
-            d.state.profile.steamvr_via = SteamVrVia::EchoXr;
-            d.notify("EchoXR is on too: hand tracking needs it");
-        }
-        d.save();
-        if on {
-            run(d, ctx, v, "Installing EchoXR Hands", |v, cancel, on| {
-                hands::fetch(cancel, on)?;
-                hands::install_into(&v.bin_dir())?;
-                Ok("Hand tracking is on: it plays along in SteamVR through EchoXR".into())
-            });
-        } else {
-            match hands::remove_from(&bin) {
-                Ok(()) => d.notify("Hand tracking is off"),
-                Err(e) => d.dialogs.error(
-                    "Couldn't turn hand tracking off",
-                    &format!("{e:#}"),
-                    Default::default(),
-                ),
-            }
-            d.mods.changed();
-        }
-    }
+    k.check(&key("on"), &mut true, name, x, y + dz(13.0), false, tip);
     let tags = [
         Some(("VR", design::BLUE)),
         Some(("Needs EchoXR", design::SUBTLE)),
@@ -1434,9 +1504,82 @@ fn open_dir(d: &mut Dashboard, dir: &std::path::Path) {
     }
 }
 
-// ---- the catalogue ----
+// ---- additional plugins ----
 
-/// GET MODS: the catalogue, each mod with what it does and GET (or that it's there).
+/// What ADDITIONAL PLUGINS offers: the catalogue's plugins that aren't here (and aren't
+/// required: those come with the update), and the VR parts not in use.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Extra<'a> {
+    Mod(&'a ModEntry),
+    /// EchoXR, on Windows while SteamVR plays through Revive.
+    EchoXr,
+    /// EchoXR Hands, while it's off.
+    Hands,
+}
+
+impl Extra<'_> {
+    /// How it is shown: as a catalogue entry.
+    fn info(&self) -> ModEntry {
+        match self {
+            Extra::Mod(m) => (*m).clone(),
+            Extra::EchoXr => ModEntry {
+                id: "echoxr".into(),
+                name: "EchoXR".into(),
+                summary: "SteamVR plays Echo VR through EchoXR's OpenXR layer instead of Revive: no injection, no administrator rights. Live build only.".into(),
+                author: "EchoTools".into(),
+                version: crate::core::echoxr::VERSION.into(),
+                homepage: "https://github.com/EchoTools/EchoXR".into(),
+                capabilities: vec!["vr".into()],
+                ..Default::default()
+            },
+            Extra::Hands => ModEntry {
+                id: "echoxr-hands".into(),
+                name: "EchoXR Hands".into(),
+                summary: "Your own fingers on Echo VR's hands, from SteamVR. It needs EchoXR: getting it turns EchoXR on.".into(),
+                author: "heisthecat31".into(),
+                version: crate::core::echoxr_hands::VERSION.into(),
+                homepage: "https://github.com/heisthecat31/EchoXR-Hands".into(),
+                capabilities: vec!["vr".into(), "network".into()],
+                ..Default::default()
+            },
+        }
+    }
+}
+
+/// The additional plugins for `view`: the VR parts not installed first, then the
+/// catalogue's optional plugins that aren't in the game's folder.
+fn extras<'a>(
+    view: Option<&ModView>,
+    catalog: &'a ModCatalog,
+    vr: Option<VrInstalled>,
+) -> Vec<Extra<'a>> {
+    let mut out = Vec::new();
+    if let Some(vr) = vr {
+        if !vr.echoxr {
+            out.push(Extra::EchoXr);
+        }
+        if !vr.hands {
+            out.push(Extra::Hands);
+        }
+    }
+    let here = |m: &ModEntry| {
+        view.is_some_and(|view| {
+            view.plugins
+                .iter()
+                .any(|p| p.present && p.file.eq_ignore_ascii_case(&m.file))
+        })
+    };
+    out.extend(
+        catalog
+            .mods
+            .iter()
+            .filter(|m| !m.required && !m.shipped && !here(m))
+            .map(Extra::Mod),
+    );
+    out
+}
+
+/// ADDITIONAL PLUGINS: what can still be installed, each with what it does and GET.
 fn catalogue_card(
     d: &mut Dashboard,
     kit: &mut Kit,
@@ -1445,13 +1588,13 @@ fn catalogue_card(
     view: Option<&ModView>,
     r: Dr,
 ) {
-    let (x, y, w, bottom) = hero::card_frame(kit, r, "Get mods");
+    let (x, y, w, bottom) = hero::card_frame(kit, r, "Additional Plugins");
     let Some(catalog) = d.mods.catalog.clone() else {
         kit.caps_text(
             x,
             y,
             w,
-            "Loading the mods catalogue…",
+            "Loading the plugins catalogue…",
             15.5,
             design::BODY,
             0.0,
@@ -1469,14 +1612,24 @@ fn catalogue_card(
     };
     let list_h = bottom - y - note_h - dz(16.0);
     kit.caps_text(x, bottom - note_h, w, note, 13.5, design::GREY, 0.0);
-    if catalog.mods.is_empty() {
-        kit.caps_text(x, y, w, "No mods to get yet.", 15.5, design::BODY, 0.0);
+    let vr = (cfg!(any(windows, target_os = "linux")) || d.demo).then(|| vr_installed(d));
+    let extras = extras(view, &catalog, vr);
+    if extras.is_empty() {
+        kit.caps_text(
+            x,
+            y,
+            w,
+            "Everything available is installed: it's in Plugins.",
+            15.5,
+            design::BODY,
+            0.0,
+        );
         return;
     }
     let editable = view.is_some_and(|m| m.loader.editable());
     let busy = busy(d, v);
-    let heights: Vec<f32> = catalog
-        .mods
+    let infos: Vec<ModEntry> = extras.iter().map(Extra::info).collect();
+    let heights: Vec<f32> = infos
         .iter()
         .map(|m| entry_height(kit, m, w) + dz(ENTRY_GAP))
         .collect();
@@ -1492,13 +1645,50 @@ fn catalogue_card(
     );
     let mut ey = y - d.mods.catalog_scroll;
     kit.clipped(x - dz(4.0), y, w + dz(8.0), list_h, |k| {
-        for (m, h) in catalog.mods.iter().zip(&heights) {
+        for ((e, m), h) in extras.iter().zip(&infos).zip(&heights) {
             if ey + h >= y && ey <= y + list_h {
-                entry(d, k, ctx, v, view, m, x, ey, w, editable, busy);
+                entry(d, k, ctx, v, *e, m, x, ey, w, editable, busy);
             }
             ey += h;
         }
     });
+}
+
+/// Downloads the catalogue's `m` into `v` as a job (new, or its new version).
+fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntry) {
+    let entry = m.clone();
+    let title = format!("Installing {}", m.name);
+    run(d, ctx, v, &title, move |v, cancel, on| {
+        mods::install(v, &entry, cancel, on)
+            .map(|()| format!("{} is installed: it loads at the next start", entry.name))
+    });
+}
+
+/// GET on an additional plugin.
+fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Extra) {
+    use crate::core::echoxr_hands as hands;
+    use crate::core::launcher::store::SteamVrVia;
+    match e {
+        Extra::Mod(m) => get(d, ctx, v, m),
+        Extra::EchoXr => {
+            d.state.profile.steamvr_via = SteamVrVia::EchoXr;
+            d.save();
+            d.notify("SteamVR plays through EchoXR now");
+        }
+        Extra::Hands => {
+            d.state.echoxr_hands = true;
+            if !cfg!(target_os = "linux") && d.state.profile.steamvr_via != SteamVrVia::EchoXr {
+                d.state.profile.steamvr_via = SteamVrVia::EchoXr;
+                d.notify("EchoXR is on too: hand tracking needs it");
+            }
+            d.save();
+            run(d, ctx, v, "Installing EchoXR Hands", |v, cancel, on| {
+                hands::fetch(cancel, on)?;
+                hands::install_into(&v.bin_dir())?;
+                Ok("EchoXR Hands is installed: it plays along in SteamVR through EchoXR".into())
+            });
+        }
+    }
 }
 
 /// The meta line of a catalogue entry: author, size, what it does.
@@ -1534,7 +1724,7 @@ fn entry(
     k: &mut Kit,
     ctx: &egui::Context,
     v: &InstalledVersion,
-    view: Option<&ModView>,
+    e: Extra,
     m: &ModEntry,
     x: f32,
     y: f32,
@@ -1542,28 +1732,36 @@ fn entry(
     editable: bool,
     busy: Option<&'static str>,
 ) {
-    // Right: GET, or what it is here.
-    let installed = view.and_then(|view| {
-        view.plugins
-            .iter()
-            .find(|p| p.file.eq_ignore_ascii_case(&m.file) && p.present)
-    });
-    let upgrade = installed.is_some_and(
-        |p| matches!(&p.source, Source::Catalog { version, .. } if *version != m.version),
-    );
+    use crate::core::launcher::store::Runtime;
+    // Right: GET, or that it isn't out yet.
     let bh = dz(30.0);
     let mut right = x + w;
-    if m.downloadable() && (installed.is_none() || upgrade) {
-        let label = if upgrade { "Update" } else { "Get" };
+    let gettable = match e {
+        Extra::Mod(m) => m.downloadable(),
+        Extra::EchoXr | Extra::Hands => true,
+    };
+    if gettable {
+        let label = "Get";
         let bw = k
             .button_width(label, Some(Icon::Download), bh)
             .max(dz(110.0));
         right -= bw;
-        let tip = match (editable, busy) {
-            (false, _) => "Needs nEVR runtime in this version",
-            (true, Some(why)) => why,
-            (true, None) => "Download it into this version (it loads at the next start)",
+        let wivrn =
+            cfg!(target_os = "linux") && !d.demo && d.state.profile.runtime == Runtime::Wivrn;
+        let why = match e {
+            Extra::EchoXr if d.any_job() => Some("Wait until the job is done"),
+            Extra::EchoXr => None,
+            Extra::Hands if wivrn => Some(
+                "Needs SteamVR: its finger bridge reads your fingers from it (choose SteamVR in Settings)",
+            ),
+            _ if !editable => Some("Needs nEVR runtime in this version"),
+            _ => busy,
         };
+        let tip = why.unwrap_or(match e {
+            Extra::EchoXr => "SteamVR plays through EchoXR instead of Revive (set up at PLAY)",
+            Extra::Hands => "Download it into this version (it turns EchoXR on too)",
+            Extra::Mod(_) => "Download it into this version (it loads at the next start)",
+        });
         if k.button(
             &format!("mods-get-{}", m.id),
             right,
@@ -1573,27 +1771,18 @@ fn entry(
             Tone::Go,
             Some(Icon::Download),
             label,
-            editable && busy.is_none(),
+            why.is_none(),
             tip,
         )
         .clicked
         {
-            let entry = m.clone();
-            let title = format!("Installing {}", m.name);
-            run(d, ctx, v, &title, move |v, cancel, on| {
-                mods::install(v, &entry, cancel, on)
-                    .map(|()| format!("{} is installed: it loads at the next start", entry.name))
-            });
+            get_extra(d, ctx, v, e);
         }
     } else {
-        let (chip, color) = match (installed, m.shipped) {
-            (Some(_), _) => ("Installed", design::QUEST_ON),
-            (None, true) => ("With the update", design::QUEST_OFF),
-            (None, false) => ("Coming soon", design::QUEST_OFF),
-        };
+        let chip = "Coming soon";
         let cw = k.chip_width(chip);
         right -= cw;
-        k.chip(right, y + (bh - dz(27.0)) / 2.0, chip, color);
+        k.chip(right, y + (bh - dz(27.0)) / 2.0, chip, design::QUEST_OFF);
     }
     // Left: name and version; the summary; who made it and what it does.
     let name = k.label_galley(
@@ -1853,5 +2042,60 @@ mod tests {
         assert_eq!(state(&p).0, "Off");
         p.present = false;
         assert_eq!(state(&p).0, "Missing");
+    }
+
+    #[test]
+    fn plugins_lists_only_whats_installed() {
+        let m = demo(None);
+        let (_, view, _) = m.view.as_ref().unwrap();
+        let vr = |list: &[Row]| {
+            list.iter()
+                .filter_map(|r| match r {
+                    Row::Vr(part, _) => Some(*part),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let none = rows(view, None, VrInstalled::default());
+        assert!(vr(&none).is_empty());
+        assert_eq!(
+            none.iter().filter(|r| matches!(r, Row::Plugin(_))).count(),
+            view.plugins.len()
+        );
+        let both = VrInstalled {
+            echoxr: true,
+            hands: true,
+        };
+        assert_eq!(vr(&rows(view, None, both)), [VrPart::EchoXr, VrPart::Hands]);
+    }
+
+    #[test]
+    fn additional_plugins_are_the_ones_not_here() {
+        let m = demo(None);
+        let (_, view, _) = m.view.as_ref().unwrap();
+        let catalog = m.catalog.as_ref().unwrap();
+        let ids = |vr| {
+            extras(Some(view), catalog, vr)
+                .iter()
+                .map(|e| e.info().id)
+                .collect::<Vec<_>>()
+        };
+        // Combat Stats is here, the required, shipped ones come with the update.
+        assert_eq!(ids(None), ["replay-recorder"]);
+        assert_eq!(
+            ids(Some(VrInstalled::default())),
+            ["echoxr", "echoxr-hands", "replay-recorder"]
+        );
+        let echoxr = VrInstalled {
+            echoxr: true,
+            hands: false,
+        };
+        assert_eq!(ids(Some(echoxr)), ["echoxr-hands", "replay-recorder"]);
+        // An update is offered on the plugin's row instead.
+        let combat = view.plugins.iter().find(|p| p.file == "CombatStats.dll");
+        assert_eq!(
+            update_for(combat.unwrap(), Some(catalog)).map(|m| m.version),
+            Some("0.3.1".to_string())
+        );
     }
 }

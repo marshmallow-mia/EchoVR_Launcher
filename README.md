@@ -34,16 +34,16 @@ on Linux). An event build you installed before stays playable either way.
 ## SteamVR on Windows
 
 The SteamVR choice runs Echo VR through [Revive](https://github.com/LibreVR/Revive)
-(installed by the launcher) or, with **EchoXR** switched on on the Mods page, through
+(installed by the launcher) or, with **EchoXR** installed on the Mods page, through
 [EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer in the game's folder: no
 injection and no administrator rights (the Meta library's copy excepted). EchoXR runs
 only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
 
 ## Hand tracking
 
-**EchoXR Hands** on the Mods page puts your own fingers on Echo VR's hands, from SteamVR
+**EchoXR Hands** (Mods page, Additional Plugins) puts your own fingers on Echo VR's hands, from SteamVR
 ([EchoXR Hands](https://github.com/heisthecat31/EchoXR-Hands), built as an nEVR plugin).
-It needs EchoXR (switching it on turns EchoXR on) and SteamVR, so on Linux it plays with
+It needs EchoXR (getting it turns EchoXR on) and SteamVR, so on Linux it plays with
 the SteamVR choice, not WiVRn. The launcher puts its plugin into the game's `plugins`
 folder and runs its finger bridge beside the game. Finger sharing starts off: on, it sends
 your display name and your match's player names to its relay, so others running it see
@@ -58,7 +58,7 @@ reads Meta's Platform SDK loader and P2P library out of Meta's own runtime packa
 adds Echo VR to Steam as a non-Steam game (Steam restarts for that). PLAY then starts it
 through Steam.
 How you play (Settings, or the Install card) is **SteamVR** or **WiVRn**, whichever is
-installed, or Flat. In VR, EchoXR is required (the Mods page shows it locked on), and PLAY
+installed, or Flat. In VR, EchoXR is required (the Mods page lists it as required), and PLAY
 points it at that runtime: it starts SteamVR when it isn't running, and WiVRn's server
 (connect your headset in WiVRn's app). `XR_RUNTIME_JSON`, when set, still wins. No OpenVR
 runtime is needed. Only the live build runs this way; the event builds don't yet.
@@ -70,7 +70,8 @@ The **Mods** page shows the selected PC version's mod loader
 which also brings Discord sign-in, friends and parties into the game) and what it loaded
 at the last start, lets you turn plugins and asset patches on or off, set a plugin's
 arguments, start without mods, and install mods from the catalogue on release.echovr.de or a
-DLL of your own. The launcher keeps its choices in its own files and writes nEVR's
+DLL of your own. **Plugins** lists only what is installed; **Additional Plugins** offers the
+rest (the catalogue's optional plugins, EchoXR Hands and, on Windows, EchoXR) with **Get**. The launcher keeps its choices in its own files and writes nEVR's
 `_local/config.yaml` from them before every start, so updates and Verify never undo them.
 Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask in the
 browser. See
