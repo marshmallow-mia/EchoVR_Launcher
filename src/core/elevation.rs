@@ -145,7 +145,7 @@ pub fn handle(req: &Request) -> Reply {
 
 /// The helper's EchoXR: the zip at `zip` into the Meta library's Echo VR (`bin`), if it is
 /// the pinned build (held against writes from the check to the copy), then EchoXR's copy
-/// of the game. The Meta app brings its own Platform SDK loader.
+/// of the game (EchoXR brings its Platform SDK stand-in).
 fn install_meta_echoxr(bin: &std::path::Path, zip: &str) -> Result<()> {
     if !std::path::Path::new(zip).is_absolute() {
         bail!("refusing EchoXR at {zip:?}");
@@ -154,7 +154,7 @@ fn install_meta_echoxr(bin: &std::path::Path, zip: &str) -> Result<()> {
     if !super::echoxr::is_pinned_zip(&mut f)? {
         bail!("refusing an EchoXR zip that isn't the pinned build");
     }
-    super::echoxr::install_zip(f, bin, None)?;
+    super::echoxr::install_zip(f, bin)?;
     super::echoxr::refresh_openxr_exe(bin)?;
     super::echoxr::make_openxr_exe(bin)
 }
@@ -374,16 +374,12 @@ pub fn remove_patch(bin: &std::path::Path, consent: &mut dyn FnMut() -> bool) ->
     }
 }
 
-/// Gets the game's bin folder `bin` ready for EchoXR: EchoXR in it (Meta's Platform SDK
-/// loader into `platform_to` when given), and its copy of the game current. When that
-/// needs administrator rights, the helper does it (after `consent`) for the Meta library's
-/// Echo VR; any other folder can't without them.
-pub fn prepare_echoxr(
-    bin: &std::path::Path,
-    platform_to: Option<&std::path::Path>,
-    consent: &mut dyn FnMut() -> bool,
-) -> Result<()> {
-    match super::echoxr::prepare(bin, platform_to) {
+/// Gets the game's bin folder `bin` ready for EchoXR: EchoXR in it (with its Platform SDK
+/// stand-in), and its copy of the game current. When that needs administrator rights, the
+/// helper does it (after `consent`) for the Meta library's Echo VR; any other folder can't
+/// without them.
+pub fn prepare_echoxr(bin: &std::path::Path, consent: &mut dyn FnMut() -> bool) -> Result<()> {
+    match super::echoxr::prepare(bin) {
         Err(e) if super::revive::needs_elevation(&e) && is_meta_bin(bin) => {
             tracing::info!("EchoXR needs elevation ({e:#}); using the helper");
             let req = Request::InstallEchoXr {

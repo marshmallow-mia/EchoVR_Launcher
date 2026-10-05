@@ -349,19 +349,10 @@ pub enum Start {
     /// On the monitor with `-noovr`: the demo platform (a `DMO-` login, linked by code).
     Flat,
     /// On the monitor with EchoRelay's `-windowed`, logged in through the Oculus platform
-    /// (the licence patch's identity). Meta's platform needs its service, which a prefix
-    /// lacks, so its loader is swapped for a stand-in that logs in offline.
+    /// (the licence patch's identity): EchoXR's Platform SDK stand-in, which needs no
+    /// Oculus service.
     FlatOculus,
 }
-
-/// The stand-in for Meta's `LibOVRPlatform64_1.dll` (NoOvrEchoVR_on_Linux's
-/// libovrplatform, MIT): an offline logged-in user, and the mic through WASAPI.
-#[cfg(target_os = "linux")]
-const PLATFORM_STUB: &[u8] =
-    include_bytes!("../../../assets/linux/libovrplatform/LibOVRPlatform64_1.dll");
-#[cfg(not(target_os = "linux"))]
-const PLATFORM_STUB: &[u8] = &[];
-const PLATFORM_DLL: &str = "LibOVRPlatform64_1.dll";
 
 /// Pure: `unix` as a Windows path in a prefix whose drives map to `drives` (letter,
 /// Unix folder): the most specific drive wins, as in Wine; `Z:` otherwise.
@@ -425,17 +416,13 @@ pub fn game_command(
         }
         _ => None,
     };
-    if start == Start::FlatOculus {
-        // The stand-in in place of Meta's loader (put back by the next start in VR).
-        let target = bin.join(PLATFORM_DLL);
-        if std::fs::read(&target).ok().as_deref() != Some(PLATFORM_STUB) {
-            std::fs::write(&target, PLATFORM_STUB)
-                .with_context(|| format!("couldn't write {}", target.display()))?;
-        }
-    } else {
-        // Meta's loader and P2P library beside the game: a prefix has no Meta app to
-        // bring them.
-        echoxr::install_into(bin, Some(bin))?;
+    if start != Start::Flat {
+        // EchoXR, and its Platform SDK stand-in beside the game (never Meta's): in VR and
+        // for the Oculus login on the monitor.
+        echoxr::install_into(bin)?;
+        echoxr::platform_beside_game(bin)?;
+    }
+    if xr.is_some() {
         echoxr::refresh_openxr_exe(bin)?;
     }
     let mut rw = format!("{}:{}", game_root.display(), prefix().display());

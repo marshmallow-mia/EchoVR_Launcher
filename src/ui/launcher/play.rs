@@ -1260,8 +1260,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         && v.publisher_lock.is_none()
     {
         let bin = v.bin_dir();
-        let platform = crate::core::echoxr::platform_dir_for(&bin);
-        if let Err(e) = crate::core::echoxr::prepare(&bin, platform.as_deref()) {
+        if let Err(e) = crate::core::echoxr::prepare(&bin) {
             if revive::needs_elevation(&e) {
                 d.notify("EchoXR needs administrator rights for this folder: PLAY again once it's set up");
                 setup::echoxr_windows(d, ctx);

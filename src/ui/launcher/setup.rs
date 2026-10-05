@@ -496,8 +496,7 @@ pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
                     on(Step::Status(
                         "Putting EchoXR into the game's folder...".into(),
                     ));
-                    let platform = echoxr::platform_dir_for(bin);
-                    elevation::prepare_echoxr(bin, platform.as_deref(), &mut consent)
+                    elevation::prepare_echoxr(bin, &mut consent)
                 }
                 None => Ok(()),
             });

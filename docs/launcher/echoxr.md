@@ -61,15 +61,16 @@ Any other code is Echo's own. EchoXR logs to `EchoXR\launcher.log` (every launch
 - **Stale copy.** EchoXR never makes the copy again by itself. Before every start, the
   launcher deletes it when `echovr.exe` changed since (the copy is older, or another
   size), so updates and reinstalls take effect.
-- **Login DLLs.** `pnsovr.dll` logs in through Meta's Platform SDK loader,
-  `LibOVRPlatform64_1.dll`. That loads the game's own `LibOVRPlatformImpl64_1.dll` (the
-  community update ships it, so the launcher never touches it), which needs
-  `LibOVRP2P64_1.dll`. The loader and P2P library are read out of Meta's own runtime
-  package (`securecdn id=3766757683456363`, pinned by hash) and are never shipped:
-  - On Linux they go next to the game, since a Wine prefix has no Meta app.
-  - On Windows they're only needed without the Meta app, and then go into `EchoXR\`.
-    That folder is on `PATH` only when EchoXR starts the game, so a Meta Link start
-    never sees them.
+- **The Platform SDK (login).** `pnsovr.dll` signs in through Oculus' Platform SDK,
+  `LibOVRPlatform64_1.dll`. Nothing of Meta's is used: EchoXR (0.4.2 on) brings its own,
+  `EchoXR\LibOVRPlatform64_1.dll` (marshmallow-mia's stand-in: a signed-in user with a
+  per-machine id, entitled, the microphone through WASAPI; no Oculus service or account).
+  - On Windows it stays in `EchoXR\`. That folder is on `PATH` (and in
+    `LIBOVR_DLL_DIR`) only when EchoXR starts the game, so a Meta Link start never sees it.
+  - On Linux the launcher also puts it next to the game, which the game looks in first,
+    for VR and for the flat start with the Oculus login.
+  - Meta's loader and P2P library, which older launchers read out of Meta's runtime
+    package, are removed where they put them (only those very files, by their hash).
 - **Argument quoting.** EchoXR wraps each argument in quotes without escaping, so an
   extra argument containing `"`, or ending in `\`, breaks.
 
@@ -145,7 +146,7 @@ table.
 | **Layers, formats** | ReviveXR's defaults. | Opaque eye layers, D24S8 → D32S8 (for Monado), a fix for `ovrTrackingCap_Position`, and audio GUID leak fixes. |
 | **Haptics, guardian, performance stats** | ReviveXR in both: haptics through OpenXR actions, boundary from the STAGE bounds, `ovr_GetPerfStats` zeros. | Same. |
 | **Hand tracking** | None any more. `ovr_GetHandPose` and the like return `ovrError_Unsupported` (ReviveXR's). | None. |
-| **Platform SDK (login)** | Not handled. The README asks for `LibOVRPlatform64_1.dll` and `LibOVRPlatformImpl64_1.dll` next to the game on Linux; the launcher brings them. | Unpacks Meta's whole runtime into the prefix's `Program Files/Oculus/Support/oculus-runtime`, sets the registry `Base`, and replaces the Impl with its own shim (faked login and entitlement). |
+| **Platform SDK (login)** | Its own stand-in, `EchoXR\LibOVRPlatform64_1.dll` (0.4.2): a signed-in user with a per-machine id, no Meta service. | Unpacks Meta's whole runtime into the prefix's `Program Files/Oculus/Support/oculus-runtime`, sets the registry `Base`, and replaces the Impl with its own shim (faked login and entitlement). |
 | **Settings, logs** | `EchoXR\echoxr.ini`; `--exe`, `--runtime steamvr\|active`, `--setup-only`; logs `EchoXR\launcher.log` and `runtime.log`. | `RIFTLIFT_*` variables (backend, trace, xrizer, offline platform…), `OXR_ZERO_TIME_IS_NOW=1`, and `WINEDLLOVERRIDES=d3d11=n;dxgi=n` with its own DXVK. |
 | **Licence** | No licence file. It credits Revive (MIT), OpenXR (Apache-2.0) and Detours (MIT). | GPL-3.0-or-later. |
 

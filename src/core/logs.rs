@@ -193,7 +193,7 @@ fn collect_from(
     let present: Vec<&InstalledVersion> = versions.iter().filter(|v| v.present()).collect();
     for v in &present {
         let dir = v.bin_dir().join(super::echoxr::DIR);
-        for n in ["launcher.log", "runtime.log"] {
+        for n in ["launcher.log", "runtime.log", "platform.log"] {
             out.extend(source(Kind::EchoXr, &format!("{}.{n}", v.id), dir.join(n)));
         }
     }

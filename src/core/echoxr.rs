@@ -4,11 +4,12 @@
 //! OpenXR: no Meta services, sign-in or store, and no injection. On Windows it plays on
 //! SteamVR (the SteamVR choice "through EchoXR"); on Linux through GE-Proton (`linux`).
 //!
-//! `pnsovr.dll` logs in through Meta's Platform SDK loader (`LibOVRPlatform64_1.dll`, which
-//! loads the game's own `LibOVRPlatformImpl64_1.dll` -- the community update ships it --
-//! and that needs `LibOVRP2P64_1.dll`). The Meta app brings the loader and P2P along.
-//! Without the app, both are read out of Meta's own runtime package, never shipped. Every
-//! download is pinned by its SHA-256. See docs/launcher/echoxr.md.
+//! The game's `pnsovr.dll` signs in through Oculus' Platform SDK (`LibOVRPlatform64_1.dll`).
+//! Nothing of Meta's: EchoXR brings its own in `EchoXR\` (marshmallow-mia's stand-in: a
+//! signed-in user with a per-machine id, no Oculus service), which `EchoXR.exe` puts first
+//! on `PATH` and in `LIBOVR_DLL_DIR`. Meta's loader and P2P library, which older launchers
+//! read out of Meta's runtime package, are taken out where they put them. The download is
+//! pinned by its SHA-256. See docs/launcher/echoxr.md.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -17,37 +18,44 @@ use anyhow::{bail, Context, Result};
 
 use crate::core::download::{self, Progress};
 use crate::core::launcher::versions::Step;
-use crate::core::{paths, remote_zip};
+use crate::core::paths;
 
-/// EchoXR's OpenXR layer (EchoTools/EchoXR 0.4.1, its GitHub release): unpacked into the
+/// EchoXR's OpenXR layer (EchoTools/EchoXR 0.4.2, its GitHub release): unpacked into the
 /// game's `bin/win10`. Built with the static C runtime, so it needs no Visual C++ runtime.
-/// 0.4.1 runs under GE-Proton: OpenXR's values from its `Wine\XR`, and a swapchain's image
-/// count asked for before the first acquire.
-pub const VERSION: &str = "0.4.1";
-const ZIP: &str = "EchoXR-OpenXR-v0.4.1.zip";
+/// 0.4.2 brings the Platform SDK stand-in; 0.4.1 made it run under GE-Proton.
+pub const VERSION: &str = "0.4.2";
+const ZIP: &str = "EchoXR-OpenXR-v0.4.2.zip";
 const URL: &str =
-    "https://github.com/EchoTools/EchoXR/releases/download/v0.4.1-rc1/EchoXR-OpenXR-v0.4.1.zip";
-const SHA256: &str = "1777c7788458e97d8abcb3b0ec54776ec85310ed88a659d3b5679e045acb4f93";
+    "https://github.com/EchoTools/EchoXR/releases/download/v0.4.2-rc1/EchoXR-OpenXR-v0.4.2.zip";
+const SHA256: &str = "10722c6b8976520f92069c378dcb982225c662469ce8b931c6c84a51f1b36eb8";
 /// Who made it, as the Mods page credits it: EchoXR, and what it builds on.
 pub const AUTHORS: &str =
     "heisthecat31, marshmallow-mia, Villagers654 (RiftLift), CrossVR (Revive)";
 /// What starts the game, in its `bin/win10`.
 pub const LAUNCHER: &str = "EchoXR.exe";
 /// The files that do the work, with their hashes.
-const FILES: [(&str, &str); 3] = [
+const FILES: [(&str, &str); 4] = [
     (
         LAUNCHER,
-        "8d62f7b950f0e498db95ee814d550481e77528c41e2e053ae50c07eda939e52c",
+        "8acc9fa4a02556ba676f664e7d2376a74717ed774bd95bbd54dba5faa5243235",
     ),
     (
         "EchoXR/LibOVRRT64_1.dll",
-        "e34b8b4477306ab8c3cf8b1224a5d4097c8b1ba6eb8291cfa7cbd50f9244d666",
+        "6c63b8744a3505c4679cc82675be2fc0109c0aae4d11a2541cf03e9134490897",
     ),
     (
         "EchoXR/openxr_loader.dll",
-        "fbaf08c7e489cdac94d6eea5770ae0378e3c8d8fcf3764e0740b2aa73246415c",
+        "0c13381b2aa3d17f099186da3ec256cc50b3dbfd9a2600bd6e38f46d19be0e85",
+    ),
+    (
+        PLATFORM_IN_ECHOXR,
+        "755998536551ebd67d8f36104ee07eae94fa68e6e4ceee87b8915c3c7cfa6bc0",
     ),
 ];
+/// EchoXR's Platform SDK stand-in, as the zip has it.
+pub const PLATFORM_IN_ECHOXR: &str = "EchoXR/LibOVRPlatform64_1.dll";
+/// The Platform SDK loader's file name.
+pub const PLATFORM_DLL: &str = "LibOVRPlatform64_1.dll";
 /// What older launchers wrote as `EchoXR/echoxr.ini` (0.3.0's updater off). 0.4.0 has no
 /// updater and no ini: this one goes.
 const OLD_INI: &str =
@@ -55,12 +63,9 @@ const OLD_INI: &str =
 /// EchoXR's folder in `bin/win10`: its runtime, and where its `PATH` points first.
 pub const DIR: &str = "EchoXR";
 
-/// Meta's PC runtime package; only its Platform SDK loader is read out of it.
-const META_RUNTIME_URL: &str =
-    "https://securecdn.oculus.com/binaries/download/?id=3766757683456363";
-/// The Platform SDK loader and the P2P library the game's implementation needs, as that
-/// package has them. (The implementation, `LibOVRPlatformImpl64_1.dll`, is the game's.)
-pub const PLATFORM: [(&str, &str); 2] = [
+/// Meta's loader and P2P library as older launchers put them in place (read out of
+/// Meta's runtime package): taken out again where they are those very files.
+const OLD_META: [(&str, &str); 2] = [
     (
         "LibOVRPlatform64_1.dll",
         "c8f99087f457bed5c0549da82d7b976d6687017c72ddc25277babadaab16001b",
@@ -124,16 +129,9 @@ fn zip_path() -> PathBuf {
     store_dir().join(ZIP)
 }
 
-fn platform_dir() -> PathBuf {
-    store_dir().join("oculus")
-}
-
-/// Whether EchoXR and Meta's loader have been fetched (and are still there).
+/// Whether EchoXR has been fetched (and is still there).
 pub fn is_fetched() -> bool {
     zip_path().is_file()
-        && PLATFORM
-            .iter()
-            .all(|(n, _)| platform_dir().join(n).is_file())
 }
 
 /// Downloads `url` into the cache as `name` and checks it against `sha256`.
@@ -152,7 +150,7 @@ pub fn fetch_pinned(
     })
 }
 
-/// Fetches what is missing: EchoXR, and Meta's Platform SDK loader.
+/// Fetches EchoXR when it is missing.
 pub fn fetch(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
     std::fs::create_dir_all(store_dir())?;
     if !download::sha256_matches(&zip_path(), SHA256) {
@@ -161,33 +159,56 @@ pub fn fetch(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
         std::fs::copy(&zip, zip_path()).context("keep EchoXR")?;
         let _ = std::fs::remove_file(zip);
     }
-    let missing: Vec<(String, String)> = PLATFORM
-        .iter()
-        .filter(|(n, sha)| !download::sha256_matches(&platform_dir().join(n), sha))
-        .map(|(n, sha)| (n.to_string(), sha.to_string()))
-        .collect();
-    if !missing.is_empty() {
-        on(Step::Status("Reading Meta's Platform SDK loader...".into()));
-        remote_zip::extract_members(
-            META_RUNTIME_URL,
-            "",
-            &missing,
-            &platform_dir(),
-            cancel,
-            &mut |_, _| {},
-        )
-        .context("Couldn't read the Platform SDK loader out of Meta's runtime package")?;
+    // Meta's loader as older launchers kept it: never used again.
+    let _ = std::fs::remove_dir_all(store_dir().join("oculus"));
+    Ok(())
+}
+
+/// Takes Meta's loader and P2P library out of `dir` where an older launcher put them
+/// there (only those very files).
+pub fn remove_old_meta(dir: &Path) -> Result<()> {
+    for (name, sha) in OLD_META {
+        let f = dir.join(name);
+        if download::sha256_matches(&f, sha) {
+            std::fs::remove_file(&f).with_context(|| format!("remove {}", f.display()))?;
+            tracing::info!("removed Meta's {name} from {}", dir.display());
+        }
     }
     Ok(())
 }
 
-/// Puts EchoXR into the game's bin folder `bin` (next to `echovr.exe`), and Meta's Platform
-/// SDK loader and P2P library into `platform_to` when given: only what is missing or
-/// differs.
-pub fn install_into(bin: &Path, platform_to: Option<&Path>) -> Result<()> {
+/// Whether `file` is EchoXR's Platform SDK stand-in (or Meta's loader an older launcher
+/// put in place): the launcher's to remove.
+pub fn is_launchers_platform(file: &Path) -> bool {
+    FILES
+        .iter()
+        .filter(|(n, _)| *n == PLATFORM_IN_ECHOXR)
+        .chain(OLD_META.iter().filter(|(n, _)| *n == PLATFORM_DLL))
+        .any(|(_, sha)| download::sha256_matches(file, sha))
+}
+
+/// Linux: EchoXR's Platform SDK stand-in beside the game in `bin` (the first place the
+/// game looks), Meta's copies an older launcher put there gone. For every start through the
+/// Oculus platform, in VR and on the monitor; Linux has no Meta app it could get in the way
+/// of.
+pub fn platform_beside_game(bin: &Path) -> Result<()> {
+    remove_old_meta(bin)?;
+    let stand_in = bin.join(PLATFORM_IN_ECHOXR);
+    let target = bin.join(PLATFORM_DLL);
+    let want = std::fs::read(&stand_in)
+        .with_context(|| format!("EchoXR's {PLATFORM_DLL} isn't in {}", bin.display()))?;
+    if std::fs::read(&target).ok().as_deref() != Some(want.as_slice()) {
+        put(&target, &want)?;
+    }
+    Ok(())
+}
+
+/// Puts EchoXR into the game's bin folder `bin` (next to `echovr.exe`): only what is
+/// missing or differs. Meta's files an older launcher put into `EchoXR\` go.
+pub fn install_into(bin: &Path) -> Result<()> {
     let zip = std::fs::File::open(zip_path())
         .context("EchoXR isn't downloaded: PLAY in the launcher downloads it")?;
-    install_zip(zip, bin, platform_to)
+    install_zip(zip, bin)
 }
 
 /// The pinned zip, as the launcher keeps it (for the administrator helper, which checks it).
@@ -204,11 +225,7 @@ pub fn is_pinned_zip(zip: &mut (impl std::io::Read + std::io::Seek)) -> Result<b
 }
 
 /// [`install_into`] from the zip `zip`.
-pub fn install_zip(
-    zip: impl std::io::Read + std::io::Seek,
-    bin: &Path,
-    platform_to: Option<&Path>,
-) -> Result<()> {
+pub fn install_zip(zip: impl std::io::Read + std::io::Seek, bin: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(zip)?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
@@ -237,34 +254,16 @@ pub fn install_zip(
     if std::fs::read(&ini).is_ok_and(|have| have == OLD_INI.as_bytes()) {
         std::fs::remove_file(&ini).with_context(|| format!("remove {}", ini.display()))?;
     }
-    if let Some(to) = platform_to {
-        std::fs::create_dir_all(to)?;
-        for (name, sha) in PLATFORM {
-            let dll = to.join(name);
-            if !download::sha256_matches(&dll, sha) {
-                std::fs::copy(platform_dir().join(name), &dll)
-                    .with_context(|| format!("copy {name}"))?;
-            }
-        }
-    }
+    remove_old_meta(&bin.join(DIR))?;
     Ok(())
 }
 
-/// Where Meta's Platform SDK loader goes for the game in `bin` on Windows: nowhere when
-/// the Meta app brings it, else EchoXR's folder (first on `PATH` only when EchoXR starts
-/// the game, so other starts never see it).
-pub fn platform_dir_for(bin: &Path) -> Option<PathBuf> {
-    crate::core::platform::oculus_base_path()
-        .is_none()
-        .then(|| bin.join(DIR))
-}
-
 /// Gets the game's bin folder `bin` ready for EchoXR, where that needs no administrator
-/// rights: EchoXR in it (Meta's loader into `platform_to` when given), its copy of the
-/// game current, and the folder writable for EchoXR to make that copy at its first start.
-/// Fails as the write did otherwise.
-pub fn prepare(bin: &Path, platform_to: Option<&Path>) -> Result<()> {
-    install_into(bin, platform_to)?;
+/// rights: EchoXR in it (with its Platform SDK stand-in), its copy of the game current,
+/// and the folder writable for EchoXR to make that copy at its first start. Fails as the
+/// write did otherwise.
+pub fn prepare(bin: &Path) -> Result<()> {
+    install_into(bin)?;
     refresh_openxr_exe(bin)?;
     if !bin.join(paths::OPENXR_EXE).is_file() {
         let probe = bin.join(".echoxr-write-test");
@@ -357,11 +356,11 @@ mod tests {
         let ini = bin.join(DIR).join("echoxr.ini");
         std::fs::create_dir_all(ini.parent().unwrap()).unwrap();
         std::fs::write(&ini, OLD_INI).unwrap();
-        install_zip(std::io::Cursor::new(zip.get_ref().clone()), bin, None).unwrap();
+        install_zip(std::io::Cursor::new(zip.get_ref().clone()), bin).unwrap();
         assert!(!ini.exists());
         // Someone's own ini stays.
         std::fs::write(&ini, "CheckForUpdates = 1\r\n").unwrap();
-        install_zip(std::io::Cursor::new(zip.into_inner()), bin, None).unwrap();
+        install_zip(std::io::Cursor::new(zip.into_inner()), bin).unwrap();
         assert!(ini.exists());
     }
 
@@ -438,30 +437,25 @@ mod tests {
         }
     }
 
-    /// Meta's package still has the pinned Platform SDK loader and P2P library, and they
-    /// can be read out of it alone.
+    /// Meta's files an older launcher put in place go (only those very files), and
+    /// EchoXR's stand-in goes beside the game on Linux.
     #[test]
-    #[ignore = "network"]
-    fn reads_the_platform_loader_out_of_metas_package() {
+    fn takes_metas_files_out_and_the_stand_in_beside_the_game() {
         let dir = tempfile::tempdir().unwrap();
-        let members: Vec<(String, String)> = PLATFORM
-            .iter()
-            .map(|(n, sha)| (n.to_string(), sha.to_string()))
-            .collect();
-        remote_zip::extract_members(
-            META_RUNTIME_URL,
-            "",
-            &members,
-            dir.path(),
-            &AtomicBool::new(false),
-            &mut |_, _| {},
-        )
-        .unwrap();
-        for (name, sha) in PLATFORM {
-            assert!(
-                download::sha256_matches(&dir.path().join(name), sha),
-                "{name}"
-            );
-        }
+        let bin = dir.path();
+        std::fs::create_dir_all(bin.join(DIR)).unwrap();
+        std::fs::write(bin.join(PLATFORM_IN_ECHOXR), b"MZ stand-in").unwrap();
+        std::fs::write(bin.join("LibOVRP2P64_1.dll"), b"someone else's").unwrap();
+        platform_beside_game(bin).unwrap();
+        assert_eq!(
+            std::fs::read(bin.join(PLATFORM_DLL)).unwrap(),
+            b"MZ stand-in"
+        );
+        assert!(bin.join("LibOVRP2P64_1.dll").is_file());
+        // Not the pinned files: neither is the launcher's.
+        assert!(!is_launchers_platform(&bin.join(PLATFORM_DLL)));
+        // No stand-in in EchoXR\: an error, not a Meta fallback.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(platform_beside_game(empty.path()).is_err());
     }
 }

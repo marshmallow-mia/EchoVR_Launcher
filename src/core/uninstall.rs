@@ -104,7 +104,16 @@ pub fn clean_version(v: &InstalledVersion) -> Vec<String> {
     ];
     files.extend(super::launcher::mods::launcher_files(v));
     files.extend(super::launcher::nevr::logins(v));
+    // The Platform SDK beside the game, when it is EchoXR's stand-in or Meta's an older
+    // launcher put there (never one of the player's own).
+    let platform = bin.join(echoxr::PLATFORM_DLL);
+    if echoxr::is_launchers_platform(&platform) {
+        files.push(platform);
+    }
     let mut failed = Vec::new();
+    if let Err(e) = echoxr::remove_old_meta(&bin) {
+        failed.push(format!("{e:#}"));
+    }
     for f in files.iter().filter(|f| f.is_file()) {
         if let Err(e) = std::fs::remove_file(f) {
             failed.push(format!("{}: {e}", f.display()));
