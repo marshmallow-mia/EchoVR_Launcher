@@ -65,6 +65,16 @@ pub fn shots() -> Vec<Shot> {
         ("play_installing", Page::Play, SnapVariant::Installing),
         ("play_extracting", Page::Play, SnapVariant::Extracting),
         ("play_quest", Page::Play, SnapVariant::QuestSide),
+        (
+            "play_quest_installing",
+            Page::Play,
+            SnapVariant::QuestInstalling,
+        ),
+        (
+            "play_quest_installing_42",
+            Page::Play,
+            SnapVariant::QuestInstalling42,
+        ),
         ("play_notice", Page::Play, SnapVariant::Notice),
         ("install_ask", Page::Install, SnapVariant::InstallAsk),
         ("install_ask_new", Page::Install, SnapVariant::InstallAskNew),
@@ -214,7 +224,12 @@ pub fn shots() -> Vec<Shot> {
     }
     if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {
         let terms: Vec<&str> = only.split(',').map(str::trim).collect();
-        shots.retain(|s| terms.iter().any(|t| s.name.contains(t)));
+        shots.retain(|s| {
+            terms.iter().any(|term| {
+                term.strip_prefix('=')
+                    .map_or_else(|| s.name.contains(term), |name| s.name == name)
+            })
+        });
     }
     shots
 }

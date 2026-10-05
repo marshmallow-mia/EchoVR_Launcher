@@ -182,7 +182,8 @@ pub fn fetch(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
 /// SDK loader and P2P library into `platform_to` when given: only what is missing or
 /// differs.
 pub fn install_into(bin: &Path, platform_to: Option<&Path>) -> Result<()> {
-    let zip = std::fs::File::open(zip_path()).context("EchoXR isn't downloaded: PLAY in the launcher downloads it")?;
+    let zip = std::fs::File::open(zip_path())
+        .context("EchoXR isn't downloaded: PLAY in the launcher downloads it")?;
     install_zip(zip, bin, platform_to)
 }
 
