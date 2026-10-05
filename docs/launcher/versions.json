@@ -9,7 +9,7 @@
       "url": "ready-at-dawn-echo-arena.zip",
       "size": null,
       "sha256": null,
-      "update_manifest": "https://release.echovr.de/updates/update.manifest",
+      "update_manifest": "https://release.echovr.de/updates-nevr/update.manifest",
       "files_manifest": "https://release.echovr.de/pc.zip.manifest",
       "notes": "The current PC client with community updates.",
       "hosted": "live",

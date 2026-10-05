@@ -10,7 +10,7 @@ parties into the game. This page covers what the launcher does with it
 
 ## Who writes what
 
-The community update (`https://release.echovr.de/updates/update.manifest`, mirrored from files.echovr.de) owns
+The community update (`https://release.echovr.de/updates-nevr/update.manifest`: the one with nEVR, which every install and update gets; the old installer's channel without it is `updates/` on files.echovr.de) owns
 `BugSplat64.dll`, the plugins it ships and `asset_patches/manifest.json`: Update and Repair
 put them back, Verify reports any change. The launcher never edits them. It writes:
 
