@@ -19,28 +19,30 @@ use crate::core::download::{self, Progress};
 use crate::core::launcher::versions::Step;
 use crate::core::{paths, remote_zip};
 
-/// EchoXR's OpenXR layer (EchoTools/EchoXR 0.4.0, its GitHub release): unpacked into the
+/// EchoXR's OpenXR layer (EchoTools/EchoXR 0.4.1, its GitHub release): unpacked into the
 /// game's `bin/win10`. Built with the static C runtime, so it needs no Visual C++ runtime.
-pub const VERSION: &str = "0.4.0";
-const ZIP: &str = "EchoXR-OpenXR-v0.4.0.zip";
+/// 0.4.1 runs under GE-Proton: OpenXR's values from its `Wine\XR`, and a swapchain's image
+/// count asked for before the first acquire.
+pub const VERSION: &str = "0.4.1";
+const ZIP: &str = "EchoXR-OpenXR-v0.4.1.zip";
 const URL: &str =
-    "https://github.com/EchoTools/EchoXR/releases/download/v0.4.0-rc1/EchoXR-OpenXR-v0.4.0.zip";
-const SHA256: &str = "271e54f2fbe570b4c4f00117703a1f15cc220f859340352aa1aba56ff19329c7";
+    "https://github.com/EchoTools/EchoXR/releases/download/v0.4.1-rc1/EchoXR-OpenXR-v0.4.1.zip";
+const SHA256: &str = "1777c7788458e97d8abcb3b0ec54776ec85310ed88a659d3b5679e045acb4f93";
 /// What starts the game, in its `bin/win10`.
 pub const LAUNCHER: &str = "EchoXR.exe";
 /// The files that do the work, with their hashes.
 const FILES: [(&str, &str); 3] = [
     (
         LAUNCHER,
-        "9cd8d81cc4c09d863fcc50ecb1caf4204a4470ab33bebdac5bd668bcadfa8d75",
+        "8d62f7b950f0e498db95ee814d550481e77528c41e2e053ae50c07eda939e52c",
     ),
     (
         "EchoXR/LibOVRRT64_1.dll",
-        "e32aed7a00131f7ac79ef3080a3df1acfe63e0d9f9916b22f145c93f5ca9606c",
+        "e34b8b4477306ab8c3cf8b1224a5d4097c8b1ba6eb8291cfa7cbd50f9244d666",
     ),
     (
         "EchoXR/openxr_loader.dll",
-        "005c4f6001afd2de88564cd26fcf4c54a3ea6c0226b04516c731c199d558128f",
+        "fbaf08c7e489cdac94d6eea5770ae0378e3c8d8fcf3764e0740b2aa73246415c",
     ),
 ];
 /// What older launchers wrote as `EchoXR/echoxr.ini` (0.3.0's updater off). 0.4.0 has no
@@ -77,6 +79,31 @@ pub fn exit_message(code: i32) -> Option<&'static str> {
         7 => "Echo VR couldn't be started (see EchoXR\\launcher.log in the game's bin\\win10 folder).",
         _ => return None,
     })
+}
+
+/// Pure: Echo VR's own exit code in the last start EchoXR logged (`launcher.log`'s
+/// "Echo exited with code N"). EchoXR passes the game's code on, and Echo's codes overlap
+/// with EchoXR's own (2-7): a start that logged one ended with the game's.
+pub fn game_exit_code(log: &str) -> Option<i64> {
+    log.lines()
+        .rev()
+        .take_while(|l| !l.starts_with("===== "))
+        .find_map(|l| {
+            l.split_once("Echo exited with code ")?
+                .1
+                .trim()
+                .parse()
+                .ok()
+        })
+}
+
+/// Why EchoXR (not Echo VR) ended the last start in `bin` with `code`, if it did.
+pub fn failure(bin: &Path, code: i32) -> Option<&'static str> {
+    let log = std::fs::read_to_string(bin.join(DIR).join("launcher.log")).unwrap_or_default();
+    if game_exit_code(&log).is_some() {
+        return None;
+    }
+    exit_message(code)
 }
 
 /// Where the launcher keeps EchoXR's zip and Meta's loader: on Linux with the rest of its
@@ -332,6 +359,25 @@ mod tests {
         std::fs::write(&ini, "CheckForUpdates = 1\r\n").unwrap();
         install_zip(std::io::Cursor::new(zip.into_inner()), bin, None).unwrap();
         assert!(ini.exists());
+    }
+
+    #[test]
+    fn tells_echos_exit_code_from_echoxrs() {
+        let log = "===== 2026-10-05 14:51:06 =====\n[14:51:06] EchoXR launcher 0.4.0\n\
+                   [14:51:15] launching: \"X:\\g\\echovr_openxr.exe\"\n\
+                   [15:00:23] Echo exited with code 3\n";
+        assert_eq!(game_exit_code(log), Some(3));
+        // A later start that EchoXR itself ended (no game code): its code is EchoXR's.
+        let later = format!("{log}\n===== 2026-10-05 15:10:00 =====\n[15:10:02] ERROR: OpenXR isn't available (exit code 5)\n");
+        assert_eq!(game_exit_code(&later), None);
+        assert_eq!(game_exit_code(""), None);
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path();
+        std::fs::create_dir_all(bin.join(DIR)).unwrap();
+        std::fs::write(bin.join(DIR).join("launcher.log"), log).unwrap();
+        assert_eq!(failure(bin, 3), None);
+        std::fs::write(bin.join(DIR).join("launcher.log"), &later).unwrap();
+        assert!(failure(bin, 5).is_some());
     }
 
     #[test]

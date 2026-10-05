@@ -62,6 +62,8 @@ installed, or Flat. In VR, EchoXR is required (the Mods page lists it as require
 points it at that runtime: it starts SteamVR when it isn't running, and WiVRn's server
 (connect your headset in WiVRn's app). `XR_RUNTIME_JSON`, when set, still wins. No OpenVR
 runtime is needed. Only the live build runs this way; the event builds don't yet.
+SteamVR 2.17.9 and 2.17.10 lose the graphics card on NVIDIA under Linux (Valve's bug): the
+launcher says so when it happens, and SteamVR's "previous" branch (Properties, Betas) plays.
 
 ## Mods
 

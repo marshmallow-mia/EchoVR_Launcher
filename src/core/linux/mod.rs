@@ -6,7 +6,7 @@ pub mod echoxr;
 pub mod steam;
 pub mod vdf;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::core::launcher::launch;
 use crate::core::launcher::store::{LauncherState, Runtime, Target};
@@ -126,6 +126,91 @@ pub fn playing() -> Option<Playing> {
         return None;
     }
     serde_json::from_str(&std::fs::read_to_string(playing_file()).ok()?).ok()
+}
+
+/// What went wrong at `--play`'s last start, for the launcher's window to say once.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Outcome {
+    pub title: String,
+    pub message: String,
+}
+
+fn outcome_file() -> PathBuf {
+    echoxr::root().join("last-start.json")
+}
+
+/// What went wrong at the last start, once (Linux only): it is gone after this.
+pub fn take_outcome() -> Option<Outcome> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let file = outcome_file();
+    let text = std::fs::read_to_string(&file).ok()?;
+    let _ = std::fs::remove_file(&file);
+    serde_json::from_str(&text).ok()
+}
+
+/// What `--play` tells about a start that failed.
+const STEAMVR_LOST_GPU: &str = "SteamVR's compositor lost the graphics card while Echo VR ran (VK_ERROR_DEVICE_LOST). SteamVR 2.17 has a known bug that does this with NVIDIA graphics on Linux: in Steam, open SteamVR's Properties, Betas, and choose \"previous\" (SteamVR 2.16.7).";
+
+/// SteamVR's compositor log where it was at a start: whether the compositor lost the GPU
+/// since (`vkerror=-4`). A compositor that restarted moved the log to
+/// `vrcompositor.previous.txt`, and its successor began a new one.
+struct CompositorLog {
+    dir: PathBuf,
+    since: std::time::SystemTime,
+    file: Option<(u64, u64)>,
+}
+
+impl CompositorLog {
+    fn mark(steam_root: &Path) -> CompositorLog {
+        let dir = steam_root.join("logs");
+        let file = std::fs::metadata(dir.join("vrcompositor.txt"))
+            .ok()
+            .map(|m| (file_id(&m), m.len()));
+        CompositorLog {
+            dir,
+            since: std::time::SystemTime::now(),
+            file,
+        }
+    }
+
+    fn lost_gpu(&self) -> bool {
+        ["vrcompositor.txt", "vrcompositor.previous.txt"]
+            .iter()
+            .any(|name| {
+                let path = self.dir.join(name);
+                let Ok(meta) = std::fs::metadata(&path) else {
+                    return false;
+                };
+                if meta.modified().is_ok_and(|t| t < self.since) {
+                    return false;
+                }
+                let from = match self.file {
+                    Some((id, len)) if id == file_id(&meta) => len,
+                    _ => 0,
+                };
+                let bytes = std::fs::read(&path).unwrap_or_default();
+                let start = usize::try_from(from).unwrap_or(0).min(bytes.len());
+                compositor_lost_gpu(&String::from_utf8_lossy(&bytes[start..]))
+            })
+    }
+}
+
+#[cfg(unix)]
+fn file_id(m: &std::fs::Metadata) -> u64 {
+    std::os::unix::fs::MetadataExt::ino(m)
+}
+
+#[cfg(not(unix))]
+fn file_id(_: &std::fs::Metadata) -> u64 {
+    0
+}
+
+/// Pure: whether this part of SteamVR's compositor log says it lost the GPU.
+fn compositor_lost_gpu(log: &str) -> bool {
+    log.contains("vkerror=-4")
+        || log.contains("Unexpected failure when checking for timeline signal")
 }
 
 /// The lobby left for this start, and whether to watch it.
@@ -311,6 +396,10 @@ pub fn play_from_steam() -> i32 {
             Err(e) => tracing::warn!("--play: no finger bridge: {e}"),
         }
     }
+    let _ = std::fs::remove_file(outcome_file());
+    let vr = matches!(start, echoxr::Start::Vr(_));
+    let compositor = matches!(start, echoxr::Start::Vr(echoxr::Xr::SteamVr))
+        .then(|| CompositorLog::mark(&steam_root));
     let result = echoxr::game_command(&steam_root, &v.bin_dir(), &args, start).and_then(|mut c| {
         tracing::info!("--play: {c:?}");
         // Proton's and the game's own output (OpenXR's warnings among it), for this run.
@@ -330,8 +419,32 @@ pub fn play_from_steam() -> i32 {
     match result {
         Ok(status) => {
             let code = status.code().unwrap_or(0);
-            if let Some(why) = crate::core::echoxr::exit_message(code) {
+            // In VR the code is EchoXR's when it stopped the start, else Echo VR's own.
+            let failed = vr
+                .then(|| crate::core::echoxr::failure(&v.bin_dir(), code))
+                .flatten();
+            let mut outcome = None;
+            if let Some(why) = failed {
                 tracing::error!("--play: EchoXR ({code}): {why}");
+                outcome = Some(Outcome {
+                    title: "Echo VR didn't start through EchoXR".into(),
+                    message: why.into(),
+                });
+            } else {
+                tracing::info!("--play: Echo VR ended (exit code {code})");
+            }
+            if compositor.is_some_and(|c| c.lost_gpu()) {
+                tracing::warn!("--play: {STEAMVR_LOST_GPU}");
+                outcome = Some(Outcome {
+                    title: "SteamVR lost the graphics card".into(),
+                    message: match outcome {
+                        Some(o) => format!("{}\n\n{STEAMVR_LOST_GPU}", o.message),
+                        None => STEAMVR_LOST_GPU.into(),
+                    },
+                });
+            }
+            if let Some(json) = outcome.and_then(|o| serde_json::to_vec(&o).ok()) {
+                let _ = std::fs::write(outcome_file(), json);
             }
             code
         }
@@ -345,6 +458,35 @@ pub fn play_from_steam() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sees_steamvr_lose_the_gpu_after_a_start() {
+        let lost = "[Error] - Failed GetDeltas(Compositor): vkerror=-4\n";
+        assert!(compositor_lost_gpu(lost));
+        assert!(compositor_lost_gpu(
+            "ASSERT: \"Unexpected failure when checking for timeline signal\" at vksync.cpp:213"
+        ));
+        assert!(!compositor_lost_gpu(
+            "[Error] - No Vulkan command buffer open in CGpuTiming::MarkEvent!"
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let log = logs.join("vrcompositor.txt");
+        // A loss before this start doesn't count.
+        std::fs::write(&log, lost).unwrap();
+        let mark = CompositorLog::mark(dir.path());
+        assert!(!mark.lost_gpu());
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut f, b"[Info] - frame\n").unwrap();
+        drop(f);
+        assert!(!mark.lost_gpu());
+        // One during it does, also when the compositor restarted and moved its log.
+        std::fs::rename(&log, logs.join("vrcompositor.previous.txt")).unwrap();
+        std::fs::write(&log, format!("[Info] - restarted\n{lost}")).unwrap();
+        assert!(mark.lost_gpu());
+    }
 
     #[test]
     fn knows_its_shortcut() {
