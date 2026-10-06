@@ -5,12 +5,12 @@
       "id": "event-lobbies",
       "name": "Event lobbies",
       "summary": "Play the event builds together: the public matches on the classic lobbies server, joining a friend's match by its id, and requesting a game server.",
-      "author": "marshmallow-mia",
-      "version": "0.1.0",
-      "url": "https://release.echovr.de/launcher/plugins/event-lobbies-0.1.0.zip",
-      "sha256": "a50479c9d7a1a0416a42e46dd816b1690423030809c8aca5d61a1e7d59439904",
+      "author": "heisthecat31",
+      "version": "0.1.1",
+      "url": "https://release.echovr.de/launcher/plugins/event-lobbies-0.1.1.zip",
+      "sha256": "667ba1d24121c0a42322d98e32da50071a36c07be50cc686f1339cecbe9b7192",
       "homepage": "",
-      "size": 1922
+      "size": 1917
     }
   ]
 }

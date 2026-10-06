@@ -2,8 +2,8 @@
   "schema": 1,
   "id": "event-lobbies",
   "name": "Event lobbies",
-  "version": "0.1.0",
-  "author": "marshmallow-mia",
+  "version": "0.1.1",
+  "author": "heisthecat31",
   "summary": "Play the event builds together: see the public matches on the classic lobbies server, join a friend's match by its id, and request a game server.",
   "icon": "calendar",
   "settings": {
