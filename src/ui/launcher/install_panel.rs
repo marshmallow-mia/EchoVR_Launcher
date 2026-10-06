@@ -20,14 +20,14 @@ use crate::ui::widgets::{Tone, BTN_H};
 /// The card: level with the hero's top and VERSIONS' bottom.
 const CARD: Dr = Dr::new(1318.0, 80.0, 555.0, 966.0);
 /// A tile (an installed version, the headset), its gap, its padding and its buttons.
-const TILE_H: f32 = 92.0;
+const TILE_H: f32 = 104.0;
 const TILE_GAP: f32 = 10.0;
 const TILE_PAD: f32 = 14.0;
 const ACTION_H: f32 = 40.0;
 /// PLAY and MANAGE in a tile.
 const PLAY_W: f32 = 96.0;
 const MANAGE_W: f32 = 150.0;
-const ACTION_GAP: f32 = 8.0;
+const ACTION_GAP: f32 = 12.0;
 /// The line over ALREADY HAVE IT?.
 const RULE: Color32 = Color32::from_rgba_premultiplied(30, 30, 30, 30);
 

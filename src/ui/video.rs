@@ -10,7 +10,7 @@ use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
 
 const BYTES: &[u8] = include_bytes!("../../assets/video/background.h264");
-const FPS: f64 = 24.0;
+const FPS: f64 = 30.0;
 /// Decoded frames kept ready.
 const AHEAD: usize = 4;
 

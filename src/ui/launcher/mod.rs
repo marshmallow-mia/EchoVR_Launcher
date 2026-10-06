@@ -538,6 +538,8 @@ pub enum SnapVariant {
     SettingsLinks,
     /// EchoVRCE: signed in.
     VrceSignedIn,
+    /// EchoVRCE: signed in, the site filling the page.
+    VrceExpanded,
     /// EchoVRCE: waiting for the sign-in code to be approved.
     VrceSigning,
     /// A new player: PATCH on Play.
@@ -1114,6 +1116,7 @@ impl Dashboard {
         self.dialogs = DialogHost::default();
         self.state.owner = Some(true);
         self.state.selected = Some("pc-latest".into());
+        self.state.vrce_expanded = false;
         self.platform = Platform::Pc;
         // A connected headset with Echo VR on it, as in the design concept.
         self.quest_conn.status = Some(Status::Ready);
@@ -1277,6 +1280,10 @@ impl Dashboard {
                 self.link_handler = Some(links::Handler::Other("Spark".into()))
             }
             Some(SnapVariant::VrceSignedIn) => self.vrce.demo(true),
+            Some(SnapVariant::VrceExpanded) => {
+                self.vrce.demo(true);
+                self.state.vrce_expanded = true;
+            }
             Some(SnapVariant::VrceDown) => self.vrce.demo_down(true),
             Some(SnapVariant::VrceSignInFailed) => self.vrce.demo_down(false),
             Some(SnapVariant::LoginCode) => {
@@ -2260,7 +2267,9 @@ impl Dashboard {
         kit.ex -= shift;
         self.page_body(kit, &ctx, self.page);
         self.warmed.insert(self.page);
-        self.top_bar(kit, &ctx);
+        if !(self.page == Page::EchoVrce && echovrce::expanded(self)) {
+            self.top_bar(kit, &ctx);
+        }
         self.quest_soon(kit, &ctx);
         kit.origin.x -= shift;
         kit.ex += shift;
@@ -2301,10 +2310,12 @@ impl Dashboard {
     /// A page under the status bar.
     fn page_body(&mut self, kit: &mut Kit, ctx: &egui::Context, page: Page) {
         // The other pages start with their header strip.
+        // (The EchoVRCE site, expanded, draws its own where the status bar was.)
         if !matches!(
             page,
             Page::Play | Page::Install | Page::Settings | Page::Servers | Page::Friends
-        ) {
+        ) && !(page == Page::EchoVrce && echovrce::expanded(self))
+        {
             let h = HEADER.wider(kit.dx());
             let title = match page {
                 Page::Plugin(i) => plugins::title(self, i),
@@ -2561,29 +2572,51 @@ impl Dashboard {
             dz(1.5),
             egui::Color32::from_rgb(142, 144, 143),
         );
-        // A dot on an icon whose page has news (its reason in the tip and under its name).
+        // A bright "!" on an icon whose page has news (its reason in the tip and under its
+        // name), with a soft shadow so it still reads on a hovered or selected icon.
         for (page, _, color) in &badges {
             let Some((_, _, cy)) = items.iter().find(|(p, ..)| p == page) else {
                 continue;
             };
-            let c = kit.drect(Dr::new(63.0, cy - 21.0, 0.0, 0.0)).min;
-            kit.ui.painter().circle_filled(c, dz(6.0), *color);
+            // Conthrax's "!", as on CHECK FOR UPDATES, centred on the icon's corner.
+            let c = kit.drect(Dr::new(64.0, cy - 21.0, 0.0, 0.0)).min;
+            let font = design::conthrax(34.0);
+            let painter = kit.ui.painter();
+            let mark = |off: egui::Vec2, color: egui::Color32| {
+                painter.text(
+                    c + off,
+                    egui::Align2::CENTER_CENTER,
+                    "!",
+                    font.clone(),
+                    color,
+                );
+            };
+            for (dx, dy, a) in [(2.5, 3.0, 60), (1.5, 2.0, 100), (1.0, 1.0, 140)] {
+                mark(
+                    egui::vec2(dz(dx), dz(dy)),
+                    egui::Color32::from_black_alpha(a),
+                );
+            }
+            mark(
+                egui::Vec2::ZERO,
+                color.lerp_to_gamma(egui::Color32::WHITE, 0.3),
+            );
         }
     }
 
-    /// The rail's backdrop, `width` wide: the design's sidebar image, stretched as it
+    /// The rail's backdrop, `width` wide: the design's sidebar image, uncovered as it
     /// unfolds; a shadow on the page side while it is unfolded.
     fn rail_background(&self, kit: &mut Kit, ctx: &egui::Context, width: f32) {
         let h = H + kit.ey;
-        let tex = kit.assets.tex(
-            ctx,
-            "left_sidebar.jpg",
-            RAIL.round() as u32,
-            h.round() as u32,
-        );
+        // The image is as wide as the rail ever unfolds (450×1080): only its left part
+        // shows, `width` of it.
+        let tw = (h * 450.0 / 1080.0).max(width);
+        let tex = kit
+            .assets
+            .tex(ctx, "left_sidebar.jpg", tw.round() as u32, h.round() as u32);
         let o = kit.window().min;
         let rect = egui::Rect::from_min_size(o, egui::vec2(width, h));
-        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(width / tw, 1.0));
         kit.ui
             .painter()
             .image(tex.id(), rect, uv, egui::Color32::WHITE);

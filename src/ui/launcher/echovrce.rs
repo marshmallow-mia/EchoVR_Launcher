@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{hero, panel, setup, Dashboard, HEADER};
+use super::{hero, panel, setup, Dashboard, Page, HEADER};
 use crate::core::echovrce::{self as vrce, Account, DeviceCode, Poll, Tokens};
 use crate::core::launcher::nevr::{self, GameLogin};
 use crate::core::launcher::store::InstalledVersion;
@@ -38,6 +38,12 @@ const ACCOUNT: Dr = Dr::new(137.0, 156.0, 1146.0, 470.0);
 const ABOUT: Dr = Dr::new(1318.0, 156.0, 555.0, 470.0);
 /// The site, under the header strip to the window's bottom.
 const SITE: Dr = Dr::new(138.0, 146.0, 1734.0, 900.0);
+/// Expanded: the strip where the status bar was, and the site filling the page under it.
+const EXPANDED_HEADER: Dr = Dr::new(104.0, 12.0, 1804.0, 44.0);
+const EXPANDED_SITE: Dr = Dr::new(104.0, 64.0, 1804.0, 1004.0);
+/// Beside the title on the strip: what the site is.
+const ABOUT_SITE: &str =
+    "The community's Echo VR service: live matches, leaderboards and your account";
 /// The page the site opens on.
 const SITE_HOME: &str = "https://echovrce.com/home";
 
@@ -637,10 +643,20 @@ fn finish_sign_in(tokens: Tokens) -> Result<(Tokens, Account), Failed> {
 
 // ---- the page ----
 
+/// Signed in: the page is the site itself (snapshots show where it goes).
+fn shows_site(d: &Dashboard) -> bool {
+    let signed_in = d.vrce.account.is_some() && d.vrce.tokens.is_some() && d.vrce.signing.is_none();
+    signed_in && (crate::ui::web::supported() || d.demo)
+}
+
+/// The site fills the page: no status bar nor page header over it (it draws its own strip).
+pub(super) fn expanded(d: &Dashboard) -> bool {
+    d.state.vrce_expanded && shows_site(d)
+}
+
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let signed_in = d.vrce.account.is_some() && d.vrce.tokens.is_some() && d.vrce.signing.is_none();
-    // Signed in: the site itself (snapshots show where it goes).
-    if signed_in && (crate::ui::web::supported() || d.demo) {
+    if shows_site(d) {
         site(d, kit, ctx);
         return;
     }
@@ -680,11 +696,19 @@ pub(super) fn site_linked(d: &mut Dashboard) {
     }
 }
 
-/// The site under the header strip, with the account and Reload, In browser and Sign out
-/// on the strip.
+/// The site under the header strip, with the account and Expand, Reload, In browser and
+/// Sign out on the strip. Expanded, the strip moves up where the status bar was and the
+/// site fills the page under it.
 fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let account = d.vrce.account.clone().unwrap_or_default();
-    let header = HEADER.wider(kit.dx());
+    let expanded = d.state.vrce_expanded;
+    let header = if expanded {
+        let h = EXPANDED_HEADER.wider(kit.dx());
+        kit.header_strip(dz(h.x), dz(h.y), dz(h.w), dz(h.h), Page::EchoVrce.title());
+        h
+    } else {
+        HEADER.wider(kit.dx())
+    };
     let cy = header.y + header.h / 2.0;
     // Right to left: Sign out, In browser, Reload, then who is signed in.
     let mut right = header.right() - 22.0;
@@ -724,6 +748,19 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if link(kit, "vrce-site-reload", "Reload", "Load the page again") {
         d.web.reload();
     }
+    let (text, tip) = if expanded {
+        (
+            "Collapse",
+            "Back to the launcher's status bar above the site",
+        )
+    } else {
+        ("Expand", "Let the site fill the page")
+    };
+    if link(kit, "vrce-site-expand", text, tip) {
+        d.state.vrce_expanded = !expanded;
+        d.save();
+        ctx.request_repaint();
+    }
     let who = kit.spaced_galley(
         &format!("Signed in as {}", account.name()).to_uppercase(),
         design::din(14.0),
@@ -733,8 +770,29 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     );
     let wx = dz(right) - who.size().x;
     kit.put(wx, dz(cy) - who.size().y / 2.0, who);
+    // What the site is, after the title, where there's room for it.
+    if !expanded {
+        let title = header.h * 0.43;
+        let title_w = kit
+            .spaced_galley(
+                &Page::EchoVrce.title().to_uppercase(),
+                design::conthrax(title),
+                design::TEXT,
+                dz(title * 0.26),
+                false,
+            )
+            .size()
+            .x;
+        let about = kit.label_galley(ABOUT_SITE, design::din(14.0), design::GREY, f32::INFINITY);
+        let ax = dz(header.x + header.h * 0.55 + 24.0) + title_w;
+        if ax + about.size().x + dz(30.0) < wx {
+            kit.put(ax, dz(cy) - about.size().y / 2.0, about);
+        }
+    }
 
-    let area = SITE.wider(kit.dx()).taller(kit.dy());
+    let area = if expanded { EXPANDED_SITE } else { SITE }
+        .wider(kit.dx())
+        .taller(kit.dy());
     kit.image_d("card_bg.png", area);
     kit.gradient_frame(
         kit.drect(area),
