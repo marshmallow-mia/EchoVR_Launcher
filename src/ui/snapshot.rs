@@ -39,7 +39,7 @@ pub struct Shot {
 }
 
 /// Every page, then extra states (mostly of the Play page). `ECHOVR_SNAPSHOTS_ONLY=play,setup`
-/// keeps only shots whose name contains one of these.
+/// keeps only shots whose name contains one of these; `=launcher_play` keeps exactly that one.
 pub fn shots() -> Vec<Shot> {
     let mut shots: Vec<Shot> = [
         ("play", Page::Play),
@@ -261,8 +261,14 @@ pub fn shots() -> Vec<Shot> {
         });
     }
     if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {
+        // `=name` keeps exactly that shot; anything else, every shot whose name contains it.
         let terms: Vec<&str> = only.split(',').map(str::trim).collect();
-        shots.retain(|s| terms.iter().any(|t| s.name.contains(t)));
+        shots.retain(|s| {
+            terms.iter().any(|t| match t.strip_prefix('=') {
+                Some(exact) => s.name == exact,
+                None => s.name.contains(t),
+            })
+        });
     }
     shots
 }

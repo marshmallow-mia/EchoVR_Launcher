@@ -271,12 +271,11 @@ pub fn mock_news() -> News {
     News {
         slots: Slots {
             main: Some(NewsItem {
-                title: "Title".into(),
-                body: "Iusto odio ducimus qui blanditiis praesentium voluptatum deleniti atque\n\n\
-                       - Quos dolores et quas\n\
-                       - Molestias excepturi sint occaecati\n\
-                       - Cupiditate non provident.\n\n\
-                       Similique sunt in culpa qui officia deserunt mollitia animi, id"
+                title: "Welcome".into(),
+                body: "Your launcher for Echo VR on PC (Quest is coming soon).\n\n\
+                       - Install, update and play from one place\n\
+                       - Friends, servers and matches to join, on the left\n\
+                       - Server status and this week's best on the right"
                     .into(),
                 image: None,
                 link_label: "How to play".into(),
@@ -284,12 +283,11 @@ pub fn mock_news() -> News {
             }),
             community: Some(NewsItem {
                 title: "Community".into(),
-                body: "Iusto odio dignissimos ducimus qui  voluptatum deleniti atque corrupti\n\n\
-                       Similique sunt in culpa qui officia deserunt mollitia est laborum et \
-                       dolorum fuga. Et harum quidem"
+                body: "Matches, events, help and the latest builds: the Echo VR community \
+                       meets on Discord."
                     .into(),
                 image: None,
-                link_label: "Link".into(),
+                link_label: "Join the Discord".into(),
                 link_url: "https://echovr.de".into(),
             }),
         },

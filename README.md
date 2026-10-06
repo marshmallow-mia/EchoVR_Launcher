@@ -8,6 +8,18 @@ page; mods on the Mods page. Echo VR on Quest is coming soon.
 Download it from the [releases](https://github.com/marshmallow-mia/EchoVR_Launcher/releases).
 Help and news are on the [Echo VR Lounge Discord](https://discord.com/invite/echo-vr-lounge).
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Play](docs/screenshots/01-play.jpg) **Play**: PLAY, the news, who's online, invites and friends to join | ![Install](docs/screenshots/02-install.jpg) **Install**: the live build and the event builds, your library |
+| ![Mods](docs/screenshots/03-mods.jpg) **Mods**: nEVR, the mods you have and more to get | ![Mod settings](docs/screenshots/04-mod-settings.jpg) **A mod's settings**, drawn from its own description |
+| ![Servers](docs/screenshots/05-servers.jpg) **Servers**: the live matches, your match, party and friends | ![EchoVRCE](docs/screenshots/06-echovrce.jpg) **EchoVRCE**: your community account |
+| ![Friends](docs/screenshots/07-friends.jpg) **Friends**: requests, finding players, who you played with | ![Plugins](docs/screenshots/08-plugins.jpg) **Plugins**: apps inside the launcher, each with its own tab |
+| ![Event lobbies](docs/screenshots/09-event-lobbies.jpg) **Event lobbies** (a plugin): public matches, join by id, request a server | ![Settings](docs/screenshots/10-settings.jpg) **Settings**: how you play, launch options, storage, the launcher |
+
+The pictures show made-up players and numbers.
+
 ## Match links
 
 The launcher joins matches from `spark://` and `https://echo.taxi/spark://…` links: paste one
@@ -26,10 +38,18 @@ checksums and added instead of downloading it again.
 
 ## Event builds
 
-The event builds (Halloween 2017, Christmas 2017 and so on) are listed as coming soon.
-To install them anyway, close the launcher and set `"event_builds": true` in its
-`launcher.json` (`%LOCALAPPDATA%\EchoVR_Launcher` on Windows, `~/.local/share/EchoVR_Launcher`
-on Linux). An event build you installed before stays playable either way.
+The event builds (Halloween 2017, Christmas 2017, Halloween 2018, Christmas 2018, Summer
+2019) can be installed on Windows and play on the community's classic lobbies server, through
+Revive on SteamVR. On Linux they are listed as coming soon until EchoXR runs them. To hide
+them, close the launcher and set `"event_builds": false` in its `launcher.json`
+(`%LOCALAPPDATA%\EchoVR_Launcher` on Windows, `~/.local/share/EchoVR_Launcher` on Linux).
+
+## Plugins
+
+Plugins are apps inside the launcher, each with its own tab in the rail; the **+** tab gets
+them. A plugin is a description of its page (`plugin.json`) that the launcher draws itself:
+[docs/plugins/pages.md](docs/plugins/pages.md). The first one, Event lobbies, lists the
+public matches of the event builds and joins a friend's match by its id.
 
 ## SteamVR on Windows
 
