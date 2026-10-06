@@ -258,9 +258,24 @@ pub fn state_file() -> PathBuf {
 
 impl LauncherState {
     pub fn load() -> LauncherState {
-        let s = Self::load_from(&state_file());
+        let file = state_file();
+        let s = Self::load_from(&file);
+        // An older schema brought up to date is kept so, at once: a later edit of the file
+        // isn't undone by the next start.
+        if Self::schema_on_disk(&file).is_some_and(|v| v < SCHEMA) {
+            if let Err(e) = s.save_to(&file) {
+                tracing::warn!("launcher.json not upgraded: {e:#}");
+            }
+        }
         crate::core::pc_update::set_channel(s.update_manifest.as_deref());
         s
+    }
+
+    /// The schema of the launcher.json at `path`, if it has one.
+    fn schema_on_disk(path: &Path) -> Option<u32> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        v.get("schema")?.as_u64().map(|n| n as u32)
     }
 
     pub fn load_from(path: &Path) -> LauncherState {
