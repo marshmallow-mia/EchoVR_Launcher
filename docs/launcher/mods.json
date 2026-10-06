@@ -23,7 +23,7 @@
     {
       "id": "xmlhttp-fix",
       "name": "XMLHTTP Fix",
-      "summary": "Gives Echo VR the system's XMLHTTP again under nEVR 4.0.0, whose stand-in crashes the game at the main menu in windowed mode.",
+      "summary": "Only for nEVR 4.0.0: gives Echo VR the system's XMLHTTP again, whose stand-in crashes the game in windowed mode. nEVR 4.0.1 does this itself, and its update removes this plugin.",
       "author": "marshmallow-mia",
       "version": "1.0.0",
       "file": "NvrXmlHttpFix.dll",

@@ -52,7 +52,8 @@ keeps when it writes the file. Writing a plugin and loading it:
 [docs/plugins/local-plugins.md](../plugins/local-plugins.md).
 
 **Required plugins.** The catalogue marks plugins the game needs (`"required": true`:
-NvrAssetPatches for the netgun fixes, NvrXmlHttpFix for windowed mode under nEVR 4.0.0).
+NvrAssetPatches for the netgun fixes; NvrXmlHttpFix for windowed mode under nEVR 4.0.0, which
+the 4.0.1 update removes, while its entry stays so a 4.0.0 install not yet updated keeps it).
 They can't be turned off, an old "off" choice is ignored and dropped, and they stay in
 `config.yaml` with mods off. Inside NvrAssetPatches the update's
 `asset_patches/manifest.json` marks patches `required` (the `netgun_*` ones): the plugin
