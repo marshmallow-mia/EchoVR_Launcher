@@ -164,6 +164,28 @@
               "when": "!{data.current.match.id}"
             }
           ]
+        },
+        {
+          "title": "Account",
+          "help": "Who you play as there. Empty: the launcher's classic lobbies account ({launcher.relay.name|'none yet'} on {launcher.relay.server}).",
+          "blocks": [
+            {
+              "field": "settings.server",
+              "label": "Server",
+              "hint": "{launcher.relay.server}"
+            },
+            {
+              "field": "settings.name",
+              "label": "Display name",
+              "hint": "{launcher.relay.name}"
+            },
+            {
+              "field": "settings.password",
+              "label": "Password",
+              "secret": true,
+              "hint": "the launcher's"
+            }
+          ]
         }
       ],
       [
@@ -221,6 +243,11 @@
         },
         {
           "blocks": [
+            {
+              "text": "{page.answer.message}",
+              "tone": "good",
+              "when": "{page.answer.ok}"
+            },
             {
               "text": "{page.error}",
               "tone": "warn",
