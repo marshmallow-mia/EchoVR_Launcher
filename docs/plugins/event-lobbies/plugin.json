@@ -120,6 +120,11 @@
               "when": "!{launcher.event_builds.0.id}"
             },
             {
+              "text": "This server doesn't offer the matches list yet: its EchoRelay needs the matches API. Joining by id and requesting a game server need it too.",
+              "tone": "warn",
+              "when": "{data.matches.error}"
+            },
+            {
               "list": "data.matches.matches",
               "title": "{item.build_name|item.build} · {item.mode|item.gametype}",
               "detail": "{item.level} · {item.players}/{item.limit} players",
