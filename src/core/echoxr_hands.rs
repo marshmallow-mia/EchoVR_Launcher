@@ -1,9 +1,11 @@
 //! EchoXR Hands (github.com/EchoTools/EchoXR-Hands, by heisthecat31 and marshmallow-mia):
 //! your own fingers on Echo VR's hands, from OpenXR hand tracking. Its package goes into the
 //! game's `bin/win10/EchoXR/Hands`: an OpenXR API layer (`layer/`) that reads your fingers in
-//! the game's own OpenXR session, the nEVR plugin and the settings window. The launcher puts
-//! the plugin into `plugins/`, where nEVR loads it like the update's plugins, takes it out
-//! again when hand tracking is off, and enables the layer for each start ([`layer_env`]).
+//! the game's own OpenXR session, and the nEVR plugin. The launcher puts the plugin into
+//! `plugins/`, where nEVR loads it like the update's plugins, takes it out again when hand
+//! tracking is off, and enables the layer for each start ([`layer_env`]). Its settings
+//! (`EchoXRHands.txt`) show on the Mods page from a description
+//! (docs/plugins/echoxr-hands.plugin.json, see [`super::launcher::plugin_settings`]).
 //! It plays with EchoXR, on every runtime with hand tracking (SteamVR, WiVRn, Monado).
 
 use std::path::{Path, PathBuf};
@@ -11,6 +13,7 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::{bail, Context, Result};
 
+use super::launcher::plugin_settings::keyvalue;
 use super::launcher::versions::Step;
 use super::{download, paths};
 
@@ -30,7 +33,6 @@ const PACKAGED_PLUGIN: &str = "plugin";
 /// The OpenXR API layer's folder (its DLL and manifest) and name.
 const LAYER_DIR: &str = "EchoXR/Hands/layer";
 const LAYER_NAME: &str = "XR_APILAYER_ECHOTOOLS_echoxr_hands";
-pub const SETTINGS_APP: &str = "EchoXRSettings.exe";
 
 fn zip_path() -> PathBuf {
     paths::data_dir().join("echoxr-hands").join(ZIP)
@@ -180,51 +182,9 @@ pub fn apply(bin: &Path, on: bool) -> Result<()> {
     }
 }
 
-/// Whether finger sharing is on in `bin`'s settings.
-pub fn sharing(bin: &Path) -> bool {
-    std::fs::read_to_string(bin.join("plugins").join(SETTINGS))
-        .ok()
-        .and_then(|t| setting(&t, "Network"))
-        .is_some_and(|v| v != "0")
-}
-
-/// Turns finger sharing on or off in `bin`'s settings (the plugin picks it up within
-/// half a second, also in a running game).
-pub fn set_sharing(bin: &Path, on: bool) -> Result<()> {
-    let path = bin.join("plugins").join(SETTINGS);
-    let text = std::fs::read_to_string(&path).unwrap_or_default();
-    std::fs::write(&path, with_sharing(&text, on))
-        .with_context(|| format!("write {}", path.display()))
-}
-
-/// Pure: a `Key = value` setting's value.
-fn setting(text: &str, key: &str) -> Option<String> {
-    text.lines().find_map(|l| {
-        let (k, v) = l.split_once('=')?;
-        (k.trim() == key).then(|| v.split(['#', ';']).next().unwrap_or("").trim().to_string())
-    })
-}
-
 /// Pure: `text` with `Network` set to 1 or 0 (added when missing).
 fn with_sharing(text: &str, on: bool) -> String {
-    let value = if on { "1" } else { "0" };
-    let mut found = false;
-    let mut out: Vec<String> = text
-        .lines()
-        .map(|l| match l.split_once('=') {
-            Some((k, _)) if k.trim() == "Network" => {
-                found = true;
-                format!("Network = {value}")
-            }
-            _ => l.to_string(),
-        })
-        .collect();
-    if !found {
-        out.push(format!("Network = {value}"));
-    }
-    let mut s = out.join("\n");
-    s.push('\n');
-    s
+    keyvalue::set(text, "Network", if on { "1" } else { "0" })
 }
 
 #[cfg(test)]
@@ -242,12 +202,12 @@ mod tests {
     #[test]
     fn finger_sharing_setting() {
         let text = "# hands\nSmoothing = 0.5\nNetwork = 1   # share\nRelayUrl = wss://x\n";
-        assert_eq!(setting(text, "Network").as_deref(), Some("1"));
+        assert_eq!(keyvalue::get(text, "Network").as_deref(), Some("1"));
         let off = with_sharing(text, false);
-        assert_eq!(setting(&off, "Network").as_deref(), Some("0"));
+        assert_eq!(keyvalue::get(&off, "Network").as_deref(), Some("0"));
         assert!(off.contains("RelayUrl = wss://x") && off.contains("Smoothing = 0.5"));
         let added = with_sharing("Smoothing = 1", true);
-        assert_eq!(setting(&added, "Network").as_deref(), Some("1"));
+        assert_eq!(keyvalue::get(&added, "Network").as_deref(), Some("1"));
     }
 
     /// The published package is the pinned one, and it unpacks.
@@ -307,9 +267,7 @@ mod tests {
         std::fs::create_dir_all(bin.join("plugins")).unwrap();
         std::fs::write(bin.join("plugins").join(PLUGIN), b"x").unwrap();
         std::fs::write(bin.join("plugins").join(SETTINGS), "Network = 1\n").unwrap();
-        assert!(installed_in(bin) && sharing(bin));
-        set_sharing(bin, false).unwrap();
-        assert!(!sharing(bin));
+        assert!(installed_in(bin));
         remove_from(bin).unwrap();
         assert!(!installed_in(bin));
         assert!(bin.join("plugins").join(SETTINGS).exists());

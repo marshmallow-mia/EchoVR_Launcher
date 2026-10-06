@@ -90,6 +90,12 @@ With no options the string is `"{}"`; it is never null. A plugin that exports on
 `NvrPluginInit` doesn't get them. The launcher doesn't accept `${...}` in an option,
 because nEVR would read it as an environment variable.
 
+To give players real controls instead of free key and value fields (switches, sliders,
+choices, with labels, help and ranges), ship a description beside your DLL:
+`MyPlugin.plugin.json`. The launcher then shows **Settings** on your row, and can also
+write a settings file of your own that you re-read while the game runs. See
+[settings.md](settings.md).
+
 ### Threads and DllMain
 
 - Every callback runs on the game's thread. Do slow work (files, network) on a thread of
@@ -260,12 +266,13 @@ until you turn it on.
    ignores it. It applies to that version only. To turn it off again, delete the line or
    set it to `false`.
 
-2. **Add the DLL:** **Mods → Plugins → Add DLL**. Confirm, then pick your DLL. The
+2. **Add the DLL:** **Mods → Installed mods → Add DLL**. Confirm, then pick your DLL. The
    launcher copies it into the version's `plugins` folder and notes its checksum. The
    plugin is listed with the tag **Your DLL** and is on.
 
 3. **Options:** if your plugin reads options, set them with **Options** in its row. They
-   reach `NvrPluginInitEx` as described above.
+   reach `NvrPluginInitEx` as described above. With a `MyPlugin.plugin.json` beside the
+   DLL the row has **Settings** instead ([settings.md](settings.md)).
 
 4. **Start the game with PLAY**, then look at the Mods page: your plugin's state
    (Loaded, Failed with the reason) is there. **Logs** opens the plugins' log folder.

@@ -41,7 +41,7 @@ only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
 
 ## Hand tracking
 
-**EchoXR Hands** (Mods page, Additional Plugins) puts your own fingers on Echo VR's hands
+**EchoXR Hands** (Mods page, More mods) puts your own fingers on Echo VR's hands
 ([EchoXR Hands](https://github.com/EchoTools/EchoXR-Hands) by heisthecat31 and
 marshmallow-mia). It needs EchoXR (getting it turns EchoXR on): its OpenXR layer reads your
 fingers from the runtime's hand tracking in Echo VR's own session, so it plays on SteamVR and
@@ -73,7 +73,7 @@ The **Mods** page shows the selected PC version's mod loader
 which also brings Discord sign-in, friends and parties into the game) and what it loaded
 at the last start, lets you turn plugins and asset patches on or off, set a plugin's
 arguments, start without mods, and install mods from the catalogue on release.echovr.de or a
-DLL of your own. **Plugins** lists only what is installed; **Additional Plugins** offers the
+DLL of your own. **Installed mods** lists only what is installed; **More mods** offers the
 rest (the catalogue's optional plugins, EchoXR Hands and, on Windows, EchoXR) with **Get**. The launcher keeps its choices in its own files and writes nEVR's
 `_local/config.yaml` from them before every start, so updates and Verify never undo them.
 Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask in the

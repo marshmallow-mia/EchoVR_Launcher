@@ -11,6 +11,7 @@ mod mods;
 mod now;
 mod panel;
 mod play;
+mod plugin_form;
 mod servers;
 mod settings;
 mod setup;
@@ -547,6 +548,16 @@ pub enum SnapVariant {
     ModsOptions,
     /// Mods: the loader's longest text (a plugin skipped, your own config.json).
     ModsLongText,
+    /// EchoVRCE isn't answering (502): signed in, the session kept.
+    VrceDown,
+    /// ...not signed in, after a sign-in that failed on it.
+    VrceSignInFailed,
+    /// Mods: EchoXR Hands installed, its settings on its row.
+    ModsHands,
+    /// Mods: EchoXR Hands' settings open.
+    ModsSettings,
+    /// Mods: a made-up plugin's settings with every kind of control, advanced shown.
+    ModsSettingsAll,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -1257,6 +1268,8 @@ impl Dashboard {
                 self.link_handler = Some(links::Handler::Other("Spark".into()))
             }
             Some(SnapVariant::VrceSignedIn) => self.vrce.demo(true),
+            Some(SnapVariant::VrceDown) => self.vrce.demo_down(true),
+            Some(SnapVariant::VrceSignInFailed) => self.vrce.demo_down(false),
             Some(SnapVariant::LoginCode) => {
                 self.overlay = Some(setup::Overlay::LoginNotice(
                     crate::core::launcher::login_watch::LoginNotice {
@@ -1401,6 +1414,9 @@ impl Dashboard {
             Some(
                 SnapVariant::ModsNoLoader | SnapVariant::ModsOptions | SnapVariant::ModsLongText,
             ) => {}
+            Some(SnapVariant::ModsHands | SnapVariant::ModsSettings | SnapVariant::ModsSettingsAll) => {
+                self.state.echoxr_hands = true;
+            }
             Some(SnapVariant::QuestFresh) => {
                 self.platform = Platform::Quest;
                 if let Some(i) = &mut self.quest_info {
@@ -2294,7 +2310,7 @@ impl Dashboard {
                 kit,
                 Icon::Plus,
                 "Plugins",
-                "Community plugins will be listed here. Until then, Mods → Additional Plugins has the ones you can get.",
+                "Plugins add apps to the launcher itself. None are available yet.",
             ),
         }
     }

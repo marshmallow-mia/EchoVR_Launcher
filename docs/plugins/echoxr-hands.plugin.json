@@ -1,0 +1,166 @@
+{
+  "$schema": "./plugin.schema.json",
+  "schema": 1,
+  "settings": {
+    "store": { "kind": "file", "file": "EchoXRHands.txt", "format": "keyvalue", "live": true },
+    "row": ["Network"],
+    "sections": [
+      {
+        "title": "Hands",
+        "fields": [
+          { "key": "Enabled", "type": "bool", "values": ["1", "0"], "default": true, "style": "switch",
+            "label": "Hand tracking", "help": "Your own fingers on Echo VR's hands." },
+          { "key": "GameHandLeft", "type": "choice", "style": "segmented", "default": "0",
+            "label": "Left hand slot",
+            "choices": [
+              { "value": "0", "label": "Slot 0", "tooltip": "The game's first hand slot is your left hand" },
+              { "value": "1", "label": "Slot 1", "tooltip": "The game's second hand slot is your left hand" }
+            ],
+            "help": "Switch it if your hands are mirrored." },
+          { "key": "RespectContact", "type": "bool", "values": ["1", "0"], "default": true,
+            "label": "Let the game hold surfaces",
+            "help": "A hand wrapped around a surface is left to the game." },
+          { "key": "TargetInstance", "type": "number", "integer": true, "min": -1, "max": 15, "default": 0,
+            "style": "stepper", "advanced": true, "label": "Your hand animator",
+            "help": "Which player's hands are yours (EchoXRHands.log lists them). -1 poses every player with your hands." },
+          { "key": "StaleMs", "type": "number", "integer": true, "min": 50, "max": 1000, "step": 10, "default": 250,
+            "unit": "ms", "advanced": true, "label": "Drop old tracking after",
+            "help": "Hands out of view, or a runtime hitch." }
+        ]
+      },
+      {
+        "title": "Smoothing",
+        "fields": [
+          { "key": "FilterMinCutoff", "type": "number", "min": 0.05, "max": 3, "step": 0.05, "default": 0.5,
+            "style": "slider", "label": "Steadiness",
+            "help": "Still shaky: lower it (e.g. 0.3).",
+            "tooltip": "The jitter filter's cutoff while your fingers are still (FilterMinCutoff). Lower is steadier, with a little more lag." },
+          { "key": "FilterBeta", "type": "number", "min": 0, "max": 10, "step": 0.1, "default": 4,
+            "style": "slider", "label": "Responsiveness",
+            "help": "Laggy: raise it.",
+            "tooltip": "How quickly the filter follows fast movements (FilterBeta). Higher is quicker, with more jitter in fast moves." },
+          { "key": "FilterDCutoff", "type": "number", "min": 0.1, "max": 5, "step": 0.1, "default": 1,
+            "advanced": true, "label": "Speed filter cutoff" },
+          { "key": "SmoothingMs", "type": "number", "integer": true, "min": 0, "max": 200, "default": 45,
+            "unit": "ms", "advanced": true, "label": "Curl smoothing",
+            "help": "Captured poses only (Pose from the rig off). Higher is steadier, with more lag." },
+          { "key": "Deadband", "type": "number", "min": 0, "max": 0.05, "step": 0.001, "default": 0.006,
+            "advanced": true, "label": "Sensor noise",
+            "help": "Curl changes smaller than this are ignored." },
+          { "key": "ContactHoldMs", "type": "number", "integer": true, "min": 0, "max": 1000, "step": 10, "default": 120,
+            "unit": "ms", "advanced": true, "label": "Contact hold",
+            "help": "After a hand lets go of something, the game keeps it this long." }
+        ]
+      },
+      {
+        "title": "Pose",
+        "fields": [
+          { "key": "UseRig", "type": "bool", "values": ["1", "0"], "default": true,
+            "label": "Pose from the rig",
+            "help": "Recommended: the same on every chassis. Off: a pose captured in the game." },
+          { "key": "OpenStraighten", "type": "number", "integer": true, "min": 0, "max": 45, "default": 12,
+            "style": "slider", "unit": "°", "label": "Open fingers straighten",
+            "help": "How far a fully open finger straightens past the rig's rest pose." },
+          { "key": "ThumbStraighten", "type": "number", "integer": true, "min": 0, "max": 90, "default": 40,
+            "style": "slider", "unit": "°", "label": "Thumbs up",
+            "help": "Raise it if a thumbs up stays folded." },
+          { "key": "AutoCalibrate", "type": "bool", "values": ["1", "0"], "default": true,
+            "label": "Calibrate on the first open hand",
+            "help": "The open-hand pose is taken the first time a hand is fully open." },
+          { "key": "OpenThreshold", "type": "number", "min": 0, "max": 0.5, "step": 0.01, "default": 0.12,
+            "advanced": true, "label": "Open hand below",
+            "help": "Every curl below this counts as an open hand." }
+        ]
+      },
+      {
+        "title": "Calibration",
+        "fields": [
+          { "key": "CalibrateHotkey", "type": "bool", "values": ["1", "0"], "default": true, "restart": true,
+            "label": "Ctrl+Alt+C recalibrates",
+            "help": "Hold both hands fully open while you press it." },
+          { "key": "CalibrateOnLaunch", "type": "bool", "values": ["1", "0"], "default": false, "restart": true,
+            "label": "Calibrate when Echo VR starts",
+            "help": "10 seconds after Echo VR is in your headset: hold both hands open and flat then." }
+        ]
+      },
+      {
+        "title": "Sharing",
+        "fields": [
+          { "key": "Network", "type": "bool", "values": ["1", "0"], "default": false,
+            "label": "Share fingers",
+            "tooltip": "Others running EchoXR Hands see your fingers, and you theirs. Your display name and your match's player names go to its relay server.",
+            "help": "Others running it see your fingers, and you theirs. It sends your display name and the names of the players in your match to EchoXR Hands' relay server, which pairs you up. Nothing is stored." },
+          { "key": "MyName", "type": "text", "advanced": true, "label": "Your name in the match",
+            "placeholder": "Found in the match", "visible_if": { "Network": true },
+            "help": "Leave it empty. Set it only if EchoXRHands.log says it couldn't find you (local player is '')." },
+          { "key": "RelayUrl", "type": "text", "format": "url", "advanced": true, "label": "Relay",
+            "default": "wss://sparkapi-production-e6df.up.railway.app/htv/ws", "visible_if": { "Network": true } },
+          { "key": "NetSendHz", "type": "number", "integer": true, "min": 5, "max": 90, "default": 30,
+            "unit": "Hz", "advanced": true, "label": "Updates sent", "visible_if": { "Network": true } }
+        ]
+      },
+      {
+        "title": "Fingers",
+        "help": "Degrees. Spread and twist: positive leans toward the pinky (mirrored per hand).",
+        "fields": [
+          { "key": "MaxCurl1", "type": "number", "integer": true, "min": 0, "max": 180, "default": 80, "unit": "°", "advanced": true, "label": "Full curl, knuckle" },
+          { "key": "MaxCurl2", "type": "number", "integer": true, "min": 0, "max": 180, "default": 105, "unit": "°", "advanced": true, "label": "Full curl, middle joint" },
+          { "key": "MaxCurl3", "type": "number", "integer": true, "min": 0, "max": 180, "default": 75, "unit": "°", "advanced": true, "label": "Full curl, tip joint" },
+          { "key": "ThumbMax1", "type": "number", "integer": true, "min": 0, "max": 180, "default": 50, "unit": "°", "advanced": true, "label": "Thumb curl, base" },
+          { "key": "ThumbMax2", "type": "number", "integer": true, "min": 0, "max": 180, "default": 20, "unit": "°", "advanced": true, "label": "Thumb curl, middle" },
+          { "key": "ThumbMax3", "type": "number", "integer": true, "min": 0, "max": 180, "default": 20, "unit": "°", "advanced": true, "label": "Thumb curl, tip" },
+          { "key": "SpreadThumb", "type": "number", "integer": true, "min": -30, "max": 30, "default": 0, "style": "stepper", "advanced": true, "label": "Spread, thumb" },
+          { "key": "SpreadIndex", "type": "number", "integer": true, "min": -30, "max": 30, "default": 1, "style": "stepper", "advanced": true, "label": "Spread, index" },
+          { "key": "SpreadMiddle", "type": "number", "integer": true, "min": -30, "max": 30, "default": 1, "style": "stepper", "advanced": true, "label": "Spread, middle" },
+          { "key": "SpreadRing", "type": "number", "integer": true, "min": -30, "max": 30, "default": 1, "style": "stepper", "advanced": true, "label": "Spread, ring" },
+          { "key": "SpreadPinky", "type": "number", "integer": true, "min": -30, "max": 30, "default": 1, "style": "stepper", "advanced": true, "label": "Spread, pinky" },
+          { "key": "TwistThumb", "type": "number", "integer": true, "min": -30, "max": 30, "default": 1, "style": "stepper", "advanced": true, "label": "Twist, thumb",
+            "help": "Positive tilts the thumb's fold toward the palm." },
+          { "key": "TwistIndex", "type": "number", "integer": true, "min": -30, "max": 30, "default": 0, "style": "stepper", "advanced": true, "label": "Twist, index" },
+          { "key": "TwistMiddle", "type": "number", "integer": true, "min": -30, "max": 30, "default": 0, "style": "stepper", "advanced": true, "label": "Twist, middle" },
+          { "key": "TwistRing", "type": "number", "integer": true, "min": -30, "max": 30, "default": 0, "style": "stepper", "advanced": true, "label": "Twist, ring" },
+          { "key": "TwistPinky", "type": "number", "integer": true, "min": -30, "max": 30, "default": 0, "style": "stepper", "advanced": true, "label": "Twist, pinky" },
+          { "key": "SplayDeg", "type": "number", "min": 0, "max": 60, "step": 0.5, "default": 0, "unit": "°", "advanced": true, "label": "Splay",
+            "help": "Finger spread from the Index's splay sensing, per unit of spread. 0 is off." },
+          { "key": "SplayAxis", "type": "choice", "style": "segmented", "default": "y", "advanced": true, "label": "Splay axis",
+            "choices": ["x", "y", "z"] },
+          { "key": "FingerOrder", "type": "text", "default": "auto", "advanced": true, "label": "Finger slots",
+            "help": "auto works them out from the knuckles. Or the five game slots, e.g. index,middle,ring,pinky,thumb." }
+        ]
+      },
+      {
+        "title": "Axes",
+        "help": "If everything curls the wrong way with auto, flip the signs.",
+        "fields": [
+          { "key": "QuatConvention", "type": "choice", "style": "segmented", "default": "auto", "advanced": true, "label": "Rotation convention",
+            "choices": ["auto", "standard", "engine"] },
+          { "key": "BendAxis", "type": "choice", "style": "segmented", "default": "auto", "advanced": true, "label": "Bend axis",
+            "choices": ["auto", "x", "y", "z"] },
+          { "key": "LeftBendSign", "type": "choice", "style": "segmented", "default": "1", "advanced": true, "label": "Left bend",
+            "choices": [ { "value": "1", "label": "+1" }, { "value": "-1", "label": "-1" } ] },
+          { "key": "RightBendSign", "type": "choice", "style": "segmented", "default": "1", "advanced": true, "label": "Right bend",
+            "choices": [ { "value": "1", "label": "+1" }, { "value": "-1", "label": "-1" } ] },
+          { "key": "ThumbBendAxis", "type": "choice", "style": "segmented", "default": "auto", "advanced": true, "label": "Thumb bend axis",
+            "choices": ["auto", "x", "y", "z"] },
+          { "key": "LeftThumbSign", "type": "choice", "style": "segmented", "default": "1", "advanced": true, "label": "Left thumb",
+            "choices": [ { "value": "1", "label": "+1" }, { "value": "-1", "label": "-1" } ] },
+          { "key": "RightThumbSign", "type": "choice", "style": "segmented", "default": "1", "advanced": true, "label": "Right thumb",
+            "choices": [ { "value": "1", "label": "+1" }, { "value": "-1", "label": "-1" } ] }
+        ]
+      },
+      {
+        "title": "Platform",
+        "fields": [
+          { "type": "note", "advanced": true,
+            "text": "Which platform your user ID says you are on. Your ID becomes e.g. STM-<number>, which the server sees as a separate account." },
+          { "key": "Platform", "type": "text", "format": "name", "max_len": 8, "restart": true, "advanced": true,
+            "label": "Platform", "placeholder": "OVR-ORG",
+            "help": "e.g. STM (Steam). Empty leaves it." },
+          { "key": "PlatformAccount", "type": "text", "format": "digits", "max_len": 20, "restart": true, "advanced": true,
+            "label": "Account number", "placeholder": "Kept",
+            "help": "For STM your SteamID64 (17 digits, 7656119...): the server rejects IDs under 10 characters." }
+        ]
+      }
+    ]
+  }
+}

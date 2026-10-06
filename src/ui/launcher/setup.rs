@@ -75,6 +75,8 @@ pub(super) enum Overlay {
     Uninstall {
         picked: Vec<crate::core::uninstall::Part>,
     },
+    /// Mods: a plugin's settings, from its description.
+    PluginSettings(Box<super::mods::SettingsSheet>),
 }
 
 /// The Install card's answers, prefilled with the last ones.
@@ -812,6 +814,7 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::UploadLogs { .. }) => super::settings::upload_card(d, k, ctx),
         Some(Overlay::Credits { .. }) => super::settings::credits_card(d, k, ctx),
         Some(Overlay::Uninstall { .. }) => super::settings::uninstall_card(d, k, ctx),
+        Some(Overlay::PluginSettings(_)) => super::mods::settings_card(d, k, ctx),
         None => {}
     });
 }

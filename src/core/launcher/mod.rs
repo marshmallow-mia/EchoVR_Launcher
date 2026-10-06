@@ -9,6 +9,7 @@ pub mod login_watch;
 pub mod mods;
 pub mod nevr;
 pub mod patch;
+pub mod plugin_settings;
 pub mod quest;
 pub mod quest_net;
 pub mod relay;

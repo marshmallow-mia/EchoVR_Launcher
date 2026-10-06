@@ -1308,35 +1308,14 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 /// Not signed in: what the page needs, and the way there.
 fn signed_out(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let r = Dr::new(LIST.x, LIST.y, LIST.w + kit.dx(), 300.0);
-    let (x, y, w, bottom) = hero::card_frame(kit, r, "Sign in to see the servers");
-    kit.caps_text(
-        x,
-        y,
-        w,
-        "The servers, joining them, starting one, your party and friends come from EchoVRCE: sign in with your EchoVRCE account on its page.",
-        17.0,
-        design::BODY,
-        0.0,
-    );
-    let bw = kit.button_width("Sign in", None, BTN_H).max(dz(180.0));
-    if kit
-        .button(
-            "servers-sign-in",
-            x,
-            bottom - BTN_H,
-            bw,
-            BTN_H,
-            Tone::Go,
-            None,
-            "Sign in",
-            !d.vrce.busy,
-            "Sign in with EchoVRCE",
-        )
-        .clicked
-    {
-        d.page = Page::EchoVrce;
-        d.vrce.sign_in(ctx);
-    }
+    let title = if d.vrce.waiting_for_server() {
+        "EchoVRCE isn't answering"
+    } else {
+        "Sign in to see the servers"
+    };
+    let (x, y, w, bottom) = hero::card_frame(kit, r, title);
+    super::echovrce::prompt_text(d, kit, (x, y, w), "The servers, joining them, starting one, your party and friends come from EchoVRCE: sign in with your EchoVRCE account on its page.", 17.0, true);
+    super::echovrce::sign_in_button(d, kit, ctx, "servers-sign-in", x, bottom - BTN_H);
 }
 
 /// The servers (or your match history), as VERSIONS has its rows.

@@ -5,7 +5,7 @@
 
 use egui::Color32;
 
-use super::{hero, panel, servers, Dashboard, Page};
+use super::{hero, panel, servers, Dashboard};
 use crate::core::echovrce::game::{self, FriendState};
 use crate::core::echovrce::Account;
 use crate::core::launcher::feed;
@@ -67,35 +67,14 @@ fn answers(d: &mut Dashboard, ctx: &egui::Context) {
 
 fn signed_out(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let r = Dr::new(FIND.x, FIND.y, FIND.w + LIST.w + 20.0 + kit.dx(), 300.0);
-    let (x, y, w, bottom) = hero::card_frame(kit, r, "Sign in to find friends");
-    kit.caps_text(
-        x,
-        y,
-        w,
-        "Finding players, friend requests, your friends and the players you played with come from EchoVRCE: sign in with your EchoVRCE account.",
-        17.0,
-        design::BODY,
-        0.0,
-    );
-    let bw = kit.button_width("Sign in", None, BTN_H).max(dz(180.0));
-    if kit
-        .button(
-            "friends-sign-in",
-            x,
-            bottom - BTN_H,
-            bw,
-            BTN_H,
-            Tone::Go,
-            None,
-            "Sign in",
-            !d.vrce.busy,
-            "Sign in with EchoVRCE",
-        )
-        .clicked
-    {
-        d.page = Page::EchoVrce;
-        d.vrce.sign_in(ctx);
-    }
+    let title = if d.vrce.waiting_for_server() {
+        "EchoVRCE isn't answering"
+    } else {
+        "Sign in to find friends"
+    };
+    let (x, y, w, bottom) = hero::card_frame(kit, r, title);
+    super::echovrce::prompt_text(d, kit, (x, y, w), "Finding players, friend requests, your friends and the players you played with come from EchoVRCE: sign in with your EchoVRCE account.", 17.0, true);
+    super::echovrce::sign_in_button(d, kit, ctx, "friends-sign-in", x, bottom - BTN_H);
 }
 
 /// A player's row: a tile with their name and a grey line under it (and a dot when

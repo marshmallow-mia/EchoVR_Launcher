@@ -117,7 +117,7 @@ fn caps_line(
 }
 
 /// A disabled control's fill: the colour sunk into the page's violet.
-fn disabled(c: Color32) -> Color32 {
+pub(crate) fn disabled(c: Color32) -> Color32 {
     mix(c, Color32::from_rgb(44, 38, 60), 0.6)
 }
 
@@ -127,7 +127,7 @@ fn label_font(h: f32) -> egui::FontId {
 }
 
 /// Text colour on a control.
-fn fg(enabled: bool) -> Color32 {
+pub(crate) fn fg(enabled: bool) -> Color32 {
     if enabled {
         design::TEXT
     } else {
@@ -615,6 +615,12 @@ impl Kit<'_> {
             );
         }
         resp.lost_focus()
+    }
+
+    /// How wide [`Kit::check`] is with `label`: its box, the gap and the label.
+    pub fn check_width(&self, label: &str) -> f32 {
+        let g = self.label_galley(label, design::din(18.0), design::TEXT, f32::INFINITY);
+        16.0 + 10.0 + g.size().x
     }
 
     /// A checkbox: blue with a white tick when on, and a DMCAPS label. Returns true when

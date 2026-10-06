@@ -189,8 +189,8 @@ pub enum GameConfigStep {
     Restored,
 }
 
-/// Before a start of `v` with nEVR in its slot: with `own` (Mods page: "Use my own
-/// config.json") the game's config stays, and one set aside earlier is put back;
+/// Before a start of `v` with nEVR in its slot: with `own` (Settings, Launch options: "Use
+/// my own config.json") the game's config stays, and one set aside earlier is put back;
 /// otherwise an obsolete EchoVRCE config is set aside, so nEVR uses its built-in one
 /// (friends and parties on). Every `_local` nEVR looks in counts.
 pub fn arrange_game_config(v: &InstalledVersion, own: bool) -> Result<GameConfigStep> {

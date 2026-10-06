@@ -47,7 +47,9 @@ They can't be turned off, an old "off" choice is ignored and dropped, and they s
 loads them whatever `manifest.local.json` says, and the page shows them locked.
 
 **Arguments.** A plugin's defaults are the catalogue's `args` for its file, written into
-`config.yaml` unless you changed them. The Options editor resets one argument (or takes
+`config.yaml` unless you changed them. A plugin with a description (the catalogue's
+`settings`, or `<Stem>.plugin.json` beside it) shows its settings in a sheet instead, see
+[../plugins/settings.md](../plugins/settings.md). The Options editor resets one argument (or takes
 out one that isn't a default) and has "Reset to default" for all of them. The launcher keeps
 the last catalogue it fetched (`mods.json` in its data folder) to use offline before a
 start.
@@ -104,6 +106,7 @@ current draft, which is also built in for when it can't be fetched):
       "author": "…", "version": "0.3.1", "file": "CombatStats.dll",
       "url": "mods/CombatStats-0.3.1.dll", "sha256": "…", "size": 412000,
       "api": 5, "capabilities": ["observes-only"], "args": { "key": "value" },
+      "settings": { "fields": [ … ] },
       "homepage": "https://github.com/…", "shipped": false } ] }
 ```
 
@@ -114,19 +117,23 @@ current draft, which is also built in for when it can't be fetched):
   absolute `https://` URL on one of them or `release.echovr.de`. Required, with `sha256`, unless `shipped`.
 - `sha256`: the file's checksum. The launcher checks the download against it and notes it
   in `launcher-mods.json`, so a file changed later is left out of `config.yaml`.
-- `shipped`: the community update brings it; the page lists it under Plugins when it is
-  there, never downloads it, and never offers it under Additional Plugins.
+- `shipped`: the community update brings it; the page lists it under Installed mods when it is
+  there, never downloads it, and never offers it under More mods.
 - `required`: the game needs it: always on, also with mods off, and never offered under
-  Additional Plugins.
+  More mods.
 - `version`: shown, and compared with the installed one: a different version puts UPDATE
-  on its row under Plugins.
+  on its row under Installed mods.
 - `api`, `capabilities` (`observes-only`, `cosmetic`, `alters-gameplay`, `alters-rules`,
   `network`, `hooks-engine`), `args` (its default arguments), `homepage`, `author`,
   `summary`, `size`: optional, shown on the page.
+- `settings`: optional, what can be set and how: the `settings` object of a plugin
+  description ([../plugins/settings.md](../plugins/settings.md)). It comes before a
+  `<Stem>.plugin.json` beside the DLL. The plugin's row then has **Settings** instead of
+  **Options**.
 
 An entry that breaks a rule is left out; the rest of the list is still used.
 
-The page's **Plugins** card lists only what is installed. **Additional Plugins** offers
+The page's **Installed mods** card lists only what is installed. **More mods** offers
 the catalogue's entries that are neither required nor shipped and aren't in `plugins/`
 (GET; "Coming soon" without a `url`), plus the VR parts not in use: EchoXR Hands, and on
 Windows EchoXR while SteamVR plays through Revive. Remove on a row puts it back there.

@@ -3,11 +3,10 @@
 //! in with EchoVRCE, the invites waiting for you and your friends with the match each is
 //! in, to JOIN. The tiles are the Servers page's.
 
-use super::{panel, servers, Dashboard, Page};
+use super::{panel, servers, Dashboard};
 use crate::core::launcher::feed::Servers;
 use crate::ui::design::{self, dz};
 use crate::ui::kit::Kit;
-use crate::ui::widgets::{Tone, BTN_H};
 
 /// The panel's content width and its padding at the bottom (design pixels).
 const W: f32 = panel::PANEL.w - 2.0 * (panel::X - panel::PANEL.x);
@@ -136,34 +135,16 @@ fn overview(kit: &Kit, s: &Servers, x: f32, y: f32, w: f32) -> f32 {
     y
 }
 
-/// Not signed in: what signing in gives, and SIGN IN.
+/// Not signed in: what signing in gives, and SIGN IN (or, signed in while EchoVRCE
+/// isn't answering, that it isn't, and Retry now).
 fn signed_out(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, y: f32, w: f32) {
-    let th = kit.caps_text(
-        x,
-        y,
-        w,
+    let th = super::echovrce::prompt_text(
+        d,
+        kit,
+        (x, y, w),
         "Sign in with EchoVRCE to see your friends, the matches they are in, and join them.",
         15.0,
-        design::BODY,
-        0.0,
+        false,
     );
-    let bw = kit.button_width("Sign in", None, BTN_H).max(dz(180.0));
-    if kit
-        .button(
-            "now-sign-in",
-            x,
-            y + th + dz(18.0),
-            bw,
-            BTN_H,
-            Tone::Go,
-            None,
-            "Sign in",
-            !d.vrce.busy,
-            "Sign in with EchoVRCE",
-        )
-        .clicked
-    {
-        d.page = Page::EchoVrce;
-        d.vrce.sign_in(ctx);
-    }
+    super::echovrce::sign_in_button(d, kit, ctx, "now-sign-in", x, y + th + dz(18.0));
 }

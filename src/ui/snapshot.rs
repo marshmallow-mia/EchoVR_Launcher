@@ -135,6 +135,14 @@ pub fn shots() -> Vec<Shot> {
             SnapVariant::VrceSignedIn,
         ),
         ("echovrce_signing", Page::EchoVrce, SnapVariant::VrceSigning),
+        ("echovrce_down", Page::EchoVrce, SnapVariant::VrceDown),
+        ("play_vrce_down", Page::Play, SnapVariant::VrceDown),
+        ("friends_vrce_down", Page::Friends, SnapVariant::VrceDown),
+        (
+            "echovrce_sign_in_failed",
+            Page::EchoVrce,
+            SnapVariant::VrceSignInFailed,
+        ),
         ("servers_live", Page::Servers, SnapVariant::ServersLive),
         (
             "servers_history",
@@ -166,6 +174,13 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("mods_echoxr", Page::Mods, SnapVariant::SettingsEchoXr),
         ("mods_locked", Page::Mods, SnapVariant::ModsLocked),
+        ("mods_hands", Page::Mods, SnapVariant::ModsHands),
+        ("mods_settings", Page::Mods, SnapVariant::ModsSettings),
+        (
+            "mods_settings_all",
+            Page::Mods,
+            SnapVariant::ModsSettingsAll,
+        ),
         (
             "install_placeholder",
             Page::Install,
@@ -225,6 +240,23 @@ pub fn shots() -> Vec<Shot> {
             variant,
             hover: Some(at),
             press,
+        });
+    }
+    // A plugin setting's hover text: on a label in its sheet, and on its row.
+    for (n, variant, at) in [
+        (
+            "mods_settings_hover",
+            SnapVariant::ModsSettings,
+            (451.0, 551.0),
+        ),
+        ("mods_hands_hover", SnapVariant::ModsHands, (900.0, 550.0)),
+    ] {
+        shots.push(Shot {
+            name: format!("launcher_{n}"),
+            page: Page::Mods,
+            variant: Some(variant),
+            hover: Some(at),
+            press: false,
         });
     }
     if let Ok(only) = std::env::var("ECHOVR_SNAPSHOTS_ONLY") {

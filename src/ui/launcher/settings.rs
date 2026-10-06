@@ -54,8 +54,8 @@ fn answers(d: &mut Dashboard, ctx: &egui::Context) {
     }
 }
 
-/// A checkbox with a grey note under its label; returns whether it flipped and the height
-/// it took.
+/// A checkbox with a grey note under its label (none: a compact row); returns whether it
+/// flipped and the height it took.
 #[allow(clippy::too_many_arguments)]
 fn option(
     kit: &mut Kit,
@@ -70,6 +70,9 @@ fn option(
     tip: &str,
 ) -> (bool, f32) {
     let flipped = kit.check(key, on, label, x, y, enabled, tip);
+    if note.is_empty() {
+        return (flipped, dz(50.0));
+    }
     let indent = dz(39.0);
     let h = kit.caps_text(
         x + indent,
@@ -179,37 +182,73 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 /// LAUNCH OPTIONS: what Echo VR is started with (desktop shortcuts too).
 fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
     let (x, mut y, w, _) = hero::card_frame(kit, r, "Launch options");
+    // With the classic lobbies' server too, the card is full: the notes go into the
+    // checks' tooltips.
+    let compact = d.state.has_event_builds();
+    let say = |note: &'static str, tip: &str| -> (&'static str, String) {
+        if compact {
+            ("", format!("{note} {tip}"))
+        } else {
+            (note, tip.to_string())
+        }
+    };
+    let (note, tip) = say(
+        "Echo VR's window on the desktop isn't full screen.",
+        "Starts Echo VR with -windowed",
+    );
     let (flipped, h) = option(
         kit,
         "opt-windowed",
         &mut d.state.profile.windowed,
         "Windowed",
-        "Echo VR's window on the desktop isn't full screen.",
+        note,
         x,
         y,
         w,
         true,
-        "Starts Echo VR with -windowed",
+        &tip,
     );
     let mut changed = flipped;
     y += h;
     let flat = d.state.profile.runtime == Runtime::Flat;
-    let tip = if flat {
-        "Starts Echo VR with -spectatorstream"
-    } else {
-        "Choose Flat under How you play"
-    };
+    let (note, tip) = say(
+        "Flat only: join matches as a spectator, for streams and casting.",
+        if flat {
+            "Starts Echo VR with -spectatorstream"
+        } else {
+            "Choose Flat under How you play"
+        },
+    );
     let (flipped, h) = option(
         kit,
         "opt-spectator",
         &mut d.state.profile.spectator,
         "Spectator stream",
-        "Flat only: join matches as a spectator, for streams and casting.",
+        note,
         x,
         y,
         w,
         flat,
-        tip,
+        &tip,
+    );
+    changed |= flipped;
+    y += h;
+    // Your own _local/config.json (another server) instead of nEVR's built-in one.
+    let (note, tip) = say(
+        "Only with the mod loader: Echo VR keeps using your own _local/config.json (e.g. for another server).",
+        "Off: an EchoVRCE-era _local/config.json is set aside before each start, and nEVR's built-in config, with friends and parties, applies",
+    );
+    let (flipped, h) = option(
+        kit,
+        "opt-own-config",
+        &mut d.state.own_game_config,
+        "Use my own config.json",
+        note,
+        x,
+        y,
+        w,
+        true,
+        &tip,
     );
     changed |= flipped;
     y += h;

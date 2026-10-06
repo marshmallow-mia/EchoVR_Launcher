@@ -76,7 +76,7 @@ Any other code is Echo's own. EchoXR logs to `EchoXR\launcher.log` (every launch
 
 ### Windows: SteamVR through EchoXR
 
-Settings → Game → SteamVR, and **EchoXR** got from Additional Plugins on the Mods page
+Settings → Game → SteamVR, and **EchoXR** got from More mods on the Mods page
 (Remove in its Plugins row goes back to Revive).
 With EchoXR:
 

@@ -9,29 +9,42 @@ use std::time::{Duration, Instant};
 
 use egui::Color32;
 
-use super::{hero, panel, versions, Dashboard, JobKind, JobResult, Msg, Page, SnapVariant};
+use super::{
+    hero, panel, plugin_form, setup, versions, Dashboard, JobKind, JobResult, Msg, Page,
+    SnapVariant,
+};
 use crate::core::launcher::catalog::Platform;
 use crate::core::launcher::mods::{
     self, AssetPatch, Loader, ModCatalog, ModEntry, ModView, Plugin, PluginStatus, Source, Status,
 };
+use crate::core::launcher::plugin_settings;
 use crate::core::launcher::store::{InstalledVersion, Target};
 use crate::core::platform;
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::style::Icon;
-use crate::ui::widgets::{Tone, BTN_H};
+use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 
 // Geometry in design pixels: under the header strip, as the EchoVRCE page's cards.
 const LOADER: Dr = Dr::new(137.0, 156.0, 1146.0, 262.0);
 const PLUGINS: Dr = Dr::new(137.0, 448.0, 1146.0, 598.0);
 const CATALOGUE: Dr = Dr::new(1318.0, 156.0, 555.0, 890.0);
 /// A plugin's row, an asset patch's, an argument's.
-const ROW_H: f32 = 72.0;
+const ROW_H: f32 = 68.0;
+/// Inside a plugin's tile, and between two tiles.
+const TILE_PAD: f32 = 12.0;
+const TILE_GAP: f32 = 12.0;
 const SUB_H: f32 = 40.0;
 const ARG_H: f32 = 46.0;
 /// Where a row's text starts: right of its checkbox.
 const INDENT: f32 = 39.0;
+/// A plugin row's checkbox (its name line), and the line under the name.
+const NAME_Y: f32 = 12.0;
+const DETAIL_Y: f32 = 48.0;
+/// The buttons on a row's name line, and the gap between its buttons and chips.
+const ROW_BTN_H: f32 = 33.0;
+const ACTION_GAP: f32 = 12.0;
 /// A catalogue entry's gap to the next.
 const ENTRY_GAP: f32 = 26.0;
 /// How often the selected version's mods are read again while the page is open.
@@ -63,6 +76,17 @@ struct Editing {
     rows: Vec<(String, String)>,
     /// The plugin's default arguments: a row that differs gets a reset.
     defaults: BTreeMap<String, String>,
+}
+
+impl Editing {
+    /// `p`'s arguments as they are, to edit.
+    fn of(p: &Plugin) -> Editing {
+        Editing {
+            file: p.file.clone(),
+            rows: p.arg_strings().into_iter().collect(),
+            defaults: p.default_strings(),
+        }
+    }
 }
 
 impl Mods {
@@ -99,6 +123,17 @@ impl Mods {
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if d.demo && d.mods.view.is_none() {
         d.mods = demo(d.snap_variant);
+        let open = match d.snap_variant {
+            Some(SnapVariant::ModsSettings) => Some((crate::core::echoxr_hands::PLUGIN, false)),
+            Some(SnapVariant::ModsSettingsAll) => Some(("CombatStats.dll", true)),
+            _ => None,
+        };
+        if let Some((file, advanced)) = open {
+            open_sheet(d, file);
+            if let Some(setup::Overlay::PluginSettings(sheet)) = &mut d.overlay {
+                sheet.form.advanced = advanced;
+            }
+        }
     }
     if !kit.ghost {
         answers(d, ctx);
@@ -252,7 +287,7 @@ fn not_available(d: &mut Dashboard, kit: &mut Kit, v: Option<&InstalledVersion>)
             v.name
         ),
         None if d.platform == Platform::Quest => "Mods are for Echo VR on this PC, and PLAY starts the Quest's now. Switch to PCVR (next to PLAY) to see the PC version's mods.".into(),
-        None => "Mods are for Echo VR on this PC: install the live build first, then choose its plugins here.".into(),
+        None => "Mods are for Echo VR on this PC: install the live build first, then choose its mods here.".into(),
     };
     kit.caps_text(x, y, w, &text, 16.0, design::BODY, dz(14.0));
     if v.is_none() {
@@ -339,19 +374,6 @@ fn loader_card(
             ) {
                 write(d, v, |v| mods::set_enabled(v, !off), |m| m.enabled = !off);
             }
-            // Your own _local/config.json (another server) instead of nEVR's built-in one.
-            let label = "Use my own config.json";
-            if kit.check(
-                "mods-own-config",
-                &mut d.state.own_game_config,
-                label,
-                x + dz(300.0),
-                by + dz(5.0),
-                true,
-                "Echo VR keeps your _local/config.json (e.g. another server). Off: an EchoVRCE-era one is set aside and nEVR's built-in config, with friends and parties, applies.",
-            ) {
-                d.save();
-            }
         }
         // The community update brings it: nothing to do here.
         Loader::None => {}
@@ -367,9 +389,9 @@ fn loader_card(
         ),
         (
             "mods-folder",
-            "Plugins",
+            "Mods folder",
             mods::plugins_dir(v),
-            "Open the folder the plugins are in",
+            "Open the game's plugins folder, where the mods are",
         ),
     ];
     let mut right = x + w;
@@ -422,7 +444,7 @@ fn loader_text(view: &ModView) -> String {
             } else {
                 ""
             };
-            let about = format!("Discord sign-in, friends and parties in the game, and the plugins below. Build {version}.{config}");
+            let about = format!("Discord sign-in, friends and parties in the game, and the mods below. Build {version}.{config}");
             match last {
                 Some(l) => format!("{l} {about}"),
                 None => format!("It hasn't started yet: what it loads shows here after you PLAY. {about}"),
@@ -433,7 +455,7 @@ fn loader_text(view: &ModView) -> String {
     }
 }
 
-/// "Last start 2026-10-04 18:04: 3 plugins loaded, 1 failed."
+/// "Last start 2026-10-04 18:04: 3 mods loaded, 1 failed."
 fn last_start(s: &Status) -> String {
     // nEVR names its log by the local time it started: 2026-10-04T18-04-05.123.
     let when = s
@@ -445,10 +467,10 @@ fn last_start(s: &Status) -> String {
     let count = |st: &str| s.plugins.iter().filter(|p| p.status == st).count();
     let (loaded, failed, skipped) = (count("loaded"), count("failed"), count("skipped"));
     if s.plugins.is_empty() && s.complete {
-        return format!("Last start{when}: no plugins.");
+        return format!("Last start{when}: no mods.");
     }
     let mut parts = vec![format!(
-        "{loaded} plugin{} loaded",
+        "{loaded} mod{} loaded",
         if loaded == 1 { "" } else { "s" }
     )];
     if failed > 0 {
@@ -472,7 +494,7 @@ fn plugins_card(
     view: Option<&ModView>,
     r: Dr,
 ) {
-    let (x, y, w, bottom) = hero::card_frame(kit, r, "Plugins");
+    let (x, y, w, bottom) = hero::card_frame(kit, r, "Installed mods");
     let editable = view.is_some_and(|m| m.loader.editable());
     let busy = busy(d, v);
     // "Add DLL" on the title's row.
@@ -519,7 +541,7 @@ fn plugins_card(
             x,
             y,
             w,
-            "No plugins here. The community update brings the asset patches and EchoRelay's patch; Additional Plugins has more, and Add DLL takes one from your computer.",
+            "No mods here. The community update brings the asset patches and EchoRelay's patch; More mods has more, and Add DLL takes one from your computer.",
             15.5,
             design::BODY,
             0.0,
@@ -529,11 +551,14 @@ fn plugins_card(
     let locked = !editable || !view.enabled;
     let current = matches!(view.loader, Loader::Nevr { .. });
     let names = names(d.mods.catalog.as_ref());
+    // Each plugin (with its options and asset patches) in a tile of its own.
+    let pad = dz(TILE_PAD);
+    let (ix, iw) = (x + pad, w - 2.0 * pad);
     let heights: Vec<f32> = rows
         .iter()
-        .map(|r| r.height() + extra_height(d, kit, r, w))
+        .map(|r| r.height() + extra_height(d, kit, r, iw))
         .collect();
-    let content: f32 = heights.iter().sum();
+    let (tops, tiles, content) = tile_layout(&rows, &heights);
     let list_h = bottom - y;
     kit.scroll_area(
         "mods-list",
@@ -545,9 +570,16 @@ fn plugins_card(
         &mut d.mods.list_scroll,
     );
     let scroll = d.mods.list_scroll;
-    let mut ry = y - scroll;
+    let top = y - scroll;
     kit.clipped(x - dz(12.0), y, w + dz(24.0), list_h, |k| {
-        for (row, &h) in rows.iter().zip(&heights) {
+        for &(ty, th) in &tiles {
+            if top + ty + th >= y && top + ty <= y + list_h {
+                group_tile(k, x, top + ty, w, th);
+            }
+        }
+        let (x, w) = (ix, iw);
+        for ((row, &h), &ry) in rows.iter().zip(&heights).zip(&tops) {
+            let ry = top + ry;
             if ry + h >= y && ry <= y + list_h {
                 match row {
                     Row::Plugin(p) => {
@@ -578,9 +610,46 @@ fn plugins_card(
                     Row::Options(n) => options_rows(d, k, ctx, v, x, ry, w, *n),
                 }
             }
-            ry += h;
         }
     });
+}
+
+/// Pure: where each row goes (its top, from the list's), the tiles around each plugin
+/// with what belongs to it (top, height), and the list's height. A plugin or a VR part
+/// starts a tile; its options and asset patches go in the same one.
+fn tile_layout(rows: &[Row], heights: &[f32]) -> (Vec<f32>, Vec<(f32, f32)>, f32) {
+    let (pad, gap) = (dz(TILE_PAD), dz(TILE_GAP));
+    let mut tops = Vec::with_capacity(rows.len());
+    let mut tiles: Vec<(f32, f32)> = Vec::new();
+    let mut y = 0.0;
+    for (row, &h) in rows.iter().zip(heights) {
+        if matches!(row, Row::Plugin(_) | Row::Vr(..)) || tiles.is_empty() {
+            if let Some(last) = tiles.last_mut() {
+                last.1 = y + pad - last.0;
+                y += pad + gap;
+            }
+            tiles.push((y, 0.0));
+            y += pad;
+        }
+        tops.push(y);
+        y += h;
+    }
+    if let Some(last) = tiles.last_mut() {
+        last.1 = y + pad - last.0;
+        y += pad;
+    }
+    (tops, tiles, y)
+}
+
+/// A plugin's tile: the cards' faint tile with a thin rim, so plugins read apart.
+fn group_tile(k: &Kit, x: f32, y: f32, w: f32, h: f32) {
+    hero::tile(k, x, y, w, h, false);
+    k.ui.painter().rect_stroke(
+        k.rect(x, y, w, h),
+        dz(6.0),
+        egui::Stroke::new(1.0, Color32::from_white_alpha(22)),
+        egui::StrokeKind::Inside,
+    );
 }
 
 /// The catalogue's names of the plugin files it lists (lowercase file name to name).
@@ -717,21 +786,20 @@ fn rows<'a>(view: &'a ModView, editing: Option<&Editing>, vr: VrInstalled) -> Ve
     out
 }
 
-/// The state chip of a plugin: what nEVR did with it, or will.
-fn state(p: &Plugin) -> (String, Color32) {
+/// A plugin's chip: only what needs looking at (`None`: all is well, or nothing to say
+/// yet). Loaded, off (its check shows that) and not started yet say nothing; the loader's
+/// card sums up the last start.
+fn state(p: &Plugin) -> Option<(&'static str, Color32)> {
     if !p.present {
-        return ("Missing".into(), design::RED);
+        return Some(("Missing", design::RED));
     }
     if !p.enabled {
-        return ("Off".into(), design::QUEST_OFF);
+        return None;
     }
-    let Some(s) = &p.status else {
-        return ("Next start".into(), design::QUEST_OFF);
-    };
-    match s.status.as_str() {
-        "loaded" => ("Loaded".into(), design::QUEST_ON),
-        "skipped" => ("Skipped".into(), design::QUEST_WARN),
-        _ => ("Failed".into(), design::RED),
+    match p.status.as_ref()?.status.as_str() {
+        "loaded" => None,
+        "skipped" => Some(("Skipped", design::QUEST_WARN)),
+        _ => Some(("Failed", design::RED)),
     }
 }
 
@@ -772,57 +840,37 @@ fn plugin_row(
     } = *look;
     let key = |what: &str| format!("mods-{what}-{}", p.file);
     // Right to left: Update, Remove, Options, the state chip.
-    let bh = dz(30.0);
-    let by = y + dz(10.0);
-    let mut right = x + w;
+    let mut a = Actions::new(x, y, w);
     if let Some(m) = &look.update {
-        let label = "Update";
-        let bw = k
-            .button_width(label, Some(Icon::Download), bh)
-            .max(dz(110.0));
-        right -= bw;
         let tip = match (editable, busy) {
             (false, _) => "Needs the mod loader (nEVR) in this version",
             (true, Some(why)) => why,
             (true, None) => "Download its new version (it loads at the next start)",
         };
-        if k.button(
+        if a.button(
+            k,
             &key("update"),
-            right,
-            by,
-            bw,
-            bh,
             Tone::Go,
             Some(Icon::Download),
-            label,
+            "Update",
             editable && busy.is_none(),
             tip,
-        )
-        .clicked
-        {
+        ) {
             let ctx = k.ui.ctx().clone();
             get(d, &ctx, v, m);
         }
-        right -= dz(10.0);
     }
     if p.removable() {
-        let bw = k.button_width("Remove", None, bh).max(dz(110.0));
-        right -= bw;
         let tip = busy.unwrap_or("Delete this plugin from the game's folder");
-        if k.button(
+        if a.button(
+            k,
             &key("remove"),
-            right,
-            by,
-            bw,
-            bh,
-            Tone::Danger,
+            Tone::Dark,
             None,
             "Remove",
             editable && busy.is_none(),
             tip,
-        )
-        .clicked
-        {
+        ) {
             d.mods.removing = Some(p.file.clone());
             d.dialogs.confirm_danger(
                 REMOVE_KEY,
@@ -831,59 +879,41 @@ fn plugin_row(
                 "Remove",
             );
         }
-        right -= dz(10.0);
     }
-    if p.present {
+    if p.present && p.settings.is_some() {
+        if a.button(
+            k,
+            &key("settings"),
+            Tone::Dark,
+            None,
+            "Settings",
+            true,
+            "What can be set for this plugin",
+        ) {
+            open_sheet(d, &p.file);
+        }
+        row_settings(d, k, v, p, &mut a, editable && busy.is_none());
+    } else if p.present {
         let open = d
             .mods
             .editing
             .as_ref()
             .is_some_and(|e| e.file.eq_ignore_ascii_case(&p.file));
-        let bw = k.button_width("Options", None, bh).max(dz(110.0));
-        right -= bw;
         let tone = if open { Tone::Blue } else { Tone::Dark };
         let tip = if editable {
             "The arguments nEVR hands this plugin"
         } else {
             "Needs the mod loader (nEVR)"
         };
-        if k.button(
-            &key("options"),
-            right,
-            by,
-            bw,
-            bh,
-            tone,
-            None,
-            "Options",
-            editable,
-            tip,
-        )
-        .clicked
-        {
-            d.mods.editing = if open {
-                None
-            } else {
-                Some(Editing {
-                    file: p.file.clone(),
-                    rows: p.arg_strings().into_iter().collect(),
-                    defaults: p.default_strings(),
-                })
-            };
+        if a.button(k, &key("options"), tone, None, "Arguments", editable, tip) {
+            d.mods.editing = if open { None } else { Some(Editing::of(p)) };
         }
-        right -= dz(14.0);
     }
-    // Only nEVR says what it loaded.
+    // What needs looking at: only nEVR says what it loaded.
     if look.held {
-        let chip = "Not loaded";
-        let cw = k.chip_width(chip);
-        right -= cw;
-        k.chip(right, by + (bh - dz(27.0)) / 2.0, chip, design::QUEST_WARN);
-    } else if look.current {
-        let (chip, color) = state(p);
-        let cw = k.chip_width(&chip);
-        right -= cw;
-        k.chip(right, by + (bh - dz(27.0)) / 2.0, &chip, color);
+        a.chip(k, "Not loaded", design::QUEST_WARN);
+    } else if let Some((chip, color)) = state(p).filter(|_| look.current) {
+        a.chip(k, chip, color);
     }
 
     // Left: the switch with the name, its source tag; the details under it.
@@ -902,9 +932,7 @@ fn plugin_row(
     } else {
         "Turn it on: it loads at the next start"
     };
-    let name = k.label_galley(&look.name, design::din(18.0), design::TEXT, f32::INFINITY);
-    let name_w = name.size().x;
-    if k.check(&key("on"), &mut on, &look.name, x, y + dz(13.0), can, tip) {
+    if k.check(&key("on"), &mut on, &look.name, x, y + dz(NAME_Y), can, tip) {
         let file = p.file.clone();
         write(
             d,
@@ -928,18 +956,168 @@ fn plugin_row(
         p.required.then_some(("Required", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
     ];
-    let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
-    for (tag, color) in tags.into_iter().flatten() {
-        let tw = k.dot_tag_width(tag, 12.0);
-        if tag_x + tw >= right - dz(12.0) {
-            break;
-        }
-        k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
-        tag_x += tw + dz(14.0);
-    }
+    name_tags(k, x, &a, &look.name, tags.into_iter().flatten());
     let line = plugin_detail(p, look.author.as_deref());
     let g = detail_lines(k, &line, w);
-    k.put(x + dz(INDENT), y + dz(43.0), g);
+    k.put(x + dz(INDENT), y + dz(DETAIL_Y), g);
+}
+
+/// The middle of a row's name line (its checkbox is 24 high).
+fn name_cy(y: f32) -> f32 {
+    y + dz(NAME_Y) + 12.0
+}
+
+/// A row's buttons, chips and switches on its name line, right to left from its right
+/// edge, each centred on the line.
+struct Actions {
+    /// Where the next one ends (the gap to the last one taken off).
+    right: f32,
+    cy: f32,
+}
+
+impl Actions {
+    fn new(x: f32, y: f32, w: f32) -> Actions {
+        Actions {
+            right: x + w,
+            cy: name_cy(y),
+        }
+    }
+
+    /// A button as wide as its label (at least 110); returns the click.
+    #[allow(clippy::too_many_arguments)]
+    fn button(
+        &mut self,
+        k: &mut Kit,
+        key: &str,
+        tone: Tone,
+        icon: Option<Icon>,
+        label: &str,
+        enabled: bool,
+        tip: &str,
+    ) -> bool {
+        let bh = dz(ROW_BTN_H);
+        let bw = k.button_width(label, icon, bh).max(dz(110.0));
+        self.right -= bw;
+        let clicked = k
+            .button(
+                key,
+                self.right,
+                self.cy - bh / 2.0,
+                bw,
+                bh,
+                tone,
+                icon,
+                label,
+                enabled,
+                tip,
+            )
+            .clicked;
+        self.right -= dz(ACTION_GAP);
+        clicked
+    }
+
+    fn chip(&mut self, k: &Kit, text: &str, color: Color32) {
+        self.right -= k.chip_width(text);
+        k.chip(self.right, self.cy - dz(13.5), text, color);
+        self.right -= dz(ACTION_GAP);
+    }
+
+    /// A dropdown showing the current choice; returns the one picked.
+    fn select(
+        &mut self,
+        k: &mut Kit,
+        key: &str,
+        choices: &[plugin_settings::Choice],
+        value: &str,
+        enabled: bool,
+        tip: &str,
+    ) -> Option<String> {
+        let bh = dz(ROW_BTN_H);
+        let label = choices
+            .iter()
+            .find(|c| c.value == value)
+            .map_or(value, |c| c.label.as_str());
+        let bw = (k.button_width(label, None, bh) + bh).max(dz(140.0));
+        self.right -= bw;
+        let picked = if enabled {
+            let items: Vec<MenuItem> = choices
+                .iter()
+                .map(|c| MenuItem::Pick {
+                    label: c.label.clone(),
+                    detail: c.help.clone(),
+                    detail_color: design::GREY,
+                    checked: c.value == value,
+                    tip: c.tooltip.clone(),
+                })
+                .collect();
+            k.menu_button(
+                key,
+                label,
+                &items,
+                self.right,
+                self.cy - bh / 2.0,
+                bw,
+                bh,
+                tip,
+            )
+            .map(|i| choices[i].value.clone())
+        } else {
+            k.button(
+                key,
+                self.right,
+                self.cy - bh / 2.0,
+                bw,
+                bh,
+                Tone::Dark,
+                None,
+                label,
+                false,
+                tip,
+            );
+            None
+        };
+        self.right -= dz(ACTION_GAP);
+        picked
+    }
+
+    /// A checkbox with its label; returns true when it was flipped.
+    fn check(
+        &mut self,
+        k: &mut Kit,
+        key: &str,
+        on: &mut bool,
+        label: &str,
+        enabled: bool,
+        tip: &str,
+    ) -> bool {
+        self.right -= k.check_width(label);
+        let flipped = k.check(key, on, label, self.right, self.cy - 12.0, enabled, tip);
+        self.right -= dz(ACTION_GAP);
+        flipped
+    }
+}
+
+/// The tags right of a row's name, as many as fit before its buttons.
+fn name_tags<'a>(
+    k: &Kit,
+    x: f32,
+    a: &Actions,
+    name: &str,
+    tags: impl IntoIterator<Item = (&'a str, Color32)>,
+) {
+    let name_w = k
+        .label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY)
+        .size()
+        .x;
+    let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
+    for (tag, color) in tags {
+        let tw = k.dot_tag_width(tag, 12.0);
+        if tag_x + tw >= a.right {
+            break;
+        }
+        k.dot_tag(tag_x, a.cy, tag, 12.0, color);
+        tag_x += tw + dz(14.0);
+    }
 }
 
 /// A plugin's line under its name: its version and file, and who made it.
@@ -950,12 +1128,11 @@ fn plugin_detail(p: &Plugin, author: Option<&str>) -> String {
     }
 }
 
-/// A VR part's row, as a plugin's: its name with tags, whether it is ready on the right,
-/// what it does under it. It is listed while it is in use: on Linux EchoXR is how VR
-/// plays (always, required); on Windows SteamVR plays through it instead of Revive, and
-/// Remove goes back to Revive (it is in Additional Plugins again).
+/// A VR part's row, as a plugin's: its name with tags, what it does under it. It is
+/// listed while it is in use: on Linux EchoXR is how VR plays (always, required); on
+/// Windows SteamVR plays through it instead of Revive, and Remove goes back to Revive (it
+/// is in More mods again).
 fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f32, w: f32) {
-    use crate::core::echoxr;
     use crate::core::launcher::store::{Runtime, SteamVrVia};
     let linux = cfg!(target_os = "linux") && !d.demo;
     let name = "EchoXR";
@@ -967,31 +1144,14 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
         "SteamVR plays through it instead of Revive (Remove goes back to Revive)"
     };
     let key = |what: &str| format!("mods-vr-{what}-{name}");
-    let bh = dz(30.0);
-    let by = y + dz(10.0);
-    let mut right = x + w;
+    let mut a = Actions::new(x, y, w);
     if !linux {
-        let bw = k.button_width("Remove", None, bh).max(dz(110.0));
-        right -= bw;
         let tip = if busy {
             "Wait until the job is done"
         } else {
             "SteamVR plays through Revive again (hand tracking, which needs EchoXR, goes too)"
         };
-        if k.button(
-            &key("remove"),
-            right,
-            by,
-            bw,
-            bh,
-            Tone::Danger,
-            None,
-            "Remove",
-            !busy,
-            tip,
-        )
-        .clicked
-        {
+        if a.button(k, &key("remove"), Tone::Dark, None, "Remove", !busy, tip) {
             d.state.profile.steamvr_via = SteamVrVia::Revive;
             let hands_off = d.state.echoxr_hands;
             if hands_off {
@@ -1008,45 +1168,17 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
                 "SteamVR plays through Revive now"
             });
         }
-        right -= dz(14.0);
     }
-    // Ready, or prepared by PLAY, while it is in use.
-    let ready = if linux {
-        Some(d.linux_set_up && echoxr::is_fetched())
-    } else if steamvr {
-        Some(!d.echoxr_missing())
-    } else {
-        None
-    };
-    if let Some(ready) = ready {
-        let (chip, color) = if ready {
-            ("Ready", design::QUEST_ON)
-        } else {
-            ("PLAY prepares it", design::QUEST_OFF)
-        };
-        let cw = k.chip_width(chip);
-        right -= cw;
-        k.chip(right, by + (bh - dz(27.0)) / 2.0, chip, color);
-    }
-    let g = k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY);
-    let name_w = g.size().x;
-    k.check(&key("on"), &mut true, name, x, y + dz(13.0), false, tip);
+    // No chip: PLAY prepares it whenever it isn't ready, nothing to look at.
+    k.check(&key("on"), &mut true, name, x, y + dz(NAME_Y), false, tip);
     let tags = [
         Some(("VR", design::BLUE)),
         linux.then_some(("Required", design::QUEST_ON)),
         (!linux && !steamvr).then_some(("Used with SteamVR", design::QUEST_WARN)),
     ];
-    let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
-    for (tag, color) in tags.into_iter().flatten() {
-        let tw = k.dot_tag_width(tag, 12.0);
-        if tag_x + tw >= right - dz(12.0) {
-            break;
-        }
-        k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
-        tag_x += tw + dz(14.0);
-    }
+    name_tags(k, x, &a, name, tags.into_iter().flatten());
     let g = detail_lines(k, &echoxr_detail(linux), w);
-    k.put(x + dz(INDENT), y + dz(43.0), g);
+    k.put(x + dz(INDENT), y + dz(DETAIL_Y), g);
 }
 
 /// EchoXR's line under its name.
@@ -1078,7 +1210,7 @@ fn hands_detail() -> String {
 }
 
 /// EchoXR Hands' row, while it is on (installed): what nEVR did with its plugin, finger
-/// sharing, its settings window and Remove (it goes back to Additional Plugins); what it
+/// sharing, its settings and Remove (it goes back to More mods); what it
 /// does under it.
 #[allow(clippy::too_many_arguments)]
 fn hands_row(
@@ -1097,128 +1229,63 @@ fn hands_row(
     let busy = busy(d, v);
     let tip = "Your own fingers on Echo VR's hands, from your headset's hand tracking (Remove takes it out)";
     let key = |what: &str| format!("mods-vr-{what}-hands");
-    let bh = dz(30.0);
-    let by = y + dz(10.0);
-    let mut right = x + w;
+    let mut a = Actions::new(x, y, w);
     let installed = d.demo || hands::installed_in(&bin);
-    {
-        let bw = k.button_width("Remove", None, bh).max(dz(110.0));
-        right -= bw;
-        let tip = busy.unwrap_or("Take its plugin out of the game's plugins folder");
-        if k.button(
-            &key("remove"),
-            right,
-            by,
-            bw,
-            bh,
-            Tone::Danger,
-            None,
-            "Remove",
-            busy.is_none(),
-            tip,
-        )
-        .clicked
-        {
-            d.state.echoxr_hands = false;
-            d.save();
-            match hands::remove_from(&bin) {
-                Ok(()) => d.notify("EchoXR Hands is removed"),
-                Err(e) => d.dialogs.error(
-                    "Couldn't remove EchoXR Hands",
-                    &format!("{e:#}"),
-                    Default::default(),
-                ),
-            }
-            d.mods.changed();
+    let tip_remove = busy.unwrap_or("Take its plugin out of the game's plugins folder");
+    if a.button(
+        k,
+        &key("remove"),
+        Tone::Dark,
+        None,
+        "Remove",
+        busy.is_none(),
+        tip_remove,
+    ) {
+        d.state.echoxr_hands = false;
+        d.save();
+        match hands::remove_from(&bin) {
+            Ok(()) => d.notify("EchoXR Hands is removed"),
+            Err(e) => d.dialogs.error(
+                "Couldn't remove EchoXR Hands",
+                &format!("{e:#}"),
+                Default::default(),
+            ),
         }
-        right -= dz(14.0);
+        d.mods.changed();
     }
-    // Its settings window (Windows), and finger sharing.
-    if installed && (cfg!(windows) || d.demo) {
-        let bw = k.button_width("Settings", None, bh).max(dz(110.0));
-        right -= bw;
-        if k.button(
+    // Its settings (from its description), finger sharing among them on the row.
+    if let Some(p) = plugin.filter(|p| p.settings.is_some()) {
+        if a.button(
+            k,
             &key("settings"),
-            right,
-            by,
-            bw,
-            bh,
             Tone::Dark,
             None,
             "Settings",
             true,
-            "EchoXR Hands' own settings window: every setting shows in the game straight away",
-        )
-        .clicked
-            && !d.demo
-        {
-            let app = hands::dir_in(&bin).join(hands::SETTINGS_APP);
-            if let Err(e) = std::process::Command::new(&app)
-                .current_dir(hands::dir_in(&bin))
-                .spawn()
-            {
-                d.dialogs.error(
-                    "Couldn't open EchoXR Hands' settings",
-                    &format!("{}: {e}", app.display()),
-                    Default::default(),
-                );
-            }
-        }
-        right -= dz(14.0);
-    }
-    if installed {
-        let mut share = !d.demo && hands::sharing(&bin);
-        let label = "Share fingers";
-        let cw = k
-            .label_galley(label, design::din(18.0), design::TEXT, f32::INFINITY)
-            .size()
-            .x
-            + dz(26.0);
-        right -= cw;
-        if k.check(
-            &key("share"),
-            &mut share,
-            label,
-            right,
-            y + dz(13.0),
-            !d.demo,
-            "Others running it see your fingers, and you theirs. It sends your display name and the names of the players in your match to EchoXR Hands' relay server, which pairs you up.",
+            "EchoXR Hands' settings: they show in the game straight away",
         ) {
-            if let Err(e) = hands::set_sharing(&bin, share) {
-                d.dialogs
-                    .error("Couldn't change finger sharing", &format!("{e:#}"), Default::default());
-            }
+            open_sheet(d, &p.file);
         }
-        right -= dz(18.0);
+        row_settings(d, k, v, p, &mut a, busy.is_none());
     }
-    let (chip, color) = match plugin {
+    // What needs looking at. Not in plugins/ yet, but downloaded: PLAY puts it there.
+    let chip = match plugin {
         Some(p) if d.mods.view.is_some() => state(p),
-        // The plugin goes into plugins/ again at the next start, from the download.
-        _ if installed || d.demo || hands::is_fetched() => ("Next start".into(), design::QUEST_OFF),
-        _ => ("Not downloaded".into(), design::QUEST_WARN),
+        _ if installed || d.demo || hands::is_fetched() => None,
+        _ => Some(("Not downloaded", design::QUEST_WARN)),
     };
-    let cw = k.chip_width(&chip);
-    right -= cw;
-    k.chip(right, by + (bh - dz(27.0)) / 2.0, &chip, color);
-    let g = k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY);
-    let name_w = g.size().x;
-    k.check(&key("on"), &mut true, name, x, y + dz(13.0), false, tip);
+    if let Some((chip, color)) = chip {
+        a.chip(k, chip, color);
+    }
+    k.check(&key("on"), &mut true, name, x, y + dz(NAME_Y), false, tip);
     let tags = [
         Some(("VR", design::BLUE)),
         Some(("Needs EchoXR", design::SUBTLE)),
         linux.then_some(("Experimental", design::QUEST_WARN)),
     ];
-    let mut tag_x = x + dz(INDENT) + name_w + dz(16.0);
-    for (tag, color) in tags.into_iter().flatten() {
-        let tw = k.dot_tag_width(tag, 12.0);
-        if tag_x + tw >= right - dz(12.0) {
-            break;
-        }
-        k.dot_tag(tag_x, y + dz(25.0), tag, 12.0, color);
-        tag_x += tw + dz(14.0);
-    }
+    name_tags(k, x, &a, name, tags.into_iter().flatten());
     let g = detail_lines(k, &hands_detail(), w);
-    k.put(x + dz(INDENT), y + dz(43.0), g);
+    k.put(x + dz(INDENT), y + dz(DETAIL_Y), g);
 }
 
 /// A row's line under its name in DMCAPS (file names keep their case), on as many lines
@@ -1319,7 +1386,7 @@ fn asset_row(
         // Right of the check's label (box 16, gap 10, then the label in DIN 18).
         let g = k.label_galley(&label, design::din(18.0), design::TEXT, f32::INFINITY);
         let tx = lx + 26.0 + g.size().x + dz(14.0);
-        k.dot_tag(tx, y + dz(20.0), "Required", 12.0, design::QUEST_ON);
+        k.dot_tag(tx, y + dz(8.0) + 12.0, "Required", 12.0, design::QUEST_ON);
     }
     if switched {
         let l = a.label.clone();
@@ -1558,6 +1625,292 @@ fn options_rows(
     }
 }
 
+// ---- a plugin's settings (from its description) ----
+
+/// The settings sheet of plugin `file`.
+#[derive(Clone)]
+pub(super) struct SettingsSheet {
+    file: String,
+    form: plugin_form::FormState,
+}
+
+const ACTION_KEY: &str = "mods-settings-action";
+
+fn open_sheet(d: &mut Dashboard, file: &str) {
+    d.overlay = Some(setup::Overlay::PluginSettings(Box::new(SettingsSheet {
+        file: file.to_string(),
+        form: Default::default(),
+    })));
+}
+
+/// The shown plugin `file` of `v`.
+fn shown_plugin(d: &Dashboard, v: &InstalledVersion, file: &str) -> Option<Plugin> {
+    d.mods
+        .view
+        .as_ref()
+        .filter(|(id, ..)| *id == v.id)
+        .and_then(|(_, view, _)| {
+            view.plugins
+                .iter()
+                .find(|p| p.file.eq_ignore_ascii_case(file))
+        })
+        .cloned()
+}
+
+/// Writes `changes` to plugin `p`'s settings, and shows them right away.
+fn apply_settings(
+    d: &mut Dashboard,
+    v: &InstalledVersion,
+    p: &Plugin,
+    changes: Vec<(String, String)>,
+) {
+    let Some(sp) = &p.settings else {
+        return;
+    };
+    if changes.is_empty() {
+        return;
+    }
+    let settings = sp.settings.clone();
+    let file = p.file.clone();
+    write(
+        d,
+        v,
+        |v| plugin_settings::write(v, &file, &settings, &changes),
+        |m| {
+            let Some(q) = m.plugins.iter_mut().find(|q| q.file == file) else {
+                return;
+            };
+            for (key, value) in &changes {
+                let args = settings
+                    .field(key)
+                    .map_or(&settings.store, |f| f.store(&settings))
+                    == &plugin_settings::Store::Args;
+                if args {
+                    q.args
+                        .insert(key.clone(), serde_json::Value::String(value.clone()));
+                }
+                if let Some(sp) = &mut q.settings {
+                    if sp.values.contains_key(key) {
+                        sp.values.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// The settings a plugin shows on its row (right to left): its bools as checks, its
+/// choices as dropdowns.
+fn row_settings(
+    d: &mut Dashboard,
+    k: &mut Kit,
+    v: &InstalledVersion,
+    p: &Plugin,
+    a: &mut Actions,
+    enabled: bool,
+) {
+    let Some(sp) = &p.settings else {
+        return;
+    };
+    let mut changes = Vec::new();
+    for key in sp.settings.row.iter().rev() {
+        let Some(f) = sp.settings.field(key) else {
+            continue;
+        };
+        let value = sp.values.get(key).cloned().unwrap_or_default();
+        let id = format!("mods-row-{}-{key}", p.file);
+        let on = enabled && plugin_settings::holds(&f.enabled_if, &sp.values);
+        match &f.kind {
+            plugin_settings::Kind::Bool { on: yes, off } => {
+                let mut b = plugin_form::is_on(f, &value);
+                if a.check(k, &id, &mut b, &f.label, on, f.hover()) {
+                    changes.push((key.clone(), if b { yes.clone() } else { off.clone() }));
+                }
+            }
+            plugin_settings::Kind::Choice { choices } => {
+                if let Some(c) = a.select(k, &id, choices, &value, on, f.hover()) {
+                    changes.push((key.clone(), c));
+                }
+            }
+            _ => {}
+        }
+    }
+    apply_settings(d, v, p, changes);
+}
+
+/// A plugin's settings over the page: its description's form, whether the changes apply
+/// now or at the next start, Show advanced, Reset all and Done.
+pub(super) fn settings_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let Some(setup::Overlay::PluginSettings(sheet)) = &d.overlay else {
+        return;
+    };
+    let file = sheet.file.clone();
+    let p = version(d).and_then(|v| shown_plugin(d, &v, &file).map(|p| (v, p)));
+    let Some((v, p, sp)) = p.and_then(|(v, p)| {
+        let sp = p.settings.clone()?;
+        Some((v, p, sp))
+    }) else {
+        d.overlay = None;
+        return;
+    };
+    let s = sp.settings.clone();
+    let title = if p
+        .file
+        .eq_ignore_ascii_case(crate::core::echoxr_hands::PLUGIN)
+    {
+        "EchoXR Hands".to_string()
+    } else {
+        display_name(&p, &names(d.mods.catalog.as_ref()))
+    };
+    // Arguments need the mod loader; a file of its own is the plugin's.
+    let editable = d
+        .mods
+        .view
+        .as_ref()
+        .is_some_and(|(_, m, _)| m.loader.editable());
+    let needs_loader = s
+        .fields()
+        .any(|f| f.has_value() && *f.store(&s) == plugin_settings::Store::Args);
+    let why_not =
+        busy(d, &v).or((needs_loader && !editable).then_some("Needs the mod loader (nEVR)"));
+    let enabled = why_not.is_none() && !d.demo;
+
+    let (w, h) = (dz(1180.0), dz(900.0));
+    let (x, y, cw, bottom) = setup::card(k, w, h, &format!("{title} settings"));
+    let foot = bottom - BTN_H;
+    let (top, list_bottom) = (y, foot - dz(20.0));
+    let Some(setup::Overlay::PluginSettings(sheet)) = &mut d.overlay else {
+        return;
+    };
+    let st = &mut sheet.form;
+    let content = plugin_form::height(k, &s, &sp.values, st, cw);
+    k.scroll_area(
+        "mods-settings-scroll",
+        x,
+        top,
+        cw + dz(18.0),
+        list_bottom - top,
+        content,
+        &mut st.scroll,
+    );
+    let scroll = st.scroll;
+    let out = k.clipped(x - dz(6.0), top, cw + dz(12.0), list_bottom - top, |k| {
+        plugin_form::form(
+            k,
+            "mods-settings",
+            &s,
+            &sp.values,
+            st,
+            x,
+            top - scroll,
+            cw,
+            (top, list_bottom),
+            enabled,
+        )
+    });
+    let mut changes = out.changes;
+    if let Some((label, question)) = out.confirm {
+        d.dialogs
+            .confirm(ACTION_KEY, &label, &question, DlgIcon::Warning);
+    }
+
+    // The foot, under a line: Show advanced, when changes apply; Reset all and Done.
+    k.ui.painter().hline(
+        (k.origin.x + x)..=(k.origin.x + x + cw),
+        k.origin.y + foot - dz(12.0),
+        egui::Stroke::new(1.0, Color32::from_white_alpha(28)),
+    );
+    let Some(setup::Overlay::PluginSettings(sheet)) = &mut d.overlay else {
+        return;
+    };
+    if s.has_advanced() {
+        k.check(
+            "mods-settings-advanced",
+            &mut sheet.form.advanced,
+            "Show advanced",
+            x,
+            foot + (BTN_H - 24.0) / 2.0,
+            true,
+            "Every setting, also the fine-tuning ones",
+        );
+    }
+    let applies = match why_not {
+        Some(why) => why.to_string(),
+        None if s.all_live() => "Changes apply right away, also while you play.".into(),
+        None if s.store.live() => {
+            "Changes apply right away, those marked at the next start.".into()
+        }
+        None => "Changes apply at the next start.".into(),
+    };
+    let note_x = x + if s.has_advanced() {
+        k.check_width("Show advanced") + dz(30.0)
+    } else {
+        0.0
+    };
+    let done_w = k.button_width("Done", None, BTN_H).max(dz(150.0));
+    let reset_w = k.button_width("Reset all", None, BTN_H).max(dz(150.0));
+    let right = x + cw;
+    let g = k.label_galley(
+        &applies,
+        design::din(14.0),
+        design::GREY,
+        right - done_w - reset_w - dz(40.0) - note_x,
+    );
+    k.put(note_x, foot + (BTN_H - g.size().y) / 2.0, g);
+    let typing = ctx.memory(|m| m.focused().is_some());
+    if k.button(
+        "mods-settings-done",
+        right - done_w,
+        foot,
+        done_w,
+        BTN_H,
+        Tone::Blue,
+        None,
+        "Done",
+        true,
+        "",
+    )
+    .clicked
+        || (!typing && ctx.input(|i| i.key_pressed(egui::Key::Escape)))
+    {
+        d.overlay = None;
+    }
+    let defaults = s.defaults();
+    let differs = defaults
+        .iter()
+        .any(|(key, dv)| sp.values.get(key).is_some_and(|cur| cur != dv));
+    if k.button(
+        "mods-settings-reset",
+        right - done_w - dz(12.0) - reset_w,
+        foot,
+        reset_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Reset all",
+        enabled && differs,
+        "Every setting back to its default",
+    )
+    .clicked
+    {
+        changes.extend(
+            defaults
+                .into_iter()
+                .filter(|(key, dv)| sp.values.get(key).is_some_and(|cur| cur != dv)),
+        );
+    }
+    if let Some(a) = d.dialogs.take(ACTION_KEY) {
+        let pending = match &mut d.overlay {
+            Some(setup::Overlay::PluginSettings(sheet)) => sheet.form.pending.take(),
+            _ => None,
+        };
+        if a.is_yes() {
+            changes.extend(pending.unwrap_or_default());
+        }
+    }
+    apply_settings(d, &v, &p, changes);
+}
+
 /// Writes a change (`f`, small files: on this thread) and shows it at once (`show`), or
 /// says why it couldn't be made.
 fn write(
@@ -1593,9 +1946,9 @@ fn open_dir(d: &mut Dashboard, dir: &std::path::Path) {
     }
 }
 
-// ---- additional plugins ----
+// ---- more mods (the catalogue's, and the VR parts not in use) ----
 
-/// What ADDITIONAL PLUGINS offers: the catalogue's plugins that aren't here (and aren't
+/// What MORE MODS offers: the catalogue's plugins that aren't here (and aren't
 /// required: those come with the update), and the VR parts not in use.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Extra<'a> {
@@ -1668,7 +2021,7 @@ fn extras<'a>(
     out
 }
 
-/// ADDITIONAL PLUGINS: what can still be installed, each with what it does and GET.
+/// MORE MODS: what can still be installed, each with what it does and GET.
 fn catalogue_card(
     d: &mut Dashboard,
     kit: &mut Kit,
@@ -1677,13 +2030,13 @@ fn catalogue_card(
     view: Option<&ModView>,
     r: Dr,
 ) {
-    let (x, y, w, bottom) = hero::card_frame(kit, r, "Additional Plugins");
+    let (x, y, w, bottom) = hero::card_frame(kit, r, "More mods");
     let Some(catalog) = d.mods.catalog.clone() else {
         kit.caps_text(
             x,
             y,
             w,
-            "Loading the plugins catalogue…",
+            "Loading the mods catalogue…",
             15.5,
             design::BODY,
             0.0,
@@ -1708,7 +2061,7 @@ fn catalogue_card(
             x,
             y,
             w,
-            "Everything available is installed: it's in Plugins.",
+            "Everything available is installed: it's under Installed mods.",
             15.5,
             design::BODY,
             0.0,
@@ -1766,7 +2119,7 @@ fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Ex
         }
         Extra::Hands => {
             // On (and EchoXR with it) only once it is installed: a failed download leaves
-            // it in Additional Plugins.
+            // it in More mods.
             let v = v.clone();
             d.start_job(
                 ctx,
@@ -1841,7 +2194,7 @@ fn entry(
     busy: Option<&'static str>,
 ) {
     // Right: GET, or that it isn't out yet.
-    let bh = dz(30.0);
+    let bh = dz(ROW_BTN_H);
     let mut right = x + w;
     let gettable = match e {
         Extra::Mod(m) => m.downloadable(),
@@ -1930,6 +2283,44 @@ fn entry(
 
 // ---- snapshots ----
 
+/// A made-up description with every kind of control, for snapshots.
+fn showcase() -> serde_json::Value {
+    serde_json::json!({
+        "store": { "kind": "args" },
+        "row": ["panel"],
+        "sections": [
+            { "title": "Panel", "help": "What the wrist panel shows after a round.", "fields": [
+                { "key": "panel", "type": "bool", "label": "Wrist panel", "default": true, "style": "switch",
+                  "help": "Shows your round on your left wrist." },
+                { "key": "compact", "type": "bool", "label": "Compact", "default": false },
+                { "key": "show", "type": "multi", "label": "Show", "style": "chips",
+                  "choices": ["damage", "eliminations", "accuracy"], "default": ["damage"] },
+                { "key": "corner", "type": "choice", "label": "Corner", "style": "segmented", "default": "left",
+                  "choices": [ { "value": "left", "label": "Left" }, { "value": "right", "label": "Right" } ] },
+                { "key": "theme", "type": "choice", "label": "Theme", "default": "team",
+                  "choices": [ { "value": "team", "label": "Team colours", "help": "Orange or blue" }, { "value": "mono", "label": "White" } ] },
+                { "key": "tint", "type": "color", "label": "Accent", "default": "#ff8800" },
+                { "key": "opacity", "type": "number", "label": "Opacity", "min": 0, "max": 100, "step": 5, "default": 80, "unit": "%", "style": "slider" },
+                { "key": "rounds", "type": "number", "label": "Rounds kept", "integer": true, "min": 1, "max": 50, "default": 10, "style": "stepper" },
+                { "key": "delay", "type": "number", "label": "Delay", "min": 0, "max": 10, "default": 2, "unit": "s",
+                  "help": "Seconds after the round ends." }
+            ]},
+            { "title": "Upload", "fields": [
+                { "key": "upload", "type": "choice", "label": "Upload rounds", "style": "radio", "default": "never",
+                  "choices": [ { "value": "never", "label": "Never" }, { "value": "ranked", "label": "Ranked matches" }, { "value": "all", "label": "Every match" } ] },
+                { "key": "server", "type": "text", "label": "Server", "format": "url", "placeholder": "https://stats.example",
+                  "enabled_if": { "upload": "all" } },
+                { "key": "token", "type": "secret", "label": "Token", "advanced": true },
+                { "key": "hotkey", "type": "key", "label": "Show the panel", "default": "Ctrl+Shift+S" },
+                { "type": "action", "label": "Clear saved rounds", "tone": "danger", "sets": { "clear": "1" },
+                  "confirm": "Delete every round kept on this PC?" },
+                { "type": "note", "text": "Rounds are kept in plugin_logs/combat_stats.", "advanced": true },
+                { "type": "link", "label": "How it counts", "url": "https://example.com/combat-stats" }
+            ]}
+        ]
+    })
+}
+
 /// Made-up mods for snapshots (`variant`: no loader yet, or a plugin's options open).
 fn demo(variant: Option<SnapVariant>) -> Mods {
     let status = |file: &str, name: &str, version: &str, st: &str, error: &str| PluginStatus {
@@ -1954,6 +2345,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         defaults: Default::default(),
         present: true,
         status: st,
+        settings: None,
     };
     let bare = variant == Some(SnapVariant::ModsNoLoader);
     let long = variant == Some(SnapVariant::ModsLongText);
@@ -1998,6 +2390,46 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
             )),
         ),
     ];
+    let hands = matches!(
+        variant,
+        Some(SnapVariant::ModsHands | SnapVariant::ModsSettings | SnapVariant::ModsSettingsAll)
+    );
+    if hands {
+        let file = crate::core::echoxr_hands::PLUGIN;
+        let mut p = plugin(
+            file,
+            "EchoXRHands",
+            Source::Shipped,
+            Some(status(file, "EchoXRHands", "0.4.0", "loaded", "")),
+        );
+        p.required = false;
+        let (settings, origin) = plugin_settings::describe(file, None, None).expect("built in");
+        let text = include_str!("../../core/launcher/testdata/EchoXRHands.txt");
+        let files = BTreeMap::from([(
+            "EchoXRHands.txt".to_string(),
+            text.replace("Network = 0", "Network = 1"),
+        )]);
+        let values = plugin_settings::values_from(&settings, &Default::default(), &files);
+        p.settings = Some(plugin_settings::PluginSettings {
+            settings,
+            origin,
+            values,
+        });
+        plugins.push(p);
+    }
+    if variant == Some(SnapVariant::ModsSettingsAll) {
+        let (settings, _) = plugin_settings::parse_settings(&showcase());
+        let settings = std::sync::Arc::new(settings.expect("showcase"));
+        let mut values = settings.defaults();
+        values.insert("rounds".into(), "12".into());
+        values.insert("tint".into(), "#3a7bff".into());
+        values.insert("show".into(), "damage,accuracy".into());
+        plugins[1].settings = Some(plugin_settings::PluginSettings {
+            settings,
+            origin: plugin_settings::Origin::Catalogue,
+            values,
+        });
+    }
     plugins[0].args = serde_json::json!({ "logging": "normal" })
         .as_object()
         .cloned()
@@ -2112,15 +2544,58 @@ mod tests {
         };
         assert_eq!(
             last_start(&s),
-            "Last start 2026-10-04 18:04: 1 plugin loaded, 2 failed."
+            "Last start 2026-10-04 18:04: 1 mod loaded, 2 failed."
         );
         s.started = "?".into();
         s.plugins = vec![p("loaded"), p("loaded"), p("skipped")];
-        assert_eq!(last_start(&s), "Last start: 2 plugins loaded, 1 skipped.");
+        assert_eq!(last_start(&s), "Last start: 2 mods loaded, 1 skipped.");
         s.plugins.clear();
-        assert_eq!(last_start(&s), "Last start: no plugins.");
+        assert_eq!(last_start(&s), "Last start: no mods.");
         assert_eq!(short_version("4.0.0+182.e418eaa"), "4.0.0");
         assert_eq!(short_version("4.0.0-182-ge418eaa-dirty"), "4.0.0");
+    }
+
+    /// A plugin's asset patches and options share its tile; the next plugin starts one.
+    #[test]
+    fn plugins_get_a_tile_each() {
+        let patch = AssetPatch {
+            label: "a".into(),
+            enabled: true,
+            required: false,
+        };
+        let p = Plugin {
+            file: "a.dll".into(),
+            name: "a".into(),
+            version: String::new(),
+            source: Source::Shipped,
+            enabled: true,
+            added: false,
+            required: false,
+            verified: true,
+            args: Default::default(),
+            defaults: Default::default(),
+            present: true,
+            status: None,
+            settings: None,
+        };
+        let rows = [
+            Row::Vr(VrPart::EchoXr, None),
+            Row::Plugin(&p),
+            Row::Assets(true),
+            Row::Asset(&patch, true),
+            Row::Plugin(&p),
+        ];
+        let heights = [50.0, 50.0, 20.0, 20.0, 50.0];
+        let (tops, tiles, content) = tile_layout(&rows, &heights);
+        let (pad, gap) = (dz(TILE_PAD), dz(TILE_GAP));
+        assert_eq!(tiles.len(), 3);
+        // EchoXR alone, then a plugin with its two asset patch rows, then the last plugin.
+        assert_eq!(tiles[0], (0.0, 50.0 + 2.0 * pad));
+        assert_eq!(tiles[1], (tiles[0].1 + gap, 90.0 + 2.0 * pad));
+        assert_eq!(tops[1], tiles[1].0 + pad);
+        assert_eq!(tops[3], tops[2] + 20.0);
+        assert_eq!(tops[4], tiles[2].0 + pad);
+        assert_eq!(content, tiles[2].0 + tiles[2].1);
     }
 
     #[test]
@@ -2138,19 +2613,25 @@ mod tests {
             defaults: Default::default(),
             present: true,
             status: None,
+            settings: None,
         };
-        assert_eq!(state(&p).0, "Next start");
+        // Not started yet: nothing to say.
+        assert_eq!(state(&p), None);
         p.status = Some(PluginStatus {
             status: "failed".into(),
             error: "missing NvrPluginGetInfo export".into(),
             ..Default::default()
         });
-        assert_eq!(state(&p).0, "Failed");
+        assert_eq!(state(&p).map(|s| s.0), Some("Failed"));
         assert_eq!(detail(&p), "a.dll  ·  missing NvrPluginGetInfo export");
         p.enabled = false;
-        assert_eq!(state(&p).0, "Off");
+        assert_eq!(state(&p), None);
         p.present = false;
-        assert_eq!(state(&p).0, "Missing");
+        assert_eq!(state(&p).map(|s| s.0), Some("Missing"));
+        p.present = true;
+        p.enabled = true;
+        p.status.as_mut().unwrap().status = "loaded".into();
+        assert_eq!(state(&p), None);
     }
 
     #[test]

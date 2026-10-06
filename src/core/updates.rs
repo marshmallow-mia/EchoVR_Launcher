@@ -288,6 +288,7 @@ mod tests {
             required: false,
             present: true,
             status: None,
+            settings: None,
         }
     }
 

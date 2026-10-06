@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 
 use super::catalog;
 use super::nevr::{self, PluginLine};
+use super::plugin_settings;
 use super::store::InstalledVersion;
 use super::versions::Step;
 use crate::core::{download, paths};
@@ -596,6 +597,8 @@ pub struct Plugin {
     pub present: bool,
     /// What the loader did with it at the last start.
     pub status: Option<PluginStatus>,
+    /// Its settings, from a description, with their values (none: just its arguments).
+    pub settings: Option<plugin_settings::PluginSettings>,
 }
 
 impl Plugin {
@@ -706,9 +709,14 @@ pub fn read(v: &InstalledVersion) -> ModView {
     let files = plugin_files(v);
     let read = |p: &str| std::fs::read_to_string(bin.join(p)).unwrap_or_default();
     let (assets_enabled, asset_patches) = asset_patches(&read(ASSETS), &read(ASSETS_OVERLAY));
+    let dir = plugins_dir(v);
+    let mut plugins = plugins(&overlay, &files, status.as_ref(), &catalog);
+    for p in plugins.iter_mut().filter(|p| p.present) {
+        p.settings = plugin_settings::read(&dir, p, catalog.entry_for(&p.file));
+    }
     ModView {
         enabled: overlay.enabled(),
-        plugins: plugins(&overlay, &files, status.as_ref(), &catalog),
+        plugins,
         loader,
         status,
         shadowed: nevr::shadowing_config(v),
@@ -834,6 +842,7 @@ fn plugin(
         args: e.args,
         defaults,
         status: st,
+        settings: None,
         file: e.file,
     }
 }
@@ -996,6 +1005,21 @@ pub fn set_args(v: &InstalledVersion, file: &str, args: &BTreeMap<String, String
         bail!("{key}: nEVR reads ${{…}} as an environment variable, and loads no plugins at all when it isn't set. Leave it out.");
     }
     edit_overlay(v, |o| o.set_args(file, args))
+}
+
+/// Some of `file`'s arguments (key, value), the others as they are.
+pub fn set_some_args(v: &InstalledVersion, file: &str, some: &[(String, String)]) -> Result<()> {
+    let o = Overlay::read(&choices_path(v));
+    let mut args = o
+        .apply(shipped(&o, &plugin_files(v), &ModCatalog::cached()))
+        .into_iter()
+        .find(|e| e.file.eq_ignore_ascii_case(file))
+        .map(|e| strings(&e.args))
+        .unwrap_or_default();
+    for (k, val) in some {
+        args.insert(k.clone(), val.clone());
+    }
+    set_args(v, file, &args)
 }
 
 fn edit_overlay(v: &InstalledVersion, f: impl FnOnce(&mut Overlay)) -> Result<()> {
@@ -1225,6 +1249,8 @@ pub struct ModEntry {
     pub shipped: bool,
     /// The game needs it: always on, also with "Start without mods".
     pub required: bool,
+    /// What can be set, and how (see [`super::plugin_settings`]).
+    pub settings: Option<Value>,
 }
 
 impl ModEntry {

@@ -1,0 +1,176 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://release.echovr.de/launcher/plugin.schema.json",
+  "title": "Echo VR Launcher plugin description",
+  "description": "<Stem>.plugin.json beside a plugin's DLL: its settings, drawn by the launcher. See docs/plugins/settings.md.",
+  "type": "object",
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema": { "const": 1 },
+    "settings": { "$ref": "#/$defs/settings" }
+  },
+  "required": ["schema", "settings"],
+  "$defs": {
+    "key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+    },
+    "scalar": { "type": ["string", "number", "boolean"] },
+    "conditions": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/key" },
+      "additionalProperties": { "$ref": "#/$defs/scalar" }
+    },
+    "store": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": { "kind": { "const": "args" } },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "file" },
+            "file": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.(txt|ini|cfg|json)$",
+              "maxLength": 64
+            },
+            "format": { "enum": ["keyvalue", "json"] },
+            "live": { "type": "boolean" }
+          },
+          "required": ["kind", "file"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "store": { "$ref": "#/$defs/store" },
+        "row": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/key" },
+          "maxItems": 2
+        },
+        "sections": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/section" }
+        },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/field" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "section": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "help": { "type": "string" },
+        "tooltip": { "type": "string" },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/field" } }
+      },
+      "required": ["fields"],
+      "additionalProperties": false
+    },
+    "choice": {
+      "oneOf": [
+        { "$ref": "#/$defs/scalar" },
+        {
+          "type": "object",
+          "properties": {
+            "value": { "$ref": "#/$defs/scalar" },
+            "label": { "type": "string" },
+            "help": { "type": "string" },
+            "tooltip": { "type": "string" }
+          },
+          "required": ["value"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "choices": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/choice" },
+      "minItems": 1
+    },
+    "field": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": ["bool", "text", "secret", "choice", "multi", "number", "color", "key", "action", "note", "link"]
+        },
+        "key": { "$ref": "#/$defs/key" },
+        "label": { "type": "string" },
+        "help": { "type": "string" },
+        "tooltip": { "type": "string" },
+        "default": {
+          "oneOf": [
+            { "$ref": "#/$defs/scalar" },
+            { "type": "array", "items": { "$ref": "#/$defs/scalar" } }
+          ]
+        },
+        "advanced": { "type": "boolean" },
+        "visible_if": { "$ref": "#/$defs/conditions" },
+        "enabled_if": { "$ref": "#/$defs/conditions" },
+        "restart": { "type": "boolean" },
+        "store": { "$ref": "#/$defs/store" },
+        "style": {
+          "enum": ["check", "switch", "field", "area", "dropdown", "segmented", "radio", "checks", "chips", "slider", "stepper"]
+        },
+        "values": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/scalar" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "placeholder": { "type": "string" },
+        "min_len": { "type": "integer", "minimum": 0 },
+        "max_len": { "type": "integer", "minimum": 0 },
+        "format": { "enum": ["url", "hex", "digits", "name"] },
+        "choices": { "$ref": "#/$defs/choices" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "step": { "type": "number", "exclusiveMinimum": 0 },
+        "integer": { "type": "boolean" },
+        "unit": { "type": "string" },
+        "alpha": { "type": "boolean" },
+        "allow_modifiers": { "type": "boolean" },
+        "sets": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/key" },
+          "additionalProperties": { "$ref": "#/$defs/scalar" },
+          "minProperties": 1
+        },
+        "tone": { "enum": ["normal", "danger"] },
+        "confirm": { "type": "string" },
+        "text": { "type": "string" },
+        "url": { "type": "string", "pattern": "^https://" }
+      },
+      "required": ["type"],
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "enum": ["action", "note", "link"] } } },
+          "else": { "required": ["key"] }
+        },
+        {
+          "if": { "properties": { "type": { "enum": ["choice", "multi"] } } },
+          "then": { "required": ["choices"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "action" } } },
+          "then": { "required": ["sets"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "link" } } },
+          "then": { "required": ["url"] }
+        }
+      ],
+      "additionalProperties": false
+    }
+  }
+}

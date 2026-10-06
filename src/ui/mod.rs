@@ -2,6 +2,7 @@
 //! Installing, patching, SteamVR setup and the Quest all run inside it.
 
 mod assets;
+mod controls;
 mod design;
 mod dialogs;
 #[cfg(test)]

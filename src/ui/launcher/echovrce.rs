@@ -45,13 +45,36 @@ enum Msg {
     /// The saved session (or none).
     Loaded(Option<Tokens>),
     /// A sign-in code, or why there is none.
-    Code(Result<DeviceCode, String>),
+    Code(Result<DeviceCode, Failed>),
     /// Signed in (code approved, or tokens pasted), or why not.
-    SignedIn(Result<(Tokens, Account), String>),
+    SignedIn(Result<(Tokens, Account), Failed>),
+    /// While a code waits: EchoVRCE isn't answering its polls (why), or is again (`None`).
+    Polling(Option<String>),
     /// The regular check: the renewed session if it was renewed, and the account.
     Checked(Result<(Option<Tokens>, Account), Ended>),
     /// A session linked for the site: (account id, its tokens), or why not.
     SiteLinked(Result<(String, Tokens), String>),
+}
+
+/// Why signing in didn't work, and whether it's because EchoVRCE isn't answering.
+struct Failed {
+    why: String,
+    down: bool,
+}
+
+impl Failed {
+    fn of(e: &anyhow::Error) -> Failed {
+        Failed {
+            why: format!("{e:#}"),
+            down: vrce::is_unavailable(e),
+        }
+    }
+}
+
+impl From<String> for Failed {
+    fn from(why: String) -> Failed {
+        Failed { why, down: false }
+    }
 }
 
 /// Why a check failed.
@@ -80,6 +103,10 @@ pub(super) struct Vrce {
     pub signing: Option<Signing>,
     /// The session ended and couldn't be renewed: sign in again.
     pub ended: bool,
+    /// EchoVRCE isn't answering right now (why): the session stays, checks go on.
+    pub down: Option<String>,
+    /// Why the last sign-in didn't work, until the next one.
+    pub failed: Option<String>,
     /// When to check the session next.
     next_check: Option<Instant>,
     loaded: bool,
@@ -112,6 +139,7 @@ impl Vrce {
                 }
                 Msg::Code(Ok(code)) => {
                     self.busy = false;
+                    self.down = None;
                     crate::core::platform::open_url(&vrce::approve_url(&code.code));
                     let cancel = Arc::new(AtomicBool::new(false));
                     self.wait_for_approval(ctx, &code, cancel.clone());
@@ -121,15 +149,23 @@ impl Vrce {
                         cancel,
                     });
                 }
-                Msg::Code(Err(why)) | Msg::SignedIn(Err(why)) => {
+                Msg::Code(Err(f)) | Msg::SignedIn(Err(f)) => {
                     self.busy = false;
                     self.signing = None;
-                    notice = Some(why);
+                    tracing::warn!("echovrce sign-in: {}", f.why);
+                    if f.down {
+                        self.down = Some(f.why.clone());
+                    }
+                    self.failed = Some(f.why.clone());
+                    notice = Some(f.why);
                 }
+                Msg::Polling(down) => self.down = down,
                 Msg::SignedIn(Ok((tokens, account))) => {
                     self.busy = false;
                     self.signing = None;
                     self.ended = false;
+                    self.down = None;
+                    self.failed = None;
                     notice = Some(format!("Signed in to EchoVRCE as {}", account.name()));
                     self.tokens = Some(tokens);
                     self.account = Some(account);
@@ -137,6 +173,7 @@ impl Vrce {
                 }
                 Msg::Checked(Ok((renewed, account))) => {
                     self.busy = false;
+                    self.down = None;
                     if renewed.is_some() {
                         self.tokens = renewed;
                     }
@@ -158,6 +195,7 @@ impl Vrce {
                 Msg::Checked(Err(Ended::Unreachable(why))) => {
                     self.busy = false;
                     tracing::info!("echovrce check: {why}");
+                    self.down = Some(why);
                     self.next_check = Some(Instant::now() + RETRY_AFTER);
                 }
             }
@@ -200,36 +238,83 @@ impl Vrce {
     /// Asks for a sign-in code; the browser opens on it once it's there.
     pub(super) fn sign_in(&mut self, ctx: &egui::Context) {
         self.busy = true;
+        self.failed = None;
         self.worker.spawn(ctx, |tx| {
-            tx.send(Msg::Code(
-                vrce::request_code().map_err(|e| format!("{e:#}")),
-            ))
+            tx.send(Msg::Code(vrce::request_code().map_err(|e| Failed::of(&e))))
         });
+    }
+
+    /// Signed in, but EchoVRCE isn't answering: the session is kept and checked again
+    /// every [`RETRY_AFTER`].
+    pub(super) fn waiting_for_server(&self) -> bool {
+        self.tokens.is_some() && self.account.is_none() && self.down.is_some()
+    }
+
+    /// What to say while EchoVRCE isn't answering (`None`: it is): why, and what happens
+    /// meanwhile. With `headline`, it starts by saying that it isn't answering (where no
+    /// heading says so already).
+    pub(super) fn down_note(&self, headline: bool) -> Option<String> {
+        let why = self.down.as_deref()?.trim_end_matches('.');
+        let cause = match why.strip_prefix("EchoVRCE isn't answering right now (") {
+            Some(status) => format!("It answered {}.", status.trim_end_matches(')')),
+            None => format!("{why}."),
+        };
+        let every = RETRY_AFTER.as_secs() / 60;
+        let then = if self.tokens.is_some() {
+            format!("You stay signed in: the launcher asks again every {every} minutes.")
+        } else {
+            "Signing in can fail until it answers again.".to_string()
+        };
+        let head = if headline {
+            "EchoVRCE isn't answering right now. "
+        } else {
+            ""
+        };
+        Some(format!("{head}{cause} {then}"))
+    }
+
+    /// Checks the session now instead of at the next try.
+    pub(super) fn retry_now(&mut self, ctx: &egui::Context) {
+        if let Some(tokens) = self.tokens.clone().filter(|_| !self.busy) {
+            self.check(ctx, tokens);
+        }
     }
 
     /// Asks every few seconds whether `code` was approved, until it is, runs out, or is
     /// cancelled.
     fn wait_for_approval(&self, ctx: &egui::Context, code: &DeviceCode, cancel: Arc<AtomicBool>) {
         let (code, until) = (code.code.clone(), Instant::now() + code.expires_in);
+        let mut down = false;
         self.worker.spawn(ctx, move |tx| loop {
             std::thread::sleep(POLL_EVERY);
             if cancel.load(Ordering::Relaxed) {
                 return;
             }
             if Instant::now() > until {
-                tx.send(Msg::SignedIn(Err(
-                    "The sign-in code ran out before it was approved. Try again.".into(),
-                )));
+                tx.send(Msg::SignedIn(Err(Failed::from(
+                    "The sign-in code ran out before it was approved. Try again.".to_string(),
+                ))));
                 return;
             }
             match vrce::poll(&code) {
-                Ok(Poll::Pending) => {}
+                Ok(Poll::Pending) => {
+                    if down {
+                        down = false;
+                        tx.send(Msg::Polling(None));
+                    }
+                }
                 Ok(Poll::Approved(tokens)) => {
                     tx.send(Msg::SignedIn(finish_sign_in(tokens)));
                     return;
                 }
+                // EchoVRCE not answering isn't the code's fault: ask again.
+                Err(e) if vrce::is_unavailable(&e) => {
+                    tracing::info!("echovrce sign-in: {e:#}; asking again");
+                    down = true;
+                    tx.send(Msg::Polling(Some(format!("{e:#}"))));
+                }
                 Err(e) => {
-                    tx.send(Msg::SignedIn(Err(format!("{e:#}"))));
+                    tx.send(Msg::SignedIn(Err(Failed::of(&e))));
                     return;
                 }
             }
@@ -265,6 +350,20 @@ impl Vrce {
         }
     }
 
+    /// Snapshots: EchoVRCE not answering (502), signed in (`signed_in`: the session is kept)
+    /// or after a sign-in that failed on it.
+    pub(super) fn demo_down(&mut self, signed_in: bool) {
+        let why = "EchoVRCE isn't answering right now (502)".to_string();
+        if signed_in {
+            self.demo(true);
+            self.account = None;
+        } else {
+            self.failed = Some(why.clone());
+        }
+        self.down = Some(why);
+        self.loaded = true;
+    }
+
     pub(super) fn cancel_sign_in(&mut self) {
         if let Some(s) = self.signing.take() {
             s.cancel.store(true, Ordering::Relaxed);
@@ -279,6 +378,7 @@ impl Vrce {
         refresh: Option<String>,
     ) {
         self.busy = true;
+        self.failed = None;
         self.worker.spawn(ctx, move |tx| {
             let tokens = match (token, refresh) {
                 (Some(token), refresh) => Ok(Tokens {
@@ -287,12 +387,12 @@ impl Vrce {
                 }),
                 (None, Some(rt)) => vrce::refresh(&rt).map_err(|e| {
                     if vrce::is_signed_out(&e) {
-                        "EchoVRCE didn't accept that refresh token.".to_string()
+                        Failed::from("EchoVRCE didn't accept that refresh token.".to_string())
                     } else {
-                        format!("{e:#}")
+                        Failed::of(&e)
                     }
                 }),
-                (None, None) => Err("There is no token in that.".into()),
+                (None, None) => Err(Failed::from("There is no token in that.".to_string())),
             };
             tx.send(Msg::SignedIn(tokens.and_then(finish_sign_in)));
         });
@@ -444,17 +544,94 @@ impl Vrce {
     }
 }
 
+/// The other pages' sign-in prompt: what signing in gives (`intro`), or, while
+/// EchoVRCE isn't answering, that it isn't (`titled`: the card's title says so already).
+/// Returns the text's height.
+pub(super) fn prompt_text(
+    d: &Dashboard,
+    kit: &Kit,
+    (x, y, w): (f32, f32, f32),
+    intro: &str,
+    size: f32,
+    titled: bool,
+) -> f32 {
+    let waiting = d.vrce.waiting_for_server();
+    let (text, color) = match d.vrce.down_note(!(waiting && titled)) {
+        Some(note) if waiting && titled => (note, design::BODY),
+        Some(note) if waiting => (note, design::QUEST_WARN),
+        Some(note) => (format!("{intro}\n\n{note}"), design::BODY),
+        None => (intro.to_string(), design::BODY),
+    };
+    kit.caps_text(x, y, w, &text, size, color, dz(10.0))
+}
+
+/// Sign in (it opens this page), or Retry now while signed in and EchoVRCE isn't
+/// answering, at (`x`, `y`).
+pub(super) fn sign_in_button(
+    d: &mut Dashboard,
+    kit: &mut Kit,
+    ctx: &egui::Context,
+    key: &str,
+    x: f32,
+    y: f32,
+) {
+    if d.vrce.waiting_for_server() {
+        let label = "Retry now";
+        let bw = kit
+            .button_width(label, Some(Icon::Refresh), BTN_H)
+            .max(dz(180.0));
+        if kit
+            .button(
+                key,
+                x,
+                y,
+                bw,
+                BTN_H,
+                Tone::Blue,
+                Some(Icon::Refresh),
+                label,
+                !d.vrce.busy,
+                "Ask EchoVRCE again now",
+            )
+            .clicked
+        {
+            d.vrce.retry_now(ctx);
+        }
+        return;
+    }
+    let bw = kit.button_width("Sign in", None, BTN_H).max(dz(180.0));
+    if kit
+        .button(
+            key,
+            x,
+            y,
+            bw,
+            BTN_H,
+            Tone::Go,
+            None,
+            "Sign in",
+            !d.vrce.busy,
+            "Sign in with EchoVRCE",
+        )
+        .clicked
+    {
+        d.page = super::Page::EchoVrce;
+        d.vrce.sign_in(ctx);
+    }
+}
+
 /// A new session: checked against the account (renewed if it must be), then saved.
-fn finish_sign_in(tokens: Tokens) -> Result<(Tokens, Account), String> {
+fn finish_sign_in(tokens: Tokens) -> Result<(Tokens, Account), Failed> {
     let (renewed, account) = vrce::check(&tokens).map_err(|e| {
         if vrce::is_signed_out(&e) {
-            "EchoVRCE didn't accept those tokens.".to_string()
+            Failed::from("EchoVRCE didn't accept those tokens.".to_string())
         } else {
-            format!("{e:#}")
+            Failed::of(&e)
         }
     })?;
     let tokens = renewed.unwrap_or(tokens);
-    vrce::store::save(&tokens).map_err(|e| format!("Couldn't save the session: {e:#}"))?;
+    vrce::store::save(&tokens)
+        .map_err(|e| Failed::from(format!("Couldn't save the session: {e:#}")))?;
     Ok((tokens, account))
 }
 
@@ -734,18 +911,89 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
             }
         }
         (None, Some(_)) => {
-            k.caps_text(
-                x,
-                y,
-                w,
-                "Checking your EchoVRCE session…",
-                17.0,
-                design::BODY,
-                0.0,
-            );
+            // Signed in, but EchoVRCE isn't answering: say so, and keep trying.
+            let Some(note) = d.vrce.down_note(false) else {
+                k.caps_text(
+                    x,
+                    y,
+                    w,
+                    "Checking your EchoVRCE session…",
+                    17.0,
+                    design::BODY,
+                    0.0,
+                );
+                return;
+            };
+            let ty =
+                y + k.caps_text(
+                    x,
+                    y,
+                    w,
+                    "Signed in, but EchoVRCE isn't answering right now",
+                    19.0,
+                    design::QUEST_WARN,
+                    0.0,
+                ) + dz(16.0);
+            k.caps_text(x, ty, w, &note, 16.0, design::BODY, 0.0);
+            if button(
+                k,
+                "vrce-retry",
+                Tone::Blue,
+                Some(Icon::Refresh),
+                "Retry now",
+                !d.vrce.busy,
+                "Ask EchoVRCE again now",
+            ) {
+                d.vrce.retry_now(ctx);
+            }
+            if button(
+                k,
+                "vrce-open",
+                Tone::Dark,
+                Some(Icon::Globe),
+                "Open EchoVRCE",
+                true,
+                vrce::WEB,
+            ) {
+                crate::core::platform::open_url(vrce::WEB);
+            }
+            if button(
+                k,
+                "vrce-sign-out",
+                Tone::Dark,
+                None,
+                "Sign out",
+                true,
+                "Forget this session here and end it on EchoVRCE",
+            ) {
+                sign_out(d, ctx);
+            }
         }
         _ => {
             let mut ty = y;
+            // Why the last sign-in didn't work, and that EchoVRCE isn't answering.
+            if let Some(why) = &d.vrce.failed {
+                ty += k.caps_text(
+                    x,
+                    ty,
+                    w,
+                    &format!("Signing in didn't work: {}", why.trim_end_matches('.')),
+                    16.0,
+                    design::DANGER,
+                    0.0,
+                ) + dz(14.0);
+            }
+            // Under a failure that says why already: only what to do.
+            let note = match (&d.vrce.failed, &d.vrce.down) {
+                (Some(_), Some(_)) => Some(
+                    "Try again in a few minutes: signing in works once EchoVRCE answers again."
+                        .to_string(),
+                ),
+                _ => d.vrce.down_note(true),
+            };
+            if let Some(note) = note {
+                ty += k.caps_text(x, ty, w, &note, 16.0, design::QUEST_WARN, 0.0) + dz(20.0);
+            }
             if d.vrce.ended {
                 ty += k.caps_text(
                     x,

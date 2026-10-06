@@ -42,6 +42,34 @@ pub fn is_signed_out(e: &anyhow::Error) -> bool {
     e.downcast_ref::<SignedOut>().is_some()
 }
 
+/// EchoVRCE isn't answering: it couldn't be reached, or it answered with a server error
+/// (5xx) or "too many requests" (429). Nothing is wrong with the session or the code:
+/// trying again later can work.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub struct Unavailable(pub String);
+
+/// Whether `e` means EchoVRCE isn't answering right now ([`Unavailable`]).
+pub fn is_unavailable(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<Unavailable>().is_some()
+}
+
+/// Pure: whether an answer's `status` means EchoVRCE isn't answering right now.
+pub fn unavailable_status(status: u16) -> bool {
+    status >= 500 || status == 429
+}
+
+fn unavailable(status: u16, body: &Value) -> anyhow::Error {
+    let detail = match message(body) {
+        m if m == "no details" => String::new(),
+        m => format!(": {m}"),
+    };
+    Unavailable(format!(
+        "EchoVRCE isn't answering right now ({status}{detail})"
+    ))
+    .into()
+}
+
 /// A session: the token calls use, and the refresh token that renews it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tokens {
@@ -239,7 +267,7 @@ fn call(
         let resp = req
             .send()
             .await
-            .map_err(|e| anyhow!("EchoVRCE couldn't be reached: {e}"))?;
+            .map_err(|e| anyhow!(Unavailable(format!("EchoVRCE couldn't be reached: {e}"))))?;
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
         Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
@@ -285,6 +313,9 @@ pub fn request_code() -> Result<DeviceCode> {
         Some(&json!({})),
         None,
     )?;
+    if unavailable_status(status) {
+        return Err(unavailable(status, &body));
+    }
     let code = body
         .get("code")
         .and_then(Value::as_str)
@@ -328,14 +359,21 @@ pub fn poll(code: &str) -> Result<Poll> {
         Some(&json!({ "code": code })),
         None,
     )?;
-    match (status, tokens_in(&body)) {
+    poll_answer(status, &body)
+}
+
+/// Pure: what an answer to a poll means. EchoVRCE not answering ([`Unavailable`]) isn't
+/// the code's fault: the caller asks again.
+fn poll_answer(status: u16, body: &Value) -> Result<Poll> {
+    match (status, tokens_in(body)) {
         (200, Some(t)) => Ok(Poll::Approved(t)),
         (200, None) if body.get("status").and_then(Value::as_str) == Some("pending") => {
             Ok(Poll::Pending)
         }
+        (s, _) if unavailable_status(s) => Err(unavailable(s, body)),
         _ => bail!(
             "The sign-in code didn't work ({status}: {}). Try again.",
-            message(&body)
+            message(body)
         ),
     }
 }
@@ -440,6 +478,7 @@ pub fn refresh(refresh_token: &str) -> Result<Tokens> {
         ),
     ];
     let mut refused = true;
+    let mut down = None;
     for (url, body, auth) in attempts {
         let (status, answer) = call(reqwest::Method::POST, &url, Some(&body), auth.as_deref())?;
         if status == 200 {
@@ -452,11 +491,14 @@ pub fn refresh(refresh_token: &str) -> Result<Tokens> {
         }
         tracing::info!("echovrce: refresh attempt answered {status}");
         refused &= matches!(status, 400 | 401 | 403 | 404);
+        if unavailable_status(status) {
+            down = Some(unavailable(status, &answer));
+        }
     }
-    if refused {
-        Err(SignedOut.into())
-    } else {
-        bail!("EchoVRCE didn't renew the session right now. It tries again later.")
+    match down {
+        _ if refused => Err(SignedOut.into()),
+        Some(e) => Err(e),
+        None => bail!("EchoVRCE didn't renew the session right now. It tries again later."),
     }
 }
 
@@ -525,6 +567,7 @@ pub fn account(token: &str) -> Result<Account> {
             })
         }
         401 => Err(SignedOut.into()),
+        s if unavailable_status(s) => Err(unavailable(s, &body)),
         _ => bail!(
             "EchoVRCE didn't answer right now ({status}: {}).",
             message(&body)
@@ -663,6 +706,35 @@ pub mod store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A poll that EchoVRCE doesn't answer is asked again; a refused code isn't.
+    #[test]
+    fn poll_answers() {
+        let pending = json!({ "status": "pending" });
+        assert_eq!(poll_answer(200, &pending).unwrap(), Poll::Pending);
+        let approved = json!({ "token": "t", "refresh_token": "r" });
+        assert!(matches!(
+            poll_answer(200, &approved).unwrap(),
+            Poll::Approved(_)
+        ));
+        for status in [502, 503, 500, 429] {
+            let e = poll_answer(status, &Value::Null).unwrap_err();
+            assert!(is_unavailable(&e), "{status}");
+            assert_eq!(
+                e.to_string(),
+                format!("EchoVRCE isn't answering right now ({status})")
+            );
+        }
+        let e = poll_answer(503, &json!({ "message": "maintenance" })).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "EchoVRCE isn't answering right now (503: maintenance)"
+        );
+        for status in [400, 404, 410] {
+            let e = poll_answer(status, &json!({ "message": "expired" })).unwrap_err();
+            assert!(!is_unavailable(&e), "{status}");
+        }
+    }
 
     /// A JWT with this payload (unsigned: only the payload is read).
     fn jwt(payload: &str) -> String {
