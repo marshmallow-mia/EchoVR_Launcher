@@ -144,6 +144,10 @@ pub struct LauncherState {
     /// Echo VR uses your own `_local/config.json`: with nEVR, the launcher doesn't set an
     /// EchoVRCE-era one aside (nEVR's built-in config, with friends and parties, is off).
     pub own_game_config: bool,
+    /// The live PC update from another channel instead (a test one):
+    /// `https://{release,files}.echovr.de/updates-*/update.manifest`. `None`: the live one.
+    /// `ECHOVR_UPDATE_MANIFEST` comes first.
+    pub update_manifest: Option<String>,
     /// Owns Echo VR on a Meta account (`Some(false)`: a new player, who needs the
     /// licence patch). `None` until asked: at an install, or a version's first PLAY.
     pub owner: Option<bool>,
@@ -214,6 +218,7 @@ impl Default for LauncherState {
             imported: false,
             minimize_on_launch: true,
             own_game_config: false,
+            update_manifest: None,
             owner: None,
             revive_artwork: true,
             revive_library: true,
@@ -249,7 +254,9 @@ pub fn state_file() -> PathBuf {
 
 impl LauncherState {
     pub fn load() -> LauncherState {
-        Self::load_from(&state_file())
+        let s = Self::load_from(&state_file());
+        crate::core::pc_update::set_channel(s.update_manifest.as_deref());
+        s
     }
 
     pub fn load_from(path: &Path) -> LauncherState {
@@ -265,6 +272,7 @@ impl LauncherState {
     }
 
     pub fn save(&self) -> Result<()> {
+        crate::core::pc_update::set_channel(self.update_manifest.as_deref());
         self.save_to(&state_file())
     }
 

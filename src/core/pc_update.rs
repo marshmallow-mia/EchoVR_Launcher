@@ -33,8 +33,71 @@ const OLD_PC_MANIFESTS: [&str; 2] = [
 /// of the live one.
 pub const MANIFEST_OVERRIDE: &str = "ECHOVR_UPDATE_MANIFEST";
 
-/// `url`, or for the live PC update the one `ECHOVR_UPDATE_MANIFEST` names (only on
-/// release.echovr.de or files.echovr.de).
+/// The channel launcher.json's `update_manifest` names, as the launcher's settings were
+/// last loaded or saved ([`set_channel`]).
+static CHANNEL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Takes launcher.json's `update_manifest` (the live PC update from another channel, e.g. a
+/// test one); called whenever the settings are loaded or saved. Said once per change.
+pub fn set_channel(url: Option<&str>) {
+    let url = url
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+        .map(str::to_string);
+    let mut c = CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
+    if *c == url {
+        return;
+    }
+    match &url {
+        Some(u) if override_ok(u) => {
+            tracing::warn!("PC update from {u} (launcher.json update_manifest) instead of the live one")
+        }
+        Some(u) => tracing::warn!(
+            "launcher.json update_manifest {u} ignored: not https://release.echovr.de/updates-*/update.manifest"
+        ),
+        None => tracing::info!("PC update from the live channel again"),
+    }
+    *c = url;
+}
+
+/// Where the live PC update comes from instead of the live channel, and who says so
+/// (`None`: the live one): `ECHOVR_UPDATE_MANIFEST` first, then launcher.json's
+/// `update_manifest`; only one on release.echovr.de or files.echovr.de counts.
+pub fn channel_override() -> Option<(String, &'static str)> {
+    if let Ok(o) = std::env::var(MANIFEST_OVERRIDE) {
+        // Asked for every frame: said once.
+        static SAID: std::sync::Once = std::sync::Once::new();
+        let ok = override_ok(&o);
+        SAID.call_once(|| {
+            if ok {
+                tracing::warn!("PC update from {o} ({MANIFEST_OVERRIDE}) instead of the live one");
+            } else {
+                tracing::warn!(
+                    "{MANIFEST_OVERRIDE} ignored: not https://release.echovr.de/updates-*/update.manifest"
+                );
+            }
+        });
+        if ok {
+            return Some((o, MANIFEST_OVERRIDE));
+        }
+    }
+    let c = CHANNEL.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    pick_channel(None, c.as_deref())
+}
+
+/// Pure: the channel from the environment variable's value (`env`), else from
+/// launcher.json's (`config`), each only when it is a staging manifest we take.
+fn pick_channel(env: Option<&str>, config: Option<&str>) -> Option<(String, &'static str)> {
+    env.filter(|u| override_ok(u))
+        .map(|u| (u.to_string(), MANIFEST_OVERRIDE))
+        .or_else(|| {
+            config
+                .filter(|u| override_ok(u))
+                .map(|u| (u.to_string(), "launcher.json"))
+        })
+}
+
+/// `url`, or for the live PC update the channel [`channel_override`] names.
 pub fn manifest_for(url: &str) -> String {
     // The PC channel without nEVR: the launcher's live one now has it. Any other
     // files.echovr.de update channel (the Quest's) is read from the mirror.
@@ -46,24 +109,8 @@ pub fn manifest_for(url: &str) -> String {
     };
     let url = moved.as_deref().unwrap_or(url);
     if url == PC_MANIFEST_URL {
-        if let Ok(o) = std::env::var(MANIFEST_OVERRIDE) {
-            // Asked for every frame: said once.
-            static SAID: std::sync::Once = std::sync::Once::new();
-            let ok = override_ok(&o);
-            SAID.call_once(|| {
-                if ok {
-                    tracing::warn!(
-                        "PC update from {o} ({MANIFEST_OVERRIDE}) instead of the live one"
-                    );
-                } else {
-                    tracing::warn!(
-                        "{MANIFEST_OVERRIDE} ignored: not https://release.echovr.de/updates-*/update.manifest"
-                    );
-                }
-            });
-            if ok {
-                return o;
-            }
+        if let Some((o, _)) = channel_override() {
+            return o;
         }
     }
     url.to_string()
@@ -235,6 +282,34 @@ mod tests {
         );
     }
     use super::*;
+
+    /// A test channel from the environment first, else from launcher.json; anything not
+    /// on release.echovr.de or files.echovr.de as updates-*/update.manifest is ignored.
+    #[test]
+    fn picks_the_update_channel() {
+        let test = "https://release.echovr.de/updates-nevr-test/update.manifest";
+        let other = "https://files.echovr.de/updates-staging/update.manifest";
+        assert_eq!(pick_channel(None, None), None);
+        assert_eq!(
+            pick_channel(None, Some(test)),
+            Some((test.into(), "launcher.json"))
+        );
+        assert_eq!(
+            pick_channel(Some(other), Some(test)),
+            Some((other.into(), MANIFEST_OVERRIDE))
+        );
+        assert_eq!(
+            pick_channel(
+                Some("https://evil.example/updates-x/update.manifest"),
+                Some(test)
+            ),
+            Some((test.into(), "launcher.json"))
+        );
+        assert_eq!(
+            pick_channel(None, Some("https://release.echovr.de/pc.zip.manifest")),
+            None
+        );
+    }
 
     #[test]
     fn staging_manifests_on_our_hosts_only() {

@@ -534,7 +534,45 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
                 .error("Couldn't change it", &format!("{e:#}"), Default::default()),
         }
     }
-    y + h + dz(12.0)
+    y += h + dz(12.0);
+    // A test channel for the PC update (launcher.json's update_manifest, or the
+    // environment's ECHOVR_UPDATE_MANIFEST): said here while it applies.
+    if let Some((url, from)) = crate::core::pc_update::channel_override() {
+        let channel = url
+            .trim_end_matches("/update.manifest")
+            .rsplit('/')
+            .next()
+            .unwrap_or(&url)
+            .to_string();
+        y += kit.caps_text(
+            x,
+            y,
+            w,
+            &format!("Echo VR updates from the test channel {channel} ({from}), not the live one."),
+            14.0,
+            design::QUEST_WARN,
+            0.0,
+        ) + dz(8.0);
+        if from == "launcher.json" {
+            if kit
+                .link(
+                    "update-channel-live",
+                    x,
+                    y,
+                    "Back to the live channel",
+                    14.0,
+                    &url,
+                )
+                .clicked
+            {
+                d.state.update_manifest = None;
+                d.save();
+            }
+            y += dz(30.0);
+        }
+        y += dz(8.0);
+    }
+    y
 }
 
 // ---- uninstalling ----

@@ -12,7 +12,19 @@ parties into the game. This page covers what the launcher does with it
 
 The community update (`https://release.echovr.de/updates-nevr/update.manifest`: the one with nEVR, which every install and update gets; the old installer's channel without it is `updates/` on files.echovr.de) owns
 `BugSplat64.dll`, the plugins it ships and `asset_patches/manifest.json`: Update and Repair
-put them back, Verify reports any change. The launcher never edits them. It writes:
+put them back, Verify reports any change.
+
+**A test channel.** To try a community update before it goes live, point the launcher at
+another manifest: `"update_manifest": "https://release.echovr.de/updates-nevr-test/update.manifest"`
+in `launcher.json` (in the launcher's data folder), or the environment variable
+`ECHOVR_UPDATE_MANIFEST` with the same URL, which comes first. Only
+`https://release.echovr.de/updates-*/update.manifest` or the same on files.echovr.de is
+taken; anything else is ignored and logged. Update, Check for updates and Verify then use it
+for the live PC version, and Settings says so ("updates from the test channel …", with
+**Back to the live channel** for the `launcher.json` one). Back on the live channel, the next
+update or Verify puts the live files back.
+
+The launcher never edits the community update's files. It writes:
 
 | File | What it holds |
 |---|---|
