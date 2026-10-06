@@ -2517,18 +2517,23 @@ impl Dashboard {
                 } else {
                     egui::Color32::from_gray(200)
                 };
-                let name = kit.label_galley(&title, design::din(19.0), fade(color), room);
+                let lines = rail_name(kit, &title, fade(color), room);
                 let why = badge(page).map(|(_, why, color)| {
                     kit.label_galley(why, design::din(13.0), fade(*color), room)
                 });
-                let name_h = name.size().y;
+                let name_h: f32 = lines.iter().map(|g| g.size().y).sum();
                 let why_h = why.as_ref().map_or(0.0, |g| g.size().y + dz(2.0));
                 let top = dz(cy) - (name_h + why_h) / 2.0;
                 let clip = kit.ui.clip_rect();
                 let mut cut = clip;
                 cut.max.x = cut.max.x.min(edge);
                 kit.ui.set_clip_rect(cut);
-                kit.put(dz(x), top, name);
+                let mut ly = top;
+                for g in lines {
+                    let h = g.size().y;
+                    kit.put(dz(x), ly, g);
+                    ly += h;
+                }
                 if let Some(g) = why {
                     kit.put(dz(x), top + name_h + dz(2.0), g);
                 }
@@ -2855,6 +2860,43 @@ fn demo_state() -> LauncherState {
     s.profile.windowed = true;
     s.quest_ip = Some("192.168.178.45".into());
     s
+}
+
+/// A tab's name in the unfolded rail, `room` wide: smaller when it doesn't fit (a plugin's
+/// name can be long), on two lines when even that doesn't.
+fn rail_name(
+    kit: &Kit,
+    title: &str,
+    color: egui::Color32,
+    room: f32,
+) -> Vec<std::sync::Arc<egui::Galley>> {
+    for size in [19.0, 17.0, 15.0] {
+        let g = kit.label_galley(title, design::din(size), color, f32::INFINITY);
+        if g.size().x <= room {
+            return vec![g];
+        }
+    }
+    // Two lines: as many words on the first as fit.
+    let words: Vec<&str> = title.split_whitespace().collect();
+    let font = design::din(15.0);
+    let mut split = 1;
+    for n in 1..words.len() {
+        let first = words[..n].join(" ");
+        if kit
+            .label_galley(&first, font.clone(), color, f32::INFINITY)
+            .size()
+            .x
+            <= room
+        {
+            split = n;
+        }
+    }
+    let (a, b) = (words[..split].join(" "), words[split..].join(" "));
+    let mut out = vec![kit.label_galley(&a, font.clone(), color, room)];
+    if !b.is_empty() {
+        out.push(kit.label_galley(&b, font, color, room));
+    }
+    out
 }
 
 /// The built-in catalogue plus an older build that is not installed, for snapshots.
