@@ -14,11 +14,11 @@ Help and news are on the [Echo VR Lounge Discord](https://discord.com/invite/ech
 |---|---|
 | ![Play](docs/screenshots/01-play.jpg) **Play**: PLAY, the news, who's online, invites and friends to join | ![Install](docs/screenshots/02-install.jpg) **Install**: the live build and the event builds, your library |
 | ![Mods](docs/screenshots/03-mods.jpg) **Mods**: nEVR, the mods you have and more to get | ![Mod settings](docs/screenshots/04-mod-settings.jpg) **A mod's settings**, drawn from its own description |
-| ![Servers](docs/screenshots/05-servers.jpg) **Servers**: the live matches, your match, party and friends | ![EchoVRCE](docs/screenshots/06-echovrce.jpg) **EchoVRCE**: your community account |
+| ![Servers](docs/screenshots/05-servers.jpg) **Servers**: the live matches, your match, party and friends | ![EchoVRCE](docs/screenshots/06-echovrce.jpg) **EchoVRCE**: echovrce.com inside the launcher, signed in |
 | ![Friends](docs/screenshots/07-friends.jpg) **Friends**: requests, finding players, who you played with | ![Plugins](docs/screenshots/08-plugins.jpg) **Plugins**: apps inside the launcher, each with its own tab |
 | ![Event lobbies](docs/screenshots/09-event-lobbies.jpg) **Event lobbies** (a plugin): public matches, join by id, request a server | ![Settings](docs/screenshots/10-settings.jpg) **Settings**: how you play, launch options, storage, the launcher |
 
-The pictures show made-up players and numbers.
+Players, matches and numbers in the pictures are made up; the mods and plugins are the real ones. The EchoVRCE page is the real site, with the account blurred.
 
 ## Match links
 

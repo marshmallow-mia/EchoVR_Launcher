@@ -1130,10 +1130,12 @@ fn demo() -> PluginsUi {
         return ui;
     };
     let id = page.id.clone();
+    // Installed from the catalogue at its current version, as a player has it.
+    let page_version = page.version.clone();
     ui.list.push(Installed {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
-        from_catalog: Some("0.1.0".into()),
+        from_catalog: Some(page_version),
         warnings: Vec::new(),
     });
     let mut v = View {

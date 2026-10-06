@@ -2321,7 +2321,90 @@ fn showcase() -> serde_json::Value {
     })
 }
 
-/// Made-up mods for snapshots (`variant`: no loader yet, or a plugin's options open).
+/// A made-up catalogue mod and a DLL that fails to load, for the layout tests only.
+fn made_up_plugins() -> Vec<Plugin> {
+    let status = |file: &str, name: &str, version: &str, st: &str, error: &str| PluginStatus {
+        file: file.into(),
+        name: name.into(),
+        version: version.into(),
+        api: 5,
+        status: st.into(),
+        error: error.into(),
+        ..Default::default()
+    };
+    let plugin = |file: &str, name: &str, source: Source, st: PluginStatus| Plugin {
+        file: file.into(),
+        name: name.into(),
+        version: st.version.clone(),
+        added: true,
+        required: false,
+        verified: source != Source::Local,
+        source,
+        enabled: true,
+        args: Default::default(),
+        defaults: Default::default(),
+        present: true,
+        status: Some(st),
+        settings: None,
+    };
+    vec![
+        plugin(
+            "CombatStats.dll",
+            "combat_stats",
+            Source::Catalog {
+                id: "combat-stats".into(),
+                version: "0.3.0".into(),
+            },
+            status("CombatStats.dll", "combat_stats", "0.3.0", "loaded", ""),
+        ),
+        plugin(
+            "MyTweak.dll",
+            "MyTweak",
+            Source::Local,
+            status(
+                "MyTweak.dll",
+                "MyTweak",
+                "",
+                "failed",
+                "missing NvrPluginGetInfo export",
+            ),
+        ),
+    ]
+}
+
+/// The catalogue entries of [`made_up_plugins`] (an update for one, one not installed).
+fn made_up_catalog() -> Vec<ModEntry> {
+    vec![
+        ModEntry {
+            id: "combat-stats".into(),
+            name: "Combat Stats".into(),
+            summary: "Your damage, eliminations and accuracy after every combat round, in a panel on your wrist.".into(),
+            author: "community".into(),
+            version: "0.3.1".into(),
+            file: "CombatStats.dll".into(),
+            url: "mods/CombatStats-0.3.1.dll".into(),
+            sha256: Some("00".repeat(32)),
+            size: Some(412_000),
+            capabilities: vec!["observes-only".into()],
+            ..Default::default()
+        },
+        ModEntry {
+            id: "replay-recorder".into(),
+            name: "Replay Recorder".into(),
+            summary: "Records your matches for the replay viewer.".into(),
+            author: "community".into(),
+            version: "1.0.0".into(),
+            file: "ReplayRecorder.dll".into(),
+            url: "mods/ReplayRecorder-1.0.0.dll".into(),
+            sha256: Some("11".repeat(32)),
+            size: Some(1_830_000),
+            capabilities: vec!["observes-only".into(), "network".into()],
+            ..Default::default()
+        },
+    ]
+}
+
+/// The Mods page for snapshots, as a player has it (`variant`: no loader yet, a plugin's options open...).
 fn demo(variant: Option<SnapVariant>) -> Mods {
     let status = |file: &str, name: &str, version: &str, st: &str, error: &str| PluginStatus {
         file: file.into(),
@@ -2349,47 +2432,27 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
     };
     let bare = variant == Some(SnapVariant::ModsNoLoader);
     let long = variant == Some(SnapVariant::ModsLongText);
-    let mut plugins = vec![
-        plugin(
+    // What a player really has: nEVR's Asset Patches. The layout tests (long text, every control)
+    // get a made-up catalogue mod and a broken DLL of their own; they aren't published.
+    let mut plugins = vec![plugin(
+        "NvrAssetPatches.dll",
+        "NvrAssetPatches",
+        Source::Shipped,
+        Some(status(
             "NvrAssetPatches.dll",
             "NvrAssetPatches",
-            Source::Shipped,
-            Some(status(
-                "NvrAssetPatches.dll",
-                "NvrAssetPatches",
-                "1.1.0",
-                "loaded",
-                "",
-            )),
-        ),
-        plugin(
-            "CombatStats.dll",
-            "combat_stats",
-            Source::Catalog {
-                id: "combat-stats".into(),
-                version: "0.3.0".into(),
-            },
-            Some(status(
-                "CombatStats.dll",
-                "combat_stats",
-                "0.3.0",
-                "loaded",
-                "",
-            )),
-        ),
-        plugin(
-            "MyTweak.dll",
-            "MyTweak",
-            Source::Local,
-            Some(status(
-                "MyTweak.dll",
-                "MyTweak",
-                "",
-                "failed",
-                "missing NvrPluginGetInfo export",
-            )),
-        ),
-    ];
+            "1.2.0",
+            "loaded",
+            "",
+        )),
+    )];
+    let made_up = matches!(
+        variant,
+        Some(SnapVariant::ModsLongText | SnapVariant::ModsSettingsAll)
+    );
+    if made_up {
+        plugins.extend(made_up_plugins());
+    }
     let hands = matches!(
         variant,
         Some(SnapVariant::ModsHands | SnapVariant::ModsSettings | SnapVariant::ModsSettingsAll)
@@ -2462,7 +2525,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
             Loader::None
         } else {
             Loader::Nevr {
-                version: "4.0.0+182.e418eaa".into(),
+                version: "4.0.1".into(),
             }
         },
         enabled: true,
@@ -2476,41 +2539,27 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         game_config: long.then(|| "_local/config.json".into()),
         stray_dbgcore: false,
         assets_enabled: true,
-        asset_patches: vec![
-            asset("netgun_base", true),
-            asset("netgun_combustion", true),
-            asset("poster_a_tex", true),
-            asset("poster_c_tex", false),
-        ],
+        asset_patches: [
+            "netgun_combustion",
+            "netgun_dyson",
+            "netgun_fission",
+            "netgun_gauss",
+            "netgun_base",
+            "poster_a_tex",
+            "poster_c_tex",
+            "poster_d_tex",
+            "poster_b_desc",
+            "poster_b_tex",
+        ]
+        .into_iter()
+        .map(|l| asset(l, true))
+        .collect(),
     };
     let mut catalog = ModCatalog::builtin();
     catalog.builtin = false;
-    catalog.mods.push(ModEntry {
-        id: "combat-stats".into(),
-        name: "Combat Stats".into(),
-        summary: "Your damage, eliminations and accuracy after every combat round, in a panel on your wrist.".into(),
-        author: "community".into(),
-        version: "0.3.1".into(),
-        file: "CombatStats.dll".into(),
-        url: "mods/CombatStats-0.3.1.dll".into(),
-        sha256: Some("00".repeat(32)),
-        size: Some(412_000),
-        capabilities: vec!["observes-only".into()],
-        ..Default::default()
-    });
-    catalog.mods.push(ModEntry {
-        id: "replay-recorder".into(),
-        name: "Replay Recorder".into(),
-        summary: "Records your matches for the replay viewer.".into(),
-        author: "community".into(),
-        version: "1.0.0".into(),
-        file: "ReplayRecorder.dll".into(),
-        url: "mods/ReplayRecorder-1.0.0.dll".into(),
-        sha256: Some("11".repeat(32)),
-        size: Some(1_830_000),
-        capabilities: vec!["observes-only".into(), "network".into()],
-        ..Default::default()
-    });
+    if made_up {
+        catalog.mods.extend(made_up_catalog());
+    }
     let editing = (variant == Some(SnapVariant::ModsOptions)).then(|| Editing {
         defaults: BTreeMap::from([("logging".into(), "normal".into())]),
         file: "NvrAssetPatches.dll".into(),
@@ -2662,10 +2711,12 @@ mod tests {
     #[test]
     fn additional_plugins_are_the_ones_not_here() {
         let m = demo(None);
-        let (_, view, _) = m.view.as_ref().unwrap();
-        let catalog = m.catalog.as_ref().unwrap();
+        let (_, mut view, _) = m.view.clone().unwrap();
+        view.plugins.extend(made_up_plugins());
+        let mut catalog = m.catalog.clone().unwrap();
+        catalog.mods.extend(made_up_catalog());
         let ids = |vr| {
-            extras(Some(view), catalog, vr)
+            extras(Some(&view), &catalog, vr)
                 .iter()
                 .map(|e| e.info().id)
                 .collect::<Vec<_>>()
@@ -2684,7 +2735,7 @@ mod tests {
         // An update is offered on the plugin's row instead.
         let combat = view.plugins.iter().find(|p| p.file == "CombatStats.dll");
         assert_eq!(
-            update_for(combat.unwrap(), Some(catalog)).map(|m| m.version),
+            update_for(combat.unwrap(), Some(&catalog)).map(|m| m.version),
             Some("0.3.1".to_string())
         );
     }
