@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::catalog::{Catalog, VersionEntry};
 use crate::core::paths;
 
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Runtime {
@@ -171,8 +171,9 @@ pub struct LauncherState {
     pub relay_server: String,
     /// Your account there, asked for at an event build's first PLAY.
     pub relay_account: Option<RelayAccount>,
-    /// Event builds can be installed. Off (the default, and the first release's), they
-    /// are listed as coming soon; `"event_builds": true` in this file turns them on.
+    /// Event builds can be installed. On by default since 0.11.2 (also for a launcher.json
+    /// from before, once: schema 1), except on Linux, where they don't start yet; off,
+    /// they are listed as coming soon. `"event_builds": false` in this file turns them off.
     pub event_builds: bool,
     /// EchoXR Hands is on (Mods page): it plays along whenever EchoXR runs on SteamVR.
     pub echoxr_hands: bool,
@@ -229,7 +230,7 @@ impl Default for LauncherState {
             linux_appid: None,
             spark_links_off: false,
             relay_server: super::relay::DEFAULT_SERVER.into(),
-            event_builds: false,
+            event_builds: EVENT_BUILDS_DEFAULT,
             echoxr_hands: false,
             rail_open: true,
             desktop_notifications: true,
@@ -239,6 +240,9 @@ impl Default for LauncherState {
         }
     }
 }
+
+/// Event builds are offered unless turned off, except on Linux (they don't start there yet).
+pub const EVENT_BUILDS_DEFAULT: bool = !cfg!(target_os = "linux");
 
 pub fn default_library() -> String {
     if cfg!(windows) {
@@ -261,14 +265,26 @@ impl LauncherState {
 
     pub fn load_from(path: &Path) -> LauncherState {
         match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                // Keep the broken file for inspection instead of silently losing it.
-                tracing::error!("launcher.json unreadable ({e}); starting fresh");
-                let _ = std::fs::rename(path, path.with_extension("json.broken"));
-                LauncherState::default()
-            }),
+            Ok(text) => serde_json::from_str::<LauncherState>(&text)
+                .map(LauncherState::migrated)
+                .unwrap_or_else(|e| {
+                    // Keep the broken file for inspection instead of silently losing it.
+                    tracing::error!("launcher.json unreadable ({e}); starting fresh");
+                    let _ = std::fs::rename(path, path.with_extension("json.broken"));
+                    LauncherState::default()
+                }),
             Err(_) => LauncherState::default(),
         }
+    }
+
+    /// A launcher.json of an older schema brought up to this one: schema 1 had event
+    /// builds off by default, so they are turned on (where they are offered) once.
+    pub fn migrated(mut self) -> LauncherState {
+        if self.schema < 2 {
+            self.event_builds = self.event_builds || EVENT_BUILDS_DEFAULT;
+        }
+        self.schema = self.schema.max(SCHEMA);
+        self
     }
 
     pub fn save(&self) -> Result<()> {
@@ -501,12 +517,20 @@ mod tests {
     }
 
     #[test]
-    fn event_builds_are_coming_soon_until_turned_on() {
+    fn event_builds_are_on_unless_turned_off() {
         let c = Catalog::builtin();
         let event = c.pc().find(|e| e.publisher_lock.is_some()).unwrap().clone();
         let live = c.pc().find(|e| e.publisher_lock.is_none()).unwrap();
-        let mut s = LauncherState::default();
-        assert!(s.offers(live) && !s.offers(&event) && !s.has_event_builds());
+        // A fresh launcher offers them (not on Linux, where they don't start yet).
+        let s = LauncherState::default();
+        assert!(s.offers(live));
+        assert_eq!(s.offers(&event), EVENT_BUILDS_DEFAULT);
+        // Turned off: coming soon.
+        let mut s = LauncherState {
+            event_builds: false,
+            ..Default::default()
+        };
+        assert!(!s.offers(&event) && !s.has_event_builds());
         // Installed before: still offered (reinstall).
         s.upsert(InstalledVersion {
             id: event.id.clone(),
@@ -515,9 +539,19 @@ mod tests {
             ..Default::default()
         });
         assert!(s.offers(&event) && s.has_event_builds());
-        // Turned on in launcher.json.
-        let s: LauncherState = serde_json::from_str(r#"{"event_builds":true}"#).unwrap();
-        assert!(s.offers(&event) && s.has_event_builds());
+    }
+
+    #[test]
+    fn an_older_launcher_json_gets_event_builds_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        // Saved by 0.11.1 or older, with them off (the default then).
+        std::fs::write(&f, r#"{"schema":1,"event_builds":false}"#).unwrap();
+        let s = LauncherState::load_from(&f);
+        assert_eq!((s.event_builds, s.schema), (EVENT_BUILDS_DEFAULT, SCHEMA));
+        // Turned off since: stays off.
+        std::fs::write(&f, r#"{"schema":2,"event_builds":false}"#).unwrap();
+        assert!(!LauncherState::load_from(&f).event_builds);
     }
 
     fn catalog() -> Catalog {
