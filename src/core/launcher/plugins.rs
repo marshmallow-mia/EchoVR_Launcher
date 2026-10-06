@@ -520,6 +520,26 @@ mod tests {
         assert_eq!(version_for(&s, "summer"), None);
     }
 
+    /// Installs every downloadable plugin of the published catalogue into a temporary
+    /// folder, as Get does.
+    #[test]
+    #[ignore = "network"]
+    fn installs_the_published_plugins() {
+        let c = PluginCatalog::load();
+        assert!(!c.builtin, "the published catalogue couldn't be fetched");
+        let root = tempfile::tempdir().unwrap();
+        for e in c.plugins.iter().filter(|e| e.downloadable()) {
+            install_into(root.path(), e, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        }
+        let all = installed_in(root.path());
+        assert!(all.iter().any(|p| p.page.id == "event-lobbies"), "{all:?}");
+        assert!(
+            all.iter().all(|p| p.warnings.is_empty()),
+            "{:?}",
+            all.iter().map(|p| &p.warnings).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn the_builtin_catalogue_parses() {
         let c = PluginCatalog::builtin();
