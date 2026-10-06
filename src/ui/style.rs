@@ -51,6 +51,8 @@ pub enum Icon {
     Plus,
     /// A bin: deletes.
     Trash,
+    /// A calendar page: events.
+    Calendar,
 }
 
 /// What a control reports back.
@@ -212,6 +214,27 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
             }
             p.circle_stroke(cen, s * 0.28, st);
             p.circle_stroke(cen, s * 0.1, st);
+        }
+        Icon::Calendar => {
+            line(vec![
+                pt(0.12, 0.22),
+                pt(0.88, 0.22),
+                pt(0.88, 0.88),
+                pt(0.12, 0.88),
+                pt(0.12, 0.22),
+            ]);
+            line(vec![pt(0.12, 0.4), pt(0.88, 0.4)]);
+            line(vec![pt(0.32, 0.1), pt(0.32, 0.3)]);
+            line(vec![pt(0.68, 0.1), pt(0.68, 0.3)]);
+            for (x, y) in [
+                (0.3, 0.57),
+                (0.5, 0.57),
+                (0.7, 0.57),
+                (0.3, 0.74),
+                (0.5, 0.74),
+            ] {
+                p.circle_filled(pt(x, y), s * 0.045, c);
+            }
         }
         Icon::Folder => {
             line(vec![

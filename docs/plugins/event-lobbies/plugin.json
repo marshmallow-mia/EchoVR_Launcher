@@ -1,0 +1,234 @@
+{
+  "schema": 1,
+  "id": "event-lobbies",
+  "name": "Event lobbies",
+  "version": "0.1.0",
+  "author": "marshmallow-mia",
+  "summary": "Play the event builds together: see the public matches on the classic lobbies server, join a friend's match by its id, and request a game server.",
+  "icon": "calendar",
+  "settings": {
+    "store": {
+      "file": "settings.json",
+      "format": "json"
+    },
+    "sections": [
+      {
+        "title": "Account",
+        "help": "Your account on the classic lobbies server. Empty: the one the launcher uses for event builds.",
+        "fields": [
+          {
+            "key": "server",
+            "type": "text",
+            "label": "Server",
+            "help": "Address and port, e.g. 168.119.2.92:6800"
+          },
+          {
+            "key": "name",
+            "type": "text",
+            "label": "Display name"
+          },
+          {
+            "key": "password",
+            "type": "secret",
+            "label": "Password"
+          }
+        ]
+      }
+    ]
+  },
+  "data": {
+    "matches": {
+      "get": "http://{settings.server|launcher.relay.server}/api/matches",
+      "every": 10
+    },
+    "regions": {
+      "get": "http://{settings.server|launcher.relay.server}/api/servers/regions?build={page.build|launcher.event_builds.0.id}",
+      "every": 60
+    },
+    "current": {
+      "post": "http://{settings.server|launcher.relay.server}/api/matches/current",
+      "body": {
+        "displayname": "{settings.name|launcher.relay.name}",
+        "password": "{settings.password|launcher.relay.password}"
+      },
+      "every": 10,
+      "when": "{settings.name|launcher.relay.name}"
+    }
+  },
+  "actions": {
+    "join": [
+      {
+        "post": "http://{settings.server|launcher.relay.server}/api/matches/join",
+        "body": {
+          "id": "{item.id|page.join_id}",
+          "displayname": "{settings.name|launcher.relay.name}",
+          "password": "{settings.password|launcher.relay.password}"
+        },
+        "save": "page.answer"
+      },
+      {
+        "require": "{page.answer.ok}",
+        "otherwise": "{page.answer.message|'The server didn’t answer.'}"
+      },
+      {
+        "play": "{page.answer.build|item.build}"
+      }
+    ],
+    "request": [
+      {
+        "post": "http://{settings.server|launcher.relay.server}/api/servers/request",
+        "body": {
+          "build": "{page.build|launcher.event_builds.0.id}",
+          "region": "{page.region|data.regions.regions.0}",
+          "displayname": "{settings.name|launcher.relay.name}",
+          "password": "{settings.password|launcher.relay.password}"
+        },
+        "save": "page.answer"
+      },
+      {
+        "require": "{page.answer.ok}",
+        "otherwise": "{page.answer.message|'The server didn’t answer.'}"
+      },
+      {
+        "play": "{page.build|launcher.event_builds.0.id}"
+      }
+    ],
+    "copy_id": [
+      {
+        "copy": "{data.current.match.id}"
+      }
+    ],
+    "refresh": [
+      {
+        "refresh": [
+          "matches",
+          "current"
+        ]
+      }
+    ]
+  },
+  "page": {
+    "columns": [
+      [
+        {
+          "title": "Public matches",
+          "help": "Running on {settings.server|launcher.relay.server}. Who plays in them isn't shown.",
+          "blocks": [
+            {
+              "text": "Install an event build first: the Install page lists them.",
+              "tone": "warn",
+              "when": "!{launcher.event_builds.0.id}"
+            },
+            {
+              "list": "data.matches.matches",
+              "title": "{item.build_name|item.build} · {item.mode|item.gametype}",
+              "detail": "{item.level} · {item.players}/{item.limit} players",
+              "button": {
+                "label": "JOIN",
+                "action": "join",
+                "enabled": "{item.joinable}"
+              },
+              "empty": "No public matches right now. Request a game server to start one."
+            },
+            {
+              "button": {
+                "label": "REFRESH",
+                "action": "refresh"
+              }
+            }
+          ]
+        },
+        {
+          "title": "Your match",
+          "help": "Give your friends this id: they join with it, also in a private match.",
+          "blocks": [
+            {
+              "value": "{data.current.match.id}",
+              "label": "Match id",
+              "copy": true,
+              "when": "{data.current.match.id}"
+            },
+            {
+              "text": "{data.current.match.mode|data.current.match.gametype} on {data.current.match.level} · {data.current.match.players}/{data.current.match.limit} players",
+              "tone": "muted",
+              "when": "{data.current.match.id}"
+            },
+            {
+              "text": "Private match: only players with its id can join.",
+              "tone": "muted",
+              "when": "{data.current.match.private}"
+            },
+            {
+              "text": "You aren't in a match.",
+              "tone": "muted",
+              "when": "!{data.current.match.id}"
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "title": "Join by id",
+          "help": "A friend's match id, public or private. Then Play starts the game and puts you there.",
+          "blocks": [
+            {
+              "field": "page.join_id",
+              "label": "Match id",
+              "hint": "e.g. 34bc3367-bdbf-cd42-0444-fccbe1ca795f"
+            },
+            {
+              "button": {
+                "label": "JOIN",
+                "action": "join",
+                "enabled": "{page.join_id}",
+                "primary": true
+              }
+            }
+          ]
+        },
+        {
+          "title": "Request a game server",
+          "help": "Starts a game server for you; your next Play goes there. Limited to a few every ten minutes.",
+          "blocks": [
+            {
+              "choice": "page.build",
+              "label": "Version",
+              "options": "launcher.event_builds",
+              "option_value": "{item.id}",
+              "option_text": "{item.name}"
+            },
+            {
+              "choice": "page.region",
+              "label": "Region",
+              "options": "data.regions.regions",
+              "option_value": "{item}",
+              "option_text": "{item}"
+            },
+            {
+              "text": "No PC hosts this version right now.",
+              "tone": "warn",
+              "when": "!{data.regions.regions.0}"
+            },
+            {
+              "button": {
+                "label": "REQUEST",
+                "action": "request",
+                "enabled": "{data.regions.regions.0}",
+                "primary": true
+              }
+            }
+          ]
+        },
+        {
+          "blocks": [
+            {
+              "text": "{page.error}",
+              "tone": "warn",
+              "when": "{page.error}"
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}

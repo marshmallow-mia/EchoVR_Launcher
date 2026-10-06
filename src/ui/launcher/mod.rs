@@ -12,6 +12,7 @@ mod now;
 mod panel;
 mod play;
 mod plugin_form;
+mod plugins;
 mod servers;
 mod settings;
 mod setup;
@@ -134,8 +135,10 @@ pub enum Page {
     Servers,
     EchoVrce,
     Friends,
-    /// Community plugins (the rail's +), not built yet.
+    /// Launcher plugins: getting, updating and removing them (the rail's +).
     Plugins,
+    /// An installed launcher plugin's tab (its index in the installed list).
+    Plugin(u8),
     Settings,
 }
 
@@ -160,6 +163,7 @@ impl Page {
             Page::EchoVrce => "EchoVRCE",
             Page::Friends => "Friends",
             Page::Plugins => "Plugins",
+            Page::Plugin(_) => "Plugin",
             Page::Settings => "Settings",
         }
     }
@@ -651,6 +655,8 @@ pub struct Dashboard {
     servers: servers::Servers,
     /// The selected version's mods and the mods catalogue (the Mods page).
     mods: mods::Mods,
+    /// The launcher plugins: their tabs and the Plugins page.
+    plugins: plugins::PluginsUi,
     /// Who opens spark:// links (Windows, Linux), once read.
     link_handler: Option<links::Handler>,
     /// When a link handed over by another launcher was last looked for.
@@ -745,6 +751,9 @@ impl Dashboard {
                 .find(|p| p.title().eq_ignore_ascii_case(&name))
             {
                 self.page = p;
+            } else {
+                // A plugin's id: its tab, once the plugins are read.
+                self.plugins.open_when_read = Some(name.to_lowercase());
             }
         }
         self.library_field = self.state.library.clone();
@@ -1874,6 +1883,7 @@ impl Dashboard {
             self.notify(&notice);
         }
         servers::follow_up(self, ctx);
+        plugins::tick(self, ctx);
         play::watch_login(self, ctx);
         self.take_link(ctx);
         self.check_updates(ctx);
@@ -2296,7 +2306,11 @@ impl Dashboard {
             Page::Play | Page::Install | Page::Settings | Page::Servers | Page::Friends
         ) {
             let h = HEADER.wider(kit.dx());
-            kit.header_strip(dz(h.x), dz(h.y), dz(h.w), dz(h.h), page.title());
+            let title = match page {
+                Page::Plugin(i) => plugins::title(self, i),
+                _ => page.title().to_string(),
+            };
+            kit.header_strip(dz(h.x), dz(h.y), dz(h.w), dz(h.h), &title);
         }
         match page {
             Page::Play => play::show(self, kit, ctx),
@@ -2306,12 +2320,8 @@ impl Dashboard {
             Page::Servers => servers::show(self, kit, ctx),
             Page::EchoVrce => echovrce::show(self, kit, ctx),
             Page::Friends => friends::show(self, kit, ctx),
-            Page::Plugins => empty_state(
-                kit,
-                Icon::Plus,
-                "Plugins",
-                "Plugins add apps to the launcher itself. None are available yet.",
-            ),
+            Page::Plugins => plugins::show_manage(self, kit, ctx),
+            Page::Plugin(i) => plugins::show_page(self, kit, ctx, i),
         }
     }
 
@@ -2429,7 +2439,7 @@ impl Dashboard {
     fn rail(&mut self, kit: &mut Kit, ctx: &egui::Context, shift: f32) {
         // Settings stays at the bottom.
         let settings_y = 1035.0 + kit.dy();
-        let items = [
+        let mut items = vec![
             (Page::Play, RailIcon::Image("icon_play.png", 24.0), 232.5),
             (Page::Install, RailIcon::Vector(Icon::Download, 30.0), 335.0),
             (Page::Mods, RailIcon::Vector(Icon::Mods, 30.0), 437.0),
@@ -2444,13 +2454,27 @@ impl Dashboard {
                 RailIcon::Image("icon_community.png", 38.0),
                 753.0,
             ),
-            (Page::Plugins, RailIcon::Vector(Icon::Plus, 30.0), 814.0),
-            (
-                Page::Settings,
-                RailIcon::Vector(Icon::Gear, 34.0),
-                settings_y,
-            ),
         ];
+        // Each plugin's tab, then the +, as many as fit above Settings.
+        let room = ((settings_y - 61.0 - 814.0) / 61.0).floor().max(0.0) as usize;
+        let mut cy = 814.0;
+        for (i, p) in self
+            .plugins
+            .list
+            .iter()
+            .enumerate()
+            .take(room.min(u8::MAX as usize))
+        {
+            let icon = RailIcon::Vector(plugins::rail_icon(&p.page), 30.0);
+            items.push((Page::Plugin(i as u8), icon, cy));
+            cy += 61.0;
+        }
+        items.push((Page::Plugins, RailIcon::Vector(Icon::Plus, 30.0), cy));
+        items.push((
+            Page::Settings,
+            RailIcon::Vector(Icon::Gear, 34.0),
+            settings_y,
+        ));
         let badges = self.rail_badges();
         let badge = |page: Page| badges.iter().find(|(p, ..)| *p == page);
         // How far it is unfolded, 0..1.
@@ -2470,18 +2494,19 @@ impl Dashboard {
         // The names, fading in as the rail opens, cut off at its edge.
         let names =
             (t > 0.01).then(|| (kit.window().min.x + width, (t * 1.6 - 0.6).clamp(0.0, 1.0)));
-        for (page, icon, cy) in items {
+        let titles: Vec<String> = items
+            .iter()
+            .map(|(page, ..)| match page {
+                Page::Plugin(i) => plugins::title(self, *i),
+                _ => page.title().to_string(),
+            })
+            .collect();
+        for ((page, icon, cy), title) in items.iter().cloned().zip(titles) {
             let tip = match badge(page) {
-                Some((_, why, _)) => format!("{}: {why}", page.title()),
-                None => page.title().to_string(),
+                Some((_, why, _)) => format!("{title}: {why}"),
+                None => title.clone(),
             };
-            let mut go = kit.rail_item(
-                &format!("rail-{}", page.title()),
-                icon,
-                cy,
-                self.page == page,
-                &tip,
-            );
+            let mut go = kit.rail_item(&format!("rail-{title}"), icon, cy, self.page == page, &tip);
             if let Some((edge, alpha)) = names {
                 let x = 98.0;
                 let room = dz(RAIL_EXTRA + RAIL_W - x - 14.0);
@@ -2492,7 +2517,7 @@ impl Dashboard {
                 } else {
                     egui::Color32::from_gray(200)
                 };
-                let name = kit.label_galley(page.title(), design::din(19.0), fade(color), room);
+                let name = kit.label_galley(&title, design::din(19.0), fade(color), room);
                 let why = badge(page).map(|(_, why, color)| {
                     kit.label_galley(why, design::din(13.0), fade(*color), room)
                 });
@@ -2517,7 +2542,7 @@ impl Dashboard {
                     ),
                 );
                 if row.width() > 0.0 {
-                    go |= kit.click_area(&format!("rail-name-{}", page.title()), row, &tip);
+                    go |= kit.click_area(&format!("rail-name-{title}"), row, &tip);
                 }
             }
             if go {

@@ -49,6 +49,7 @@ pub fn shots() -> Vec<Shot> {
         ("echovrce", Page::EchoVrce),
         ("friends", Page::Friends),
         ("plugins", Page::Plugins),
+        ("plugin_event_lobbies", Page::Plugin(0)),
         ("settings", Page::Settings),
     ]
     .into_iter()

@@ -1082,11 +1082,53 @@ pub fn write(
     if !args.is_empty() {
         mods::set_some_args(v, file, &args)?;
     }
+    write_files(&plugins, s, by_file)
+}
+
+/// Writes `changes` of settings `s` kept in files in `dir` (a launcher plugin's folder);
+/// settings kept as nEVR arguments can't be written there.
+pub fn write_in(dir: &Path, s: &Settings, changes: &[(String, String)]) -> Result<()> {
+    let mut by_file: BTreeMap<String, (FileFormat, Vec<(String, String)>)> = BTreeMap::new();
+    for (key, value) in changes {
+        if !is_key(key) {
+            bail!("{key:?} isn't a setting's key");
+        }
+        match s.field(key).map_or(&s.store, |f| f.store(s)) {
+            Store::Args => bail!("{key}: kept as an argument, which only a mod has"),
+            Store::File { file, format, .. } => by_file
+                .entry(file.clone())
+                .or_insert_with(|| (*format, Vec::new()))
+                .1
+                .push((key.clone(), value.clone())),
+        }
+    }
+    write_files(dir, s, by_file)
+}
+
+/// The values of settings `s` kept in files in `dir`, with defaults where none is kept.
+pub fn read_in(dir: &Path, s: &Settings) -> BTreeMap<String, String> {
+    let files = store_files(s)
+        .into_iter()
+        .filter_map(|f| {
+            Some((
+                f.clone(),
+                std::fs::read_to_string(store_path(dir, &f)).ok()?,
+            ))
+        })
+        .collect();
+    values_from(s, &BTreeMap::new(), &files)
+}
+
+fn write_files(
+    plugins: &Path,
+    s: &Settings,
+    by_file: BTreeMap<String, (FileFormat, Vec<(String, String)>)>,
+) -> Result<()> {
     for (name, (format, kv)) in by_file {
         if !is_store_file(&name) {
             bail!("{name} isn't a settings file the launcher writes");
         }
-        let path = store_path(&plugins, &name);
+        let path = store_path(plugins, &name);
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let new = match format {
             FileFormat::KeyValue => {
