@@ -11,6 +11,10 @@ case "$platform" in
   windows)
     mkdir -p "$stage/EchoVR_Launcher"
     cp target/release/EchoVR_Launcher.exe LICENSE THIRD_PARTY_NOTICES.txt "$stage/EchoVR_Launcher/"
+    # The EchoVRCE page's WebView2 loader: a GNU build loads it as a DLL, which must sit next
+    # to the exe or the launcher doesn't start.
+    loader="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*webview2-com-sys*/x64/WebView2Loader.dll' 2>/dev/null | head -1)"
+    if [ -n "$loader" ]; then cp "$loader" "$stage/EchoVR_Launcher/"; fi
     (cd "$stage" && 7z a -tzip "$out" EchoVR_Launcher >/dev/null)
     ;;
   macos)
