@@ -258,16 +258,20 @@ pub fn state_file() -> PathBuf {
 
 impl LauncherState {
     pub fn load() -> LauncherState {
-        let file = state_file();
-        let s = Self::load_from(&file);
-        // An older schema brought up to date is kept so, at once: a later edit of the file
-        // isn't undone by the next start.
-        if Self::schema_on_disk(&file).is_some_and(|v| v < SCHEMA) {
-            if let Err(e) = s.save_to(&file) {
+        let s = Self::load_upgraded(&state_file());
+        crate::core::pc_update::set_channel(s.update_manifest.as_deref());
+        s
+    }
+
+    /// [`Self::load_from`], and an older schema brought up to date is saved at once, so a
+    /// later edit of the file isn't undone by the next start.
+    pub fn load_upgraded(path: &Path) -> LauncherState {
+        let s = Self::load_from(path);
+        if Self::schema_on_disk(path).is_some_and(|v| v < SCHEMA) {
+            if let Err(e) = s.save_to(path) {
                 tracing::warn!("launcher.json not upgraded: {e:#}");
             }
         }
-        crate::core::pc_update::set_channel(s.update_manifest.as_deref());
         s
     }
 
@@ -567,6 +571,14 @@ mod tests {
         // Turned off since: stays off.
         std::fs::write(&f, r#"{"schema":2,"event_builds":false}"#).unwrap();
         assert!(!LauncherState::load_from(&f).event_builds);
+        // The upgrade is saved at once.
+        std::fs::write(&f, r#"{"schema":1,"event_builds":false}"#).unwrap();
+        LauncherState::load_upgraded(&f);
+        assert_eq!(LauncherState::schema_on_disk(&f), Some(SCHEMA));
+        assert_eq!(
+            LauncherState::load_from(&f).event_builds,
+            EVENT_BUILDS_DEFAULT
+        );
     }
 
     fn catalog() -> Catalog {
