@@ -1093,7 +1093,8 @@ fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
         {
             get(d, ctx, e.clone(), "Plugin added: it has its own tab now");
         }
-        y += dz(40.0);
+        // The summary under the button, not beside it.
+        y += BTN_H + dz(8.0);
         if d.plugins.busy.as_deref() == Some(e.id.as_str()) {
             k.chip(x, y, "Downloading…", design::QUEST_WARN);
             y += dz(34.0);
