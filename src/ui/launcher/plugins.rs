@@ -368,12 +368,17 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                         .any(|v| v.id == vid && v.publisher_lock.is_some())
                 };
                 match core::version_for(&d.state, &name) {
-                    // As PLAY: they don't start on Linux yet.
-                    Some(vid) if cfg!(target_os = "linux") && event(&vid) => {
+                    // As PLAY: on Linux they start in VR only.
+                    Some(vid)
+                        if cfg!(target_os = "linux")
+                            && event(&vid)
+                            && d.state.profile.runtime
+                                == crate::core::launcher::store::Runtime::Flat =>
+                    {
                         return fail(
                             d,
                             &id,
-                            "Event builds don't run on Linux yet: EchoXR runs only the live build."
+                            "Event builds always start in VR: choose SteamVR or WiVRn in Settings."
                                 .into(),
                         );
                     }

@@ -197,6 +197,8 @@ enum JobResult {
     LinuxReady(u32),
     /// SteamVR through EchoXR is set up (Windows).
     EchoXrReady,
+    /// An event build is set up for the classic lobbies (EchoLoader, EchoRelay's patch).
+    EventBuildReady,
     QuestInstalled(crate::core::launcher::quest::Installed),
     QuestUpdated,
     /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
@@ -1975,12 +1977,21 @@ impl Dashboard {
             self.quest_info = None;
         }
         // PLAY prepared VR first: the game starts once that's done (not after a failure).
-        let play_after = [setup::REVIVE_JOB, setup::ECHOXR_JOB, setup::LINUX_JOB].contains(&id)
+        let play_after = [
+            setup::REVIVE_JOB,
+            setup::ECHOXR_JOB,
+            setup::LINUX_JOB,
+            setup::EVENT_JOB,
+        ]
+        .contains(&id)
             && std::mem::take(&mut self.play_after_prep);
         let start_now = play_after
             && matches!(
                 r,
-                JobResult::ReviveReady(_) | JobResult::EchoXrReady | JobResult::LinuxReady(_)
+                JobResult::ReviveReady(_)
+                    | JobResult::EchoXrReady
+                    | JobResult::LinuxReady(_)
+                    | JobResult::EventBuildReady
             );
         match r {
             JobResult::Installed(mut v, update_failed) => {
@@ -2128,6 +2139,11 @@ impl Dashboard {
                             notes.join("\n\n")
                         ),
                     );
+                }
+            }
+            JobResult::EventBuildReady => {
+                if !play_after {
+                    self.notify("The event build is set up: PLAY starts it");
                 }
             }
             JobResult::EchoXrReady => {

@@ -86,10 +86,10 @@ With EchoXR:
     launcher's elevated helper does that step, only for the Meta library's Echo VR,
     from the pinned zip. It runs `EchoXR.exe --setup-only` to make the copy there.
 - **PLAY** runs `bin/win10/EchoXR.exe` with the launch options.
-- **Not supported:**
-  - Event builds don't run this way: EchoXR only patches the live build. Pick Revive
-    for them.
-  - The SteamVR library entry and artwork belong to Revive and aren't used.
+- **Event builds** run this way too (EchoXR 0.5.0 on): `EchoXR.exe` goes into their
+  `bin\win7` and patches the build its exe is, found by its PE timestamp.
+- **Not supported:** the SteamVR library entry and artwork belong to Revive and aren't
+  used.
 
 ### Linux
 

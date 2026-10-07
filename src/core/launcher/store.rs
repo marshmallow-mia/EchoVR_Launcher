@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::catalog::{Catalog, VersionEntry};
 use crate::core::paths;
 
-pub const SCHEMA: u32 = 2;
+pub const SCHEMA: u32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Runtime {
@@ -172,8 +172,9 @@ pub struct LauncherState {
     /// Your account there, asked for at an event build's first PLAY.
     pub relay_account: Option<RelayAccount>,
     /// Event builds can be installed. On by default since 0.11.2 (also for a launcher.json
-    /// from before, once: schema 1), except on Linux, where they don't start yet; off,
-    /// they are listed as coming soon. `"event_builds": false` in this file turns them off.
+    /// from before, once: schema 1), and on Linux since they run there through EchoXR
+    /// (schema 3, once); off, they are listed as coming soon. `"event_builds": false` in
+    /// this file turns them off.
     pub event_builds: bool,
     /// EchoXR Hands is on (Mods page): it plays along whenever EchoXR runs on SteamVR.
     pub echoxr_hands: bool,
@@ -244,8 +245,8 @@ impl Default for LauncherState {
     }
 }
 
-/// Event builds are offered unless turned off, except on Linux (they don't start there yet).
-pub const EVENT_BUILDS_DEFAULT: bool = !cfg!(target_os = "linux");
+/// Event builds are offered unless turned off.
+pub const EVENT_BUILDS_DEFAULT: bool = true;
 
 pub fn default_library() -> String {
     if cfg!(windows) {
@@ -300,10 +301,11 @@ impl LauncherState {
     }
 
     /// A launcher.json of an older schema brought up to this one: schema 1 had event
-    /// builds off by default, so they are turned on (where they are offered) once.
+    /// builds off by default, and schema 2 on Linux (where they didn't start yet), so they
+    /// are turned on there once.
     pub fn migrated(mut self) -> LauncherState {
-        if self.schema < 2 {
-            self.event_builds = self.event_builds || EVENT_BUILDS_DEFAULT;
+        if self.schema < 2 || (self.schema < 3 && cfg!(target_os = "linux")) {
+            self.event_builds = true;
         }
         self.schema = self.schema.max(SCHEMA);
         self
@@ -543,10 +545,10 @@ mod tests {
         let c = Catalog::builtin();
         let event = c.pc().find(|e| e.publisher_lock.is_some()).unwrap().clone();
         let live = c.pc().find(|e| e.publisher_lock.is_none()).unwrap();
-        // A fresh launcher offers them (not on Linux, where they don't start yet).
+        // A fresh launcher offers them.
         let s = LauncherState::default();
         assert!(s.offers(live));
-        assert_eq!(s.offers(&event), EVENT_BUILDS_DEFAULT);
+        assert!(s.offers(&event));
         // Turned off: coming soon.
         let mut s = LauncherState {
             event_builds: false,
@@ -570,18 +572,21 @@ mod tests {
         // Saved by 0.11.1 or older, with them off (the default then).
         std::fs::write(&f, r#"{"schema":1,"event_builds":false}"#).unwrap();
         let s = LauncherState::load_from(&f);
-        assert_eq!((s.event_builds, s.schema), (EVENT_BUILDS_DEFAULT, SCHEMA));
-        // Turned off since: stays off.
+        assert_eq!((s.event_builds, s.schema), (true, SCHEMA));
+        // Schema 2 had them off on Linux, where they didn't start yet: on there, once.
         std::fs::write(&f, r#"{"schema":2,"event_builds":false}"#).unwrap();
+        assert_eq!(
+            LauncherState::load_from(&f).event_builds,
+            cfg!(target_os = "linux")
+        );
+        // Turned off since: stays off.
+        std::fs::write(&f, r#"{"schema":3,"event_builds":false}"#).unwrap();
         assert!(!LauncherState::load_from(&f).event_builds);
         // The upgrade is saved at once.
         std::fs::write(&f, r#"{"schema":1,"event_builds":false}"#).unwrap();
         LauncherState::load_upgraded(&f);
         assert_eq!(LauncherState::schema_on_disk(&f), Some(SCHEMA));
-        assert_eq!(
-            LauncherState::load_from(&f).event_builds,
-            EVENT_BUILDS_DEFAULT
-        );
+        assert!(LauncherState::load_from(&f).event_builds);
     }
 
     fn catalog() -> Catalog {

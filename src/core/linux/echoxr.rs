@@ -390,11 +390,12 @@ fn drives() -> Vec<(char, PathBuf)> {
 
 /// The command that starts Echo VR from its bin folder `bin` through Proton, with `args`
 /// for the game, the way `start` says (see [`Start`]). In VR, `EchoXR.exe` makes
-/// `echovr_openxr.exe` on its first run, turns Proton's OpenXR on itself (no OpenVR
-/// runtime needed) and points Echo at the runtime.
+/// `echovr_openxr.exe` (its copy of `exe`) on its first run, turns Proton's OpenXR on itself
+/// (no OpenVR runtime needed) and points Echo at the runtime; on the monitor `exe` starts.
 pub fn game_command(
     steam_root: &Path,
     bin: &Path,
+    exe: &str,
     args: &[String],
     start: Start,
     hands: bool,
@@ -432,7 +433,7 @@ pub fn game_command(
     let program = if xr.is_some() {
         bin.join(echoxr::LAUNCHER)
     } else {
-        bin.join(paths::DEFAULT_EXE)
+        bin.join(exe)
     };
     let mut c = std::process::Command::new(proton_dir().join("proton"));
     c.arg("waitforexitandrun")
@@ -449,8 +450,8 @@ pub fn game_command(
         tracing::info!("--play: LIBOVR_DLL_DIR={dir}");
         c.env("LIBOVR_DLL_DIR", dir);
     }
-    // nEVR is the game's BugSplat64.dll, which Wine has no builtin of: the game's own
-    // folder wins without an override.
+    // nEVR (or an event build's EchoLoader) is the game's BugSplat64.dll, which Wine has no
+    // builtin of: the game's own folder wins without an override.
     if let Some((xr, manifest)) = xr {
         tracing::info!("--play: {} at {}", xr.name(), manifest.display());
         c.env("XR_RUNTIME_JSON", manifest)

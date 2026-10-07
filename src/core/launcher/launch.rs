@@ -140,7 +140,8 @@ pub fn build(
 
 /// [`build`] for an event build on the classic lobbies relay, as the relay's own launcher
 /// starts it: no arguments at all (the 2019 build quits on any it doesn't know), from its
-/// game folder. These builds always start in VR, so Flat plays like Meta Link.
+/// game folder. These builds always start in VR, so Flat plays like Meta Link. Through
+/// EchoXR, `EchoXR.exe` starts from the bin folder and starts the game from its game folder.
 pub fn build_relay(
     profile: &LaunchProfile,
     exe: &Path,
@@ -150,11 +151,9 @@ pub fn build_relay(
         Runtime::Flat => Runtime::MetaLink,
         rt => rt,
     };
-    if runtime == Runtime::Revive && profile.steamvr_via == SteamVrVia::EchoXr {
-        bail!("Event builds don't run through EchoXR (it runs only the live build): choose Revive for SteamVR in Settings.");
-    }
     let bare = LaunchProfile {
         runtime,
+        steamvr_via: profile.steamvr_via,
         ..Default::default()
     };
     let mut c = build(&bare, exe, revive_dir, None)?;
@@ -258,6 +257,19 @@ mod tests {
         let c = build_relay(&flat, old, None).unwrap();
         assert!(c.args.is_empty());
         assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena"));
+        // Through EchoXR: EchoXR.exe beside it, from the bin folder, bare too.
+        let xr = LaunchProfile {
+            runtime: Runtime::Revive,
+            steamvr_via: SteamVrVia::EchoXr,
+            ..p.clone()
+        };
+        let c = build_relay(&xr, old, None).unwrap();
+        assert_eq!(
+            c.program,
+            Path::new("C:/E/ready-at-dawn-echo-arena/bin/win7").join(echoxr::LAUNCHER)
+        );
+        assert!(c.args.is_empty());
+        assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena/bin/win7"));
 
         p.runtime = Runtime::Flat;
         p.spectator = true;
@@ -282,7 +294,8 @@ mod tests {
         );
         assert_eq!(c.args, ["-lobbyid", LOBBY, "-foo"]);
         assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena/bin/win10"));
-        assert!(build_relay(&p, old, None).is_err());
+        // An event build plays through EchoXR too, bare.
+        assert!(build_relay(&p, old, None).unwrap().args.is_empty());
 
         p = LaunchProfile {
             runtime: Runtime::Revive,

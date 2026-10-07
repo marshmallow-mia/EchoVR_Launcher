@@ -26,6 +26,9 @@ use crate::ui::widgets::{Tone, BTN_H};
 pub(super) const REVIVE_JOB: &str = "revive";
 /// SteamVR through EchoXR (Windows).
 pub(super) const ECHOXR_JOB: &str = "echoxr";
+/// Setting an event build up for the classic lobbies before its PLAY (EchoLoader and
+/// EchoRelay's patch).
+pub(super) const EVENT_JOB: &str = "event-build";
 /// Putting Echo VR into SteamVR's library (or taking it out) on its own.
 const LIBRARY_JOB: &str = "steamvr-library";
 pub(super) const CONSENT_KEY: &str = "admin-consent";
@@ -477,13 +480,31 @@ pub(super) fn steamvr_library(d: &mut Dashboard, ctx: &egui::Context, add: bool)
     );
 }
 
+/// Sets event build `v` up for the classic lobbies (EchoLoader in its crash reporter's
+/// place, EchoRelay's patch as its plugin), as its install does: for a build an older
+/// launcher installed, before its PLAY.
+pub(super) fn event_build(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion) {
+    let v = v.clone();
+    d.start_job(
+        ctx,
+        JobKind::Revive,
+        EVENT_JOB,
+        &format!("Setting up {}", v.name),
+        "Adding EchoLoader and EchoRelay's patch...",
+        move |cancel, on| match relay::set_up(&v, cancel, on) {
+            Ok(()) => JobResult::EventBuildReady,
+            Err(e) => job_err(e, "Couldn't set up the classic lobby"),
+        },
+    );
+}
+
 /// Sets up SteamVR through EchoXR (Windows): EchoXR and, without the Meta app, Meta's
 /// Platform SDK loader; then EchoXR into the selected version's folder (asking for
 /// administrator rights for the Meta library's).
 pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
     let mut consent = consent_asker(d.worker.tx(ctx));
     let bin = match d.target() {
-        Target::Installed(v) if v.publisher_lock.is_none() => Some(v.bin_dir()),
+        Target::Installed(v) => Some(v.bin_dir()),
         _ => None,
     };
     d.start_job(
@@ -589,8 +610,7 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         None => "Echo VR".to_string(),
     };
     let echoxr = d.state.profile.runtime == Runtime::Revive
-        && d.state.profile.steamvr_via == SteamVrVia::EchoXr
-        && v.publisher_lock.is_none();
+        && d.state.profile.steamvr_via == SteamVrVia::EchoXr;
     let result = match (d.state.profile.runtime, revive) {
         // EchoXR.exe beside the game starts it on SteamVR, with the game's icon.
         _ if echoxr => platform::create_shortcut(

@@ -39,8 +39,8 @@ checksums and added instead of downloading it again.
 ## Event builds
 
 The event builds (Halloween 2017, Christmas 2017, Halloween 2018, Christmas 2018, Summer
-2019) can be installed on Windows and play on the community's classic lobbies server, through
-Revive on SteamVR. On Linux they are listed as coming soon until EchoXR runs them. To hide
+2019) can be installed on Windows and Linux and play on the community's classic lobbies server:
+on SteamVR through EchoXR or Revive, on Meta Link, or on Linux in VR through EchoXR. To hide
 them, close the launcher and set `"event_builds": false` in its `launcher.json`
 (`%LOCALAPPDATA%\EchoVR_Launcher` on Windows, `~/.local/share/EchoVR_Launcher` on Linux).
 

@@ -24,8 +24,11 @@ Rules the launcher enforces (see `src/core/launcher/catalog.rs`):
   own `_local/` and `_temp/` folders are never checked.
 - `publisher_lock`: makes it an event build, played on the classic lobbies
   ([EchoRelay](https://github.com/heisthecat31/EchoRelay)) server set in Settings. Its
-  install gets EchoRelay's patch (`bin/win7/dbgcore.dll`, or `dbghelp.dll` with the
-  game's own kept as `dbghelp_orig.dll` on the 2017 builds), and every PLAY writes its
+  install gets EchoLoader 2 in the crash reporter's place (`BugSplat64.dll`, as nEVR is on
+  the live build) and EchoRelay's patch as its plugin (`plugins/EchoRelay.Patch.dll`;
+  Halloween 2017 also gets `NvrMissingTextures.dll` for the textures its package lacks).
+  A build set up the way EchoRelay's own installer does it (the patch as `dbgcore.dll`, or
+  `dbghelp.dll` on the 2017 builds) is moved over at its next PLAY. Every PLAY writes its
   `_local/config.json` with the server, this lock and the player's account. It gets no
   update and starts without arguments. Use the lock EchoRelay expects: `rad15_live` for
   Christmas 2017, not its own `ea_rel6_0`.

@@ -1380,7 +1380,7 @@ mod tests {
         assert!(classify(Some(nevr), None).editable());
         assert_eq!(classify(Some(b"MZ"), Some(STOCK_SLOT_SHA256)), Loader::None);
         assert_eq!(classify(None, None), Loader::None);
-        // EchoLoader 2 (never shipped), or anything else.
+        // EchoLoader 2 (the event builds' loader, not the live build's), or anything else.
         assert_eq!(
             classify(Some(b"MZ ECHOLOADER_ID:2.0.0:open"), Some("00")),
             Loader::Unknown

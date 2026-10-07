@@ -369,15 +369,29 @@ pub fn play_from_steam() -> i32 {
     } else {
         launch::game_args(&profile, lobby.as_ref().map(|(l, _)| l.as_str()))
     };
-    // EchoXR runs only the live build's echovr.exe (its patch checks the bytes first).
-    if v.publisher_lock.is_some() {
-        tracing::error!("--play: event builds don't run on Linux yet");
-        return 2;
+    let event = v.publisher_lock.is_some();
+    // An event build: in VR always (it can't sign in on the monitor), with EchoLoader and
+    // EchoRelay's patch in its folder (PLAY in the launcher's window set it up already; a
+    // start from Steam alone may come first).
+    if event {
+        if profile.runtime == crate::core::launcher::store::Runtime::Flat {
+            tracing::error!("--play: event builds always start in VR");
+            return 2;
+        }
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        if let Err(e) = crate::core::launcher::relay::set_up(&v, &cancel, &mut |_| {}) {
+            tracing::error!("--play: {} not set up for the classic lobbies: {e:#}", v.id);
+            return 2;
+        }
     }
-    // Started from Steam without the launcher's window too: nEVR's plugin list.
-    let hands = profile.hands(state.echoxr_hands);
-    if let Err(e) = crate::core::launcher::mods::before_start(&v, state.own_game_config, hands) {
-        tracing::warn!("--play: mods not prepared: {e:#}");
+    // Started from Steam without the launcher's window too: nEVR's plugin list (the live
+    // build's; EchoXR Hands only with it).
+    let hands = !event && profile.hands(state.echoxr_hands);
+    if !event {
+        if let Err(e) = crate::core::launcher::mods::before_start(&v, state.own_game_config, hands)
+        {
+            tracing::warn!("--play: mods not prepared: {e:#}");
+        }
     }
     let playing = Playing {
         pid: std::process::id(),
@@ -412,8 +426,8 @@ pub fn play_from_steam() -> i32 {
     let compositor = matches!(start, echoxr::Start::Vr(echoxr::Xr::SteamVr))
         .then(|| CompositorLog::mark(&steam_root));
     // EchoXR Hands: its OpenXR layer in the game's loader (in VR only).
-    let result =
-        echoxr::game_command(&steam_root, &v.bin_dir(), &args, start, hands).and_then(|mut c| {
+    let result = echoxr::game_command(&steam_root, &v.bin_dir(), v.exe_name(), &args, start, hands)
+        .and_then(|mut c| {
             tracing::info!("--play: {c:?}");
             // Proton's and the game's own output (OpenXR's warnings among it), for this run.
             if let Ok(out) = std::fs::File::create(crate::core::paths::log_dir().join("proton.log"))

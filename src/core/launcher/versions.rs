@@ -215,13 +215,16 @@ pub fn reinstall(
     })
 }
 
-/// An event build gets EchoRelay's patch, so it can log in on the classic lobbies server.
+/// An event build gets EchoLoader and EchoRelay's patch, so it can log in on the classic
+/// lobbies server.
 fn relay_patch(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
     if v.publisher_lock.is_none() {
         return Ok(());
     }
-    on(Step::Status("Adding EchoRelay's patch...".into()));
-    super::relay::apply_patch(v, cancel)
+    on(Step::Status(
+        "Adding EchoLoader and EchoRelay's patch...".into(),
+    ));
+    super::relay::set_up(v, cancel, on)
 }
 
 /// Applies `entry`'s update to `v` after an install; why it failed, if it did (the game
@@ -298,9 +301,14 @@ impl Checksums {
         if keep_patch {
             skip.insert(format!("{bin}/{}", super::patch::DLL).to_ascii_lowercase());
         }
-        // An event build's EchoRelay patch replaces one of its files.
+        // An event build's loader replaces its crash reporter (and, on the 2017 builds,
+        // the game's dbghelp.dll goes back where EchoRelay's installer put its patch).
         if v.publisher_lock.is_some() {
-            skip.insert(format!("{bin}/{}", super::relay::patch_file(v)).to_ascii_lowercase());
+            skip.extend(
+                super::relay::not_the_builds(v)
+                    .into_iter()
+                    .map(|f| format!("{bin}/{f}").to_ascii_lowercase()),
+            );
         }
         Ok(Checksums {
             manifest,
@@ -585,8 +593,8 @@ mod tests {
     }
 
     /// Installs Halloween 2017 (1.3 GB) into the library in `ECHOVR_TEST_LIBRARY`, as the
-    /// launcher does, and checks what an event build gets: the usual layout, EchoRelay's
-    /// patch, its config, and a reinstall that finds nothing to fetch.
+    /// launcher does, and checks what an event build gets: the usual layout, EchoLoader with
+    /// its plugins, its config, and a reinstall that finds nothing to fetch.
     #[test]
     #[ignore = "network, 1.3 GB; needs ECHOVR_TEST_LIBRARY"]
     fn installs_an_event_build() {
@@ -617,11 +625,15 @@ mod tests {
             bin.display()
         );
         assert!(v.present());
+        // EchoLoader in the crash reporter's place, the patch and NvrMissingTextures as its
+        // plugins, and the game's own dbghelp.dll back (the archive has the patch as it).
+        assert!(super::super::relay::in_place(&v));
         assert!(download::sha256_matches(
-            &bin.join("dbghelp.dll"),
+            &bin.join("plugins").join(super::super::relay::PATCH_PLUGIN),
             super::super::relay::PATCH_SHA256
         ));
-        assert!(bin.join("dbghelp_orig.dll").is_file());
+        assert!(bin.join("plugins/NvrMissingTextures.dll").is_file());
+        assert!(!bin.join("dbghelp_orig.dll").exists());
         let account = super::super::store::RelayAccount {
             name: "Tester".into(),
             password: "pw".into(),

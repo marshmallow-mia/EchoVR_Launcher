@@ -262,6 +262,7 @@ fn pc_action(d: &mut Dashboard) -> Action {
         .and_then(|id| setup::job_for(d, &id))
         .or_else(|| hero::job_view(d, setup::REVIVE_JOB))
         .or_else(|| hero::job_view(d, setup::ECHOXR_JOB))
+        .or_else(|| hero::job_view(d, setup::EVENT_JOB))
         .or_else(|| hero::job_view(d, setup::LINUX_JOB));
     let mut a = Action::new();
     let needs_steamvr = d.steamvr_missing();
@@ -334,15 +335,13 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.main = Main::PrepareRevive;
                 a.enabled = !d.any_job();
                 a.tip = "Start Echo VR on SteamVR: Revive, which runs it there, is installed first (asks for administrator rights)".into();
-            } else if echoxr && cfg!(windows) && v.publisher_lock.is_some() {
+            } else if cfg!(target_os = "linux")
+                && v.publisher_lock.is_some()
+                && d.state.profile.runtime == Runtime::Flat
+            {
                 (a.main, a.enabled, a.grey) = (Main::Play, false, true);
                 a.tip =
-                    "Event builds don't run through EchoXR: choose Revive for SteamVR in Settings"
-                        .into();
-            } else if cfg!(target_os = "linux") && v.publisher_lock.is_some() {
-                (a.main, a.enabled, a.grey) = (Main::Play, false, true);
-                a.tip =
-                    "Event builds don't run on Linux yet: EchoXR runs only the live build".into();
+                    "Event builds always start in VR: choose SteamVR or WiVRn in Settings".into();
             } else if cfg!(target_os = "linux") && !setup::pc_play_supported(d) {
                 a.main = Main::PrepareLinux;
                 a.enabled = !d.any_job();
@@ -1107,6 +1106,15 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
             d.overlay = Some(setup::relay_account(d, true));
             return;
         }
+        // EchoLoader and EchoRelay's patch in its folder first (a build an older launcher
+        // installed has the patch as EchoRelay's own installer puts it in); then it starts.
+        if let Target::Installed(v) = d.target() {
+            if !relay::in_place(&v) {
+                d.play_after_prep = true;
+                setup::event_build(d, ctx, &v);
+                return;
+            }
+        }
         return match launch::preflight(&d.state.profile) {
             Some(w) => {
                 d.pending_lobby = None;
@@ -1257,7 +1265,6 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     if cfg!(windows)
         && d.state.profile.runtime == Runtime::Revive
         && d.state.profile.steamvr_via == SteamVrVia::EchoXr
-        && v.publisher_lock.is_none()
     {
         let bin = v.bin_dir();
         if let Err(e) = crate::core::echoxr::prepare(&bin) {
@@ -1290,11 +1297,11 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             lobby.as_ref().map(|j| j.lobby.as_str()),
         )
     };
-    // EchoXR Hands: its OpenXR layer in the game's loader, when it plays through EchoXR.
-    let through_echoxr = profile.runtime == Runtime::Revive
-        && profile.steamvr_via == SteamVrVia::EchoXr
-        && v.publisher_lock.is_none();
-    let hands = through_echoxr && profile.hands(d.state.echoxr_hands);
+    // EchoXR Hands: its OpenXR layer in the game's loader, when the live build plays
+    // through EchoXR.
+    let through_echoxr =
+        profile.runtime == Runtime::Revive && profile.steamvr_via == SteamVrVia::EchoXr;
+    let hands = through_echoxr && v.publisher_lock.is_none() && profile.hands(d.state.echoxr_hands);
     let command = command.map(|mut c| {
         if hands {
             c.env
