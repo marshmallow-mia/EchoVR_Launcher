@@ -883,7 +883,13 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
     kit.image("icon.png", x, top, s, s);
     kit.title(x + s + dz(20.0), top + dz(4.0), "Echo VR Launcher", 22.0);
     let version = env!("CARGO_PKG_VERSION");
+    let updating = super::hero::job_view(d, super::LAUNCHER_JOB);
     let status = match &d.launcher_update {
+        LauncherUpdate::Available(r) if updating.is_some() => format!(
+            "Version {version} · updating to {}: {}",
+            r.version,
+            updating.as_ref().map(|j| j.step()).unwrap_or_default()
+        ),
         LauncherUpdate::Checking => format!("Version {version} · checking for updates"),
         LauncherUpdate::Latest => format!("Version {version} · the latest"),
         LauncherUpdate::Available(r) => format!("Version {version} · {} is out", r.version),
@@ -892,7 +898,14 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
     let g = kit.label_galley(&status, design::din(15.0), design::GREY, w - s - dz(20.0));
     kit.put(x + s + dz(20.0), top + dz(40.0), g);
 
+    let self_update = crate::core::launcher::self_update::supported();
     let update = match &d.launcher_update {
+        _ if updating.is_some() => None,
+        LauncherUpdate::Available(_) if self_update => Some((
+            "about-update",
+            "Update now",
+            "Download the new launcher, check it and restart into it",
+        )),
         LauncherUpdate::Available(_) => {
             Some(("about-update", "Download update", "Open the release page"))
         }
@@ -932,6 +945,7 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
                 ("about-credits", _) => d.overlay = Some(setup::Overlay::Credits { scroll: 0.0 }),
                 ("about-discord", _) => platform::open_url(crate::core::LOUNGE_INVITE),
                 ("about-source", _) => platform::open_url(env!("CARGO_PKG_REPOSITORY")),
+                (_, LauncherUpdate::Available(_)) if self_update => d.update_launcher(ctx),
                 (_, LauncherUpdate::Available(r)) => platform::open_url(&r.url),
                 _ => d.check_launcher_update(ctx),
             }

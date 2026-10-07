@@ -53,6 +53,17 @@ fn is_newer(candidate: &str, current: &str) -> bool {
 /// The latest release when it is newer than this launcher; `None` when this is the
 /// latest (or nothing is released yet).
 pub fn newer() -> Result<Option<Release>> {
+    // Debug builds: `ECHOVR_FAKE_LAUNCHER_UPDATE=0.99.0` says that version is out (to try
+    // the launcher's own update; with `ECHOVR_UPDATE_MIRROR` to fetch it from a test server).
+    if let Some(v) = std::env::var("ECHOVR_FAKE_LAUNCHER_UPDATE")
+        .ok()
+        .filter(|_| cfg!(debug_assertions))
+    {
+        return Ok(is_newer(&v, env!("CARGO_PKG_VERSION")).then(|| Release {
+            url: format!("{}/releases", env!("CARGO_PKG_REPOSITORY")),
+            version: v,
+        }));
+    }
     let Some(url) = latest_url(env!("CARGO_PKG_REPOSITORY")) else {
         bail!("no GitHub repository");
     };

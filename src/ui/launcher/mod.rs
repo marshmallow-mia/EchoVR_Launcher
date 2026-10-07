@@ -209,6 +209,8 @@ enum JobResult {
     HandsInstalled,
     /// Parts of the launcher's things were uninstalled.
     Uninstalled(crate::core::uninstall::Outcome),
+    /// The launcher's new version is in place: start it (the executable) and end this one.
+    LauncherUpdated(PathBuf),
 }
 
 enum Msg {
@@ -407,6 +409,9 @@ impl Feed {
 
 /// What a job does: its progress wording, whether it can be cancelled, and which
 /// failures count as a failed update.
+/// The launcher's own update, as a job.
+pub(super) const LAUNCHER_JOB: &str = "launcher-update";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JobKind {
     Install,
@@ -425,6 +430,8 @@ enum JobKind {
     Mods,
     /// Taking what the launcher put on this PC off it again.
     Uninstall,
+    /// Updating the launcher itself.
+    LauncherUpdate,
 }
 
 struct Job {
@@ -989,6 +996,29 @@ impl Dashboard {
             );
         }
         roots
+    }
+
+    /// Updates the launcher to the newer release that is out (see `self_update`): a job,
+    /// then it starts again.
+    pub(super) fn update_launcher(&mut self, ctx: &egui::Context) {
+        let LauncherUpdate::Available(r) = &self.launcher_update else {
+            return;
+        };
+        let v = r.version.clone();
+        self.start_job(
+            ctx,
+            JobKind::LauncherUpdate,
+            LAUNCHER_JOB,
+            &format!("Updating the launcher to {v}"),
+            "Downloading...",
+            move |cancel, on| match crate::core::launcher::self_update::install(&v, cancel, on) {
+                Ok(exe) => JobResult::LauncherUpdated(exe),
+                Err(e) => versions::job_err(
+                    e.context("You can also download it yourself: github.com/marshmallow-mia/EchoVR_Launcher/releases"),
+                    "Launcher Update Failed",
+                ),
+            },
+        );
     }
 
     /// Looks for a newer launcher release in the background.
@@ -2139,6 +2169,23 @@ impl Dashboard {
                             notes.join("\n\n")
                         ),
                     );
+                }
+            }
+            JobResult::LauncherUpdated(exe) => {
+                // The new one starts (it waits for this one to end), the old tray goes.
+                self.save();
+                crate::core::tray::quit();
+                match crate::core::launcher::self_update::restart(&exe) {
+                    Ok(()) => {
+                        tracing::info!("launcher updated: restarting");
+                        crate::core::elevation::shutdown();
+                        std::process::exit(0);
+                    }
+                    Err(e) => self.dialogs.error(
+                        "Launcher updated",
+                        &format!("The new launcher is in place, but it couldn't be started ({e:#}). Close this one and start it again."),
+                        Default::default(),
+                    ),
                 }
             }
             JobResult::EventBuildReady => {

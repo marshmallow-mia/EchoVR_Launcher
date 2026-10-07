@@ -9,7 +9,12 @@ fn main() {
     core::launcher::feed::init_local_offset();
     let desktop_fix = core::linux::prepare_desktop_env();
     core::paths::move_from_installer();
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    // Started by the launcher it updated: once that one has ended, a normal start.
+    if args.get(1).map(String::as_str) == Some(core::launcher::self_update::AFTER_FLAG) {
+        core::launcher::self_update::wait_for(args.get(2).map(String::as_str).unwrap_or(""));
+        args.truncate(1);
+    }
     // Elevated helper mode: the app relaunches itself with this flag (as admin) to perform
     // privileged operations for the normal process. Never starts the GUI.
     if args.get(1).map(String::as_str) == Some(core::elevation::HELPER_FLAG) {
@@ -42,6 +47,7 @@ fn main() {
 
     core::log::init("EchoVR_Launcher.log");
     core::linux::log_desktop_env(desktop_fix.as_deref());
+    core::launcher::self_update::clean_up();
     let result = ui::run();
     core::elevation::shutdown();
     core::uninstall::after_exit();

@@ -491,7 +491,9 @@ pub(super) fn job_state(job: &JobView) -> String {
         JobKind::Unpatch => "Removing the patch".into(),
         JobKind::Licence => "Licence patch".into(),
         JobKind::Uninstall => "Uninstalling".into(),
-        JobKind::Revive | JobKind::QuestUpdate | JobKind::Mods => job.title.clone(),
+        JobKind::Revive | JobKind::QuestUpdate | JobKind::Mods | JobKind::LauncherUpdate => {
+            job.title.clone()
+        }
     }
 }
 
