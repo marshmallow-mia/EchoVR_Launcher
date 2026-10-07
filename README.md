@@ -20,6 +20,8 @@ Help and news are on the [Echo VR Lounge Discord](https://discord.com/invite/ech
 
 Players, matches and numbers in the pictures are made up; the mods and plugins are the real ones. The EchoVRCE page is the real site, with the account blurred.
 
+All ten in one picture, one below the other: [docs/screenshots/00-all.jpg](docs/screenshots/00-all.jpg).
+
 ## Match links
 
 The launcher joins matches from `spark://` and `https://echo.taxi/spark://…` links: paste one
