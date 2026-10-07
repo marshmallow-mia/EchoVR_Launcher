@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Packages target/release/EchoVR_Launcher into a portable zip.
-#   scripts/package.sh <windows|macos|linux> <output.zip>
+# Packages target/release/EchoVR_Launcher into a portable zip (or, windows-setup, the installer).
+#   scripts/package.sh <windows|windows-setup|macos|linux> <output.zip|setup.exe>
 set -euo pipefail
 platform="$1"
 out="$(pwd)/$2"
@@ -16,6 +16,15 @@ case "$platform" in
     loader="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*webview2-com-sys*/x64/WebView2Loader.dll' 2>/dev/null | head -1)"
     if [ -n "$loader" ]; then cp "$loader" "$stage/EchoVR_Launcher/"; fi
     (cd "$stage" && 7z a -tzip "$out" EchoVR_Launcher >/dev/null)
+    ;;
+  windows-setup)
+    # The installer (windows/installer.nsi, NSIS's makensis) of the same files.
+    mkdir -p "$stage/EchoVR_Launcher"
+    cp target/release/EchoVR_Launcher.exe LICENSE THIRD_PARTY_NOTICES.txt "$stage/EchoVR_Launcher/"
+    loader="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*webview2-com-sys*/x64/WebView2Loader.dll' 2>/dev/null | head -1)"
+    cp "$loader" "$stage/EchoVR_Launcher/"
+    version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+    (cd windows && makensis -V2 -DVERSION="$version" -DSTAGE="$stage/EchoVR_Launcher" -DOUT="$out" installer.nsi)
     ;;
   macos)
     app="$stage/EchoVR_Launcher.app/Contents"

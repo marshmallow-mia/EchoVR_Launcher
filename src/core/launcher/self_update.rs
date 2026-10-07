@@ -104,7 +104,32 @@ pub fn install(v: &str, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result
     let _ = std::fs::remove_file(&zip);
     result?;
     tracing::info!("launcher {v} is in {}", dir.display());
+    installed_version(&dir, v);
     Ok(exe)
+}
+
+/// Windows: when the installer put the launcher into `dir`, the version Windows' Apps list
+/// shows becomes `v`.
+fn installed_version(dir: &Path, v: &str) {
+    #[cfg(windows)]
+    {
+        use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+        let key = winreg::RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall\EchoVR_Launcher",
+            KEY_READ | KEY_WRITE,
+        );
+        let Ok(key) = key else {
+            return;
+        };
+        let at: String = key.get_value("InstallLocation").unwrap_or_default();
+        if Path::new(&at) == dir {
+            if let Err(e) = key.set_value("DisplayVersion", &v) {
+                tracing::warn!("Apps list version: {e}");
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (dir, v);
 }
 
 /// The zip `name` of version `v`, checked against its release's checksums: from the
