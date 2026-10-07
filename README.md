@@ -57,7 +57,7 @@ public matches of the event builds and joins a friend's match by its id.
 
 The SteamVR choice runs Echo VR through [Revive](https://github.com/LibreVR/Revive)
 (installed by the launcher) or, with **EchoXR** installed on the Mods page, through
-[EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer in the game's folder: no
+[EchoXR](https://github.com/marshmallow-mia/EchoXR)'s OpenXR layer in the game's folder: no
 injection and no administrator rights (the Meta library's copy excepted). EchoXR runs
 only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
 
@@ -75,7 +75,7 @@ running it see your fingers.
 ## Linux
 
 The PC version plays on Linux through Steam. The first **PLAY** (and the first after an
-update of them) downloads a private GE-Proton and [EchoXR](https://github.com/EchoTools/EchoXR)'s OpenXR layer (it
+update of them) downloads a private GE-Proton and [EchoXR](https://github.com/marshmallow-mia/EchoXR)'s OpenXR layer (it
 answers Echo's Oculus calls over OpenXR, so SteamVR, Monado or WiVRn drive the headset),
 reads Meta's Platform SDK loader and P2P library out of Meta's own runtime package, and
 adds Echo VR to Steam as a non-Steam game (it asks first: Steam restarts for that, once),
@@ -84,7 +84,11 @@ How you play (Settings, or the Install card) is **SteamVR** or **WiVRn**, whiche
 installed, or Flat. In VR, EchoXR is required (the Mods page lists it as required), and PLAY
 points it at that runtime: it starts SteamVR when it isn't running, and WiVRn's server
 (connect your headset in WiVRn's app). `XR_RUNTIME_JSON`, when set, still wins. No OpenVR
-runtime is needed. Only the live build runs this way; the event builds don't yet.
+runtime is needed. The live build and the event builds run this way.
+Under Proton the game can't rate the graphics card on its first start and used to pick Low:
+the GPU Rating plugin ([NvrGpuRating](https://github.com/marshmallow-mia/NvrGpuRating), a
+required mod, also in the event builds) gives it the card's numbers, and a Low preset saved
+before is rated again once (your other game settings stay).
 SteamVR 2.17.9 and 2.17.10 lose the graphics card on NVIDIA under Linux (Valve's bug): the
 launcher says so when it happens, and SteamVR's "previous" branch (Properties, Betas) plays.
 

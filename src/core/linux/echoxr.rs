@@ -1,4 +1,4 @@
-//! What Echo VR needs on Linux, the way EchoXR does it (github.com/EchoTools/EchoXR, its
+//! What Echo VR needs on Linux, the way EchoXR does it (github.com/marshmallow-mia/EchoXR, its
 //! OpenXR layer only): a private GE-Proton, whose `wineopenxr` passes OpenXR on to the
 //! runtime you play with (SteamVR or WiVRn, `Xr`); a Wine prefix; and EchoXR
 //! (`core::echoxr`) in the game's `bin/win10`, with Meta's Platform SDK loader beside the

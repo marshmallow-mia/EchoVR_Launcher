@@ -65,8 +65,8 @@ pub const CREDITS: &[Credit] = &[
         by: crate::core::echoxr::AUTHORS,
         what: "Echo VR on OpenXR: SteamVR without Revive, and VR on Linux.",
         licence: "MIT (Revive), Apache-2.0 (OpenXR SDK)",
-        url: "https://github.com/EchoTools/EchoXR",
-        credits: "https://github.com/EchoTools/EchoXR/blob/main/CREDITS.md",
+        url: "https://github.com/marshmallow-mia/EchoXR",
+        credits: "https://github.com/marshmallow-mia/EchoXR/blob/main/CREDITS.md",
     },
     Credit {
         name: "EchoXR Hands",

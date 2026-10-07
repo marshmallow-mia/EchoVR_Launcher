@@ -2,7 +2,7 @@
 
 Echo VR talks to the Oculus runtime through LibOVR (`LibOVRRT64_1.dll`). Without
 Meta's runtime (on SteamVR, or on Linux), something has to answer those calls over
-OpenXR. The launcher uses [EchoTools/EchoXR](https://github.com/EchoTools/EchoXR) for
+OpenXR. The launcher uses [marshmallow-mia/EchoXR](https://github.com/marshmallow-mia/EchoXR) for
 that: the OpenXR layer of heisthecat31's EchoXR, without the hand tracking.
 [RiftLift](https://github.com/Villagers654/RiftLift) solves the same problem for any Rift
 game on Linux. This page covers how the launcher uses EchoXR, and what each of the two

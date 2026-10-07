@@ -43,6 +43,12 @@ const TEXTURES_URL: &str =
 const TEXTURES_FILE: &str = "NvrMissingTextures-1.0.0.dll";
 const TEXTURES_SHA256: &str = "362f0406841489dbb50607522d4d0846c1325e9276ac2bf8e0ac09567be69909";
 const TEXTURES_DLL: &str = "NvrMissingTextures.dll";
+/// NvrGpuRating (marshmallow-mia's), on release.echovr.de: tells the game the GPU's cores
+/// and base clock (or AMD's TFLOPS) where Proton can't, so its first start picks the right
+/// graphics preset. Every event build rates the GPU that way.
+const RATING_URL: &str = "https://release.echovr.de/launcher/mods/NvrGpuRating-1.0.0.dll";
+const RATING_FILE: &str = "NvrGpuRating-1.0.0.dll";
+const RATING_SHA256: &str = "78c047ea68c363550d8c2c7b802fcd4e025fc9b092e086bf37a733e3d91f1d71";
 /// Halloween 2017's lock: the build NvrMissingTextures is for.
 const TEXTURES_LOCK: &str = "release4_5";
 /// Where the loader finds its plugins, beside the exe.
@@ -85,7 +91,10 @@ fn lacks_textures(v: &InstalledVersion) -> bool {
 
 /// The plugins `v` gets, by file name.
 fn plugin_names(v: &InstalledVersion) -> Vec<(&'static str, &'static str)> {
-    let mut p = vec![(PATCH_PLUGIN, PATCH_SHA256)];
+    let mut p = vec![
+        (PATCH_PLUGIN, PATCH_SHA256),
+        (super::graphics::PLUGIN, RATING_SHA256),
+    ];
     if lacks_textures(v) {
         p.push((TEXTURES_DLL, TEXTURES_SHA256));
     }
@@ -135,7 +144,12 @@ pub fn set_up(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step
         cancel,
         on,
     )?)?;
-    let mut plugins = vec![(PATCH_PLUGIN, patch)];
+    on(Step::Status("Downloading NvrGpuRating...".into()));
+    let rating = echoxr::fetch_pinned(RATING_URL, RATING_FILE, RATING_SHA256, cancel, on)?;
+    let mut plugins = vec![
+        (PATCH_PLUGIN, patch),
+        (super::graphics::PLUGIN, std::fs::read(rating)?),
+    ];
     if lacks_textures(v) {
         on(Step::Status("Downloading NvrMissingTextures...".into()));
         let dll = echoxr::fetch_pinned(TEXTURES_URL, TEXTURES_FILE, TEXTURES_SHA256, cancel, on)?;
@@ -419,6 +433,7 @@ mod tests {
         for (url, name, sha) in [
             (LOADER_URL, LOADER_FILE, LOADER_SHA256),
             (TEXTURES_URL, TEXTURES_FILE, TEXTURES_SHA256),
+            (RATING_URL, RATING_FILE, RATING_SHA256),
         ] {
             let path = dir.path().join(name);
             http::download_to(url, &path, None).unwrap();

@@ -1999,7 +1999,7 @@ impl Extra<'_> {
                 summary: "SteamVR plays Echo VR through EchoXR's OpenXR layer instead of Revive: no injection, no administrator rights. Live build only.".into(),
                 author: crate::core::echoxr::AUTHORS.into(),
                 version: crate::core::echoxr::VERSION.into(),
-                homepage: "https://github.com/EchoTools/EchoXR".into(),
+                homepage: "https://github.com/marshmallow-mia/EchoXR".into(),
                 capabilities: vec!["vr".into()],
                 ..Default::default()
             },

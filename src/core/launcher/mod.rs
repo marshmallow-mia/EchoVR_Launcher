@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod discover;
 pub mod feed;
 pub mod game;
+pub mod graphics;
 pub mod launch;
 pub mod login_watch;
 pub mod mods;

@@ -1,4 +1,4 @@
-//! EchoXR (github.com/EchoTools/EchoXR, its OpenXR layer only): `EchoXR.exe` in the game's
+//! EchoXR (github.com/marshmallow-mia/EchoXR, its OpenXR layer only): `EchoXR.exe` in the game's
 //! `bin/win10` starts the game as `echovr_openxr.exe` (its patched copy of `echovr.exe`,
 //! made when missing) with `EchoXR\LibOVRRT64_1.dll` answering Echo's LibOVR calls over
 //! OpenXR: no Meta services, sign-in or store, and no injection. On Windows it plays on
@@ -20,14 +20,14 @@ use crate::core::download::{self, Progress};
 use crate::core::launcher::versions::Step;
 use crate::core::paths;
 
-/// EchoXR's OpenXR layer (EchoTools/EchoXR 0.5.0, its GitHub release): unpacked into the
+/// EchoXR's OpenXR layer (marshmallow-mia/EchoXR 0.5.0, its GitHub release): unpacked into the
 /// game's bin folder (`bin/win10`, or an event build's `bin/win7`). Built with the static C
 /// runtime, so it needs no Visual C++ runtime. 0.5.0 runs the five event builds; 0.4.2
 /// brings the Platform SDK stand-in; 0.4.1 made it run under GE-Proton.
 pub const VERSION: &str = "0.5.0";
 const ZIP: &str = "EchoXR-OpenXR-v0.5.0.zip";
 const URL: &str =
-    "https://github.com/EchoTools/EchoXR/releases/download/v0.5.0-rc1/EchoXR-OpenXR-v0.5.0.zip";
+    "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.5.0-rc1/EchoXR-OpenXR-v0.5.0.zip";
 const SHA256: &str = "cfc58aa67f6c5f0dd492cc27ce682be58ed57c255b6bb3b5b069f57b1715a0e2";
 /// Who made it, as the Mods page credits it: EchoXR, and what it builds on.
 pub const AUTHORS: &str =

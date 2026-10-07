@@ -425,6 +425,20 @@ pub fn play_from_steam() -> i32 {
     let vr = matches!(start, echoxr::Start::Vr(_));
     let compositor = matches!(start, echoxr::Start::Vr(echoxr::Xr::SteamVr))
         .then(|| CompositorLog::mark(&steam_root));
+    // A Low preset the failed GPU rating saved: rated again this once, now that
+    // NvrGpuRating answers (only with it in place, else the game picks Low again).
+    let rerate = v
+        .bin_dir()
+        .join("plugins")
+        .join(crate::core::launcher::graphics::PLUGIN)
+        .is_file()
+        .then(|| {
+            crate::core::launcher::graphics::begin(
+                &echoxr::local_app_data().join("rad/loneecho"),
+                crate::core::launcher::graphics::settings_file(&v),
+            )
+        })
+        .flatten();
     // EchoXR Hands: its OpenXR layer in the game's loader (in VR only).
     let result = echoxr::game_command(&steam_root, &v.bin_dir(), v.exe_name(), &args, start, hands)
         .and_then(|mut c| {
@@ -439,6 +453,11 @@ pub fn play_from_steam() -> i32 {
             Ok(c.status()?)
         });
     drop(mic);
+    if let Some(r) = rerate {
+        if let Err(e) = r.finish() {
+            tracing::warn!("--play: graphics re-rate: {e:#}");
+        }
+    }
     let _ = std::fs::remove_file(playing_file());
     match result {
         Ok(status) => {

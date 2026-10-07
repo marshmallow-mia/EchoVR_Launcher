@@ -34,6 +34,24 @@
       ],
       "shipped": true,
       "required": true
+    },
+    {
+      "id": "gpu-rating",
+      "name": "GPU Rating",
+      "summary": "Tells the game your GPU's speed where Proton can't, so it starts on the graphics preset Windows would pick instead of Low (always on: it changes nothing where the driver answers itself).",
+      "author": "marshmallow-mia",
+      "version": "1.0.0",
+      "file": "NvrGpuRating.dll",
+      "url": "https://release.echovr.de/launcher/mods/NvrGpuRating-1.0.0.dll",
+      "sha256": "78c047ea68c363550d8c2c7b802fcd4e025fc9b092e086bf37a733e3d91f1d71",
+      "size": 269312,
+      "api": 5,
+      "capabilities": [
+        "cosmetic",
+        "hooks-engine"
+      ],
+      "homepage": "https://github.com/marshmallow-mia/NvrGpuRating",
+      "required": true
     }
   ]
 }

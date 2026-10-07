@@ -884,7 +884,32 @@ pub fn before_start(v: &InstalledVersion, own_game_config: bool, hands: bool) ->
     if let Err(e) = crate::core::echoxr_hands::apply(&bin, hands) {
         tracing::warn!("hand tracking: {e:#}");
     }
+    // What the game needs from the catalogue (it doesn't come with the update): in place.
+    if let Err(e) = ensure_required(v, &ModCatalog::cached()) {
+        tracing::warn!("required mods: {e:#}");
+    }
     prepare(v)
+}
+
+/// Installs the catalogue's required mods that don't come with the community update (a
+/// file `v` lacks, or one that isn't the catalogue's version), as the Mods page would.
+pub fn ensure_required(v: &InstalledVersion, catalog: &ModCatalog) -> Result<()> {
+    let plugins = v.bin_dir().join(PLUGINS);
+    for e in catalog
+        .mods
+        .iter()
+        .filter(|e| e.required && e.downloadable())
+    {
+        let Some(sha) = e.sha256.as_deref() else {
+            continue;
+        };
+        if download::sha256_matches(&plugins.join(&e.file), sha) {
+            continue;
+        }
+        tracing::info!("{} is required: installing {}", e.name, e.version);
+        install(v, e, &AtomicBool::new(false), &mut |_| {})?;
+    }
+    Ok(())
 }
 
 /// Before a start: writes `v`'s `config.yaml` from its plugins and the launcher's
