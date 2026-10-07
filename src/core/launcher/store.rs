@@ -179,8 +179,8 @@ pub struct LauncherState {
     pub echoxr_hands: bool,
     /// The rail is unfolded: the tabs' names beside their icons (new players start so).
     pub rail_open: bool,
-    /// The EchoVRCE site fills the page (its strip at the top, no status bar over it).
-    pub vrce_expanded: bool,
+    /// How far the EchoVRCE site is zoomed, in percent (100 = its own size).
+    pub vrce_zoom: u16,
     /// Updates found are announced on the desktop too.
     pub desktop_notifications: bool,
     /// The tray keeps looking for updates while the launcher is closed.
@@ -235,7 +235,7 @@ impl Default for LauncherState {
             event_builds: EVENT_BUILDS_DEFAULT,
             echoxr_hands: false,
             rail_open: true,
-            vrce_expanded: false,
+            vrce_zoom: 100,
             desktop_notifications: true,
             tray: true,
             tray_at_login: false,

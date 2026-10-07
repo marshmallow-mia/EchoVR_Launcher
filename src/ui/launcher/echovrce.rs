@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{hero, panel, setup, Dashboard, Page, HEADER};
+use super::{hero, panel, setup, Dashboard, Page};
 use crate::core::echovrce::{self as vrce, Account, DeviceCode, Poll, Tokens};
 use crate::core::launcher::nevr::{self, GameLogin};
 use crate::core::launcher::store::InstalledVersion;
@@ -22,6 +22,7 @@ use crate::ui::design::{self, dz, Dr};
 use crate::ui::kit::Kit;
 use crate::ui::parts::Worker;
 use crate::ui::style::Icon;
+use crate::ui::web;
 use crate::ui::widgets::{Tone, BTN_H};
 
 /// How often the session is checked (and renewed when due).
@@ -36,14 +37,12 @@ const POLL_EVERY: Duration = Duration::from_secs(3);
 // Geometry in design pixels: the account card, and what EchoVRCE is, under the header.
 const ACCOUNT: Dr = Dr::new(137.0, 156.0, 1146.0, 470.0);
 const ABOUT: Dr = Dr::new(1318.0, 156.0, 555.0, 470.0);
-/// The site, under the header strip to the window's bottom.
-const SITE: Dr = Dr::new(138.0, 146.0, 1734.0, 900.0);
-/// Expanded: the strip where the status bar was, and the site filling the page under it.
-const EXPANDED_HEADER: Dr = Dr::new(104.0, 12.0, 1804.0, 44.0);
-const EXPANDED_SITE: Dr = Dr::new(104.0, 64.0, 1804.0, 1004.0);
-/// Beside the title on the strip: what the site is.
-const ABOUT_SITE: &str =
-    "The community's Echo VR service: live matches, leaderboards and your account";
+/// Signed in: the strip where the status bar is elsewhere, and the site filling the page
+/// under it.
+const SITE_HEADER: Dr = Dr::new(104.0, 12.0, 1804.0, 44.0);
+const SITE: Dr = Dr::new(104.0, 64.0, 1804.0, 1004.0);
+/// The site's zoom steps in percent, as in browsers.
+const ZOOMS: [u16; 13] = [50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
 /// The page the site opens on.
 const SITE_HOME: &str = "https://echovrce.com/home";
 
@@ -95,6 +94,8 @@ enum Ended {
 pub(super) struct Signing {
     pub code: DeviceCode,
     pub since: Instant,
+    /// Approved in the window (the site's own page in the web view), not the browser.
+    pub here: bool,
     cancel: Arc<AtomicBool>,
 }
 
@@ -106,6 +107,8 @@ pub(super) struct Vrce {
     pub account: Option<Account>,
     /// Loading the saved session, checking it, or asking for a code.
     pub busy: bool,
+    /// The code being asked for is approved in the window, not the browser.
+    sign_in_here: bool,
     pub signing: Option<Signing>,
     /// The session ended and couldn't be renewed: sign in again.
     pub ended: bool,
@@ -146,12 +149,16 @@ impl Vrce {
                 Msg::Code(Ok(code)) => {
                     self.busy = false;
                     self.down = None;
-                    crate::core::platform::open_url(&vrce::approve_url(&code.code));
+                    let here = self.sign_in_here;
+                    if !here {
+                        crate::core::platform::open_url(&vrce::approve_url(&code.code));
+                    }
                     let cancel = Arc::new(AtomicBool::new(false));
                     self.wait_for_approval(ctx, &code, cancel.clone());
                     self.signing = Some(Signing {
                         code,
                         since: Instant::now(),
+                        here,
                         cancel,
                     });
                 }
@@ -243,8 +250,14 @@ impl Vrce {
 
     /// Asks for a sign-in code; the browser opens on it once it's there.
     pub(super) fn sign_in(&mut self, ctx: &egui::Context) {
+        self.start_sign_in(ctx, false);
+    }
+
+    /// Asks for a code; `here`: to approve in the window instead of the browser.
+    fn start_sign_in(&mut self, ctx: &egui::Context, here: bool) {
         self.busy = true;
         self.failed = None;
+        self.sign_in_here = here;
         self.worker.spawn(ctx, |tx| {
             tx.send(Msg::Code(vrce::request_code().map_err(|e| Failed::of(&e))))
         });
@@ -328,6 +341,14 @@ impl Vrce {
     }
 
     /// Snapshots: signed in as a made-up account, or waiting for a made-up code.
+    /// Snapshots: a code being approved in the window.
+    pub(super) fn demo_here(&mut self) {
+        self.demo(false);
+        if let Some(s) = &mut self.signing {
+            s.here = true;
+        }
+    }
+
     pub(super) fn demo(&mut self, signed_in: bool) {
         use base64::Engine;
         if signed_in {
@@ -351,6 +372,7 @@ impl Vrce {
                     expires_in: Duration::from_secs(300),
                 },
                 since: Instant::now(),
+                here: false,
                 cancel: Arc::default(),
             });
         }
@@ -643,19 +665,158 @@ fn finish_sign_in(tokens: Tokens) -> Result<(Tokens, Account), Failed> {
 
 // ---- the page ----
 
+/// Approving the code in the window: echovrce.com's page for it fills the page, with the
+/// code, In browser instead and Cancel on its strip.
+fn approve_here(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    let Some(code) = d.vrce.signing.as_ref().map(|s| s.code.code.clone()) else {
+        return;
+    };
+    let url = vrce::approve_url(&code);
+    let header = SITE_HEADER.wider(kit.dx());
+    kit.header_strip(
+        dz(header.x),
+        dz(header.y),
+        dz(header.w),
+        dz(header.h),
+        Page::EchoVrce.title(),
+    );
+    let cy = header.y + header.h / 2.0;
+    let mut right = header.right() - 22.0;
+    let mut link = |kit: &mut Kit, key: &str, text: &str, tip: &str| {
+        let g = kit.spaced_galley(
+            &text.to_uppercase(),
+            design::din(14.0),
+            design::TEXT,
+            dz(0.5),
+            true,
+        );
+        right -= g.size().x / dz(1.0);
+        let clicked = kit
+            .link(key, dz(right), dz(cy) - g.size().y / 2.0, text, 14.0, tip)
+            .clicked;
+        right -= 26.0;
+        clicked
+    };
+    if link(kit, "vrce-here-cancel", "Cancel", "Stop signing in") {
+        d.vrce.cancel_sign_in();
+        return;
+    }
+    if link(
+        kit,
+        "vrce-here-browser",
+        "In browser instead",
+        "Approve the code in your browser",
+    ) {
+        crate::core::platform::open_url(&url);
+        if let Some(s) = &mut d.vrce.signing {
+            s.here = false;
+        }
+        return;
+    }
+    let what = kit.spaced_galley(
+        &format!("Approve the code {code} to sign in").to_uppercase(),
+        design::din(14.0),
+        design::GREY,
+        dz(0.5),
+        false,
+    );
+    kit.put(
+        dz(right) - what.size().x,
+        dz(cy) - what.size().y / 2.0,
+        what,
+    );
+
+    let area = SITE.wider(kit.dx()).taller(kit.dy());
+    kit.image_d("card_bg.png", area);
+    kit.gradient_frame(
+        kit.drect(area),
+        dz(6.0),
+        dz(2.0),
+        design::RIM_TOP,
+        design::RIM_BOTTOM,
+    );
+    let (tx, ty, tw) = (dz(area.x + 30.0), dz(area.y + 30.0), dz(area.w - 60.0));
+    if !d.web.is_sign_in() && d.web.error.is_none() && !d.demo {
+        d.web.open_sign_in(&url);
+        ctx.request_repaint();
+    }
+    if let Some(err) = d.web.error.clone() {
+        let text = format!("echovrce.com couldn't be shown here: {err}. Use In browser instead.");
+        kit.caps_text(tx, ty, tw, &text, 17.0, design::DANGER, 0.0);
+    } else {
+        d.web.place(kit.drect(area).shrink(dz(2.0)));
+        kit.caps_text(tx, ty, tw, "Opening echovrce.com…", 17.0, design::BODY, 0.0);
+    }
+    ctx.request_repaint_after(Duration::from_millis(500));
+}
+
 /// Signed in: the page is the site itself (snapshots show where it goes).
 fn shows_site(d: &Dashboard) -> bool {
     let signed_in = d.vrce.account.is_some() && d.vrce.tokens.is_some() && d.vrce.signing.is_none();
     signed_in && (crate::ui::web::supported() || d.demo)
 }
 
-/// The site fills the page: no status bar nor page header over it (it draws its own strip).
-pub(super) fn expanded(d: &Dashboard) -> bool {
-    d.state.vrce_expanded && shows_site(d)
+/// The site fills the page (or its page approving a code, in the window): no status bar
+/// nor page header over it (it draws its own strip).
+pub(super) fn fills_page(d: &Dashboard) -> bool {
+    shows_site(d) || approving_here(d)
+}
+
+/// The code is approved in the window: echovrce.com's page for it fills the page.
+fn approving_here(d: &Dashboard) -> bool {
+    let here = d.vrce.signing.as_ref().is_some_and(|s| s.here);
+    here && (crate::ui::web::supported() || d.demo)
+}
+
+/// The zoom one step in or out from `z` (or back to 100%), in percent.
+fn zoomed(z: u16, step: web::Zoom) -> u16 {
+    match step {
+        web::Zoom::In => ZOOMS.into_iter().find(|&s| s > z).unwrap_or(z),
+        web::Zoom::Out => ZOOMS.into_iter().rev().find(|&s| s < z).unwrap_or(z),
+        web::Zoom::Reset => 100,
+    }
+}
+
+/// Zooms the site a step (remembered in launcher.json; the view follows in [`site`]).
+fn zoom(d: &mut Dashboard, step: web::Zoom) {
+    let z = zoomed(d.state.vrce_zoom, step);
+    if z != d.state.vrce_zoom {
+        d.state.vrce_zoom = z;
+        d.save();
+    }
+}
+
+/// The browser's zoom keys while the launcher has the keyboard (inside the site, its
+/// own script tells them).
+fn zoom_keys(ctx: &egui::Context) -> Option<web::Zoom> {
+    ctx.input_mut(|i| {
+        let cmd = egui::Modifiers::COMMAND;
+        let pressed = |i: &mut egui::InputState, k| {
+            i.consume_key(cmd, k) || i.consume_key(cmd | egui::Modifiers::SHIFT, k)
+        };
+        if pressed(i, egui::Key::Plus) || pressed(i, egui::Key::Equals) {
+            Some(web::Zoom::In)
+        } else if pressed(i, egui::Key::Minus) {
+            Some(web::Zoom::Out)
+        } else if pressed(i, egui::Key::Num0) {
+            Some(web::Zoom::Reset)
+        } else {
+            None
+        }
+    })
 }
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let signed_in = d.vrce.account.is_some() && d.vrce.tokens.is_some() && d.vrce.signing.is_none();
+    let here = approving_here(d);
+    // Approved, cancelled or gone to the browser: the sign-in page closes.
+    if d.web.is_sign_in() && !here {
+        d.web.close();
+    }
+    if here && !kit.ghost {
+        approve_here(d, kit, ctx);
+        return;
+    }
     if shows_site(d) {
         site(d, kit, ctx);
         return;
@@ -696,23 +857,42 @@ pub(super) fn site_linked(d: &mut Dashboard) {
     }
 }
 
-/// The site under the header strip, with the account and Expand, Reload, In browser and
-/// Sign out on the strip. Expanded, the strip moves up where the status bar was and the
-/// site fills the page under it.
+/// The site filling the page under its strip (where the status bar is elsewhere), with
+/// the account, zoom, Reload, In browser and Sign out on the strip.
 fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let account = d.vrce.account.clone().unwrap_or_default();
-    let expanded = d.state.vrce_expanded;
-    let header = if expanded {
-        let h = EXPANDED_HEADER.wider(kit.dx());
-        kit.header_strip(dz(h.x), dz(h.y), dz(h.w), dz(h.h), Page::EchoVrce.title());
-        h
-    } else {
-        HEADER.wider(kit.dx())
-    };
+    let mut steps: Vec<web::Zoom> = zoom_keys(ctx).into_iter().collect();
+    for e in d.web.take_events() {
+        match e {
+            web::Event::Zoom(z) => steps.push(z),
+            // The site lost its session and wants to sign in: it gets a new one linked
+            // from the launcher's (below, once the view is closed).
+            web::Event::SignIn if !d.vrce.linking_site => {
+                tracing::info!("echovrce site: asked to sign in, linking a new session");
+                d.web.close();
+                d.state.vrce_site_account = None;
+                d.save();
+            }
+            web::Event::SignIn => {}
+        }
+    }
+    for step in steps {
+        zoom(d, step);
+    }
+    d.web
+        .set_zoom(f64::from(d.state.vrce_zoom.clamp(25, 500)) / 100.0);
+    let header = SITE_HEADER.wider(kit.dx());
+    kit.header_strip(
+        dz(header.x),
+        dz(header.y),
+        dz(header.w),
+        dz(header.h),
+        Page::EchoVrce.title(),
+    );
     let cy = header.y + header.h / 2.0;
-    // Right to left: Sign out, In browser, Reload, then who is signed in.
+    // Right to left: Sign out, In browser, Reload, the zoom, then who is signed in.
     let mut right = header.right() - 22.0;
-    let mut link = |kit: &mut Kit, key: &str, text: &str, tip: &str| {
+    let mut link = |kit: &mut Kit, key: &str, text: &str, tip: &str, gap: f32| {
         let g = kit.spaced_galley(
             &text.to_uppercase(),
             design::din(14.0),
@@ -725,7 +905,7 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         let clicked = kit
             .link(key, dz(right), dz(cy) - g.size().y / 2.0, text, 14.0, tip)
             .clicked;
-        right -= 26.0;
+        right -= gap;
         clicked
     };
     if link(
@@ -733,6 +913,7 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         "vrce-site-sign-out",
         "Sign out",
         "Sign out here and on EchoVRCE",
+        26.0,
     ) {
         sign_out(d, ctx);
         return;
@@ -742,24 +923,51 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         "vrce-site-browser",
         "In browser",
         "Open echovrce.com in your browser",
+        26.0,
     ) {
         crate::core::platform::open_url(SITE_HOME);
     }
-    if link(kit, "vrce-site-reload", "Reload", "Load the page again") {
+    if link(
+        kit,
+        "vrce-site-reload",
+        "Reload",
+        "Load the page again",
+        34.0,
+    ) {
         d.web.reload();
     }
-    let (text, tip) = if expanded {
-        (
-            "Collapse",
-            "Back to the launcher's status bar above the site",
-        )
+    let keys = if cfg!(target_os = "macos") {
+        "Cmd"
     } else {
-        ("Expand", "Let the site fill the page")
+        "Ctrl"
     };
-    if link(kit, "vrce-site-expand", text, tip) {
-        d.state.vrce_expanded = !expanded;
-        d.save();
-        ctx.request_repaint();
+    if link(
+        kit,
+        "vrce-site-zoom-in",
+        "+",
+        &format!("Zoom in ({keys} +)"),
+        14.0,
+    ) {
+        zoom(d, web::Zoom::In);
+    }
+    let percent = format!("{}%", d.state.vrce_zoom);
+    if link(
+        kit,
+        "vrce-site-zoom-reset",
+        &percent,
+        &format!("The site's size: back to 100% ({keys} 0)"),
+        14.0,
+    ) {
+        zoom(d, web::Zoom::Reset);
+    }
+    if link(
+        kit,
+        "vrce-site-zoom-out",
+        "-",
+        &format!("Zoom out ({keys} -)"),
+        26.0,
+    ) {
+        zoom(d, web::Zoom::Out);
     }
     let who = kit.spaced_galley(
         &format!("Signed in as {}", account.name()).to_uppercase(),
@@ -770,29 +978,8 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     );
     let wx = dz(right) - who.size().x;
     kit.put(wx, dz(cy) - who.size().y / 2.0, who);
-    // What the site is, after the title, where there's room for it.
-    if !expanded {
-        let title = header.h * 0.43;
-        let title_w = kit
-            .spaced_galley(
-                &Page::EchoVrce.title().to_uppercase(),
-                design::conthrax(title),
-                design::TEXT,
-                dz(title * 0.26),
-                false,
-            )
-            .size()
-            .x;
-        let about = kit.label_galley(ABOUT_SITE, design::din(14.0), design::GREY, f32::INFINITY);
-        let ax = dz(header.x + header.h * 0.55 + 24.0) + title_w;
-        if ax + about.size().x + dz(30.0) < wx {
-            kit.put(ax, dz(cy) - about.size().y / 2.0, about);
-        }
-    }
 
-    let area = if expanded { EXPANDED_SITE } else { SITE }
-        .wider(kit.dx())
-        .taller(kit.dy());
+    let area = SITE.wider(kit.dx()).taller(kit.dy());
     kit.image_d("card_bg.png", area);
     kit.gradient_frame(
         kit.drect(area),
@@ -1083,6 +1270,19 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
                 "Get a code to approve on echovrce.com",
             ) {
                 d.vrce.sign_in(ctx);
+            }
+            if web::supported()
+                && button(
+                    k,
+                    "vrce-sign-in-here",
+                    Tone::Dark,
+                    None,
+                    "Sign in here",
+                    !busy,
+                    "Approve the code in the launcher instead of your browser",
+                )
+            {
+                d.vrce.start_sign_in(ctx, true);
             }
             if button(
                 k,

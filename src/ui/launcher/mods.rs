@@ -275,22 +275,51 @@ fn add_from_disk(d: &mut Dashboard, ctx: &egui::Context) {
 /// A version where mods don't apply: none installed, or an event build.
 fn not_available(d: &mut Dashboard, kit: &mut Kit, v: Option<&InstalledVersion>) {
     let r = LOADER.wider(kit.dx());
-    let title = if v.is_some() {
-        "Event build"
+    // An installed live build, when another one is chosen.
+    let live = v.and_then(|_| {
+        d.state
+            .versions
+            .iter()
+            .find(|x| x.publisher_lock.is_none() && x.bin_dir().ends_with("win10"))
+            .cloned()
+    });
+    let title = if live.is_some() {
+        "Live build"
     } else {
         "No PC version yet"
     };
     let (x, y, w, bottom) = hero::card_frame(kit, r, title);
-    let text = match v {
-        Some(v) => format!(
-            "{} is an event build: it runs EchoRelay's patch where the mod loader would be, so it has no mods.\n\nChoose the live build on the Play page to see its mods.",
-            v.name
+    let text = match &live {
+        Some(live) => format!(
+            "Mods are for the live build: choose {} to see its mods here.",
+            live.name
         ),
-        None if d.platform == Platform::Quest => "Mods are for Echo VR on this PC, and PLAY starts the Quest's now. Switch to PCVR (next to PLAY) to see the PC version's mods.".into(),
+        None if v.is_none() && d.platform == Platform::Quest => "Mods are for Echo VR on this PC, and PLAY starts the Quest's now. Switch to PCVR (next to PLAY) to see the PC version's mods.".into(),
         None => "Mods are for Echo VR on this PC: install the live build first, then choose its mods here.".into(),
     };
     kit.caps_text(x, y, w, &text, 16.0, design::BODY, dz(14.0));
-    if v.is_none() {
+    if let Some(live) = live {
+        let label = "Choose it";
+        let bw = kit.button_width(label, None, BTN_H).max(dz(200.0));
+        if kit
+            .button(
+                "mods-choose-live",
+                x,
+                bottom - BTN_H,
+                bw,
+                BTN_H,
+                Tone::Go,
+                None,
+                label,
+                true,
+                &format!("PLAY starts {} then, and its mods show here", live.name),
+            )
+            .clicked
+        {
+            d.state.selected = Some(live.id.clone());
+            d.save();
+        }
+    } else {
         let bw = kit
             .button_width("Install", Some(Icon::Download), BTN_H)
             .max(dz(200.0));

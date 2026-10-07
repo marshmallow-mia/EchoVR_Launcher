@@ -436,26 +436,36 @@ pub fn link_device(token: &str) -> Result<Tokens> {
 }
 
 /// The script that signs echovrce.com in with `tokens` (a session linked for it) before
-/// its own scripts run, once per `account`: later the site renews that session itself.
-/// With no tokens it only signs out a session left from another account.
+/// its own scripts run, once per linked session: later the site renews that session
+/// itself. A newly linked session always replaces what the site had (on macOS its storage
+/// outlives the launcher's data, so it may still hold an ended session of the same
+/// account). With no tokens it only signs out a session left from another account.
 pub fn site_sign_in_script(account: &str, tokens: Option<&Tokens>) -> String {
+    use sha2::{Digest, Sha256};
     let js = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
-    let set = match tokens {
-        Some(t) => format!(
-            "localStorage.setItem('jwt',{});{}",
-            js(&t.token),
-            t.refresh_token
-                .as_deref()
-                .map(|r| format!("localStorage.setItem('refreshToken',{});", js(r)))
-                .unwrap_or_default()
+    let (session, set) = match tokens {
+        Some(t) => (
+            hex::encode(&Sha256::digest(t.token.as_bytes())[..8]),
+            format!(
+                "localStorage.setItem('jwt',{});{}",
+                js(&t.token),
+                t.refresh_token
+                    .as_deref()
+                    .map(|r| format!("localStorage.setItem('refreshToken',{});", js(r)))
+                    .unwrap_or_default()
+            ),
         ),
-        None => String::new(),
+        None => (String::new(), String::new()),
     };
     format!(
-        "(function(){{try{{var want={account},have=localStorage.getItem('echovrLauncherAccount')||'';\
-         if(have!==want){{localStorage.removeItem('jwt');localStorage.removeItem('refreshToken');\
-         localStorage.removeItem('authTokenExpiry');{set}localStorage.setItem('echovrLauncherAccount',want);}}}}catch(e){{}}}})();",
-        account = js(account)
+        "(function(){{try{{var want={account},have=localStorage.getItem('echovrLauncherAccount')||'',\
+         session={session},had=localStorage.getItem('echovrLauncherSession')||'';\
+         if(have!==want||(session&&had!==session)){{localStorage.removeItem('jwt');\
+         localStorage.removeItem('refreshToken');localStorage.removeItem('authTokenExpiry');{set}\
+         localStorage.setItem('echovrLauncherAccount',want);\
+         localStorage.setItem('echovrLauncherSession',session||had);}}}}catch(e){{}}}})();",
+        account = js(account),
+        session = js(&session),
     )
 }
 

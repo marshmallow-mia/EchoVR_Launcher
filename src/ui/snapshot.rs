@@ -135,12 +135,12 @@ pub fn shots() -> Vec<Shot> {
             Page::EchoVrce,
             SnapVariant::VrceSignedIn,
         ),
-        (
-            "echovrce_expanded",
-            Page::EchoVrce,
-            SnapVariant::VrceExpanded,
-        ),
         ("echovrce_signing", Page::EchoVrce, SnapVariant::VrceSigning),
+        (
+            "echovrce_signing_here",
+            Page::EchoVrce,
+            SnapVariant::VrceSigningHere,
+        ),
         ("echovrce_down", Page::EchoVrce, SnapVariant::VrceDown),
         ("play_vrce_down", Page::Play, SnapVariant::VrceDown),
         ("friends_vrce_down", Page::Friends, SnapVariant::VrceDown),

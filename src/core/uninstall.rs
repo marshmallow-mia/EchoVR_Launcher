@@ -1,5 +1,5 @@
-//! Uninstalling: what the launcher put on this PC, part by part (Settings → Uninstall, and
-//! the Install page). The launcher's own program file stays until an installer handles it.
+//! Uninstalling: what the launcher put on this PC, part by part (Settings → Uninstall).
+//! The launcher's own program file stays until an installer handles it.
 //!
 //! - Echo VR's versions: the launcher's own folders are deleted; a copy it only knew of
 //!   (your folder, the Meta app's) is forgotten, with what the launcher put into it taken
@@ -8,7 +8,8 @@
 //! - Windows: Echo VR's entry in SteamVR's library (Revive's manifest). Revive itself and
 //!   the game artwork in the Meta app (which uses it too) stay.
 //! - Desktop shortcuts, the spark:// link handler, the sign-ins (EchoVRCE's and the game's).
-//! - The launcher's data: settings, logs, caches, downloads.
+//! - The launcher's data: settings, logs, caches, downloads, and on macOS the site's
+//!   storage (WebKit keeps it in ~/Library, outside the data folder).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -291,6 +292,7 @@ pub fn run(
                 if let Err(e) = super::tray::set_autostart(false) {
                     out.notes.push(format!("The tray's start at login: {e:#}"));
                 }
+                remove_site_data(&mut out.notes);
                 let data = paths::data_dir();
                 let keep = kept_in_data(&data, Path::new(&state.library), has(Part::Versions));
                 let r = remove_dir_except(&data, keep.as_deref())
@@ -320,6 +322,49 @@ pub fn run(
 }
 
 /// Echo VR's shortcut out of Steam: Steam closes for that, and starts again when it ran.
+/// The app's bundle identifier (`scripts/package.sh`): WebKit's folders for the packaged
+/// launcher are named after it; for a bare executable, after the executable.
+#[cfg(target_os = "macos")]
+const BUNDLE_ID: &str = "de.echovr.launcher";
+
+/// The echovrce.com site's storage inside the window (its session, cookies and cache).
+/// On Windows and Linux it is in the data folder already; on macOS WebKit keeps it in
+/// ~/Library, named after the app.
+fn remove_site_data(notes: &mut Vec<String>) {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let lib = home.join("Library");
+        let exe = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()));
+        for name in [Some(BUNDLE_ID.to_string()), exe].into_iter().flatten() {
+            let cookies = format!("{name}.binarycookies");
+            for p in [
+                lib.join("WebKit").join(&name),
+                lib.join("Caches").join(&name).join("WebKit"),
+                lib.join("HTTPStorages").join(&name),
+                lib.join("HTTPStorages").join(&cookies),
+            ] {
+                let r = if p.is_dir() {
+                    std::fs::remove_dir_all(&p)
+                } else if p.exists() {
+                    std::fs::remove_file(&p)
+                } else {
+                    continue;
+                };
+                if let Err(e) = r {
+                    notes.push(format!("{}: {e}", p.display()));
+                }
+            }
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = notes;
+}
+
 fn remove_steam_shortcut() -> Result<()> {
     use super::linux::steam;
     let Some(root) = steam::root() else {

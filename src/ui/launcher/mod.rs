@@ -538,10 +538,10 @@ pub enum SnapVariant {
     SettingsLinks,
     /// EchoVRCE: signed in.
     VrceSignedIn,
-    /// EchoVRCE: signed in, the site filling the page.
-    VrceExpanded,
     /// EchoVRCE: waiting for the sign-in code to be approved.
     VrceSigning,
+    /// EchoVRCE: the code being approved in the window.
+    VrceSigningHere,
     /// A new player: PATCH on Play.
     NewPlayer,
     /// The licence card for the selected version.
@@ -1116,7 +1116,6 @@ impl Dashboard {
         self.dialogs = DialogHost::default();
         self.state.owner = Some(true);
         self.state.selected = Some("pc-latest".into());
-        self.state.vrce_expanded = false;
         self.platform = Platform::Pc;
         // A connected headset with Echo VR on it, as in the design concept.
         self.quest_conn.status = Some(Status::Ready);
@@ -1280,10 +1279,6 @@ impl Dashboard {
                 self.link_handler = Some(links::Handler::Other("Spark".into()))
             }
             Some(SnapVariant::VrceSignedIn) => self.vrce.demo(true),
-            Some(SnapVariant::VrceExpanded) => {
-                self.vrce.demo(true);
-                self.state.vrce_expanded = true;
-            }
             Some(SnapVariant::VrceDown) => self.vrce.demo_down(true),
             Some(SnapVariant::VrceSignInFailed) => self.vrce.demo_down(false),
             Some(SnapVariant::LoginCode) => {
@@ -1344,6 +1339,7 @@ impl Dashboard {
                 }
             }
             Some(SnapVariant::VrceSigning) => self.vrce.demo(false),
+            Some(SnapVariant::VrceSigningHere) => self.vrce.demo_here(),
             Some(SnapVariant::NewPlayer) => self.state.owner = Some(false),
             Some(SnapVariant::Licence) => {
                 self.state.owner = Some(false);
@@ -2267,7 +2263,7 @@ impl Dashboard {
         kit.ex -= shift;
         self.page_body(kit, &ctx, self.page);
         self.warmed.insert(self.page);
-        if !(self.page == Page::EchoVrce && echovrce::expanded(self)) {
+        if !(self.page == Page::EchoVrce && echovrce::fills_page(self)) {
             self.top_bar(kit, &ctx);
         }
         self.quest_soon(kit, &ctx);
@@ -2310,11 +2306,11 @@ impl Dashboard {
     /// A page under the status bar.
     fn page_body(&mut self, kit: &mut Kit, ctx: &egui::Context, page: Page) {
         // The other pages start with their header strip.
-        // (The EchoVRCE site, expanded, draws its own where the status bar was.)
+        // (The EchoVRCE site draws its own where the status bar is elsewhere.)
         if !matches!(
             page,
             Page::Play | Page::Install | Page::Settings | Page::Servers | Page::Friends
-        ) && !(page == Page::EchoVrce && echovrce::expanded(self))
+        ) && !(page == Page::EchoVrce && echovrce::fills_page(self))
         {
             let h = HEADER.wider(kit.dx());
             let title = match page {
@@ -2895,41 +2891,37 @@ fn demo_state() -> LauncherState {
     s
 }
 
-/// A tab's name in the unfolded rail, `room` wide: smaller when it doesn't fit (a plugin's
-/// name can be long), on two lines when even that doesn't.
+/// A tab's name in the unfolded rail, `room` wide: on two lines when it doesn't fit on
+/// one (a plugin's name can be long), at the size of the others; smaller only when a
+/// word alone is too wide even so.
 fn rail_name(
     kit: &Kit,
     title: &str,
     color: egui::Color32,
     room: f32,
 ) -> Vec<std::sync::Arc<egui::Galley>> {
-    for size in [19.0, 17.0, 15.0] {
-        let g = kit.label_galley(title, design::din(size), color, f32::INFINITY);
-        if g.size().x <= room {
-            return vec![g];
-        }
-    }
-    // Two lines: as many words on the first as fit.
     let words: Vec<&str> = title.split_whitespace().collect();
-    let font = design::din(15.0);
-    let mut split = 1;
-    for n in 1..words.len() {
-        let first = words[..n].join(" ");
-        if kit
-            .label_galley(&first, font.clone(), color, f32::INFINITY)
-            .size()
-            .x
-            <= room
-        {
-            split = n;
+    let line =
+        |text: &str, size: f32| kit.label_galley(text, design::din(size), color, f32::INFINITY);
+    for size in [19.0, 17.0, 15.0] {
+        let whole = line(title, size);
+        if whole.size().x <= room {
+            return vec![whole];
+        }
+        // Two lines: as many words on the first as fit, the rest on the second.
+        for n in (1..words.len()).rev() {
+            let first = line(&words[..n].join(" "), size);
+            if first.size().x > room {
+                continue;
+            }
+            let second = line(&words[n..].join(" "), size);
+            if second.size().x <= room {
+                return vec![first, second];
+            }
+            break;
         }
     }
-    let (a, b) = (words[..split].join(" "), words[split..].join(" "));
-    let mut out = vec![kit.label_galley(&a, font.clone(), color, room)];
-    if !b.is_empty() {
-        out.push(kit.label_galley(&b, font, color, room));
-    }
-    out
+    vec![kit.label_galley(title, design::din(15.0), color, room)]
 }
 
 /// The built-in catalogue plus an older build that is not installed, for snapshots.

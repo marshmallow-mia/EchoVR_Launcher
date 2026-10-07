@@ -309,7 +309,6 @@ pub(super) fn manage_menu(
         Unpatch,
         Account,
         Remove,
-        Uninstall,
     }
     let event = v.publisher_lock.is_some();
     let mut menu = Vec::new();
@@ -375,13 +374,6 @@ pub(super) fn manage_menu(
         ),
         Some(Act::Remove),
     ));
-    menu.push((
-        MenuItem::row(
-            "Uninstall…",
-            "Echo VR, its mods and VR set-up, and the launcher's data: choose what",
-        ),
-        Some(Act::Uninstall),
-    ));
     let (items, acts): (Vec<MenuItem>, Vec<Option<Act>>) = menu.into_iter().unzip();
     let picked = k
         .menu_button(
@@ -412,7 +404,6 @@ pub(super) fn manage_menu(
                 );
             }
         }
-        Some(Act::Uninstall) if !busy => super::settings::ask_uninstall(d),
         Some(Act::Remove) => {
             d.pending_remove = Some(v.id.clone());
             if v.external {

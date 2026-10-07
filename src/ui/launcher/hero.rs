@@ -389,27 +389,21 @@ pub(super) fn job_row(kit: &mut Kit, key: &str, extra: f32, job: &JobView) -> bo
         &job.step(),
     );
     play_body(kit, extra, true, 0.0);
-    let body = kit.drect(PLAY_AREA.wider(extra));
-    let (x0, x1) = (
-        body.min.x,
-        kit.drect(Dr::new(332.0 + extra, 0.0, 0.0, 0.0)).min.x,
-    );
+    // The fill runs along the bar with a front slanted like its right end: measured where
+    // each point's slant meets the bottom, the bar spans x0..x1.
+    let (x0, x1) = (PLAY_SHAPE[0].0, PLAY_SHAPE[2].0 + extra);
     let lit = match job.fraction {
-        Some(f) => Some((x0, x0 + (x1 - x0) * f.clamp(0.0, 1.0))),
+        Some(f) => (x0, x0 + (x1 - x0) * f.clamp(0.0, 1.0)),
         None => {
             let t = kit.ui.input(|i| i.time) as f32;
             let band = (x1 - x0) * 0.35;
             let pos = x0 - band + (t * 0.6).fract() * (x1 - x0 + band);
             kit.ui.ctx().request_repaint();
-            Some((pos.max(x0), (pos + band).min(x1)))
+            (pos, pos + band)
         }
     };
-    if let Some((a, b)) = lit.filter(|(a, b)| b > a) {
-        let clip = Rect::from_x_y_ranges(a..=b, body.y_range().expand(20.0));
-        let saved = kit.ui.clip_rect();
-        kit.ui.set_clip_rect(clip.intersect(saved));
-        play_body(kit, extra, false, 0.0);
-        kit.ui.set_clip_rect(saved);
+    if lit.1 > lit.0 {
+        fill_bar(kit, extra, lit);
     }
     let label = match job.fraction {
         Some(f) => format!("{:.0}%", f * 100.0),
@@ -435,6 +429,76 @@ pub(super) fn job_row(kit: &mut Kit, key: &str, extra: f32, job: &JobView) -> bo
     let label = if can { "Cancel" } else { "Stopping…" };
     blue_face(kit, extra, can && !pressed, t, Icon::Close, label);
     resp.clicked
+}
+
+/// How far right a point's slant meets the bar's bottom, per design pixel above it.
+const PLAY_SLANT: f32 = (PLAY_SHAPE[2].0 - PLAY_SHAPE[1].0) / (PLAY_SHAPE[2].1 - PLAY_SHAPE[1].1);
+/// The rounding of the green button's corners (design pixels), and the fill's shadow.
+const PLAY_ROUND: f32 = 3.0;
+const FILL_SHADOW: f32 = 7.0;
+
+/// The bar's progress in green between `lit` (bottom x, see [`job_row`]), inside the
+/// button's shape and slanted like its end, with a small shadow ahead of it.
+fn fill_bar(kit: &Kit, extra: f32, lit: (f32, f32)) {
+    let shape = play_outline(extra);
+    let u = |(x, y): (f32, f32)| x + (PLAY_SHAPE[2].1 - y) * PLAY_SLANT;
+    let band = |a: f32, b: f32| clip(&clip(&shape, |p| u(p) - a), |p| b - u(p));
+    let at = |p: (f32, f32)| kit.drect(Dr::new(p.0, p.1, 0.0, 0.0)).min;
+    let mut mesh = egui::Mesh::default();
+    let mut add = |poly: &[(f32, f32)], color: &dyn Fn((f32, f32)) -> Color32| {
+        if poly.len() < 3 {
+            return;
+        }
+        let first = mesh.vertices.len() as u32;
+        for &p in poly {
+            mesh.colored_vertex(at(p), color(p));
+        }
+        for i in 1..poly.len() as u32 - 1 {
+            mesh.add_triangle(first, first + i, first + i + 1);
+        }
+    };
+    let (a, b) = lit;
+    add(&band(b, b + FILL_SHADOW), &|p| {
+        let t = ((u(p) - b) / FILL_SHADOW).clamp(0.0, 1.0);
+        Color32::from_black_alpha((90.0 * (1.0 - t) * (1.0 - t)) as u8)
+    });
+    add(&band(a, b), &|_| design::GREEN);
+    kit.ui.painter().add(mesh);
+}
+
+/// The green button's shape (design pixels), `extra` wider, its left corners rounded
+/// as in its image.
+fn play_outline(extra: f32) -> Vec<(f32, f32)> {
+    let s = design::shifted(PLAY_SHAPE, extra, 200.0);
+    let (left, top, bottom) = (s[0].0, s[0].1, s[3].1);
+    let r = PLAY_ROUND;
+    let arc = |cx: f32, cy: f32, from: f32| {
+        (0..=4).map(move |i| {
+            let a = (from + 90.0 * i as f32 / 4.0).to_radians();
+            (cx + r * a.cos(), cy + r * a.sin())
+        })
+    };
+    let mut out: Vec<(f32, f32)> = arc(left + r, top + r, 180.0).collect();
+    out.extend([s[1], s[2]]);
+    out.extend(arc(left + r, bottom - r, 90.0));
+    out
+}
+
+/// The part of convex polygon `poly` where `side` is not negative (`side` linear).
+fn clip(poly: &[(f32, f32)], side: impl Fn((f32, f32)) -> f32) -> Vec<(f32, f32)> {
+    let mut out = Vec::with_capacity(poly.len() + 2);
+    for (i, &p) in poly.iter().enumerate() {
+        let q = poly[(i + 1) % poly.len()];
+        let (sp, sq) = (side(p), side(q));
+        if sp >= 0.0 {
+            out.push(p);
+        }
+        if (sp >= 0.0) != (sq >= 0.0) {
+            let t = sp / (sp - sq);
+            out.push((p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t));
+        }
+    }
+    out
 }
 
 /// The blank blue button (grey when off, lighter under the pointer, `t`) with an icon and
