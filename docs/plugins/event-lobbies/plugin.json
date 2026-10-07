@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "event-lobbies",
   "name": "Event lobbies",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "heisthecat31",
   "summary": "Play the event builds together: see the public matches on the classic lobbies server, join a friend's match by its id, and request a game server.",
   "icon": "calendar",
@@ -67,6 +67,10 @@
         "save": "page.answer"
       },
       {
+        "require": "{page.answer.message} != Log in to the game on this server once first, then join a match.",
+        "otherwise": "Start an event build once and press PLAY in it first: that signs you in on this server. Then you can join a match."
+      },
+      {
         "require": "{page.answer.ok}",
         "otherwise": "{page.answer.message|'The server didn’t answer.'}"
       },
@@ -84,6 +88,10 @@
           "password": "{settings.password|launcher.relay.password}"
         },
         "save": "page.answer"
+      },
+      {
+        "require": "{page.answer.message} != Log in to the game on this server once first, then request a game server.",
+        "otherwise": "Start an event build once and press PLAY in it first: that signs you in on this server. Then you can request a game server."
       },
       {
         "require": "{page.answer.ok}",
@@ -120,9 +128,24 @@
               "when": "!{launcher.event_builds.0.id}"
             },
             {
+              "text": "Can't reach {settings.server|launcher.relay.server}: the server may be down, or this PC is offline. Trying again every 10 seconds.",
+              "tone": "warn",
+              "when": "{data.matches.failed} == unreachable"
+            },
+            {
               "text": "This server doesn't offer the matches list yet: its EchoRelay needs the matches API. Joining by id and requesting a game server need it too.",
               "tone": "warn",
-              "when": "{data.matches.error}"
+              "when": "{data.matches.failed} == missing"
+            },
+            {
+              "text": "The server answered with an error ({data.matches.error}). Trying again every 10 seconds.",
+              "tone": "warn",
+              "when": "{data.matches.failed} == server"
+            },
+            {
+              "text": "Couldn't load the matches list ({data.matches.error}). Trying again every 10 seconds.",
+              "tone": "warn",
+              "when": "{data.matches.error|'-'} == {data.matches.failed|data.matches.error}"
             },
             {
               "list": "data.matches.matches",
@@ -167,6 +190,11 @@
               "text": "You aren't in a match.",
               "tone": "muted",
               "when": "!{data.current.match.id}"
+            },
+            {
+              "text": "Start an event build once and press PLAY in it first: that signs you in on this server. Then your match shows here, and you can join by id and request game servers.",
+              "tone": "warn",
+              "when": "{data.current.message} == Log in to the game on this server once first, then look up your match."
             }
           ]
         },
@@ -234,7 +262,7 @@
             {
               "text": "No PC hosts this version right now.",
               "tone": "warn",
-              "when": "!{data.regions.regions.0}"
+              "when": "!{data.regions.regions.0|data.regions.error}"
             },
             {
               "button": {

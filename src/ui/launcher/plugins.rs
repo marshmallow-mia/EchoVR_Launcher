@@ -50,7 +50,7 @@ enum Msg {
     Fetched {
         plugin: String,
         source: String,
-        result: Result<Value, String>,
+        result: Result<Value, Failure>,
     },
     Answered {
         plugin: String,
@@ -148,9 +148,10 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     Ok(value) => {
                         v.data.insert(source, value);
                     }
-                    Err(e) => {
-                        tracing::info!("plugin data {source}: {e}");
-                        v.data.insert(source, json!({"error": e}));
+                    Err(f) => {
+                        tracing::info!("plugin data {source} ({}): {}", f.kind, f.message);
+                        v.data
+                            .insert(source, json!({"error": f.message, "failed": f.kind}));
                     }
                 }
             }
@@ -219,25 +220,63 @@ fn view<'a>(d: &'a mut Dashboard, p: &Installed) -> &'a mut View {
     v
 }
 
+/// Why a request failed: its message, and what kind of failure it was, as a page sees it
+/// (`data.<name>.failed`): `unreachable` (no connection to the server, or no answer in
+/// time), `missing` (the server doesn't have that address: 404, 405 or 501) or `server`
+/// (any other error answer).
+struct Failure {
+    message: String,
+    kind: &'static str,
+}
+
+impl Failure {
+    /// A failed GET: `http::get_text` keeps reqwest's error when nothing came back, and
+    /// says "server responded with <status>" for an error answer.
+    fn of_get(e: &anyhow::Error) -> Failure {
+        let message = format!("{e:#}");
+        let no_answer = e
+            .chain()
+            .any(|c| c.downcast_ref::<reqwest::Error>().is_some());
+        let kind = if no_answer {
+            "unreachable"
+        } else if ["404", "405", "501"]
+            .iter()
+            .any(|code| message.contains(&format!("responded with {code}")))
+        {
+            "missing"
+        } else {
+            "server"
+        };
+        Failure { message, kind }
+    }
+}
+
 /// Sends a request on the plugin worker; `f` makes the message from its answer.
 fn send(
     d: &Dashboard,
     ctx: &egui::Context,
     r: &Request,
     c: &Value,
-    f: impl FnOnce(Result<Value, String>) -> Msg + Send + 'static,
+    f: impl FnOnce(Result<Value, Failure>) -> Msg + Send + 'static,
 ) {
     let url = pp::render(&r.url, c);
     let body = r.body.as_ref().map(|b| pp::render_body(b, c));
     let method = r.method;
     d.plugins.worker.spawn(ctx, move |tx| {
         let result = match method {
-            Method::Get => crate::core::http::get_text(&url).map_err(|e| format!("{e:#}")),
+            Method::Get => crate::core::http::get_text(&url).map_err(|e| Failure::of_get(&e)),
+            // post_json fails only when no answer came back.
             Method::Post => crate::core::http::post_json(&url, &body.unwrap_or(Value::Null))
-                .map_err(|e| format!("{e:#}"))
+                .map_err(|e| Failure {
+                    message: format!("{e:#}"),
+                    kind: "unreachable",
+                })
                 .and_then(|(status, text)| {
                     if status >= 500 {
-                        Err(format!("the server answered {status}"))
+                        Err(Failure {
+                            message: format!("the server answered {status}"),
+                            kind: "server",
+                        })
                     } else {
                         Ok(text)
                     }
@@ -266,6 +305,18 @@ fn fetch_due(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                 due.push(s.clone());
             }
         }
+    }
+    // Drawn again when the next one is due, so the page refetches (and an error goes once
+    // the server answers again) with nobody touching the window.
+    if let Some(next) = p
+        .page
+        .data
+        .iter()
+        .filter(|s| s.every > 0)
+        .map(|s| s.every)
+        .min()
+    {
+        ctx.request_repaint_after(std::time::Duration::from_secs(next));
     }
     for s in due {
         let v = d.plugins.views.get_mut(&p.page.id).expect("its view");
@@ -334,7 +385,7 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                 let plugin = id.clone();
                 send(d, ctx, &request, &c, move |result| Msg::Answered {
                     plugin,
-                    result,
+                    result: result.map_err(|f| f.message),
                 });
                 return;
             }
@@ -1167,4 +1218,23 @@ fn demo() -> PluginsUi {
     }
     ui.views.insert(id, v);
     ui
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Failure;
+
+    #[test]
+    fn failures_by_kind() {
+        // Nothing listens there: no answer at all.
+        let e = crate::core::http::get_text("http://127.0.0.1:9/api/matches").unwrap_err();
+        assert_eq!(Failure::of_get(&e).kind, "unreachable");
+        // The server answered, but without the matches API, or with an error.
+        let e = anyhow::anyhow!("GET http://x/api/matches: server responded with 404 Not Found");
+        assert_eq!(Failure::of_get(&e).kind, "missing");
+        let e = anyhow::anyhow!(
+            "GET http://x/api/matches: server responded with 500 Internal Server Error"
+        );
+        assert_eq!(Failure::of_get(&e).kind, "server");
+    }
 }

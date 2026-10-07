@@ -67,7 +67,7 @@ Every text in a page is a template. `{path}` is filled from the page's context:
 |---|---|
 | `settings.<key>` | the plugin's settings (text) |
 | `page.<key>` | values the page sets while the launcher runs (fields, choices, `save`, `set`) |
-| `data.<name>` | what data source `<name>` fetched (its JSON; `{"error": "…"}` when it failed) |
+| `data.<name>` | what data source `<name>` fetched (its JSON). When it failed: `{"error": "…", "failed": "…"}`, `failed` saying why: `unreachable` (no connection, or no answer in time), `missing` (the server doesn't have that address: 404, 405, 501) or `server` (another error answer). The next fetch that works replaces it |
 | `launcher.relay.server`, `.name`, `.password` | the classic lobbies server and account from the launcher's settings |
 | `launcher.event_builds` | the installed event builds: `[{"id": "halloween", "version": "pc-halloween-2018", "name": "Halloween 2018"}]` |
 | `item` | inside a list: its row |

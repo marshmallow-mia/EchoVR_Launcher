@@ -834,4 +834,63 @@ mod tests {
                 .is_none()
         );
     }
+
+    /// The Event lobbies page's conditions: a message per kind of failure, the plain error
+    /// for a launcher that doesn't say the kind, nothing when the list came, and the relay's
+    /// "log in once" answer turned into the page's own words.
+    #[test]
+    fn event_lobbies_conditions() {
+        let page: Value = serde_json::from_str(include_str!(
+            "../../../docs/plugins/event-lobbies/plugin.json"
+        ))
+        .unwrap();
+        let blocks = page["page"]["columns"][0][0]["blocks"].as_array().unwrap();
+        let shown = |data: Value| -> Vec<String> {
+            let c = json!({ "data": { "matches": data }, "launcher": {}, "settings": {} });
+            blocks
+                .iter()
+                .filter(|b| b.get("text").is_some() && b.get("when").is_some())
+                .filter(|b| truthy(b["when"].as_str().unwrap(), &c))
+                .map(|b| render(b["text"].as_str().unwrap(), &c))
+                .filter(|t| !t.starts_with("Install an event build"))
+                .collect()
+        };
+        assert!(shown(json!({"matches": []})).is_empty());
+        let down = shown(json!({"error": "GET …: no route", "failed": "unreachable"}));
+        assert_eq!(down.len(), 1);
+        assert!(down[0].starts_with("Can't reach"));
+        let missing = shown(json!({"error": "GET …: 404", "failed": "missing"}));
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].contains("matches API"));
+        assert_eq!(
+            shown(json!({"error": "GET …: 500", "failed": "server"})).len(),
+            1
+        );
+        // A launcher before 0.11.5 says only the error.
+        let old = shown(json!({"error": "GET …: no route"}));
+        assert_eq!(
+            old,
+            ["Couldn't load the matches list (GET …: no route). Trying again every 10 seconds."]
+        );
+
+        for (action, words) in [
+            ("request", "request a game server"),
+            ("join", "join a match"),
+        ] {
+            let steps = page["actions"][action].as_array().unwrap();
+            let check = steps
+                .iter()
+                .find(|s| s["require"].as_str().is_some_and(|r| r.contains("!=")))
+                .unwrap();
+            let relay = format!("Log in to the game on this server once first, then {words}.");
+            let c = json!({ "page": { "answer": { "ok": false, "message": relay } } });
+            assert!(!truthy(check["require"].as_str().unwrap(), &c), "{action}");
+            assert!(check["otherwise"]
+                .as_str()
+                .unwrap()
+                .starts_with("Start an event build once"));
+            let c = json!({ "page": { "answer": { "ok": true, "message": "Requested." } } });
+            assert!(truthy(check["require"].as_str().unwrap(), &c), "{action}");
+        }
+    }
 }
