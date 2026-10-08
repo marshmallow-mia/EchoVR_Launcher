@@ -193,9 +193,15 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
             (note, tip.to_string())
         }
     };
+    let flat = d.state.profile.runtime == Runtime::Flat;
+    // nEVR takes -windowed for "no headset": in VR it would start the game flat.
     let (note, tip) = say(
-        "Echo VR's window on the desktop isn't full screen.",
-        "Starts Echo VR with -windowed",
+        "Flat only: Echo VR's window on the desktop isn't full screen.",
+        if flat {
+            "Starts Echo VR with -windowed"
+        } else {
+            "Choose Flat under How you play"
+        },
     );
     let (flipped, h) = option(
         kit,
@@ -206,12 +212,11 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         x,
         y,
         w,
-        true,
+        flat,
         &tip,
     );
     let mut changed = flipped;
     y += h;
-    let flat = d.state.profile.runtime == Runtime::Flat;
     let (note, tip) = say(
         "Flat only: join matches as a spectator, for streams and casting.",
         if flat {

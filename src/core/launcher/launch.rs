@@ -82,9 +82,11 @@ pub fn game_args(profile: &LaunchProfile, lobby: Option<&str>) -> Vec<String> {
         if profile.spectator {
             args.push("-spectatorstream".into());
         }
-    }
-    if profile.windowed {
-        args.push("-windowed".into());
+        // Flat only: nEVR (and EchoRelay's patch) take -windowed for "no headset", so in
+        // VR it would start the game on the monitor.
+        if profile.windowed {
+            args.push("-windowed".into());
+        }
     }
     if let Some(l) = lobby {
         args.push("-lobbyid".into());
@@ -278,12 +280,16 @@ mod tests {
             build(&p, exe, None, None).unwrap().args,
             ["-noovr", "-spectatorstream", "-windowed", "-foo"]
         );
+        // In VR, Windowed left on doesn't start it flat (nEVR: -windowed = no headset).
+        p.runtime = Runtime::VirtualDesktop;
+        assert_eq!(build(&p, exe, None, None).unwrap().args, ["-foo"]);
 
         // SteamVR through EchoXR: EchoXR.exe beside the game, the game's arguments, no
         // Revive needed; event builds can't.
         p = LaunchProfile {
             runtime: Runtime::Revive,
             steamvr_via: SteamVrVia::EchoXr,
+            windowed: true,
             extra_args: "-foo".into(),
             ..Default::default()
         };
