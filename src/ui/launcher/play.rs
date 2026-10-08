@@ -8,7 +8,7 @@
 use egui::Color32;
 
 use super::hero::{self, Face, InfoLine, JobView, PathClick, Row, Side};
-use super::{now, panel, setup, versions, Dashboard, Msg, Page};
+use super::{now, panel, setup, versions, Dashboard, Msg, Page, QueuedUpdate};
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
@@ -356,23 +356,29 @@ fn pc_action(d: &mut Dashboard) -> Action {
             }
             let updates = crate::core::launcher::versions::has_updates(&v);
             let in_use = d.files_in_use(&v);
-            a.update_enabled = updates && in_use.is_none() && !ours && !d.any_job();
+            // Besides the game's files, the button brings the version's plugin updates
+            // and the launcher's.
+            let game = updates && d.updates.game(&v.id);
+            let plugins = d.updates.plugins_for(&v.id);
+            let launcher = d.launcher_ready();
+            a.update_enabled =
+                (updates || plugins > 0 || launcher) && in_use.is_none() && !ours && !d.any_job();
             if ours && !running {
                 a.update_tip = "Echo VR is starting".into();
             }
             if let Some(why) = in_use {
                 a.update_tip = why.into();
             }
-            if !updates {
+            if !updates && !launcher {
                 a.update_tip = "Event builds don't get updates: REINSTALL on the Install page checks their files".into();
             }
             a.update_alert = d
                 .update_note
                 .get(&v.id)
                 .is_some_and(|n| n.contains("failed"));
-            a.update_ready = updates && d.updates.game(&v.id);
+            a.update_ready = game || plugins > 0 || launcher;
             if a.update_ready && a.update_enabled {
-                a.update_tip = "An update is out: download the changed game files".into();
+                a.update_tip = ready_tip(d, game, plugins, launcher);
             }
             a.update = Update::Pc(Box::new(v));
         }
@@ -446,7 +452,39 @@ fn quest_action(d: &mut Dashboard) -> Action {
     a.update = Update::Quest;
     a.update_enabled = installed && !busy;
     a.update_tip = "Copy the latest game files to your Quest".into();
+    // A launcher update comes along (after the Quest's).
+    a.update_ready = d.launcher_ready();
+    if a.update_ready && a.update_enabled {
+        a.update_tip = format!("{}, then {}", a.update_tip, ready_tip(d, false, 0, true));
+    }
     a
+}
+
+/// The orange button's tip: what a click updates.
+fn ready_tip(d: &Dashboard, game: bool, plugins: usize, launcher: bool) -> String {
+    let mut parts = Vec::new();
+    if game {
+        parts.push("the changed game files".to_string());
+    }
+    match plugins {
+        0 => {}
+        1 => parts.push("a plugin".into()),
+        n => parts.push(format!("{n} plugins")),
+    }
+    if launcher {
+        if let super::LauncherUpdate::Available(r) = &d.launcher_update {
+            parts.push(format!(
+                "the launcher {} (it restarts at the end)",
+                r.version
+            ));
+        }
+    }
+    let list = match parts.as_slice() {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    };
+    format!("Updates are out: this downloads {list}")
 }
 
 /// What the headset's connection and install are, for an info line.
@@ -514,6 +552,7 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
             Side::Blue {
                 icon: Icon::Download,
                 label: "Update ready",
+                ready: true,
             }
         } else {
             Side::Updates {
@@ -563,9 +602,21 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
         }
     }
     if update {
+        // The launcher last: it restarts.
+        let launcher = d.launcher_ready().then_some(QueuedUpdate::Launcher);
         match a.update {
-            Update::Pc(v) => versions::update(d, ctx, *v),
-            Update::Quest => setup::quest_update(d, ctx),
+            Update::Pc(v) => {
+                let plugins =
+                    (d.updates.plugins_for(&v.id) > 0).then(|| QueuedUpdate::Plugins(v.id.clone()));
+                if crate::core::launcher::versions::has_updates(&v) {
+                    versions::update(d, ctx, *v);
+                }
+                d.queue_updates(ctx, plugins.into_iter().chain(launcher).collect());
+            }
+            Update::Quest => {
+                setup::quest_update(d, ctx);
+                d.queue_updates(ctx, launcher.into_iter().collect());
+            }
             Update::Nothing => {}
         }
     }

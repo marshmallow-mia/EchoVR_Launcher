@@ -160,6 +160,15 @@ const IMAGES: &[(&str, &[u8])] = &[
         "blue_button_grey_hover.png",
         include_bytes!("../../assets/img/blue_button_grey_hover.png"),
     ),
+    // The blue button in orange: an update is ready.
+    (
+        "update_ready_button.png",
+        include_bytes!("../../assets/img/update_ready_button.png"),
+    ),
+    (
+        "update_ready_button_hover.png",
+        include_bytes!("../../assets/img/update_ready_button_hover.png"),
+    ),
     (
         "header_strip_small.png",
         include_bytes!("../../assets/img/header_strip_small.png"),

@@ -303,6 +303,25 @@ impl UpdatesFound {
             .filter(|f| matches!(f, crate::core::updates::Finding::Plugin { .. }))
             .count()
     }
+
+    /// How many plugin updates installed version `id` has.
+    fn plugins_for(&self, id: &str) -> usize {
+        self.findings
+            .iter()
+            .filter(|f| {
+                matches!(f, crate::core::updates::Finding::Plugin { version_id, .. } if version_id == id)
+            })
+            .count()
+    }
+}
+
+/// What Play's update button does after the game's update, one job after the other.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum QueuedUpdate {
+    /// The catalogue plugins of installed version `id` that have a newer version.
+    Plugins(String),
+    /// The launcher (last: it restarts).
+    Launcher,
 }
 
 #[derive(Default)]
@@ -716,6 +735,8 @@ pub struct Dashboard {
     /// Snapshots: the copies found.
     snap_found: Vec<String>,
     launcher_update: LauncherUpdate,
+    /// The updates Play's update button started that wait for the job before them.
+    update_queue: Vec<QueuedUpdate>,
     /// What the uninstall card asked to remove, until its confirmation is answered.
     uninstall_parts: Vec<crate::core::uninstall::Part>,
     /// What can be updated, as the last check found it.
@@ -1027,6 +1048,32 @@ impl Dashboard {
                 ),
             },
         );
+    }
+
+    /// A newer launcher is out on the channel followed, and this one can update itself to
+    /// it (not the way back from a beta: that is Advanced settings' to start).
+    fn launcher_ready(&self) -> bool {
+        matches!(&self.launcher_update, LauncherUpdate::Available(r) if !r.back)
+            && crate::core::launcher::self_update::supported()
+    }
+
+    /// Play's update button: `queue` runs after the job it started (if any), one update
+    /// after the other.
+    fn queue_updates(&mut self, ctx: &egui::Context, queue: Vec<QueuedUpdate>) {
+        self.update_queue = queue;
+        self.run_update_queue(ctx);
+    }
+
+    /// Starts the next queued update once no job runs (a step with nothing to do is
+    /// skipped).
+    fn run_update_queue(&mut self, ctx: &egui::Context) {
+        while !self.any_job() && !self.update_queue.is_empty() {
+            match self.update_queue.remove(0) {
+                QueuedUpdate::Plugins(id) => mods::update_all(self, ctx, &id),
+                QueuedUpdate::Launcher if self.launcher_ready() => self.update_launcher(ctx),
+                QueuedUpdate::Launcher => {}
+            }
+        }
     }
 
     /// Looks for a newer launcher release in the background.
@@ -2009,6 +2056,7 @@ impl Dashboard {
     }
 
     fn job_done(&mut self, ctx: &egui::Context, id: &str, kind: Option<JobKind>, r: JobResult) {
+        let cancelled = matches!(r, JobResult::Failed(None));
         match &r {
             JobResult::Failed(None) => tracing::info!("job {id}: cancelled"),
             JobResult::Failed(Some(e)) => {
@@ -2276,6 +2324,11 @@ impl Dashboard {
         if start_now {
             play::try_start(self, ctx, None);
         }
+        // Cancelled: the updates queued after it don't go on either.
+        if cancelled {
+            self.update_queue.clear();
+        }
+        self.run_update_queue(ctx);
     }
 
     #[allow(clippy::too_many_arguments)]

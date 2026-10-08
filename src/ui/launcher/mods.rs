@@ -2135,6 +2135,58 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntr
     });
 }
 
+/// Play's update button: every catalogue plugin of installed version `id` the update
+/// check found a newer version of, in one job. Nothing when there's none (or its files
+/// are in use).
+pub(super) fn update_all(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
+    use crate::core::updates::Finding;
+    let Some(v) = d.state.versions.iter().find(|v| v.id == id).cloned() else {
+        return;
+    };
+    let Some(catalog) = d.mods.catalog.as_ref() else {
+        return;
+    };
+    let entries: Vec<ModEntry> = d
+        .updates
+        .findings
+        .iter()
+        .filter_map(|f| match f {
+            Finding::Plugin {
+                version_id,
+                file,
+                to,
+                ..
+            } if version_id == id => catalog
+                .entry_for(file)
+                .filter(|m| m.downloadable() && m.version == *to)
+                .cloned(),
+            _ => None,
+        })
+        .collect();
+    if entries.is_empty() || busy(d, &v).is_some() {
+        return;
+    }
+    let title = match entries.as_slice() {
+        [one] => format!("Updating {}", one.name),
+        more => format!("Updating {} plugins", more.len()),
+    };
+    run(d, ctx, &v, &title, move |v, cancel, on| {
+        for e in &entries {
+            mods::install(v, e, cancel, on)?;
+        }
+        Ok(match entries.as_slice() {
+            [one] => format!(
+                "{} {} is installed: it loads at the next start",
+                one.name, one.version
+            ),
+            more => format!(
+                "{} plugins are updated: they load at the next start",
+                more.len()
+            ),
+        })
+    });
+}
+
 /// GET on an additional plugin.
 fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Extra) {
     use crate::core::echoxr_hands as hands;

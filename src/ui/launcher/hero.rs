@@ -63,12 +63,14 @@ const UPDATE_SHAPE: [(f32, f32); 4] = [
 ];
 const UPDATE_AREA: Dr = Dr::new(325.0, 243.0, 338.0, 66.0);
 /// The centre of update_button.png's icon and label, for the blue button's own labels.
-/// The blue button's images, every state.
-const BLUE_STATES: [&str; 4] = [
+/// The blue button's images, every state (and in orange, an update ready).
+const BLUE_STATES: [&str; 6] = [
     "blue_button.png",
     "blue_button_hover.png",
     "blue_button_grey.png",
     "blue_button_grey_hover.png",
+    "update_ready_button.png",
+    "update_ready_button_hover.png",
 ];
 const UPDATE_LABEL: (f32, f32) = (500.4, 276.8);
 const SWITCH_IMG: Dr = Dr::new(697.0, 248.4, 147.0, 60.1);
@@ -91,8 +93,12 @@ pub(super) enum Face<'a> {
 pub(super) enum Side<'a> {
     /// CHECK FOR UPDATES (the image), with the orange "!" after a failed update.
     Updates { alert: bool },
-    /// The blank blue button with an icon and a label.
-    Blue { icon: Icon, label: &'a str },
+    /// The blank blue button with an icon and a label; `ready`: orange, an update is out.
+    Blue {
+        icon: Icon,
+        label: &'a str,
+        ready: bool,
+    },
 }
 
 /// The two buttons. `grey` draws the green one in greys even when it can be clicked
@@ -369,8 +375,16 @@ pub(super) fn row(kit: &mut Kit, key: &str, extra: f32, r: &Row) -> (bool, bool)
                 kit.image_tinted(&format!("{name}_hover.png"), at, design::fade(t));
             }
         }
-        Side::Blue { icon, label } => {
-            blue_face(kit, extra, r.side_enabled && !pressed, t, icon, label);
+        Side::Blue { icon, label, ready } => {
+            blue_face(
+                kit,
+                extra,
+                r.side_enabled && !pressed,
+                ready,
+                t,
+                icon,
+                label,
+            );
         }
     }
     (main, resp.clicked)
@@ -427,7 +441,7 @@ pub(super) fn job_row(kit: &mut Kit, key: &str, extra: f32, job: &JobView) -> bo
         &tip,
     );
     let label = if can { "Cancel" } else { "Stopping…" };
-    blue_face(kit, extra, can && !pressed, t, Icon::Close, label);
+    blue_face(kit, extra, can && !pressed, false, t, Icon::Close, label);
     resp.clicked
 }
 
@@ -501,17 +515,17 @@ fn clip(poly: &[(f32, f32)], side: impl Fn((f32, f32)) -> f32) -> Vec<(f32, f32)
     out
 }
 
-/// The blank blue button (grey when off, lighter under the pointer, `t`) with an icon and
-/// a DMCAPS label where update_button.png has its own.
-fn blue_face(kit: &Kit, extra: f32, enabled: bool, t: f32, icon: Icon, label: &str) {
+/// The blank blue button (grey when off, orange when `ready`, lighter under the pointer,
+/// `t`) with an icon and a DMCAPS label where update_button.png has its own.
+fn blue_face(kit: &Kit, extra: f32, enabled: bool, ready: bool, t: f32, icon: Icon, label: &str) {
     let at = UPDATE_IMG.moved(extra);
     for name in BLUE_STATES {
         kit.prefetch_d(name, at);
     }
-    let (body, hover) = if enabled {
-        ("blue_button.png", "blue_button_hover.png")
-    } else {
-        ("blue_button_grey.png", "blue_button_grey_hover.png")
+    let (body, hover) = match (enabled, ready) {
+        (false, _) => ("blue_button_grey.png", "blue_button_grey_hover.png"),
+        (true, true) => ("update_ready_button.png", "update_ready_button_hover.png"),
+        (true, false) => ("blue_button.png", "blue_button_hover.png"),
     };
     kit.image_d(body, at);
     if t > 0.01 {

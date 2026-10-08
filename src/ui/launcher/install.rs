@@ -282,6 +282,7 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
     h.side = Side::Blue {
         icon: Icon::Folder,
         label: "Change folder",
+        ready: false,
     };
     h.side_act = SideAct::ChangeFolder;
     h.side_enabled = busy.is_none();
@@ -431,6 +432,7 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
         h.side = Side::Blue {
             icon: Icon::Info,
             label: "How to connect",
+            ready: false,
         };
         (h.side_act, h.side_enabled) = (SideAct::Help(url), true);
         h.side_tip = "How to turn on developer mode and USB debugging".into();
@@ -448,6 +450,7 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
             h.side = Side::Blue {
                 icon: Icon::Download,
                 label: "From a link",
+                ready: false,
             };
             (h.side_act, h.side_enabled) = (SideAct::QuestLink, !busy);
             h.side_tip = if busy {
@@ -459,6 +462,7 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
             h.side = Side::Blue {
                 icon: Icon::Refresh,
                 label: "Check again",
+                ready: false,
             };
             (h.side_act, h.side_enabled) = (SideAct::QuestCheck, !busy);
             h.side_tip = if busy {

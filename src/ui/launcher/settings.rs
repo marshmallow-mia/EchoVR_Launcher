@@ -780,6 +780,7 @@ pub(super) fn uninstalled(d: &mut Dashboard, o: crate::core::uninstall::Outcome)
 /// LAUNCHER: how it looks and behaves, updates, support, and About at the bottom.
 fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     panel::frame(kit, "Launcher");
+    update_button(d, kit, ctx);
     let look = panel::look();
     let (x, w) = (dz(panel::X), dz(PANEL_W));
     let mut y = dz(panel::BODY_Y);
@@ -910,8 +911,10 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
     let g = kit.label_galley(&status, design::din(15.0), design::GREY, w - s - dz(20.0));
     kit.put(x + s + dz(20.0), top + dz(40.0), g);
 
+    // An update that's out has its button at the panel's top instead.
     let update = action
         .as_ref()
+        .filter(|_| !matches!(d.launcher_update, LauncherUpdate::Available(_)))
         .map(|(label, tip)| ("about-update", *label, tip.as_str()));
     let links = [
         Some(("about-credits", "Credits", "Who made this possible")),
@@ -990,6 +993,49 @@ fn update_status(d: &Dashboard) -> (String, Option<(&'static str, String)>) {
         _ => Some(("Check for updates", "Look for a newer launcher".into())),
     };
     (format!("Version {version} · {status}"), action)
+}
+
+/// A launcher update that's out: a button beside the panel's title, where it's seen
+/// (About's line says what it is).
+fn update_button(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    let LauncherUpdate::Available(r) = &d.launcher_update else {
+        return;
+    };
+    let (_, Some((short, tip))) = update_status(d) else {
+        return;
+    };
+    let (tone, label) = match short {
+        "Update now" => (Tone::Go, format!("Update to {}", r.version)),
+        "Switch now" => (Tone::Blue, format!("Switch to {}", r.version)),
+        other => (Tone::Blue, other.to_string()),
+    };
+    // Beside the title: as much room as it leaves (the short label when that's too little).
+    let right = dz(panel::X + PANEL_W);
+    let room = dz(PANEL_W - 190.0);
+    let icon = Some(Icon::Download);
+    let label = if kit.button_width(&label, icon, BTN_H) <= room {
+        label
+    } else {
+        short.to_string()
+    };
+    let w = kit.button_width(&label, icon, BTN_H).max(150.0);
+    if kit
+        .button(
+            "launcher-update",
+            right - w,
+            dz(37.0),
+            w,
+            BTN_H,
+            tone,
+            icon,
+            &label,
+            true,
+            &tip,
+        )
+        .clicked
+    {
+        update_action(d, ctx);
+    }
 }
 
 /// What [`update_status`]'s action does.
