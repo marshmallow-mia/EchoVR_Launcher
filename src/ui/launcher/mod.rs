@@ -244,7 +244,11 @@ enum Msg {
     /// ADB over the network was turned on, or why not.
     QuestNetwork(Result<(), UiError>),
     /// The launcher's latest release, if newer (`Err`: couldn't look).
-    LauncherUpdate(Result<Option<update_check::Release>, String>),
+    /// A launcher update check's answer, for that channel.
+    LauncherUpdate(
+        update_check::Channel,
+        Result<Option<update_check::Release>, String>,
+    ),
     /// An update check is done.
     Updates(crate::core::updates::Check),
     /// Who opens spark:// links now (`Err`: registering failed, and why).
@@ -493,6 +497,10 @@ pub enum SnapVariant {
     LogsSent,
     /// Settings: the credits.
     Credits,
+    /// Settings: Advanced settings, on beta, with a beta out.
+    AdvancedSettings,
+    /// Play while the launcher follows beta: the chip in the status bar.
+    BetaChannel,
     /// The rail unfolded.
     RailOpen,
     /// Updates found: the rail's dots, Play's "Update ready".
@@ -1028,9 +1036,10 @@ impl Dashboard {
             return;
         }
         self.launcher_update = LauncherUpdate::Checking;
-        self.worker.spawn(ctx, |tx| {
-            let r = update_check::newer().map_err(|e| format!("{e:#}"));
-            tx.send(Msg::LauncherUpdate(r));
+        let channel = self.state.launcher_channel;
+        self.worker.spawn(ctx, move |tx| {
+            let r = update_check::newer(channel).map_err(|e| format!("{e:#}"));
+            tx.send(Msg::LauncherUpdate(channel, r));
         });
     }
 
@@ -1072,10 +1081,15 @@ impl Dashboard {
             self.mods.catalog_done(c);
         }
         for f in &check.findings {
+            // From the channel followed when the check began: another one is picked since.
+            if check.launcher_channel != self.state.launcher_channel {
+                break;
+            }
             if let Finding::Launcher { version, url } = f {
                 self.launcher_update = LauncherUpdate::Available(update_check::Release {
                     version: version.clone(),
                     url: url.clone(),
+                    back: false,
                 });
             }
         }
@@ -1166,6 +1180,7 @@ impl Dashboard {
         self.servers = servers::Servers::default();
         self.mods = mods::Mods::default();
         self.state.profile = demo_state().profile;
+        self.state.launcher_channel = update_check::Channel::Main;
         self.snap_game = None;
         self.install_pick = None;
         self.snap_found.clear();
@@ -1250,6 +1265,7 @@ impl Dashboard {
                 self.launcher_update = LauncherUpdate::Available(update_check::Release {
                     version: "0.11.0".into(),
                     url: concat!(env!("CARGO_PKG_REPOSITORY"), "/releases").into(),
+                    back: false,
                 });
                 self.state.rail_open = true;
             }
@@ -1257,6 +1273,19 @@ impl Dashboard {
             Some(SnapVariant::ModsLocked) => {}
             Some(SnapVariant::Credits) => {
                 self.overlay = Some(setup::Overlay::Credits { scroll: 0.0 })
+            }
+            Some(SnapVariant::AdvancedSettings) => {
+                self.state.launcher_channel = update_check::Channel::Beta;
+                self.launcher_update = LauncherUpdate::Available(update_check::Release {
+                    version: "0.11.10-beta.1".into(),
+                    url: concat!(env!("CARGO_PKG_REPOSITORY"), "/releases").into(),
+                    back: false,
+                });
+                self.overlay = Some(setup::Overlay::Advanced);
+            }
+            Some(SnapVariant::BetaChannel) => {
+                self.state.launcher_channel = update_check::Channel::Beta;
+                self.launcher_update = LauncherUpdate::Latest;
             }
             Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A"),
             Some(
@@ -1853,7 +1882,9 @@ impl Dashboard {
                     Ok(()) => self.notify("ADB over the network is on: you can unplug your Quest"),
                     Err(e) => self.dialogs.error_ui(&e),
                 },
-                Msg::LauncherUpdate(r) => {
+                // A channel picked since then gets its own answer.
+                Msg::LauncherUpdate(channel, _) if channel != self.state.launcher_channel => {}
+                Msg::LauncherUpdate(_, r) => {
                     self.launcher_update = match r {
                         Ok(Some(release)) => LauncherUpdate::Available(release),
                         Ok(None) => LauncherUpdate::Latest,
@@ -2747,6 +2778,42 @@ impl Dashboard {
     /// The status bar: a chip for the side in use (PCVR: the install, click to install;
     /// Quest: the connection, click to check it) and what the game or the running job is
     /// doing. On Play and Install it spans the main column only.
+    /// The status bar's chip while the launcher isn't on main: the channel followed, else
+    /// (main picked again, not switched back yet) the running build's own. Its text, colour
+    /// and tip.
+    fn channel_chip(&self) -> Option<(String, egui::Color32, String)> {
+        use update_check::Channel;
+        let version = env!("CARGO_PKG_VERSION");
+        let followed = self.state.launcher_channel;
+        let built = update_check::running_channel();
+        let (text, channel, tip) = if followed != Channel::Main {
+            (
+                format!("{} channel", followed.name()),
+                followed,
+                format!(
+                    "Launcher {version} on the {} channel. Click to change it.",
+                    followed.name()
+                ),
+            )
+        } else if built != Channel::Main {
+            (
+                format!("{} build", built.name()),
+                built,
+                format!(
+                    "Launcher {version} is a {} build. Click to switch back to main's.",
+                    built.name()
+                ),
+            )
+        } else {
+            return None;
+        };
+        let color = match channel {
+            Channel::Alpha => design::RED,
+            _ => design::QUEST_WARN,
+        };
+        Some((text, color, tip))
+    }
+
     fn top_bar(&mut self, kit: &mut Kit, ctx: &egui::Context) {
         let bar = if matches!(self.page, Page::Play | Page::Install | Page::Settings) {
             Dr::new(138.0, 15.0, 1144.0, 43.0)
@@ -2801,6 +2868,29 @@ impl Dashboard {
                     self.check_quest(ctx, true);
                 }
             }
+        }
+
+        // Not on main: the launcher's channel, at the bar's right end.
+        let mut status_end = bar.right() - 12.0;
+        if let Some((text, color, tip)) = self.channel_chip() {
+            let g = kit.spaced_galley(
+                &text.to_uppercase(),
+                design::din(12.0),
+                design::TEXT,
+                dz(0.5),
+                false,
+            );
+            let w = g.size().x / dz(1.0) + 20.0;
+            let chip = Dr::new(bar.right() - 11.0 - w, 23.0, w, 27.0);
+            let r = kit.drect(chip);
+            kit.ui.painter().rect_filled(r, dz(4.0), color);
+            kit.ui
+                .painter()
+                .galley(r.center() - g.size() / 2.0, g, design::TEXT);
+            if kit.hot("channel-chip", r, true, &tip).0.clicked {
+                self.overlay = Some(setup::Overlay::Advanced);
+            }
+            status_end = chip.x - 12.0;
         }
 
         let game = self.game();
@@ -2864,10 +2954,10 @@ impl Dashboard {
             color,
             dz(0.5),
             false,
-            dz(bar.right() - 12.0) - x,
+            dz(status_end) - x,
         );
         let y = dz(bar.y + bar.h / 2.0) - g.size().y / 2.0;
-        let max_w = dz(bar.right() - 12.0) - x;
+        let max_w = dz(status_end) - x;
         kit.clipped(x, 0.0, max_w, dz(bar.bottom()), |kit| {
             kit.put(x, y, g);
         });

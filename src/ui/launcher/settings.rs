@@ -6,6 +6,7 @@ use super::install::{myriad, text_link};
 use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{Runtime, SteamVrVia};
+use crate::core::launcher::update_check::Channel;
 use crate::core::links::Handler;
 use crate::core::{logs, paths, platform, revive};
 use crate::ui::design::{self, dz, Dr};
@@ -855,6 +856,24 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     {
         ask_upload(d);
     }
+    y += BTN_H + dz(14.0);
+    if kit
+        .button(
+            "advanced-settings",
+            x,
+            y,
+            w,
+            BTN_H,
+            Tone::Panel,
+            Some(Icon::Gear),
+            "Advanced settings",
+            true,
+            "The launcher's update channel: main, beta or alpha",
+        )
+        .clicked
+    {
+        d.overlay = Some(setup::Overlay::Advanced);
+    }
 
     about(d, kit, ctx, x, w);
     let footer = myriad(
@@ -882,40 +901,13 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
     );
     kit.image("icon.png", x, top, s, s);
     kit.title(x + s + dz(20.0), top + dz(4.0), "Echo VR Launcher", 22.0);
-    let version = env!("CARGO_PKG_VERSION");
-    let updating = super::hero::job_view(d, super::LAUNCHER_JOB);
-    let status = match &d.launcher_update {
-        LauncherUpdate::Available(r) if updating.is_some() => format!(
-            "Version {version} · updating to {}: {}",
-            r.version,
-            updating.as_ref().map(|j| j.step()).unwrap_or_default()
-        ),
-        LauncherUpdate::Checking => format!("Version {version} · checking for updates"),
-        LauncherUpdate::Latest => format!("Version {version} · the latest"),
-        LauncherUpdate::Available(r) => format!("Version {version} · {} is out", r.version),
-        LauncherUpdate::Failed => format!("Version {version} · couldn't check for updates"),
-    };
+    let (status, action) = update_status(d);
     let g = kit.label_galley(&status, design::din(15.0), design::GREY, w - s - dz(20.0));
     kit.put(x + s + dz(20.0), top + dz(40.0), g);
 
-    let self_update = crate::core::launcher::self_update::supported();
-    let update = match &d.launcher_update {
-        _ if updating.is_some() => None,
-        LauncherUpdate::Available(_) if self_update => Some((
-            "about-update",
-            "Update now",
-            "Download the new launcher, check it and restart into it",
-        )),
-        LauncherUpdate::Available(_) => {
-            Some(("about-update", "Download update", "Open the release page"))
-        }
-        LauncherUpdate::Checking => None,
-        _ => Some((
-            "about-update",
-            "Check for updates",
-            "Look for a newer launcher",
-        )),
-    };
+    let update = action
+        .as_ref()
+        .map(|(label, tip)| ("about-update", *label, tip.as_str()));
     let links = [
         Some(("about-credits", "Credits", "Who made this possible")),
         Some(("about-discord", "Discord", "The Echo VR community")),
@@ -927,6 +919,7 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
         update,
     ];
     let mut lx = x;
+    let mut picked = None;
     for (key, label, tip) in links.into_iter().flatten() {
         let clicked = text_link(kit, key, lx, links_y, label, 20.0, true, tip);
         let lw = myriad(
@@ -941,14 +934,160 @@ fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) 
         .x;
         lx += lw + dz(28.0);
         if clicked {
-            match (key, &d.launcher_update) {
-                ("about-credits", _) => d.overlay = Some(setup::Overlay::Credits { scroll: 0.0 }),
-                ("about-discord", _) => platform::open_url(crate::core::LOUNGE_INVITE),
-                ("about-source", _) => platform::open_url(env!("CARGO_PKG_REPOSITORY")),
-                (_, LauncherUpdate::Available(_)) if self_update => d.update_launcher(ctx),
-                (_, LauncherUpdate::Available(r)) => platform::open_url(&r.url),
-                _ => d.check_launcher_update(ctx),
-            }
+            picked = Some(key);
+        }
+    }
+    match picked {
+        Some("about-credits") => d.overlay = Some(setup::Overlay::Credits { scroll: 0.0 }),
+        Some("about-discord") => platform::open_url(crate::core::LOUNGE_INVITE),
+        Some("about-source") => platform::open_url(env!("CARGO_PKG_REPOSITORY")),
+        Some(_) => update_action(d, ctx),
+        None => {}
+    }
+}
+
+/// The launcher's version and what its update check says, with what can be done about
+/// it (a link's or button's label and tip): About's line and Advanced settings'.
+fn update_status(d: &Dashboard) -> (String, Option<(&'static str, String)>) {
+    let version = env!("CARGO_PKG_VERSION");
+    let channel = d.state.launcher_channel.name();
+    let updating = super::hero::job_view(d, super::LAUNCHER_JOB);
+    let status = match &d.launcher_update {
+        LauncherUpdate::Available(r) if updating.is_some() => format!(
+            "updating to {}: {}",
+            r.version,
+            updating.as_ref().map(|j| j.step()).unwrap_or_default()
+        ),
+        LauncherUpdate::Checking => "checking for updates".into(),
+        LauncherUpdate::Latest if d.state.launcher_channel == Channel::Main => "the latest".into(),
+        LauncherUpdate::Latest => format!("the latest on {channel}"),
+        // Back from a beta: the channel's release is older.
+        LauncherUpdate::Available(r) if r.back => format!("{channel} is at {}", r.version),
+        LauncherUpdate::Available(r) => format!("{} is out", r.version),
+        LauncherUpdate::Failed => "couldn't check for updates".into(),
+    };
+    let self_update = crate::core::launcher::self_update::supported();
+    let action = match &d.launcher_update {
+        _ if updating.is_some() => None,
+        LauncherUpdate::Available(r) if self_update && r.back => Some((
+            "Switch now",
+            format!(
+                "Download {channel}'s launcher {}, check it and restart into it",
+                r.version
+            ),
+        )),
+        LauncherUpdate::Available(_) if self_update => Some((
+            "Update now",
+            "Download the new launcher, check it and restart into it".into(),
+        )),
+        LauncherUpdate::Available(_) => Some(("Download update", "Open the release page".into())),
+        LauncherUpdate::Checking => None,
+        _ => Some(("Check for updates", "Look for a newer launcher".into())),
+    };
+    (format!("Version {version} · {status}"), action)
+}
+
+/// What [`update_status`]'s action does.
+fn update_action(d: &mut Dashboard, ctx: &egui::Context) {
+    match &d.launcher_update {
+        LauncherUpdate::Available(_) if crate::core::launcher::self_update::supported() => {
+            d.update_launcher(ctx)
+        }
+        LauncherUpdate::Available(r) => platform::open_url(&r.url),
+        _ => d.check_launcher_update(ctx),
+    }
+}
+
+/// ADVANCED SETTINGS: the launcher's update channel (main, beta or alpha), with what the
+/// update check says on it and its update.
+pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let (w, h) = (dz(1000.0), dz(570.0));
+    let (x, y, cw, bottom) = setup::card(k, w, h, "Advanced settings");
+    let updating = super::hero::job_view(d, super::LAUNCHER_JOB).is_some();
+    let mut ry = y;
+    k.caption(x, ry, "LAUNCHER CHANNEL");
+    ry += dz(34.0);
+    ry += k.caps_text(
+        x,
+        ry,
+        cw,
+        "Which releases the launcher updates to. Beta and alpha get main's releases too; \
+         back on main, main's newest launcher is offered again.",
+        16.0,
+        design::BODY,
+        0.0,
+    ) + dz(18.0);
+    let indent = dz(39.0);
+    for c in Channel::ALL {
+        let on = d.state.launcher_channel == c;
+        if k.radio(
+            &format!("channel-{}", c.name()),
+            on,
+            c.label(),
+            x,
+            ry,
+            !updating,
+            "",
+        ) {
+            d.state.launcher_channel = c;
+            d.save();
+            d.check_launcher_update(ctx);
+        }
+        let nh = k.caps_text(
+            x + indent,
+            ry + dz(38.0),
+            cw - indent,
+            c.note(),
+            14.0,
+            design::GREY,
+            0.0,
+        );
+        ry += dz(38.0) + nh + dz(22.0);
+    }
+    let (status, action) = update_status(d);
+    let g = k.label_galley(&status, design::din(15.0), design::GREY, cw);
+    k.put(x, ry + dz(6.0), g);
+
+    let by = bottom - BTN_H;
+    let close_w = k.button_width("Close", None, BTN_H).max(110.0);
+    let right = x + cw;
+    if k.button(
+        "advanced-close",
+        right - close_w,
+        by,
+        close_w,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Close",
+        true,
+        "",
+    )
+    .clicked
+        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+    {
+        d.overlay = None;
+        return;
+    }
+    if let Some((label, tip)) = action {
+        let icon =
+            matches!(d.launcher_update, LauncherUpdate::Available(_)).then_some(Icon::Download);
+        let aw = k.button_width(label, icon, BTN_H).max(150.0);
+        if k.button(
+            "advanced-update",
+            right - close_w - 8.0 - aw,
+            by,
+            aw,
+            BTN_H,
+            Tone::Blue,
+            icon,
+            label,
+            true,
+            &tip,
+        )
+        .clicked
+        {
+            update_action(d, ctx);
         }
     }
 }

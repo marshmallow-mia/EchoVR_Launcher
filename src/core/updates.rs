@@ -86,6 +86,8 @@ pub struct Check {
     pub baselines: Vec<(String, String)>,
     /// The catalogue fetched, for the Mods page's Update buttons.
     pub catalog: Option<ModCatalog>,
+    /// The launcher channel its launcher finding is from.
+    pub launcher_channel: update_check::Channel,
 }
 
 /// Debug builds: `ECHOVR_FAKE_UPDATE=1` makes every Echo VR that gets updates look
@@ -96,8 +98,13 @@ fn fake_game_update() -> bool {
 
 /// Looks for updates (network; seconds). Failures leave a kind out quietly.
 pub fn check(state: &LauncherState) -> Check {
-    let mut out = Check::default();
-    match update_check::newer() {
+    let mut out = Check {
+        launcher_channel: state.launcher_channel,
+        ..Check::default()
+    };
+    match update_check::newer(state.launcher_channel) {
+        // The way back from a beta isn't an update to announce: Advanced settings has it.
+        Ok(Some(r)) if r.back => {}
         Ok(Some(r)) => out.findings.push(Finding::Launcher {
             version: r.version,
             url: r.url,

@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::catalog::{Catalog, VersionEntry};
+use super::update_check::Channel;
 use crate::core::paths;
 
 pub const SCHEMA: u32 = 3;
@@ -188,6 +189,8 @@ pub struct LauncherState {
     pub tray: bool,
     /// The tray starts at login.
     pub tray_at_login: bool,
+    /// The launcher releases it updates to: main, beta or alpha (Advanced settings).
+    pub launcher_channel: Channel,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -241,6 +244,7 @@ impl Default for LauncherState {
             tray: true,
             tray_at_login: false,
             relay_account: None,
+            launcher_channel: Channel::Main,
         }
     }
 }
@@ -587,6 +591,22 @@ mod tests {
         LauncherState::load_upgraded(&f);
         assert_eq!(LauncherState::schema_on_disk(&f), Some(SCHEMA));
         assert!(LauncherState::load_from(&f).event_builds);
+    }
+
+    #[test]
+    fn keeps_the_launcher_channel() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        // From before channels: main.
+        std::fs::write(&f, r#"{"schema":3}"#).unwrap();
+        assert_eq!(LauncherState::load_from(&f).launcher_channel, Channel::Main);
+        let mut s = LauncherState::load_from(&f);
+        s.launcher_channel = Channel::Beta;
+        s.save_to(&f).unwrap();
+        assert!(std::fs::read_to_string(&f)
+            .unwrap()
+            .contains(r#""launcher_channel": "beta""#));
+        assert_eq!(LauncherState::load_from(&f).launcher_channel, Channel::Beta);
     }
 
     fn catalog() -> Catalog {

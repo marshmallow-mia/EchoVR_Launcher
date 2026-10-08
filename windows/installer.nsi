@@ -4,6 +4,9 @@
 ; launcher's own update (Settings, Update now) can replace its files.
 ;
 ;   makensis -DVERSION=0.11.8 -DSTAGE=<folder with the portable files> -DOUT=<setup.exe> windows/installer.nsi
+;
+; A beta or alpha (VERSION=0.11.10-beta.1) also needs -DVIVERSION=0.11.10: Windows' file
+; version is numbers only.
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -17,6 +20,9 @@ RequestExecutionLevel user
 !endif
 !ifndef OUT
   !define OUT "Echo_VR_Launcher-${VERSION}-windows-setup.exe"
+!endif
+!ifndef VIVERSION
+  !define VIVERSION "${VERSION}"
 !endif
 
 !define NAME "Echo VR Launcher"
@@ -34,7 +40,7 @@ InstallDir "$LOCALAPPDATA\Programs\EchoVR_Launcher"
 InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 BrandingText "${NAME} ${VERSION}"
 
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${VIVERSION}.0"
 VIAddVersionKey "ProductName" "${NAME}"
 VIAddVersionKey "ProductVersion" "${VERSION}"
 VIAddVersionKey "FileVersion" "${VERSION}"

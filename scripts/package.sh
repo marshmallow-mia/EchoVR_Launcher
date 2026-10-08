@@ -24,7 +24,8 @@ case "$platform" in
     loader="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*webview2-com-sys*/x64/WebView2Loader.dll' 2>/dev/null | head -1)"
     cp "$loader" "$stage/EchoVR_Launcher/"
     version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-    (cd windows && makensis -V2 -DVERSION="$version" -DSTAGE="$stage/EchoVR_Launcher" -DOUT="$out" installer.nsi)
+    # Windows' file version is numbers only: 0.11.10 for 0.11.10-beta.1.
+    (cd windows && makensis -V2 -DVERSION="$version" -DVIVERSION="${version%%-*}" -DSTAGE="$stage/EchoVR_Launcher" -DOUT="$out" installer.nsi)
     ;;
   macos)
     app="$stage/EchoVR_Launcher.app/Contents"

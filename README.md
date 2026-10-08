@@ -126,6 +126,13 @@ Settings (Windows and Linux: it downloads the release, checks it, replaces its f
 restarts; macOS opens the release page). EchoXR and EchoXR Hands come with the launcher, so a launcher
 update brings theirs.
 
+**Settings → Advanced settings** picks the launcher's channel: **main** (the tested
+releases), **beta** (fixes to try before they reach main) or **alpha** (the newest
+builds). Betas are tagged `vX.Y.Z-beta.N` and alphas `vX.Y.Z-alpha.N`, published as
+GitHub prereleases; beta gets main's releases too, alpha all three. Off main, the status
+bar says so (**BETA CHANNEL**). Back on main, main's newest launcher is offered as
+**Switch now**.
+
 Each update is also announced once as a desktop notification (Linux: the desktop's
 notifications; Windows: a toast). While the launcher is closed, its icon in the tray
 (`EchoVR_Launcher --tray`, started by the launcher) keeps looking and opens it; it can

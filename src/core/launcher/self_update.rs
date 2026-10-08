@@ -316,6 +316,29 @@ pub fn wait_for(pid: &str) {
     tracing::warn!("the old launcher (pid {pid}) is still running; starting anyway");
 }
 
+/// Tests against the live mirror: version `v`'s Windows and Linux zips, downloaded into
+/// `dir` and checked against the mirror's `SHA256SUMS` as an update checks them.
+#[cfg(test)]
+pub(super) fn check_on_mirror(v: &str, dir: &Path) -> Result<()> {
+    let sums = http::get_text(&format!("{MIRROR}/{SUMS}"))?;
+    for os in ["windows", "linux"] {
+        let name = format!("Echo_VR_Launcher-{v}-{os}.zip");
+        let sha = sum_for(&sums, &name).with_context(|| format!("{SUMS} doesn't list {name}"))?;
+        let zip = download::fetch_pinned(
+            &format!("{MIRROR}/{name}"),
+            dir,
+            &name,
+            &sha,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )?;
+        if crate::core::zip::top_folder(&zip)?.as_deref() != Some(ZIP_FOLDER) {
+            bail!("{name} doesn't have everything in {ZIP_FOLDER}");
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
