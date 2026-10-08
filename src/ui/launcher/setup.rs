@@ -628,6 +628,10 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         }
         launch::join_args(&a)
     };
+    // Virtual Desktop's Oculus mode: its streamer starts the game, then the game's options.
+    let vd_streamer = (d.state.profile.runtime == Runtime::VirtualDesktop && !echoxr && !d.demo)
+        .then(launch::vd_streamer)
+        .flatten();
     let result = match (d.state.profile.runtime, revive) {
         // EchoXR.exe beside the game starts it on SteamVR (or Virtual Desktop's runtime),
         // with the game's icon.
@@ -640,6 +644,20 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         ),
         (Runtime::Revive, Some(dir)) => {
             revive::create_injector_shortcut(&format!("{name} (Revive)"), &dir, &exe, &args)
+        }
+        _ if vd_streamer.is_some() => {
+            let vd_args = launch::join_args(
+                &std::iter::once(exe.to_string_lossy().into_owned())
+                    .chain(launch::split_args(&args))
+                    .collect::<Vec<_>>(),
+            );
+            platform::create_shortcut(
+                &name,
+                vd_streamer.as_deref().unwrap_or(&exe),
+                Some(vd_args.as_str()),
+                Some(&v.bin_dir()),
+                Some(&exe),
+            )
         }
         _ => platform::create_shortcut(
             &name,
@@ -867,7 +885,7 @@ pub(super) fn runtime_note(r: Runtime) -> &'static str {
     match r {
         Runtime::MetaLink => "Quest over Link or Air Link, or a Rift, with the Meta Quest app.",
         Runtime::VirtualDesktop => {
-            "Quest over Virtual Desktop, on Meta's runtime, SteamVR or VD's own OpenXR."
+            "Quest over Virtual Desktop: its Oculus mode, SteamVR or VD's own OpenXR."
         }
         // On Linux every headset plays through EchoXR on its OpenXR runtime.
         Runtime::Revive if cfg!(target_os = "linux") => {

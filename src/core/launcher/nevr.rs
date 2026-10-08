@@ -452,11 +452,12 @@ pub fn is_run_log(name: &str) -> bool {
     name.starts_with("nevr-") && name.ends_with(".jsonl") && name != "nevr-boot.jsonl"
 }
 
-/// Pure: whether a start's log (nEVR's, which has the game's own lines) says Meta's runtime
-/// couldn't make the headset's swap chain: the game then stops at "Unknown error while
-/// loading the game" (seen with Virtual Desktop streaming Meta's runtime).
+/// Pure: whether a start's log (nEVR's, which has the game's own lines) says VR didn't come
+/// up on the Oculus runtime: no headset (`ovrError_NoHmd`: Meta's runtime under Virtual
+/// Desktop, when VD didn't start the game), or no swap chain for it (seen in Virtual
+/// Desktop's Oculus mode). The game then stops with an error.
 pub fn swap_chain_failed(log: &str) -> bool {
-    log.contains("Failed to create OVR D3D swap chain")
+    log.contains("Failed to create OVR D3D swap chain") || log.contains("ovrError_NoHmd")
 }
 
 /// Whether `name` is one of nEVR's crash records.
@@ -672,6 +673,9 @@ mod tests {
 {"ts":"2026-10-08T18:45:29.611Z","run":"246c-1dd57552f7d65b6","level":"error","msg":"[EVR] Failed to create OVR D3D swap chain: "}
 {"ts":"2026-10-08T18:45:29.611Z","run":"246c-1dd57552f7d65b6","level":"info","msg":"[EVR] Unknown error while loading the game."}"#;
         assert!(swap_chain_failed(log));
+        // Meta's runtime under Virtual Desktop, started without VD (beta.4).
+        let no_hmd = r#"{"ts":"2026-10-08T19:05:15.313Z","run":"6198-1dd5757f290f868","level":"info","msg":"[EVR] OVR Error:\n  Code: -1007 -- ovrError_NoHmd\n  Description: ovr_Create: No HMD attached.\n"}"#;
+        assert!(swap_chain_failed(no_hmd));
         assert!(!swap_chain_failed(
             r#"{"level":"info","msg":"[EVR] Successfully initialized OVR session."}"#
         ));

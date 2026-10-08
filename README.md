@@ -69,18 +69,30 @@ injection and no administrator rights (the Meta library's copy excepted). See
 
 ## Virtual Desktop on Windows
 
-Virtual Desktop streams whichever runtime runs Echo VR. With Virtual Desktop chosen,
-Settings picks which one (**Through**):
+With Virtual Desktop chosen, Settings picks how its streamer runs Echo VR (**Through**):
 
-- **Meta's runtime**: Echo VR itself on Meta's runtime (the Meta Quest Link app installed).
+- **Oculus mode**: Virtual Desktop's streamer starts Echo VR itself and gives it the
+  headset, as its Games list (and its tray's Inject Game) does:
+  `VirtualDesktop.Streamer.exe <echovr.exe> <launch options>`. Echo VR started on its own
+  would land on Meta's runtime, which has no headset under Virtual Desktop.
 - **SteamVR (EchoXR)**: through EchoXR on SteamVR, which Virtual Desktop's SteamVR driver
   streams (SteamVR installed).
 - **VD's OpenXR (EchoXR)**: through EchoXR on Virtual Desktop's own OpenXR runtime
   (`EchoXR.exe --runtime active`): neither SteamVR nor Meta's runtime.
 
-PLAY sets EchoXR up the first time it's needed. When a start through Meta's runtime stops
-at "Failed to create OVR D3D swap chain" (Meta's runtime couldn't give the game the
-headset's picture), the launcher closes the game and offers the EchoXR routes instead.
+PLAY sets EchoXR up the first time it's needed. When a start in Oculus mode stops without VR
+("Failed to create OVR D3D swap chain", or no headset), the launcher closes the game and
+offers the EchoXR routes instead.
+
+## Antivirus
+
+The live build loads nEVR (`bin\win10\BugSplat64.dll`) at its start, and Windows only says
+"unable to start correctly" (0xc0000135, 0xc0000022, 0xc0000043) when antivirus removed or
+blocked it. The launcher checks the file before PLAY and right after an update puts it in
+place, and reads those codes when a start ends. It then says so and offers **Allow and
+repair**, which adds the game's folder to Windows Security's exclusions (with administrator
+rights; only a folder of a version the launcher has) and puts the file back, or **Open
+Windows Security**.
 
 ## Hand tracking
 

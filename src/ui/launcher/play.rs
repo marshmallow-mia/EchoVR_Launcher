@@ -30,8 +30,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
-/// Virtual Desktop through Meta's runtime failed: through EchoXR instead?
+/// Virtual Desktop's Oculus mode failed: through EchoXR instead?
 const VD_SWITCH: &str = "vd-switch";
+/// Echo VR's mod loader (`BugSplat64.dll`) was removed or blocked: allow it and repair?
+const NEVR_BLOCKED: &str = "nevr-blocked";
 /// PLAY on Linux would add Echo VR to Steam (Steam restarts): asked once.
 const PREPARE_LINUX: &str = "prepare-linux";
 
@@ -79,6 +81,16 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             let lobby = d.pending_lobby.take();
             if answer.is_yes() {
                 start(d, ctx, lobby);
+            }
+        }
+        if let Some(answer) = d.dialogs.take(NEVR_BLOCKED) {
+            let id = d.nevr_blocked.take();
+            match (answer, id) {
+                (Answer::Button(0), Some(id)) => allow_and_repair(d, ctx, &id),
+                (Answer::Button(1), _) => {
+                    crate::core::platform::open_url("windowsdefender://threat")
+                }
+                _ => {}
             }
         }
         if let Some(Answer::Button(i)) = d.dialogs.take(VD_SWITCH) {
@@ -1279,6 +1291,25 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         );
         return;
     }
+    // The live build loads BugSplat64.dll (nEVR, the mod loader) at its start: without it,
+    // or blocked, Windows only says "unable to start correctly".
+    if cfg!(windows) && v.publisher_lock.is_none() {
+        use crate::core::launcher::mods::{slot_state, SlotState};
+        let lead = match slot_state(&v.bin_dir()) {
+            SlotState::Ok => None,
+            SlotState::Missing => Some(format!(
+                "BugSplat64.dll, Echo VR's mod loader (nEVR), is missing from {}.",
+                v.bin_dir().display()
+            )),
+            SlotState::Blocked(e) => Some(format!(
+                "BugSplat64.dll, Echo VR's mod loader (nEVR), can't be read ({e})."
+            )),
+        };
+        if let Some(lead) = lead {
+            ask_nevr_blocked(d, &v.id, &lead);
+            return;
+        }
+    }
     // An event build: pointed at the classic lobbies server as your account each time,
     // so a changed account or server applies.
     if v.publisher_lock.is_some() {
@@ -1363,13 +1394,21 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         profile.runtime = Runtime::Flat;
         profile.spectator = true;
     }
+    // Virtual Desktop's Oculus mode: its streamer starts the game.
+    let vd_streamer = (profile.runtime == Runtime::VirtualDesktop && !profile.through_echoxr())
+        .then(launch::vd_streamer)
+        .flatten();
+    let tools = launch::Tools {
+        revive_dir: revive_dir.as_deref(),
+        vd_streamer: vd_streamer.as_deref(),
+    };
     let command = if v.publisher_lock.is_some() {
-        launch::build_relay(&profile, &exe, revive_dir.as_deref())
+        launch::build_relay(&profile, &exe, &tools)
     } else {
         launch::build(
             &profile,
             &exe,
-            revive_dir.as_deref(),
+            &tools,
             lobby.as_ref().map(|j| j.lobby.as_str()),
         )
     };
@@ -1418,8 +1457,8 @@ pub(super) struct LoginWatching {
     watch: LoginWatch,
     at: std::time::Instant,
     since: std::time::Instant,
-    /// Virtual Desktop through Meta's runtime: its start is watched for the swap chain
-    /// Meta's runtime couldn't make.
+    /// Virtual Desktop's Oculus mode: its start is watched for VR that didn't come up (no
+    /// headset, or no swap chain for it).
     vd_meta: bool,
 }
 
@@ -1455,12 +1494,10 @@ pub(super) fn watch_login(d: &mut Dashboard, ctx: &egui::Context) {
         return;
     }
     w.at = std::time::Instant::now();
-    // Virtual Desktop through Meta's runtime, which couldn't make the headset's swap chain:
-    // the game stops at "Unknown error"; offer EchoXR instead.
+    // Virtual Desktop's Oculus mode without VR (no headset, or no swap chain for it): the
+    // game stops with an error; offer EchoXR instead.
     if w.vd_meta && starting && w.watch.swap_chain_failed() {
-        tracing::info!(
-            "Meta's runtime couldn't make the headset's swap chain (Virtual Desktop): closing the game"
-        );
+        tracing::info!("Virtual Desktop's Oculus mode didn't start VR: closing the game");
         d.login_watch = None;
         stop(d);
         ask_vd_switch(d);
@@ -1486,15 +1523,71 @@ pub(super) fn watch_login(d: &mut Dashboard, ctx: &egui::Context) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
 }
 
-/// Virtual Desktop through Meta's runtime couldn't start VR: through EchoXR instead
+/// Echo VR can't start for its mod loader in version `id`'s folder (`lead`: what happened
+/// to it): most likely antivirus. Allow it in Windows Security and repair, or open Windows
+/// Security (answered in `show`).
+pub(super) fn ask_nevr_blocked(d: &mut Dashboard, id: &str, lead: &str) {
+    tracing::warn!("{id}: {lead}");
+    d.nevr_blocked = Some(id.to_string());
+    let folder = d
+        .state
+        .version(id)
+        .map(|v| v.bin_dir().display().to_string())
+        .unwrap_or_else(|| "the game's folder".into());
+    d.dialogs.options(
+        NEVR_BLOCKED,
+        "Windows blocked Echo VR's mod loader",
+        &format!(
+            "{lead} Echo VR can't start without it.\n\n\
+             That is usually antivirus: Windows Security (or another antivirus) takes it for a threat and removes or blocks it. \
+             Allow and repair adds {folder} to Windows Security's exclusions (it asks for administrator rights) and puts the file back.\n\n\
+             Or by hand: Windows Security, Virus & threat protection, Protection history: allow BugSplat64.dll, then update Echo VR. \
+             With another antivirus, allow that folder there."
+        ),
+        DlgIcon::Warning,
+        &["Allow and repair", "Open Windows Security", "Close"],
+    );
+}
+
+/// Adds version `id`'s game folder to Windows Security's exclusions (asking for
+/// administrator rights), then updates it, which puts the mod loader back.
+fn allow_and_repair(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
+    let Some(v) = d.state.version(id).cloned() else {
+        return;
+    };
+    let mut consent = setup::consent_asker(d.worker.tx(ctx));
+    let bin = v.bin_dir();
+    d.start_job(
+        ctx,
+        super::JobKind::Update,
+        id,
+        &format!("Allowing {} in Windows Security", v.name),
+        "Asking for administrator rights...",
+        move |cancel, on| {
+            let r =
+                crate::core::elevation::exclude_from_defender(&bin, &mut consent).and_then(|()| {
+                    on(crate::core::launcher::versions::Step::Status(
+                        "Putting the mod loader back...".into(),
+                    ));
+                    crate::core::launcher::versions::update(&v, cancel, on)
+                });
+            match r {
+                Ok(()) => super::JobResult::Updated,
+                Err(e) => versions::job_err(e, "Couldn't Allow Echo VR"),
+            }
+        },
+    );
+}
+
+/// Virtual Desktop's Oculus mode couldn't start VR: through EchoXR instead
 /// (answered in `show`)?
 pub(super) fn ask_vd_switch(d: &mut Dashboard) {
     d.dialogs.options(
         VD_SWITCH,
         "Virtual Desktop couldn't start VR",
-        "Meta's runtime couldn't give Echo VR the headset's picture (\"Failed to create OVR D3D swap chain\"), so the game stopped and was closed.\n\nPlay through EchoXR instead? SteamVR (EchoXR) needs SteamVR installed; VD's OpenXR (EchoXR) needs neither SteamVR nor Meta's runtime. Settings has this choice under Virtual Desktop.",
+        "Echo VR got no headset, or no picture for it, in Virtual Desktop's Oculus mode, so the game stopped and was closed. Is Virtual Desktop connected from your headset?\n\nOr play through EchoXR: SteamVR (EchoXR) needs SteamVR installed; VD's OpenXR (EchoXR) needs neither SteamVR nor Meta's runtime. Settings has this choice under Virtual Desktop.",
         DlgIcon::Warning,
-        &["SteamVR (EchoXR)", "VD's OpenXR (EchoXR)", "Keep Meta's runtime"],
+        &["SteamVR (EchoXR)", "VD's OpenXR (EchoXR)", "Keep Oculus mode"],
     );
 }
 

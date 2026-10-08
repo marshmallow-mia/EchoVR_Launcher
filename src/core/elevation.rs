@@ -24,7 +24,7 @@
 
 use std::io::{Read, Write};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 pub const HELPER_FLAG: &str = "--admin-helper";
@@ -55,6 +55,11 @@ pub enum Request {
     /// it make its copy of the game there.
     InstallEchoXr {
         zip: String,
+    },
+    /// Add this game folder (an installed version's bin folder, nothing else) to Windows
+    /// Security's exclusions, so it stops taking nEVR's BugSplat64.dll away.
+    ExcludeFromDefender {
+        dir: String,
     },
     Shutdown,
 }
@@ -140,7 +145,66 @@ pub fn handle(req: &Request) -> Reply {
             Ok(()) => Reply::Ok,
             Err(e) => Reply::Err(format!("{e:#}")),
         },
+        Request::ExcludeFromDefender { dir } => {
+            let bins: Vec<std::path::PathBuf> = super::launcher::store::LauncherState::load()
+                .versions
+                .iter()
+                .map(|v| v.bin_dir())
+                .collect();
+            match known_bin(dir, &bins).and_then(|d| add_defender_exclusion(&d)) {
+                Ok(()) => Reply::Ok,
+                Err(e) => Reply::Err(format!("{e:#}")),
+            }
+        }
     }
+}
+
+/// `dir` when it is one of `bins` (the installed versions' bin folders), as it is on disk:
+/// the helper adds no other folder to Windows Security's exclusions.
+fn known_bin(dir: &str, bins: &[std::path::PathBuf]) -> Result<std::path::PathBuf> {
+    let dir = std::fs::canonicalize(dir).with_context(|| format!("{dir} isn't there"))?;
+    if bins
+        .iter()
+        .filter_map(|b| std::fs::canonicalize(b).ok())
+        .any(|b| b == dir)
+    {
+        Ok(dir)
+    } else {
+        bail!("{} isn't an Echo VR folder the launcher has", dir.display())
+    }
+}
+
+/// Pure: `s` as a PowerShell string literal (single quotes: nothing in it is expanded).
+fn ps_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Adds the folder `dir` to Windows Security's exclusions (needs administrator rights).
+fn add_defender_exclusion(dir: &std::path::Path) -> Result<()> {
+    if !cfg!(windows) {
+        bail!("Windows Security is Windows'");
+    }
+    // canonicalize gives `\\?\C:\...`: Windows Security wants the plain path.
+    let plain = dir.to_string_lossy();
+    let plain = plain.strip_prefix(r"\\?\").unwrap_or(&plain);
+    let out = super::process::command("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command"])
+        .arg(format!(
+            "Add-MpPreference -ExclusionPath {}",
+            ps_quote(plain)
+        ))
+        .output()
+        .context("couldn't run PowerShell")?;
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        bail!(
+            "Windows Security didn't take the exclusion ({}): {}",
+            out.status,
+            err.trim()
+        );
+    }
+    tracing::info!("added {plain} to Windows Security's exclusions");
+    Ok(())
 }
 
 /// The helper's EchoXR: the zip at `zip` into the Meta library's Echo VR (`bin`), if it is
@@ -392,6 +456,21 @@ pub fn prepare_echoxr(bin: &std::path::Path, consent: &mut dyn FnMut() -> bool) 
         }
         Err(e) if super::revive::needs_elevation(&e) => Err(e.context(NEEDS_ADMIN)),
         r => r,
+    }
+}
+
+/// Adds the game's bin folder `bin` to Windows Security's exclusions: always through the
+/// helper (after `consent`), which takes only an installed version's bin folder.
+pub fn exclude_from_defender(
+    bin: &std::path::Path,
+    consent: &mut dyn FnMut() -> bool,
+) -> Result<()> {
+    let req = Request::ExcludeFromDefender {
+        dir: bin.to_string_lossy().into(),
+    };
+    match broker::request(&req, consent)? {
+        Reply::Err(m) => bail!("{m}"),
+        _ => Ok(()),
     }
 }
 
@@ -729,6 +808,35 @@ mod tests {
             assert!(library_entry_for(Some(&bad), "").is_err(), "{bad}");
         }
         assert!(library_entry_for(Some(&exe), "-a\n-b").is_err());
+    }
+
+    #[test]
+    fn excludes_only_installed_game_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("Echo/ready-at-dawn-echo-arena/bin/win10");
+        let other = dir.path().join("Windows");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let bins = [bin.clone()];
+        assert_eq!(
+            known_bin(&bin.to_string_lossy(), &bins).unwrap(),
+            std::fs::canonicalize(&bin).unwrap()
+        );
+        // The same folder by another spelling.
+        let dotted = dir
+            .path()
+            .join("Echo/ready-at-dawn-echo-arena/bin/win10/../win10");
+        assert!(known_bin(&dotted.to_string_lossy(), &bins).is_ok());
+        for bad in [
+            other.to_string_lossy().into_owned(),
+            dir.path().to_string_lossy().into_owned(),
+            dir.path().join("missing").to_string_lossy().into_owned(),
+        ] {
+            assert!(known_bin(&bad, &bins).is_err(), "{bad}");
+        }
+        // Nothing in a folder name runs in PowerShell.
+        assert_eq!(ps_quote(r"D:\Games\Echo"), r"'D:\Games\Echo'");
+        assert_eq!(ps_quote("D:\\it's $(x)"), "'D:\\it''s $(x)'");
     }
 
     #[test]

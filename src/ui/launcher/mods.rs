@@ -1162,7 +1162,7 @@ fn plugin_detail(p: &Plugin, author: Option<&str>) -> String {
 /// A VR part's row, as a plugin's: its name with tags, what it does under it. It is
 /// listed while it is in use: on Linux EchoXR is how VR plays (always, required); on
 /// Windows SteamVR plays through it instead of Revive (and Virtual Desktop through SteamVR
-/// or its own OpenXR runtime), and Remove goes back to Revive and Meta's runtime (it is in
+/// or its own OpenXR runtime), and Remove goes back to Revive and VD's Oculus mode (it is in
 /// More mods again).
 fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f32, w: f32) {
     use crate::core::launcher::store::{Runtime, SteamVrVia, VdVia};
@@ -1173,7 +1173,7 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     let tip = if linux {
         "Linux plays VR through it: always on"
     } else {
-        "SteamVR plays through it instead of Revive, and Virtual Desktop when it runs through SteamVR or its own OpenXR (Remove goes back to Revive and Meta's runtime)"
+        "SteamVR plays through it instead of Revive, and Virtual Desktop when it runs through SteamVR or its own OpenXR (Remove goes back to Revive and VD's Oculus mode)"
     };
     let key = |what: &str| format!("mods-vr-{what}-{name}");
     let mut a = Actions::new(x, y, w);
@@ -1181,7 +1181,7 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
         let tip = if busy {
             "Wait until the job is done"
         } else {
-            "SteamVR plays through Revive again, Virtual Desktop through Meta's runtime (hand tracking, which needs EchoXR, goes too)"
+            "SteamVR plays through Revive again, Virtual Desktop in its Oculus mode (hand tracking, which needs EchoXR, goes too)"
         };
         if a.button(k, &key("remove"), Tone::Dark, None, "Remove", !busy, tip) {
             d.state.profile.steamvr_via = SteamVrVia::Revive;

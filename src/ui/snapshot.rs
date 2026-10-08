@@ -192,6 +192,11 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("mods_vd", Page::Mods, SnapVariant::SettingsVirtualDesktop),
         ("play_vd_switch", Page::Play, SnapVariant::DialogVdSwitch),
+        (
+            "play_nevr_blocked",
+            Page::Play,
+            SnapVariant::DialogNevrBlocked,
+        ),
         ("mods_locked", Page::Mods, SnapVariant::ModsLocked),
         ("mods_hands", Page::Mods, SnapVariant::ModsHands),
         ("mods_settings", Page::Mods, SnapVariant::ModsSettings),

@@ -25,6 +25,19 @@ use crate::core::paths;
 
 pub const API_URL: &str = "http://127.0.0.1:6721/session";
 
+/// Pure: whether a start's exit `code` is Windows' loader turning the game down before it
+/// ran (a DLL it loads at its start missing, blocked or flagged), and what it says.
+pub fn loader_failure(code: i32) -> Option<&'static str> {
+    Some(match code as u32 {
+        0xC000_0135 => "a file it loads at its start is missing",
+        0xC000_0022 => "Windows denied access to a file it loads at its start",
+        0xC000_0043 => "a file it loads at its start was in use (being scanned)",
+        0xC000_0906 => "Windows flagged a file it loads at its start as a threat",
+        0xC000_0428 => "Windows rejected the signature of a file it loads at its start",
+        _ => return None,
+    })
+}
+
 /// The game server plugin: loaded only by a game running as a dedicated server.
 #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
 pub const SERVER_MODULE: &str = "pnsradgameserver.dll";
@@ -670,6 +683,23 @@ impl Monitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_the_loader_turning_it_down() {
+        // A player's starts with antivirus taking BugSplat64.dll (beta.4).
+        for code in [
+            0xC000_0135_u32,
+            0xC000_0022,
+            0xC000_0043,
+            0xC000_0906,
+            0xC000_0428,
+        ] {
+            assert!(loader_failure(code as i32).is_some(), "{code:#x}");
+        }
+        for code in [0, 1, 0xC000_0005_u32 as i32, 0xC000_0409_u32 as i32] {
+            assert_eq!(loader_failure(code), None);
+        }
+    }
 
     fn args(s: &str) -> Vec<String> {
         s.split(' ').map(str::to_string).collect()

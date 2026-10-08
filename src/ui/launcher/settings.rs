@@ -209,8 +209,8 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 fn vd_route(via: VdVia) -> (&'static str, &'static str) {
     match via {
         VdVia::Meta => (
-            "Meta's runtime",
-            "Echo VR itself, on Meta's runtime (the Meta Quest Link app), which Virtual Desktop streams",
+            "Oculus mode",
+            "Virtual Desktop's streamer starts Echo VR and gives it the headset, as its Games list does",
         ),
         VdVia::SteamVr => (
             "SteamVR (EchoXR)",

@@ -92,6 +92,28 @@ pub fn nevr_in(bin: &Path) -> bool {
     std::fs::read(bin.join(SLOT)).is_ok_and(|b| find(&b, nevr::MARKER).is_some())
 }
 
+/// Whether the game in `bin` can load what's in its slot (`BugSplat64.dll`, which the game
+/// itself loads at its start: without it, it doesn't start at all).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SlotState {
+    Ok,
+    /// Not there (antivirus took it away, as a rule).
+    Missing,
+    /// There, but it can't be read: blocked (antivirus scanning or holding it), with why.
+    Blocked(String),
+}
+
+/// What the slot of the game in `bin` is like now.
+pub fn slot_state(bin: &Path) -> SlotState {
+    use std::io::Read;
+    let path = bin.join(SLOT);
+    match std::fs::File::open(&path).and_then(|mut f| f.read(&mut [0u8; 1])) {
+        Ok(_) => SlotState::Ok,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => SlotState::Missing,
+        Err(e) => SlotState::Blocked(e.to_string()),
+    }
+}
+
 // ---- plugin entries ----
 
 /// An entry of a `plugins` list: a file name, or an object.
@@ -1392,6 +1414,27 @@ impl ModCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_a_missing_or_blocked_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(slot_state(dir.path()), SlotState::Missing);
+        std::fs::write(dir.path().join(SLOT), "nEVR").unwrap();
+        assert_eq!(slot_state(dir.path()), SlotState::Ok);
+        // One it can't read (as antivirus holds it): blocked.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let p = dir.path().join(SLOT);
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let state = slot_state(dir.path());
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+            // Root reads it anyway.
+            if !matches!(state, SlotState::Ok) {
+                assert!(matches!(state, SlotState::Blocked(_)), "{state:?}");
+            }
+        }
+    }
 
     #[test]
     fn tells_the_loaders_apart() {

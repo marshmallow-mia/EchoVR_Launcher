@@ -222,6 +222,9 @@ enum Msg {
     CacheDeleted(Vec<PathBuf>),
     /// A job needs administrator rights: ask, then answer on the channel.
     Consent(std::sync::mpsc::SyncSender<bool>),
+    /// A version's mod loader went or is blocked right after a job put it in place (its
+    /// id, what happened).
+    SlotGone(String, String),
     FeedStatus(Option<feed::Servers>),
     FeedNews(Option<feed::News>),
     /// A feed image by file name (`None`: it couldn't be loaded).
@@ -554,8 +557,10 @@ pub enum SnapVariant {
     SettingsEchoXr,
     /// Settings with Virtual Desktop chosen, through SteamVR (EchoXR): its routes.
     SettingsVirtualDesktop,
-    /// Play: Virtual Desktop through Meta's runtime couldn't start VR, EchoXR instead?
+    /// Play: Virtual Desktop's Oculus mode couldn't start VR, EchoXR instead?
     DialogVdSwitch,
+    /// Play: Windows blocked the mod loader, allow it?
+    DialogNevrBlocked,
     /// Servers: signed in, the live list (and you in a party queueing).
     ServersLive,
     /// Servers: your match history.
@@ -659,6 +664,8 @@ pub struct Dashboard {
     login_watch: Option<play::LoginWatching>,
     /// The lobby to join once "Launch anyway" is answered.
     pending_lobby: Option<play::Join>,
+    /// The version whose mod loader the "Windows blocked" question is about.
+    nevr_blocked: Option<String>,
     /// PC or Quest, on the Play and the Install page alike.
     platform: Platform,
     quest_conn: QuestConn,
@@ -966,6 +973,33 @@ impl Dashboard {
             return Some(120_000_000_000);
         }
         self.free.get(self.state.library.clone()).flatten()
+    }
+
+    /// Windows: 3 s after a job put version `id`'s files in place, whether its mod loader
+    /// (`BugSplat64.dll`) is still there and readable: antivirus takes it away right after,
+    /// as a rule.
+    fn check_slot_soon(&mut self, ctx: &egui::Context, id: &str) {
+        use crate::core::launcher::mods::{slot_state, SlotState};
+        if !cfg!(windows) || self.demo {
+            return;
+        }
+        let Some(v) = self
+            .state
+            .version(id)
+            .filter(|v| v.publisher_lock.is_none())
+        else {
+            return;
+        };
+        let (id, bin) = (id.to_string(), v.bin_dir());
+        self.worker.spawn(ctx, move |tx| {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let lead = match slot_state(&bin) {
+                SlotState::Ok => return,
+                SlotState::Missing => "BugSplat64.dll, Echo VR's mod loader (nEVR), was removed right after it was put in place.".to_string(),
+                SlotState::Blocked(e) => format!("BugSplat64.dll, Echo VR's mod loader (nEVR), was blocked right after it was put in place ({e})."),
+            };
+            tx.send(Msg::SlotGone(id, lead));
+        });
     }
 
     /// Revive (for SteamVR) is known not to be installed.
@@ -1395,6 +1429,14 @@ impl Dashboard {
                 self.state.profile.vd_via = crate::core::launcher::store::VdVia::SteamVr;
             }
             Some(SnapVariant::DialogVdSwitch) => play::ask_vd_switch(self),
+            Some(SnapVariant::DialogNevrBlocked) => {
+                let id = self.state.versions.first().map(|v| v.id.clone()).unwrap_or_default();
+                play::ask_nevr_blocked(
+                    self,
+                    &id,
+                    "BugSplat64.dll, Echo VR's mod loader (nEVR), was removed right after it was put in place.",
+                );
+            }
             Some(SnapVariant::SettingsEchoXr) => {
                 self.state.profile.runtime = Runtime::Revive;
                 self.state.profile.steamvr_via = SteamVrVia::EchoXr;
@@ -1706,15 +1748,33 @@ impl Dashboard {
             match c.try_wait() {
                 Ok(None) => {}
                 Ok(Some(status)) => {
+                    let code = status.code();
+                    if let Some(c) = code {
+                        tracing::info!("the start PLAY made ended with code {:#x}", c as u32);
+                    }
+                    // Windows' loader turned the game down (EchoXR passes the game's code
+                    // on). Not for Virtual Desktop's streamer, which only hands the game on.
+                    let vd_streamer = self.state.profile.runtime == Runtime::VirtualDesktop
+                        && !self.state.profile.through_echoxr();
+                    let loader = code
+                        .and_then(crate::core::launcher::game::loader_failure)
+                        .filter(|_| !vd_streamer);
                     // EchoXR.exe ended before the game showed up: it says why (later on,
                     // its exit code is Echo's own).
                     let starting = self.launched.is_some_and(|l| !l.seen);
-                    let why = status
-                        .code()
+                    let why = code
                         .and_then(|c| crate::core::echoxr::exit_message_for(c, &self.state.profile))
                         .filter(|_| self.child_echoxr && starting);
                     self.child = None;
-                    if let Some(why) = why {
+                    if let (Some(l), Target::Installed(v)) = (loader, self.target()) {
+                        self.launched = None;
+                        let c = code.unwrap_or_default() as u32;
+                        play::ask_nevr_blocked(
+                            self,
+                            &v.id,
+                            &format!("Echo VR didn't start: {l} (code {c:#x}), as a rule BugSplat64.dll, its mod loader (nEVR)."),
+                        );
+                    } else if let Some(why) = why {
                         self.launched = None;
                         self.dialogs.error(
                             "Echo VR didn't start through EchoXR",
@@ -1931,6 +1991,7 @@ impl Dashboard {
                         }
                     }
                 }
+                Msg::SlotGone(id, lead) => play::ask_nevr_blocked(self, &id, &lead),
                 Msg::LogsUploaded(r) => {
                     self.uploading_logs = false;
                     match r {
@@ -2127,8 +2188,10 @@ impl Dashboard {
                 if self.state.selected.is_none() {
                     self.state.selected = Some(v.id.clone());
                 }
+                let installed = v.id.clone();
                 self.state.upsert(v);
                 self.save();
+                self.check_slot_soon(ctx, &installed);
                 // A new player's patch goes in now, if it is already here.
                 setup::apply_pending(self, ctx);
                 match update_failed {
@@ -2153,6 +2216,7 @@ impl Dashboard {
                 self.updates.check_soon();
                 self.state.upsert(r.version);
                 self.save();
+                self.check_slot_soon(ctx, id);
                 setup::apply_pending(self, ctx);
                 match (r.update_failed, r.repaired.len()) {
                     (Some(why), _) => {
@@ -2179,6 +2243,7 @@ impl Dashboard {
                     crate::core::updates::after_update(v, true);
                     self.save();
                 }
+                self.check_slot_soon(ctx, id);
                 self.updates.check_soon();
                 self.mods.changed();
                 self.update_note.insert(id.to_string(), "Up to date".into());
