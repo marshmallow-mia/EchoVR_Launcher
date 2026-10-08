@@ -50,12 +50,32 @@ pub enum SteamVrVia {
     EchoXr,
 }
 
+/// What the Virtual Desktop choice (`Runtime::VirtualDesktop`) runs Echo VR on, on Windows:
+/// VD's streamer streams Meta's runtime, SteamVR, or its own OpenXR runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum VdVia {
+    /// echovr.exe on Meta's (Oculus) runtime.
+    #[default]
+    Meta,
+    /// EchoXR on SteamVR's OpenXR runtime (VD's SteamVR driver).
+    SteamVr,
+    /// EchoXR on VD's own OpenXR runtime (VDXR): neither SteamVR nor Meta.
+    VdXr,
+}
+
+impl VdVia {
+    pub const ALL: [VdVia; 3] = [VdVia::Meta, VdVia::SteamVr, VdVia::VdXr];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct LaunchProfile {
     pub runtime: Runtime,
     /// SteamVR (`Runtime::Revive`) through Revive or EchoXR.
     pub steamvr_via: SteamVrVia,
+    /// Virtual Desktop (`Runtime::VirtualDesktop`) through Meta's runtime, SteamVR or VD's
+    /// own OpenXR runtime.
+    pub vd_via: VdVia,
     /// Flat mode only: `-spectatorstream`.
     pub spectator: bool,
     /// `-windowed`
@@ -65,15 +85,36 @@ pub struct LaunchProfile {
 }
 
 impl LaunchProfile {
+    /// Whether Windows starts the game through EchoXR.exe: SteamVR through EchoXR, or
+    /// Virtual Desktop through SteamVR or its own OpenXR runtime.
+    pub fn through_echoxr(&self) -> bool {
+        match self.runtime {
+            Runtime::Revive => self.steamvr_via == SteamVrVia::EchoXr,
+            Runtime::VirtualDesktop => self.vd_via != VdVia::Meta,
+            _ => false,
+        }
+    }
+
+    /// EchoXR.exe's own arguments, before the game's: VD's OpenXR runtime is the system's
+    /// (`--runtime active`); otherwise EchoXR picks SteamVR by itself.
+    pub fn echoxr_args(&self) -> Vec<String> {
+        if self.runtime == Runtime::VirtualDesktop && self.vd_via == VdVia::VdXr {
+            vec!["--runtime".into(), "active".into()]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Whether hand tracking (`wanted`: EchoXR Hands is on) plays along with a start
     /// like this: in VR through EchoXR, whose OpenXR session its layer reads the fingers
-    /// in. On Linux that's SteamVR or WiVRn; on Windows, SteamVR through EchoXR.
+    /// in. On Linux that's SteamVR or WiVRn; on Windows, a start through EchoXR.
     pub fn hands(&self, wanted: bool) -> bool {
         let linux = cfg!(target_os = "linux");
         wanted
             && match self.runtime {
-                Runtime::Revive => linux || self.steamvr_via == SteamVrVia::EchoXr,
+                Runtime::Revive => linux || self.through_echoxr(),
                 Runtime::Wivrn => linux,
+                Runtime::VirtualDesktop => !linux && self.through_echoxr(),
                 _ => false,
             }
     }
@@ -542,6 +583,55 @@ mod tests {
         p.runtime = Runtime::Revive;
         p.steamvr_via = SteamVrVia::Revive;
         assert_eq!(p.hands(true), cfg!(target_os = "linux"));
+        // Virtual Desktop through EchoXR (SteamVR or VD's OpenXR): on Windows.
+        p.runtime = Runtime::VirtualDesktop;
+        assert!(!p.hands(true), "through Meta's runtime");
+        for via in [VdVia::SteamVr, VdVia::VdXr] {
+            p.vd_via = via;
+            assert_eq!(p.hands(true), !cfg!(target_os = "linux"));
+        }
+    }
+
+    #[test]
+    fn virtual_desktop_routes() {
+        let mut p = LaunchProfile {
+            runtime: Runtime::VirtualDesktop,
+            ..Default::default()
+        };
+        assert_eq!(p.vd_via, VdVia::Meta);
+        assert!(!p.through_echoxr());
+        assert!(p.echoxr_args().is_empty());
+        p.vd_via = VdVia::SteamVr;
+        assert!(p.through_echoxr());
+        assert!(p.echoxr_args().is_empty(), "SteamVR is EchoXR's own pick");
+        p.vd_via = VdVia::VdXr;
+        assert!(p.through_echoxr());
+        assert_eq!(p.echoxr_args(), ["--runtime", "active"]);
+        // The route only counts for Virtual Desktop.
+        p.runtime = Runtime::MetaLink;
+        assert!(!p.through_echoxr());
+        assert!(p.echoxr_args().is_empty());
+        p.runtime = Runtime::Revive;
+        assert!(!p.through_echoxr());
+        p.steamvr_via = SteamVrVia::EchoXr;
+        assert!(p.through_echoxr());
+
+        // Kept in launcher.json; one from before has Meta.
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        let mut s = LauncherState::default();
+        s.profile.runtime = Runtime::VirtualDesktop;
+        s.profile.vd_via = VdVia::VdXr;
+        s.save_to(&f).unwrap();
+        assert_eq!(LauncherState::load_from(&f).profile.vd_via, VdVia::VdXr);
+        std::fs::write(
+            &f,
+            r#"{"schema":3,"profile":{"runtime":"VirtualDesktop","steamvr_via":"EchoXr"}}"#,
+        )
+        .unwrap();
+        let s = LauncherState::load_from(&f);
+        assert_eq!(s.profile.runtime, Runtime::VirtualDesktop);
+        assert_eq!(s.profile.vd_via, VdVia::Meta);
     }
 
     #[test]

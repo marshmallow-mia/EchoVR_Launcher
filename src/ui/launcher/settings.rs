@@ -5,7 +5,7 @@
 use super::install::{myriad, text_link};
 use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg};
 use crate::core::launcher::relay;
-use crate::core::launcher::store::{Runtime, SteamVrVia};
+use crate::core::launcher::store::{Runtime, SteamVrVia, VdVia};
 use crate::core::launcher::update_check::Channel;
 use crate::core::links::Handler;
 use crate::core::{logs, paths, platform, revive};
@@ -120,6 +120,31 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             d.save();
         }
     }
+    // Virtual Desktop (on Windows): what its streamer runs Echo VR through.
+    if (cfg!(windows) || d.demo) && d.state.profile.runtime == Runtime::VirtualDesktop {
+        let ry = top + dz(TILE_H) + dz(24.0);
+        let cap = kit.caption(x, ry + dz(8.0), "Through");
+        let mut rx = cap.max.x + dz(28.0);
+        for via in VdVia::ALL {
+            let (label, tip) = vd_route(via);
+            let on = d.state.profile.vd_via == via;
+            if kit.radio(
+                &format!("settings-vd-{via:?}"),
+                on,
+                label,
+                rx,
+                ry,
+                true,
+                tip,
+            ) {
+                d.state.profile.vd_via = via;
+                d.save();
+            }
+            let g = kit.label_galley(label, design::din(16.0), design::BODY, f32::INFINITY);
+            rx += 26.0 + g.size().x + dz(44.0);
+        }
+        return;
+    }
     // SteamVR through Revive (on Windows; EchoXR instead is its switch on the Mods
     // page): Revive's own options.
     if cfg!(windows) || d.demo {
@@ -177,6 +202,24 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 setup::steamvr_library(d, ctx, d.state.revive_library);
             }
         }
+    }
+}
+
+/// A Virtual Desktop route's name and what it needs.
+fn vd_route(via: VdVia) -> (&'static str, &'static str) {
+    match via {
+        VdVia::Meta => (
+            "Meta's runtime",
+            "Echo VR itself, on Meta's runtime (the Meta Quest Link app), which Virtual Desktop streams",
+        ),
+        VdVia::SteamVr => (
+            "SteamVR (EchoXR)",
+            "Through EchoXR on SteamVR, which Virtual Desktop streams: SteamVR has to be installed",
+        ),
+        VdVia::VdXr => (
+            "VD's OpenXR (EchoXR)",
+            "Through EchoXR on Virtual Desktop's own OpenXR runtime: neither SteamVR nor Meta's runtime",
+        ),
     }
 }
 

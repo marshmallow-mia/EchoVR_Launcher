@@ -709,7 +709,8 @@ fn update_for(p: &Plugin, c: Option<&ModCatalog>) -> Option<ModEntry> {
 }
 
 /// Which VR parts are installed, so listed with the plugins: EchoXR while it's how VR
-/// plays (always on Linux; on Windows instead of Revive), EchoXR Hands while it's on.
+/// plays (always on Linux; on Windows instead of Revive, or for Virtual Desktop), EchoXR
+/// Hands while it's on.
 fn vr_installed(d: &Dashboard) -> VrInstalled {
     use crate::core::launcher::store::SteamVrVia;
     if !(cfg!(any(windows, target_os = "linux")) || d.demo) {
@@ -717,7 +718,8 @@ fn vr_installed(d: &Dashboard) -> VrInstalled {
     }
     VrInstalled {
         echoxr: (cfg!(target_os = "linux") && !d.demo)
-            || d.state.profile.steamvr_via == SteamVrVia::EchoXr,
+            || d.state.profile.steamvr_via == SteamVrVia::EchoXr
+            || d.state.profile.through_echoxr(),
         // On, and really there (a failed download once marked it on).
         hands: d.state.echoxr_hands && (d.demo || crate::core::echoxr_hands::is_fetched()),
     }
@@ -1159,18 +1161,19 @@ fn plugin_detail(p: &Plugin, author: Option<&str>) -> String {
 
 /// A VR part's row, as a plugin's: its name with tags, what it does under it. It is
 /// listed while it is in use: on Linux EchoXR is how VR plays (always, required); on
-/// Windows SteamVR plays through it instead of Revive, and Remove goes back to Revive (it
-/// is in More mods again).
+/// Windows SteamVR plays through it instead of Revive (and Virtual Desktop through SteamVR
+/// or its own OpenXR runtime), and Remove goes back to Revive and Meta's runtime (it is in
+/// More mods again).
 fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f32, w: f32) {
-    use crate::core::launcher::store::{Runtime, SteamVrVia};
+    use crate::core::launcher::store::{Runtime, SteamVrVia, VdVia};
     let linux = cfg!(target_os = "linux") && !d.demo;
     let name = "EchoXR";
-    let steamvr = d.state.profile.runtime == Runtime::Revive;
+    let in_use = d.state.profile.runtime == Runtime::Revive || d.state.profile.through_echoxr();
     let busy = d.any_job();
     let tip = if linux {
         "Linux plays VR through it: always on"
     } else {
-        "SteamVR plays through it instead of Revive (Remove goes back to Revive)"
+        "SteamVR plays through it instead of Revive, and Virtual Desktop when it runs through SteamVR or its own OpenXR (Remove goes back to Revive and Meta's runtime)"
     };
     let key = |what: &str| format!("mods-vr-{what}-{name}");
     let mut a = Actions::new(x, y, w);
@@ -1178,10 +1181,11 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
         let tip = if busy {
             "Wait until the job is done"
         } else {
-            "SteamVR plays through Revive again (hand tracking, which needs EchoXR, goes too)"
+            "SteamVR plays through Revive again, Virtual Desktop through Meta's runtime (hand tracking, which needs EchoXR, goes too)"
         };
         if a.button(k, &key("remove"), Tone::Dark, None, "Remove", !busy, tip) {
             d.state.profile.steamvr_via = SteamVrVia::Revive;
+            d.state.profile.vd_via = VdVia::Meta;
             let hands_off = d.state.echoxr_hands;
             if hands_off {
                 d.state.echoxr_hands = false;
@@ -1203,7 +1207,8 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     let tags = [
         Some(("VR", design::BLUE)),
         linux.then_some(("Required", design::QUEST_ON)),
-        (!linux && !steamvr).then_some(("Used with SteamVR", design::QUEST_WARN)),
+        (!linux && !in_use)
+            .then_some(("Used with SteamVR and Virtual Desktop", design::QUEST_WARN)),
     ];
     name_tags(k, x, &a, name, tags.into_iter().flatten());
     let g = detail_lines(k, &echoxr_detail(linux), w);
@@ -1221,7 +1226,7 @@ fn echoxr_detail(linux: bool) -> String {
         )
     } else {
         format!(
-            "v{}  ·  by {}  ·  SteamVR without Revive  ·  live build only",
+            "v{}  ·  by {}  ·  SteamVR without Revive, and Virtual Desktop",
             echoxr::VERSION,
             echoxr::AUTHORS
         )

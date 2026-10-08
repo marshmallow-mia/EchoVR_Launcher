@@ -33,8 +33,11 @@ exactly theirs).
    final live build works.
 2. **Headset event.** It holds the `OculusHMDConnected` event.
 3. **Environment.** It points `LIBOVR_DLL_DIR` and `PATH` at `EchoXR\`, and (on Windows)
-   `XR_RUNTIME_JSON` at SteamVR's `steamxr_win64.json`. Under Proton it turns OpenXR on
-   itself (through `wineopenxr`) when Proton didn't, so no OpenVR runtime is needed.
+   `XR_RUNTIME_JSON` at SteamVR's `steamxr_win64.json`. With `--runtime active` it leaves
+   the system's OpenXR runtime instead: the launcher passes that for Virtual Desktop
+   through its own OpenXR runtime (VDXR, which VD's streamer registers as the system's).
+   Virtual Desktop through SteamVR is the default, SteamVR. Under Proton it turns OpenXR
+   on itself (through `wineopenxr`) when Proton didn't, so no OpenVR runtime is needed.
 4. **Start.** It starts the copy as its direct child, passing on every argument it
    doesn't know itself. There's no job object.
 

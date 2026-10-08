@@ -452,6 +452,13 @@ pub fn is_run_log(name: &str) -> bool {
     name.starts_with("nevr-") && name.ends_with(".jsonl") && name != "nevr-boot.jsonl"
 }
 
+/// Pure: whether a start's log (nEVR's, which has the game's own lines) says Meta's runtime
+/// couldn't make the headset's swap chain: the game then stops at "Unknown error while
+/// loading the game" (seen with Virtual Desktop streaming Meta's runtime).
+pub fn swap_chain_failed(log: &str) -> bool {
+    log.contains("Failed to create OVR D3D swap chain")
+}
+
 /// Whether `name` is one of nEVR's crash records.
 pub fn is_crash_log(name: &str) -> bool {
     name.starts_with("nevr-crash-") && name.ends_with(".txt")
@@ -657,6 +664,18 @@ fn failed(rest: &str) -> Option<PluginStatus> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sees_the_swap_chain_fail() {
+        // A Virtual Desktop start through Meta's runtime (a player's log, 0.11.10-beta.2).
+        let log = r#"{"ts":"2026-10-08T18:45:29.598Z","run":"246c-1dd57552f7d65b6","level":"info","msg":"[EVR] Initializing OVR D3D components..."}
+{"ts":"2026-10-08T18:45:29.611Z","run":"246c-1dd57552f7d65b6","level":"error","msg":"[EVR] Failed to create OVR D3D swap chain: "}
+{"ts":"2026-10-08T18:45:29.611Z","run":"246c-1dd57552f7d65b6","level":"info","msg":"[EVR] Unknown error while loading the game."}"#;
+        assert!(swap_chain_failed(log));
+        assert!(!swap_chain_failed(
+            r#"{"level":"info","msg":"[EVR] Successfully initialized OVR session."}"#
+        ));
+    }
 
     #[test]
     fn tells_what_nevr_reads_as_a_variable() {

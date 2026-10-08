@@ -41,15 +41,18 @@ const PLUGIN_FILES: usize = 3;
 const PLUGIN_TOTAL: usize = 8;
 const RECENT: Duration = Duration::from_secs(14 * 24 * 3600);
 
-/// The launcher's own logs, as `core::log` writes and rotates them, and Proton's output
+/// The launcher's own logs (its window's, Linux' PLAY through Steam, the administrator
+/// helper's and the tray's), as `core::log` writes and rotates them, and Proton's output
 /// of the last Linux start.
-const LAUNCHER_LOGS: [&str; 7] = [
+const LAUNCHER_LOGS: [&str; 9] = [
     "EchoVR_Launcher.log",
     "EchoVR_Launcher.log.1",
     "play.log",
     "play.log.1",
     "admin-helper.log",
     "admin-helper.log.1",
+    "tray.log",
+    "tray.log.1",
     "proton.log",
 ];
 
@@ -145,7 +148,9 @@ fn modified(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
-/// The non-empty files in `dir` whose names pass `keep`, newest first.
+/// The non-empty files in `dir` whose names pass `keep`, newest first. Size and time come
+/// from each file itself: on Windows the folder's listing keeps a file's size (0 for a new
+/// one) until it is closed, so a running game's log would look empty.
 pub(crate) fn newest_in(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<(PathBuf, SystemTime)> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -154,8 +159,10 @@ pub(crate) fn newest_in(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<(PathBuf
         .filter_map(Result::ok)
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter(|e| keep(&e.file_name().to_string_lossy()))
-        .filter(|e| e.metadata().is_ok_and(|m| m.len() > 0))
-        .filter_map(|e| Some((e.path(), modified(&e.path())?)))
+        .filter_map(|e| {
+            let m = std::fs::metadata(e.path()).ok()?;
+            (m.len() > 0).then_some((e.path(), m.modified().ok()?))
+        })
         .collect();
     files.sort_by_key(|f| std::cmp::Reverse(f.1));
     files

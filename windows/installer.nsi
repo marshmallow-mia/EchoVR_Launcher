@@ -77,6 +77,10 @@ VIAddVersionKey "LegalCopyright" "GPL-3.0"
 Section "${NAME}" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
+  ; The tray and the launcher, if they run: one started before an update still holds the
+  ; replaced files (<name>.old), and then they couldn't be put in.
+  nsExec::Exec 'taskkill /F /IM "${EXE}"'
+  Sleep 500
   !insertmacro PutFile "${EXE}"
   !insertmacro PutFile "WebView2Loader.dll"
   File "${STAGE}\LICENSE"

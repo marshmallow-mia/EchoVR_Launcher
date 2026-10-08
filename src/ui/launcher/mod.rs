@@ -552,6 +552,10 @@ pub enum SnapVariant {
     SettingsSteamVr,
     /// ...through EchoXR.
     SettingsEchoXr,
+    /// Settings with Virtual Desktop chosen, through SteamVR (EchoXR): its routes.
+    SettingsVirtualDesktop,
+    /// Play: Virtual Desktop through Meta's runtime couldn't start VR, EchoXR instead?
+    DialogVdSwitch,
     /// Servers: signed in, the live list (and you in a party queueing).
     ServersLive,
     /// Servers: your match history.
@@ -974,16 +978,16 @@ impl Dashboard {
         self.demo || self.echoxr.get(()).is_some_and(|ready| !ready)
     }
 
-    /// SteamVR is the choice, on Windows, and isn't set up the way it runs yet (Revive's
-    /// injector, or EchoXR).
+    /// On Windows, what the choice runs through isn't set up yet: EchoXR (SteamVR or Virtual
+    /// Desktop through it) or Revive's injector (SteamVR).
     fn steamvr_missing(&mut self) -> bool {
-        if self.state.profile.runtime != Runtime::Revive || !(cfg!(windows) || self.demo) {
+        if !(cfg!(windows) || self.demo) {
             return false;
         }
-        match self.state.profile.steamvr_via {
-            SteamVrVia::Revive => self.revive_missing(),
-            SteamVrVia::EchoXr => self.echoxr_missing(),
+        if self.state.profile.through_echoxr() {
+            return self.echoxr_missing();
         }
+        self.state.profile.runtime == Runtime::Revive && self.revive_missing()
     }
 
     /// Echo VR copies on this PC the library doesn't have yet (looked for on a worker,
@@ -1034,6 +1038,7 @@ impl Dashboard {
             return;
         };
         let v = r.version.clone();
+        let tray = self.state.tray && !self.demo;
         self.start_job(
             ctx,
             JobKind::LauncherUpdate,
@@ -1042,10 +1047,16 @@ impl Dashboard {
             "Downloading...",
             move |cancel, on| match crate::core::launcher::self_update::install(&v, cancel, on) {
                 Ok(exe) => JobResult::LauncherUpdated(exe),
-                Err(e) => versions::job_err(
-                    e.context("You can also download it yourself: github.com/marshmallow-mia/EchoVR_Launcher/releases"),
-                    "Launcher Update Failed",
-                ),
+                Err(e) => {
+                    // The update ended the tray before it replaced the files: it's back.
+                    if tray {
+                        crate::core::tray::start();
+                    }
+                    versions::job_err(
+                        e.context("You can also download it yourself: github.com/marshmallow-mia/EchoVR_Launcher/releases"),
+                        "Launcher Update Failed",
+                    )
+                }
             },
         );
     }
@@ -1379,6 +1390,11 @@ impl Dashboard {
                 ctx.data_mut(|d| d.insert_temp(id, true));
             }
             Some(SnapVariant::SettingsSteamVr) => self.state.profile.runtime = Runtime::Revive,
+            Some(SnapVariant::SettingsVirtualDesktop) => {
+                self.state.profile.runtime = Runtime::VirtualDesktop;
+                self.state.profile.vd_via = crate::core::launcher::store::VdVia::SteamVr;
+            }
+            Some(SnapVariant::DialogVdSwitch) => play::ask_vd_switch(self),
             Some(SnapVariant::SettingsEchoXr) => {
                 self.state.profile.runtime = Runtime::Revive;
                 self.state.profile.steamvr_via = SteamVrVia::EchoXr;
@@ -1695,7 +1711,7 @@ impl Dashboard {
                     let starting = self.launched.is_some_and(|l| !l.seen);
                     let why = status
                         .code()
-                        .and_then(crate::core::echoxr::exit_message)
+                        .and_then(|c| crate::core::echoxr::exit_message_for(c, &self.state.profile))
                         .filter(|_| self.child_echoxr && starting);
                     self.child = None;
                     if let Some(why) = why {
@@ -1904,7 +1920,8 @@ impl Dashboard {
                             }
                             // The wait for the game starts now that Steam has the link.
                             self.launched = Some(Launched::now());
-                            self.login_watch = Some(play::LoginWatching::new(&root));
+                            self.login_watch =
+                                Some(play::LoginWatching::new(&root, &self.state.profile));
                         }
                         Ok(false) => self.launched = None,
                         Err(e) => {
@@ -2275,7 +2292,11 @@ impl Dashboard {
             JobResult::EchoXrReady => {
                 self.echoxr = Probe::default();
                 if !play_after {
-                    self.notify("SteamVR through EchoXR is ready: PLAY starts Echo VR through it");
+                    self.notify(if self.state.profile.runtime == Runtime::VirtualDesktop {
+                        "EchoXR is ready: PLAY starts Echo VR through it on Virtual Desktop"
+                    } else {
+                        "SteamVR through EchoXR is ready: PLAY starts Echo VR through it"
+                    });
                 }
             }
             JobResult::LinuxReady(appid) => {
@@ -2817,6 +2838,8 @@ impl Dashboard {
                 let needs_steamvr = self.steamvr_missing();
                 if setup::needs_patch(self, &v) {
                     ("PCVR: needs the patch", design::QUEST_WARN)
+                } else if needs_steamvr && self.state.profile.runtime == Runtime::VirtualDesktop {
+                    ("PCVR: set up EchoXR", design::QUEST_WARN)
                 } else if needs_steamvr {
                     ("PCVR: set up SteamVR", design::QUEST_WARN)
                 } else {

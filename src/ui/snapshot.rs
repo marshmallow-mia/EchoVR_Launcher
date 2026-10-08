@@ -185,6 +185,13 @@ pub fn shots() -> Vec<Shot> {
             SnapVariant::SettingsEchoXr,
         ),
         ("mods_echoxr", Page::Mods, SnapVariant::SettingsEchoXr),
+        (
+            "settings_vd",
+            Page::Settings,
+            SnapVariant::SettingsVirtualDesktop,
+        ),
+        ("mods_vd", Page::Mods, SnapVariant::SettingsVirtualDesktop),
+        ("play_vd_switch", Page::Play, SnapVariant::DialogVdSwitch),
         ("mods_locked", Page::Mods, SnapVariant::ModsLocked),
         ("mods_hands", Page::Mods, SnapVariant::ModsHands),
         ("mods_settings", Page::Mods, SnapVariant::ModsSettings),

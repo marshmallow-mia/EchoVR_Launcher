@@ -36,13 +36,29 @@ fn role(args: &[OsString]) -> Role {
     }
 }
 
-/// The other processes of this executable run by this user, with their roles.
+/// Pure: an executable's file name without what an update renamed it to (`<name>.old`,
+/// `<name>.<n>.old`): a tray started before an update runs from that name.
+fn base_name(name: &str) -> &str {
+    let Some(rest) = name.strip_suffix(".old") else {
+        return name;
+    };
+    match rest.rsplit_once('.') {
+        Some((base, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => rest,
+    }
+}
+
+/// The other processes of this executable run by this user (also from its name before an
+/// update), with their roles.
 fn others() -> Vec<(sysinfo::Pid, Role)> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let Ok(me) = std::env::current_exe() else {
         return Vec::new();
     };
-    let Some(name) = me.file_name().map(|n| n.to_os_string()) else {
+    let Some(name) = me
+        .file_name()
+        .map(|n| base_name(&n.to_string_lossy()).to_string())
+    else {
         return Vec::new();
     };
     let mut sys = System::new();
@@ -59,8 +75,8 @@ fn others() -> Vec<(sysinfo::Pid, Role)> {
     // By the executable's own file name: the process name is cut to 15 characters on
     // Linux (a renamed copy, "EchoVR_Launcher (1)", wouldn't match itself).
     let same = |p: &sysinfo::Process| match p.exe().and_then(|e| e.file_name()) {
-        Some(n) => n == name,
-        None => p.name() == name,
+        Some(n) => base_name(&n.to_string_lossy()) == name,
+        None => base_name(&p.name().to_string_lossy()) == name,
     };
     sys.processes()
         .values()
@@ -282,6 +298,18 @@ mod tests {
             role(&args(&[crate::core::elevation::HELPER_FLAG, "x"])),
             Role::Other
         );
+    }
+
+    #[test]
+    fn knows_itself_after_an_update() {
+        assert_eq!(base_name("EchoVR_Launcher.exe"), "EchoVR_Launcher.exe");
+        assert_eq!(base_name("EchoVR_Launcher.exe.old"), "EchoVR_Launcher.exe");
+        assert_eq!(
+            base_name("EchoVR_Launcher.exe.2.old"),
+            "EchoVR_Launcher.exe"
+        );
+        assert_eq!(base_name("EchoVR_Launcher.old"), "EchoVR_Launcher");
+        assert_eq!(base_name("EchoVR_Launcher"), "EchoVR_Launcher");
     }
 
     #[test]

@@ -500,20 +500,28 @@ pub(super) fn event_build(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledV
     );
 }
 
-/// Sets up SteamVR through EchoXR (Windows): EchoXR and, without the Meta app, Meta's
-/// Platform SDK loader; then EchoXR into the selected version's folder (asking for
-/// administrator rights for the Meta library's).
+/// Sets up EchoXR on Windows (for SteamVR, or Virtual Desktop through it): EchoXR, then
+/// EchoXR into the selected version's folder (asking for administrator rights for the Meta
+/// library's).
 pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
     let mut consent = consent_asker(d.worker.tx(ctx));
     let bin = match d.target() {
         Target::Installed(v) => Some(v.bin_dir()),
         _ => None,
     };
+    let (title, failed) = if d.state.profile.runtime == Runtime::VirtualDesktop {
+        (
+            "Preparing EchoXR for Virtual Desktop",
+            "EchoXR Setup Failed",
+        )
+    } else {
+        ("Preparing SteamVR (EchoXR)", "SteamVR Setup Failed")
+    };
     d.start_job(
         ctx,
         JobKind::Revive,
         ECHOXR_JOB,
-        "Preparing SteamVR (EchoXR)",
+        title,
         "Downloading EchoXR...",
         move |cancel, on| {
             let r = echoxr::fetch(cancel, on).and_then(|()| match &bin {
@@ -527,7 +535,7 @@ pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
             });
             match r {
                 Ok(()) => JobResult::EchoXrReady,
-                Err(e) => job_err(e, "SteamVR Setup Failed"),
+                Err(e) => job_err(e, failed),
             }
         },
     );
@@ -611,14 +619,22 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         Some(_) => format!("Echo VR {}", v.name),
         None => "Echo VR".to_string(),
     };
-    let echoxr = d.state.profile.runtime == Runtime::Revive
-        && d.state.profile.steamvr_via == SteamVrVia::EchoXr;
+    let echoxr = d.state.profile.through_echoxr();
+    // EchoXR's own arguments (Virtual Desktop's OpenXR runtime) before the game's.
+    let xr_args = {
+        let mut a = d.state.profile.echoxr_args();
+        if v.publisher_lock.is_none() {
+            a.extend(launch::game_args(&d.state.profile, None));
+        }
+        launch::join_args(&a)
+    };
     let result = match (d.state.profile.runtime, revive) {
-        // EchoXR.exe beside the game starts it on SteamVR, with the game's icon.
+        // EchoXR.exe beside the game starts it on SteamVR (or Virtual Desktop's runtime),
+        // with the game's icon.
         _ if echoxr => platform::create_shortcut(
             &name,
             &v.bin_dir().join(echoxr::LAUNCHER),
-            (!args.is_empty()).then_some(args.as_str()),
+            (!xr_args.is_empty()).then_some(xr_args.as_str()),
             Some(&v.bin_dir()),
             Some(&exe),
         ),
@@ -850,7 +866,9 @@ pub(super) const NEW_NOTE: &str =
 pub(super) fn runtime_note(r: Runtime) -> &'static str {
     match r {
         Runtime::MetaLink => "Quest over Link or Air Link, or a Rift, with the Meta Quest app.",
-        Runtime::VirtualDesktop => "Quest over Virtual Desktop; start its streamer first.",
+        Runtime::VirtualDesktop => {
+            "Quest over Virtual Desktop, on Meta's runtime, SteamVR or VD's own OpenXR."
+        }
         // On Linux every headset plays through EchoXR on its OpenXR runtime.
         Runtime::Revive if cfg!(target_os = "linux") => {
             "Any SteamVR headset, through EchoXR. PLAY starts SteamVR."

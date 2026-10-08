@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Result};
 
-use super::store::{LaunchProfile, Runtime, SteamVrVia};
+use super::store::{LaunchProfile, Runtime};
 use crate::core::{echoxr, revive};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,6 +104,19 @@ pub fn build(
 ) -> Result<Command> {
     let cwd = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     let args = game_args(profile, lobby);
+    // EchoXR.exe beside the game starts it (as its copy, echovr_openxr.exe) on an OpenXR
+    // runtime: SteamVR's (SteamVR, or Virtual Desktop's SteamVR driver), or Virtual
+    // Desktop's own. Its arguments first; the game gets the rest.
+    if profile.through_echoxr() {
+        let mut a = profile.echoxr_args();
+        a.extend(args);
+        return Ok(Command {
+            program: cwd.join(echoxr::LAUNCHER),
+            args: a,
+            cwd,
+            env: Vec::new(),
+        });
+    }
     match profile.runtime {
         // WiVRn is Linux's, which starts through Steam (`core::linux`), not here.
         Runtime::MetaLink | Runtime::VirtualDesktop | Runtime::Wivrn | Runtime::Flat => {
@@ -114,14 +127,6 @@ pub fn build(
                 env: Vec::new(),
             })
         }
-        // EchoXR.exe beside the game starts it (as its copy, echovr_openxr.exe) on
-        // SteamVR's OpenXR runtime, with the game's arguments.
-        Runtime::Revive if profile.steamvr_via == SteamVrVia::EchoXr => Ok(Command {
-            program: cwd.join(echoxr::LAUNCHER),
-            args,
-            cwd,
-            env: Vec::new(),
-        }),
         Runtime::Revive => {
             let Some(dir) = revive_dir else {
                 bail!("Revive is not installed. Set up SteamVR from the PLAY button first.");
@@ -156,10 +161,12 @@ pub fn build_relay(
     let bare = LaunchProfile {
         runtime,
         steamvr_via: profile.steamvr_via,
+        vd_via: profile.vd_via,
         ..Default::default()
     };
     let mut c = build(&bare, exe, revive_dir, None)?;
-    if runtime != Runtime::Revive {
+    // Revive's injector starts from Revive's folder, EchoXR.exe from the bin folder.
+    if runtime != Runtime::Revive && !bare.through_echoxr() {
         // bin/win7/<exe> -> the game folder.
         if let Some(game) = exe.ancestors().nth(3) {
             c.cwd = game.to_path_buf();
@@ -203,6 +210,7 @@ pub fn spawn(cmd: &Command) -> Result<std::process::Child> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::launcher::store::{SteamVrVia, VdVia};
 
     const LOBBY: &str = "0f5c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b";
 
@@ -283,6 +291,40 @@ mod tests {
         // In VR, Windowed left on doesn't start it flat (nEVR: -windowed = no headset).
         p.runtime = Runtime::VirtualDesktop;
         assert_eq!(build(&p, exe, None, None).unwrap().args, ["-foo"]);
+
+        // Virtual Desktop: through Meta's runtime the game itself; through SteamVR or VD's
+        // OpenXR runtime, EchoXR.exe (told to take the system's runtime for VD's own).
+        let bin = Path::new("C:/E/ready-at-dawn-echo-arena/bin/win10");
+        let vd = |via| LaunchProfile {
+            runtime: Runtime::VirtualDesktop,
+            vd_via: via,
+            extra_args: "-foo".into(),
+            ..Default::default()
+        };
+        let c = build(&vd(VdVia::Meta), exe, None, Some(LOBBY)).unwrap();
+        assert_eq!(c.program, exe);
+        assert_eq!(c.args, ["-lobbyid", LOBBY, "-foo"]);
+        let c = build(&vd(VdVia::SteamVr), exe, None, Some(LOBBY)).unwrap();
+        assert_eq!(c.program, bin.join(echoxr::LAUNCHER));
+        assert_eq!(c.args, ["-lobbyid", LOBBY, "-foo"]);
+        assert_eq!(c.cwd, bin);
+        let c = build(&vd(VdVia::VdXr), exe, None, Some(LOBBY)).unwrap();
+        assert_eq!(c.program, bin.join(echoxr::LAUNCHER));
+        assert_eq!(c.args, ["--runtime", "active", "-lobbyid", LOBBY, "-foo"]);
+        // Event builds: EchoXR.exe from the bin folder, only its own arguments; through
+        // Meta's runtime the game from its game folder.
+        let win7 = Path::new("C:/E/ready-at-dawn-echo-arena/bin/win7");
+        let c = build_relay(&vd(VdVia::SteamVr), old, None).unwrap();
+        assert_eq!(c.program, win7.join(echoxr::LAUNCHER));
+        assert!(c.args.is_empty());
+        assert_eq!(c.cwd, win7);
+        let c = build_relay(&vd(VdVia::VdXr), old, None).unwrap();
+        assert_eq!(c.args, ["--runtime", "active"]);
+        assert_eq!(c.cwd, win7);
+        let c = build_relay(&vd(VdVia::Meta), old, None).unwrap();
+        assert_eq!(c.program, old);
+        assert!(c.args.is_empty());
+        assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena"));
 
         // SteamVR through EchoXR: EchoXR.exe beside the game, the game's arguments, no
         // Revive needed; event builds can't.

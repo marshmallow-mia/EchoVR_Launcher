@@ -14,11 +14,13 @@ use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
 use crate::core::launcher::feed::NewsItem;
 use crate::core::launcher::login_watch::LoginWatch;
-use crate::core::launcher::store::{InstalledVersion, Runtime, SteamVrVia, Target};
+use crate::core::launcher::store::{
+    InstalledVersion, LaunchProfile, Runtime, SteamVrVia, Target, VdVia,
+};
 use crate::core::launcher::{launch, quest, relay};
 use crate::core::revive;
 use crate::ui::design::{self, dz, Dr};
-use crate::ui::dialogs::Icon as DlgIcon;
+use crate::ui::dialogs::{Answer, Icon as DlgIcon};
 use crate::ui::kit::Kit;
 use crate::ui::markdown::{self, Look};
 use crate::ui::style::{self, Icon};
@@ -28,6 +30,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
+/// Virtual Desktop through Meta's runtime failed: through EchoXR instead?
+const VD_SWITCH: &str = "vd-switch";
 /// PLAY on Linux would add Echo VR to Steam (Steam restarts): asked once.
 const PREPARE_LINUX: &str = "prepare-linux";
 
@@ -75,6 +79,21 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             let lobby = d.pending_lobby.take();
             if answer.is_yes() {
                 start(d, ctx, lobby);
+            }
+        }
+        if let Some(Answer::Button(i)) = d.dialogs.take(VD_SWITCH) {
+            let via = match i {
+                0 => Some(VdVia::SteamVr),
+                1 => Some(VdVia::VdXr),
+                _ => None,
+            };
+            if let Some(via) = via {
+                d.state.profile.vd_via = via;
+                d.save();
+                d.notify(match via {
+                    VdVia::SteamVr => "Virtual Desktop plays through SteamVR (EchoXR) now: PLAY again",
+                    _ => "Virtual Desktop plays through its own OpenXR runtime (EchoXR) now: PLAY again",
+                });
             }
         }
     }
@@ -266,8 +285,8 @@ fn pc_action(d: &mut Dashboard) -> Action {
         .or_else(|| hero::job_view(d, setup::LINUX_JOB));
     let mut a = Action::new();
     let needs_steamvr = d.steamvr_missing();
-    let echoxr = d.state.profile.runtime == Runtime::Revive
-        && d.state.profile.steamvr_via == SteamVrVia::EchoXr;
+    let echoxr = d.state.profile.through_echoxr();
+    let vd = d.state.profile.runtime == Runtime::VirtualDesktop;
     let local = d.local();
     // Echo VR clients: the launcher's own game, or one started elsewhere. Servers on this
     // PC don't count (they never block PLAY).
@@ -288,6 +307,8 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 "Starting"
             } else if setup::needs_patch(d, &v) {
                 "Needs the licence patch"
+            } else if needs_steamvr && vd {
+                "EchoXR is not set up"
             } else if needs_steamvr {
                 "SteamVR is not set up"
             } else if event {
@@ -330,7 +351,12 @@ fn pc_action(d: &mut Dashboard) -> Action {
             } else if needs_steamvr && echoxr {
                 a.main = Main::PrepareEchoXr;
                 a.enabled = !d.any_job();
-                a.tip = "Start Echo VR on SteamVR: EchoXR's OpenXR runtime goes into the game's folder first".into();
+                a.tip = if vd {
+                    "Start Echo VR through Virtual Desktop: EchoXR's OpenXR runtime goes into the game's folder first"
+                } else {
+                    "Start Echo VR on SteamVR: EchoXR's OpenXR runtime goes into the game's folder first"
+                }
+                .into();
             } else if needs_steamvr {
                 a.main = Main::PrepareRevive;
                 a.enabled = !d.any_job();
@@ -1312,13 +1338,10 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         (Runtime::Revive, SteamVrVia::Revive) => revive::find_revive_dir(),
         _ => None,
     };
-    // SteamVR through EchoXR: EchoXR into the game's folder and its copy of the game
-    // current. Where that needs administrator rights (the Meta library's), PLAY's preparation
-    // does it.
-    if cfg!(windows)
-        && d.state.profile.runtime == Runtime::Revive
-        && d.state.profile.steamvr_via == SteamVrVia::EchoXr
-    {
+    // Through EchoXR (SteamVR, or Virtual Desktop's SteamVR or OpenXR): EchoXR into the
+    // game's folder and its copy of the game current. Where that needs administrator rights
+    // (the Meta library's), PLAY's preparation does it.
+    if cfg!(windows) && d.state.profile.through_echoxr() {
         let bin = v.bin_dir();
         if let Err(e) = crate::core::echoxr::prepare(&bin) {
             if revive::needs_elevation(&e) {
@@ -1352,8 +1375,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     };
     // EchoXR Hands: its OpenXR layer in the game's loader, when the live build plays
     // through EchoXR.
-    let through_echoxr =
-        profile.runtime == Runtime::Revive && profile.steamvr_via == SteamVrVia::EchoXr;
+    let through_echoxr = profile.through_echoxr();
     let hands = through_echoxr && v.publisher_lock.is_none() && profile.hands(d.state.echoxr_hands);
     let command = command.map(|mut c| {
         if hands {
@@ -1373,7 +1395,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             d.child = Some(child);
             d.child_echoxr = through_echoxr;
             d.launched = Some(super::Launched::now());
-            d.login_watch = Some(LoginWatching::new(&v.root));
+            d.login_watch = Some(LoginWatching::new(&v.root, &profile));
             if d.state.minimize_on_launch {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }
@@ -1396,16 +1418,20 @@ pub(super) struct LoginWatching {
     watch: LoginWatch,
     at: std::time::Instant,
     since: std::time::Instant,
+    /// Virtual Desktop through Meta's runtime: its start is watched for the swap chain
+    /// Meta's runtime couldn't make.
+    vd_meta: bool,
 }
 
 impl LoginWatching {
-    pub fn new(root: &str) -> LoginWatching {
+    pub fn new(root: &str, profile: &LaunchProfile) -> LoginWatching {
         // A little slack: the game may open its log in the same second PLAY ran.
         let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
         LoginWatching {
             watch: LoginWatch::new(root, since, crate::core::launcher::nevr::log_dir()),
             at: std::time::Instant::now(),
             since: std::time::Instant::now(),
+            vd_meta: profile.runtime == Runtime::VirtualDesktop && profile.vd_via == VdVia::Meta,
         }
     }
 }
@@ -1429,6 +1455,19 @@ pub(super) fn watch_login(d: &mut Dashboard, ctx: &egui::Context) {
         return;
     }
     w.at = std::time::Instant::now();
+    // Virtual Desktop through Meta's runtime, which couldn't make the headset's swap chain:
+    // the game stops at "Unknown error"; offer EchoXR instead.
+    if w.vd_meta && starting && w.watch.swap_chain_failed() {
+        tracing::info!(
+            "Meta's runtime couldn't make the headset's swap chain (Virtual Desktop): closing the game"
+        );
+        d.login_watch = None;
+        stop(d);
+        ask_vd_switch(d);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        return;
+    }
     let Some(notice) = w.watch.poll().into_iter().next() else {
         return;
     };
@@ -1445,6 +1484,18 @@ pub(super) fn watch_login(d: &mut Dashboard, ctx: &egui::Context) {
     d.overlay = Some(setup::Overlay::LoginNotice(notice));
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
+/// Virtual Desktop through Meta's runtime couldn't start VR: through EchoXR instead
+/// (answered in `show`)?
+pub(super) fn ask_vd_switch(d: &mut Dashboard) {
+    d.dialogs.options(
+        VD_SWITCH,
+        "Virtual Desktop couldn't start VR",
+        "Meta's runtime couldn't give Echo VR the headset's picture (\"Failed to create OVR D3D swap chain\"), so the game stopped and was closed.\n\nPlay through EchoXR instead? SteamVR (EchoXR) needs SteamVR installed; VD's OpenXR (EchoXR) needs neither SteamVR nor Meta's runtime. Settings has this choice under Virtual Desktop.",
+        DlgIcon::Warning,
+        &["SteamVR (EchoXR)", "VD's OpenXR (EchoXR)", "Keep Meta's runtime"],
+    );
 }
 
 /// The card for a login EchoVRCE turned down: the code to pick in its Discord DM, or its

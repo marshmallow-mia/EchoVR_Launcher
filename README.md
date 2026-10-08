@@ -61,8 +61,23 @@ public matches of the event builds and joins a friend's match by its id.
 The SteamVR choice runs Echo VR through [Revive](https://github.com/LibreVR/Revive)
 (installed by the launcher) or, with **EchoXR** installed on the Mods page, through
 [EchoXR](https://github.com/marshmallow-mia/EchoXR)'s OpenXR layer in the game's folder: no
-injection and no administrator rights (the Meta library's copy excepted). EchoXR runs
-only the live build. See [docs/launcher/echoxr.md](docs/launcher/echoxr.md).
+injection and no administrator rights (the Meta library's copy excepted). See
+[docs/launcher/echoxr.md](docs/launcher/echoxr.md).
+
+## Virtual Desktop on Windows
+
+Virtual Desktop streams whichever runtime runs Echo VR. With Virtual Desktop chosen,
+Settings picks which one (**Through**):
+
+- **Meta's runtime**: Echo VR itself on Meta's runtime (the Meta Quest Link app installed).
+- **SteamVR (EchoXR)**: through EchoXR on SteamVR, which Virtual Desktop's SteamVR driver
+  streams (SteamVR installed).
+- **VD's OpenXR (EchoXR)**: through EchoXR on Virtual Desktop's own OpenXR runtime
+  (`EchoXR.exe --runtime active`): neither SteamVR nor Meta's runtime.
+
+PLAY sets EchoXR up the first time it's needed. When a start through Meta's runtime stops
+at "Failed to create OVR D3D swap chain" (Meta's runtime couldn't give the game the
+headset's picture), the launcher closes the game and offers the EchoXR routes instead.
 
 ## Hand tracking
 

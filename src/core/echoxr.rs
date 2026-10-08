@@ -2,7 +2,9 @@
 //! `bin/win10` starts the game as `echovr_openxr.exe` (its patched copy of `echovr.exe`,
 //! made when missing) with `EchoXR\LibOVRRT64_1.dll` answering Echo's LibOVR calls over
 //! OpenXR: no Meta services, sign-in or store, and no injection. On Windows it plays on
-//! SteamVR (the SteamVR choice "through EchoXR"); on Linux through GE-Proton (`linux`).
+//! SteamVR (the SteamVR choice "through EchoXR", and Virtual Desktop through SteamVR) or on
+//! Virtual Desktop's own OpenXR runtime (`--runtime active`); on Linux through GE-Proton
+//! (`linux`).
 //!
 //! The game's `pnsovr.dll` signs in through Oculus' Platform SDK (`LibOVRPlatform64_1.dll`).
 //! Nothing of Meta's: EchoXR brings its own in `EchoXR\` (marshmallow-mia's stand-in: a
@@ -17,6 +19,7 @@ use std::sync::atomic::AtomicBool;
 use anyhow::{bail, Context, Result};
 
 use crate::core::download::{self, Progress};
+use crate::core::launcher::store::{LaunchProfile, Runtime, VdVia};
 use crate::core::launcher::versions::Step;
 use crate::core::paths;
 
@@ -87,6 +90,18 @@ pub fn exit_message(code: i32) -> Option<&'static str> {
         6 => "The OpenXR runtime has no headset: connect it and wake it up, then try again.",
         7 => "Echo VR couldn't be started (see EchoXR\\launcher.log in the game's bin\\win10 folder).",
         _ => return None,
+    })
+}
+
+/// Pure: [`exit_message`] for a start with `profile`: through Virtual Desktop, what to
+/// start and connect is VD's.
+pub fn exit_message_for(code: i32, profile: &LaunchProfile) -> Option<&'static str> {
+    let vd = profile.runtime == Runtime::VirtualDesktop;
+    Some(match (code, profile.vd_via) {
+        (5, VdVia::VdXr) if vd => "Virtual Desktop's OpenXR runtime didn't answer: start its streamer and connect from your headset first.",
+        (5, _) if vd => "SteamVR didn't answer: connect from your headset in Virtual Desktop, start SteamVR, then try again.",
+        (6, _) if vd => "Virtual Desktop has no headset yet: connect from your headset, then try again.",
+        _ => return exit_message(code),
     })
 }
 
@@ -343,6 +358,22 @@ mod tests {
         for code in [0, 1, 8, -1, 0xC000_0005_u32 as i32] {
             assert_eq!(exit_message(code), None);
         }
+        // Through Virtual Desktop, what to start is VD's.
+        let mut p = LaunchProfile {
+            runtime: Runtime::Revive,
+            ..Default::default()
+        };
+        assert_eq!(exit_message_for(5, &p), exit_message(5));
+        p.runtime = Runtime::VirtualDesktop;
+        p.vd_via = VdVia::VdXr;
+        assert!(exit_message_for(5, &p)
+            .unwrap()
+            .contains("Virtual Desktop's OpenXR"));
+        p.vd_via = VdVia::SteamVr;
+        assert!(exit_message_for(5, &p).unwrap().contains("SteamVR"));
+        assert!(exit_message_for(6, &p).unwrap().contains("Virtual Desktop"));
+        assert_eq!(exit_message_for(4, &p), exit_message(4));
+        assert_eq!(exit_message_for(1, &p), None);
     }
 
     #[test]

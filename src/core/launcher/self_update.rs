@@ -97,6 +97,9 @@ pub fn install(v: &str, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result
             if !staging.join(file).is_file() {
                 bail!("The update has no {}", file.to_string_lossy());
             }
+            // The tray runs from these files: it goes first, while it still has their
+            // names (after the update the window starts it again).
+            crate::core::tray::quit();
             replace(&dir, &staging)?;
             executable_bit(&exe)
         });
@@ -215,8 +218,7 @@ fn replace(dir: &Path, staging: &Path) -> Result<()> {
                 if let Ok(meta) = std::fs::metadata(&target) {
                     let _ = std::fs::set_permissions(&from, meta.permissions());
                 }
-                let old = old_name(&target);
-                let _ = std::fs::remove_file(&old);
+                let old = aside_name(&target);
                 std::fs::rename(&target, &old)
                     .with_context(|| format!("move {} aside", target.display()))?;
                 Some(old)
@@ -266,6 +268,25 @@ fn old_name(file: &Path) -> PathBuf {
     file.with_file_name(name)
 }
 
+/// Where `file` goes aside: `<file>.old`, or when an older one is still there and can't go
+/// (a process started from it still runs: a tray from before the last update), the first
+/// free `<file>.<n>.old`. Every one ends in `.old`, so the next start removes it.
+fn aside_name(file: &Path) -> PathBuf {
+    let free = |p: &Path| {
+        let _ = std::fs::remove_file(p);
+        !p.exists()
+    };
+    let first = old_name(file);
+    if free(&first) {
+        return first;
+    }
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    (1..=9)
+        .map(|n| file.with_file_name(format!("{name}.{n}{OLD}")))
+        .find(|p| free(p))
+        .unwrap_or(first)
+}
+
 /// At a start: removes what an update left beside the executable (the replaced files, an
 /// unpacking that didn't finish).
 pub fn clean_up() {
@@ -277,11 +298,36 @@ pub fn clean_up() {
     if collect(&dir, Path::new(""), &mut old).is_err() {
         return;
     }
-    for rel in old.iter().filter(|r| r.to_string_lossy().ends_with(OLD)) {
-        match std::fs::remove_file(dir.join(rel)) {
-            Ok(()) => tracing::info!("removed {} (replaced by an update)", rel.display()),
-            Err(e) => tracing::info!("{} stays for now: {e}", rel.display()),
+    old.retain(|r| r.to_string_lossy().ends_with(OLD));
+    let remove = |old: &mut Vec<PathBuf>, last: bool| {
+        old.retain(|rel| match std::fs::remove_file(dir.join(rel)) {
+            Ok(()) => {
+                tracing::info!("removed {} (replaced by an update)", rel.display());
+                false
+            }
+            Err(e) => {
+                if last {
+                    tracing::info!("{} stays for now: {e}", rel.display());
+                }
+                true
+            }
+        });
+    };
+    remove(&mut old, false);
+    if old.is_empty() {
+        return;
+    }
+    // Still in use: most likely by a tray started before the update, running from the old
+    // executable. It goes (the window starts a new one), then they can.
+    crate::core::tray::quit();
+    let start = Instant::now();
+    loop {
+        let last = start.elapsed() >= Duration::from_secs(2);
+        remove(&mut old, last);
+        if old.is_empty() || last {
+            return;
         }
+        std::thread::sleep(Duration::from_millis(200));
     }
 }
 
@@ -372,6 +418,37 @@ mod tests {
         assert!(exe.is_file());
         // The renamed one is still in use: it goes at the next start (here: when it can).
         let _ = std::fs::remove_file(&old);
+    }
+
+    #[test]
+    fn an_old_one_that_cant_go_doesnt_block_the_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, staging) = (dir.path().join("app"), dir.path().join("stage"));
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("EchoVR_Launcher.exe"), "0.11.9").unwrap();
+        std::fs::write(staging.join("EchoVR_Launcher.exe"), "beta.3").unwrap();
+        // The last update's .old can't be removed (as one a running tray holds): here a
+        // folder in its place.
+        std::fs::create_dir_all(app.join("EchoVR_Launcher.exe.old/held")).unwrap();
+        replace(&app, &staging).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(app.join("EchoVR_Launcher.exe")).unwrap(),
+            "beta.3"
+        );
+        assert_eq!(
+            std::fs::read_to_string(app.join("EchoVR_Launcher.exe.1.old")).unwrap(),
+            "0.11.9"
+        );
+        // And with that one held too, the next number.
+        std::fs::write(staging.join("EchoVR_Launcher.exe"), "beta.4").unwrap();
+        std::fs::remove_file(app.join("EchoVR_Launcher.exe.1.old")).unwrap();
+        std::fs::create_dir_all(app.join("EchoVR_Launcher.exe.1.old/held")).unwrap();
+        replace(&app, &staging).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(app.join("EchoVR_Launcher.exe.2.old")).unwrap(),
+            "beta.3"
+        );
     }
 
     #[test]

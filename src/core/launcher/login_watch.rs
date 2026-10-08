@@ -168,14 +168,25 @@ impl LoginWatch {
         out
     }
 
-    /// Whether nEVR's log of this start says the login failed (`None`: there is none).
-    fn login_failed(&self) -> Option<bool> {
+    /// nEVR's log of this start (`None`: there is none yet).
+    fn nevr_log(&self) -> Option<String> {
         let dir = self.nevr_logs.as_ref()?;
         let (log, _) = crate::core::logs::newest_in(dir, crate::core::launcher::nevr::is_run_log)
             .into_iter()
             .find(|(_, t)| *t >= self.since)?;
-        let text = std::fs::read_to_string(log).ok()?;
-        Some(text.contains("to login failed"))
+        std::fs::read_to_string(log).ok()
+    }
+
+    /// Whether nEVR's log of this start says the login failed (`None`: there is none).
+    fn login_failed(&self) -> Option<bool> {
+        Some(self.nevr_log()?.contains("to login failed"))
+    }
+
+    /// Whether nEVR's log of this start says Meta's runtime couldn't make the headset's
+    /// swap chain (the game stops before VR).
+    pub fn swap_chain_failed(&self) -> bool {
+        self.nevr_log()
+            .is_some_and(|t| crate::core::launcher::nevr::swap_chain_failed(&t))
     }
 
     /// The `[LOGIN]` blocks complete since the last call.
@@ -310,6 +321,17 @@ Select code >>> 58 <<<\n";
         }
         let w = LoginWatch::new(&dir.path().to_string_lossy(), since, Some(nevr_dir));
         (dir, w)
+    }
+
+    #[test]
+    fn sees_the_swap_chain_fail_in_nevrs_log() {
+        let failed = r#"{"level":"error","msg":"[EVR] Failed to create OVR D3D swap chain: "}"#;
+        let (_d, w) = watch("", Some(failed));
+        assert!(w.swap_chain_failed());
+        let (_d, w) = watch("", Some(r#"{"msg":"[EVR] Successfully created device."}"#));
+        assert!(!w.swap_chain_failed());
+        let (_d, w) = watch("", None);
+        assert!(!w.swap_chain_failed());
     }
 
     #[test]
