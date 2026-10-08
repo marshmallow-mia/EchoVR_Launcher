@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Echo VR Launcher
+Comment=Installs, updates and starts Echo VR
+Exec=EchoVR_Launcher
+Icon=de.echovr.launcher
+Categories=Game;
+Terminal=false

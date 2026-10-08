@@ -5,8 +5,10 @@
 //! DLL, but can rename them), and the old ones go at the next start. Then the launcher
 //! starts again: the new one waits for this one to end ([`AFTER_FLAG`]).
 //!
-//! Not on macOS (no build of it) nor for an AppImage (one file to replace, not a folder):
-//! there the release page opens, as before.
+//! An AppImage is one file: the release's AppImage, checked the same way, takes its place
+//! (renamed over it; the running one keeps its copy until it ends).
+//!
+//! Not on macOS (no build of it): there the release page opens, as before.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -45,7 +47,8 @@ fn asset(v: &str) -> Option<String> {
     Some(format!("Echo_VR_Launcher-{v}-{os}.zip"))
 }
 
-/// The running launcher's executable, the file an update replaces.
+/// The running launcher's executable, the file an update replaces (not for an AppImage:
+/// that's [`appimage`]).
 fn executable() -> Option<PathBuf> {
     if std::env::var_os("APPIMAGE").is_some() {
         return None;
@@ -53,9 +56,24 @@ fn executable() -> Option<PathBuf> {
     std::env::current_exe().ok()
 }
 
+/// Linux: the AppImage this launcher runs from, the one file an update replaces.
+fn appimage() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+}
+
+/// The AppImage download of version `v`.
+fn appimage_asset(v: &str) -> String {
+    format!("Echo_VR_Launcher-{v}-x86_64.AppImage")
+}
+
 /// Whether this launcher can update itself (else: the release page).
 pub fn supported() -> bool {
-    asset("0").is_some() && executable().is_some()
+    asset("0").is_some() && (executable().is_some() || appimage().is_some())
 }
 
 /// Pure: the checksum `sums` (as `sha256sum` writes it) gives for `name`.
@@ -71,6 +89,9 @@ fn sum_for(sums: &str, name: &str) -> Option<String> {
 /// Downloads version `v` for this system, checks it, and puts it in place of the running
 /// launcher's files. Returns the executable to start.
 pub fn install(v: &str, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<PathBuf> {
+    if let Some(img) = appimage() {
+        return install_appimage(v, &img, cancel, on);
+    }
     let (Some(name), Some(exe)) = (asset(v), executable()) else {
         bail!("This launcher can't update itself here: download it from the release page.");
     };
@@ -111,6 +132,58 @@ pub fn install(v: &str, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result
     Ok(exe)
 }
 
+/// [`install`] for an AppImage: version `v`'s AppImage, checked, in place of `img`. Returns
+/// the AppImage to start.
+fn install_appimage(
+    v: &str,
+    img: &Path,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<PathBuf> {
+    on(Step::Status(format!("Downloading launcher {v}...")));
+    let new = fetch(v, &appimage_asset(v), cancel, on)?;
+    on(Step::Status(format!("Installing launcher {v}...")));
+    // The tray runs the old one: it goes (after the update the window starts it again).
+    crate::core::tray::quit();
+    let result = put_appimage(&new, img);
+    let _ = std::fs::remove_file(&new);
+    result?;
+    tracing::info!("launcher {v} is {}", img.display());
+    Ok(img.to_path_buf())
+}
+
+/// The temporary file beside AppImage `img` the new one is written to first.
+fn appimage_staging(img: &Path) -> PathBuf {
+    let name = img.file_name().unwrap_or_default().to_string_lossy();
+    img.with_file_name(format!(".{name}{STAGING}"))
+}
+
+/// Puts the AppImage `new` in place of `img`: copied beside it with `img`'s permissions
+/// (and executable), then renamed over it, so `img` is never half written. Linux lets a
+/// running file be replaced that way: the running launcher keeps its copy.
+fn put_appimage(new: &Path, img: &Path) -> Result<()> {
+    let tmp = appimage_staging(img);
+    let result = (|| -> Result<()> {
+        std::fs::copy(new, &tmp).with_context(|| {
+            format!(
+                "Couldn't write the update beside {}. Is its folder writable?",
+                img.display()
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(img).map_or(0o755, |m| m.permissions().mode());
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode | 0o111))?;
+        }
+        std::fs::rename(&tmp, img).with_context(|| format!("replace {}", img.display()))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Windows: when the installer put the launcher into `dir`, the version Windows' Apps list
 /// shows becomes `v`.
 fn installed_version(dir: &Path, v: &str) {
@@ -135,8 +208,8 @@ fn installed_version(dir: &Path, v: &str) {
     let _ = (dir, v);
 }
 
-/// The zip `name` of version `v`, checked against its release's checksums: from the
-/// mirror, else from GitHub.
+/// The download `name` (zip or AppImage) of version `v`, checked against its release's
+/// checksums: from the mirror, else from GitHub.
 fn fetch(v: &str, name: &str, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<PathBuf> {
     let github = GITHUB.replace("{v}", v);
     // Debug builds: `ECHOVR_UPDATE_MIRROR=<url>` fetches the update from a test server.
@@ -290,6 +363,10 @@ fn aside_name(file: &Path) -> PathBuf {
 /// At a start: removes what an update left beside the executable (the replaced files, an
 /// unpacking that didn't finish).
 pub fn clean_up() {
+    // An AppImage: an update that didn't finish.
+    if let Some(img) = appimage() {
+        let _ = std::fs::remove_file(appimage_staging(&img));
+    }
     let Some(dir) = executable().and_then(|e| e.parent().map(Path::to_path_buf)) else {
         return;
     };
@@ -365,8 +442,25 @@ pub fn wait_for(pid: &str) {
 /// Tests against the live mirror: version `v`'s Windows and Linux zips, downloaded into
 /// `dir` and checked against the mirror's `SHA256SUMS` as an update checks them.
 #[cfg(test)]
-pub(super) fn check_on_mirror(v: &str, dir: &Path) -> Result<()> {
+pub(super) fn check_on_mirror(v: &str, dir: &Path, with_appimage: bool) -> Result<()> {
     let sums = http::get_text(&format!("{MIRROR}/{SUMS}"))?;
+    if with_appimage {
+        let name = appimage_asset(v);
+        let sha = sum_for(&sums, &name).with_context(|| format!("{SUMS} doesn't list {name}"))?;
+        let img = download::fetch_pinned(
+            &format!("{MIRROR}/{name}"),
+            dir,
+            &name,
+            &sha,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )?;
+        // An ELF with the AppImage (type 2) mark at byte 8.
+        let head = std::fs::read(&img)?;
+        if head.get(..4) != Some(b"\x7fELF") || head.get(8..11) != Some(b"AI\x02") {
+            bail!("{name} isn't an AppImage");
+        }
+    }
     for os in ["windows", "linux"] {
         let name = format!("Echo_VR_Launcher-{v}-{os}.zip");
         let sha = sum_for(&sums, &name).with_context(|| format!("{SUMS} doesn't list {name}"))?;
@@ -418,6 +512,43 @@ mod tests {
         assert!(exe.is_file());
         // The renamed one is still in use: it goes at the next start (here: when it can).
         let _ = std::fs::remove_file(&old);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_appimage_is_replaced_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("Echo VR Launcher.AppImage");
+        let new = dir.path().join("download");
+        std::fs::write(&img, "beta.3").unwrap();
+        std::fs::set_permissions(&img, std::fs::Permissions::from_mode(0o750)).unwrap();
+        std::fs::write(&new, "beta.4").unwrap();
+        put_appimage(&new, &img).unwrap();
+        assert_eq!(std::fs::read_to_string(&img).unwrap(), "beta.4");
+        // Its permissions, executable.
+        let mode = std::fs::metadata(&img).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o751);
+        assert!(!appimage_staging(&img).exists());
+        assert_eq!(
+            appimage_staging(&img).file_name().unwrap(),
+            ".Echo VR Launcher.AppImage.launcher-update"
+        );
+        // A folder it can't write into: the old one stays, nothing is left over.
+        let ro = dir.path().join("ro");
+        std::fs::create_dir(&ro).unwrap();
+        let img = ro.join("EchoVR_Launcher.AppImage");
+        std::fs::write(&img, "beta.3").unwrap();
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let err = put_appimage(&new, &img);
+        std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(err.is_err());
+        assert_eq!(std::fs::read_to_string(&img).unwrap(), "beta.3");
+        assert!(!appimage_staging(&img).exists());
+        assert_eq!(
+            appimage_asset("0.11.10-beta.4"),
+            "Echo_VR_Launcher-0.11.10-beta.4-x86_64.AppImage"
+        );
     }
 
     #[test]

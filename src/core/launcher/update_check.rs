@@ -404,7 +404,9 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("evr-live-{}", channel.name()));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            super::super::self_update::check_on_mirror(&r.version, &dir).unwrap();
+            // Every release since 0.11.10-beta.4 has an AppImage.
+            let appimage = v >= Version::parse("0.11.10-beta.4").unwrap();
+            super::super::self_update::check_on_mirror(&r.version, &dir, appimage).unwrap();
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
