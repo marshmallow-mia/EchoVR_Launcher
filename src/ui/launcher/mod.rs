@@ -2838,7 +2838,12 @@ impl Dashboard {
         use update_check::Channel;
         let version = env!("CARGO_PKG_VERSION");
         let followed = self.state.launcher_channel;
-        let built = update_check::running_channel();
+        // Screenshots show the channel picked, not the build they were made with.
+        let built = if self.demo {
+            Channel::Main
+        } else {
+            update_check::running_channel()
+        };
         let (text, channel, tip) = if followed != Channel::Main {
             (
                 format!("{} channel", followed.name()),
@@ -3092,7 +3097,7 @@ fn demo_state() -> LauncherState {
         ..Default::default()
     });
     s.selected = Some("pc-latest".into());
-    s.profile.windowed = true;
+    s.profile.windowed = false;
     s.quest_ip = Some("192.168.178.45".into());
     s
 }
