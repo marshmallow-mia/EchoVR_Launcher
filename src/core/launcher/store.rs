@@ -78,7 +78,8 @@ pub struct LaunchProfile {
     pub vd_via: VdVia,
     /// Flat mode only: `-spectatorstream`.
     pub spectator: bool,
-    /// `-windowed`
+    /// No longer an option: Flat always starts with `-windowed` (nEVR's "no headset"), VR
+    /// never. Kept so launcher.json reads as before.
     pub windowed: bool,
     /// Extra arguments, split like a command line (quotes group).
     pub extra_args: String,

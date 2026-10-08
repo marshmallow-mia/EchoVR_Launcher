@@ -895,7 +895,7 @@ pub(super) fn runtime_note(r: Runtime) -> &'static str {
         Runtime::Wivrn => {
             "Quest and other headsets over WiVRn, through EchoXR. Connect in WiVRn's app."
         }
-        Runtime::Flat => "No headset: play or spectate on the monitor.",
+        Runtime::Flat => "No headset: play or spectate in a window on the monitor.",
     }
 }
 

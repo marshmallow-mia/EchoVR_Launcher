@@ -82,11 +82,10 @@ pub fn game_args(profile: &LaunchProfile, lobby: Option<&str>) -> Vec<String> {
         if profile.spectator {
             args.push("-spectatorstream".into());
         }
-        // Flat only: nEVR (and EchoRelay's patch) take -windowed for "no headset", so in
-        // VR it would start the game on the monitor.
-        if profile.windowed {
-            args.push("-windowed".into());
-        }
+        // Always: nEVR (and EchoRelay's patch) take -windowed for "no headset"; with
+        // -noovr alone the game still starts Meta's runtime ("Failed to initialize the
+        // Oculus VR session"). Never in VR: it would start the game on the monitor.
+        args.push("-windowed".into());
     }
     if let Some(l) = lobby {
         args.push("-lobbyid".into());
@@ -325,13 +324,18 @@ mod tests {
         assert!(c.args.is_empty());
         assert_eq!(c.cwd, Path::new("C:/E/ready-at-dawn-echo-arena/bin/win7"));
 
+        // Flat: always in a window (-windowed is nEVR's "no headset"), Windowed or not.
         p.runtime = Runtime::Flat;
+        assert_eq!(
+            build(&p, exe, &Tools::default(), None).unwrap().args,
+            ["-noovr", "-windowed", "-foo"]
+        );
         p.spectator = true;
-        p.windowed = true;
         assert_eq!(
             build(&p, exe, &Tools::default(), None).unwrap().args,
             ["-noovr", "-spectatorstream", "-windowed", "-foo"]
         );
+        p.windowed = true;
         // Virtual Desktop: in its Oculus mode its streamer starts the game (and injects
         // itself); through SteamVR or VD's OpenXR runtime, EchoXR.exe (told to take the
         // system's runtime for VD's own).

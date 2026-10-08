@@ -237,29 +237,8 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         }
     };
     let flat = d.state.profile.runtime == Runtime::Flat;
-    // nEVR takes -windowed for "no headset": in VR it would start the game flat.
-    let (note, tip) = say(
-        "Flat only: Echo VR's window on the desktop isn't full screen.",
-        if flat {
-            "Starts Echo VR with -windowed"
-        } else {
-            "Choose Flat under How you play"
-        },
-    );
-    let (flipped, h) = option(
-        kit,
-        "opt-windowed",
-        &mut d.state.profile.windowed,
-        "Windowed",
-        note,
-        x,
-        y,
-        w,
-        flat,
-        &tip,
-    );
-    let mut changed = flipped;
-    y += h;
+    // No Windowed option: Flat always starts in a window (nEVR's -windowed is "no headset";
+    // -noovr alone still starts Meta's runtime), and in VR it would start the game flat.
     let (note, tip) = say(
         "Flat only: join matches as a spectator, for streams and casting.",
         if flat {
@@ -280,7 +259,7 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         flat,
         &tip,
     );
-    changed |= flipped;
+    let mut changed = flipped;
     y += h;
     // Your own _local/config.json (another server) instead of nEVR's built-in one.
     let (note, tip) = say(
