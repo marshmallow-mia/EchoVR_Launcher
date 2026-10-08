@@ -9,6 +9,9 @@ Download it from the [releases](https://github.com/marshmallow-mia/EchoVR_Launch
 On Windows, `-windows-setup.exe` installs it for you (no administrator rights: into
 `%LOCALAPPDATA%\Programs\EchoVR_Launcher`, with Start menu and desktop shortcuts and an
 uninstaller in Windows' Apps); `-windows.zip` is the same launcher to unpack anywhere.
+On Linux, `-x86_64.AppImage` is the launcher in one file: make it executable and start it
+(it updates itself, in place); `-linux.zip` and `-linux.tar.gz` are the same launcher to
+unpack anywhere.
 Help and news are on the [Echo VR Lounge Discord](https://discord.com/invite/echo-vr-lounge).
 
 ## Screenshots
@@ -137,8 +140,8 @@ manifest changed since the launcher last brought it up to date), and a new versi
 plugin installed from the catalogue. Nothing installs by itself: a dot on the rail (Play,
 Mods, Settings) and the status bar say what is out, PLAY's side button becomes **Update
 ready**, and the Mods page has **Update** on the plugin; the launcher's own update is **Update now** in
-Settings (Windows and Linux: it downloads the release, checks it, replaces its files and
-restarts; macOS opens the release page). EchoXR and EchoXR Hands come with the launcher, so a launcher
+Settings (Windows and Linux: it downloads the release, checks it, replaces its files, or
+the AppImage, and restarts; macOS opens the release page). EchoXR and EchoXR Hands come with the launcher, so a launcher
 update brings theirs.
 
 **Settings → Advanced settings** picks the launcher's channel: **main** (the tested
