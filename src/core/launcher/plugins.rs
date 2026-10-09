@@ -196,6 +196,9 @@ pub struct PluginEntry {
     pub sha256: String,
     pub size: Option<u64>,
     pub homepage: String,
+    /// From the dev folder of the dev code in use ([`super::dev_code`]), not published.
+    #[serde(skip)]
+    pub dev: bool,
 }
 
 impl PluginEntry {
@@ -259,6 +262,46 @@ impl PluginCatalog {
         })
     }
 
+    /// A dev folder's catalogue (of `code`): every entry downloads from that folder (a
+    /// relative `url` resolves into it, anything outside is left out) and is marked
+    /// [`PluginEntry::dev`].
+    pub fn parse_dev(text: &str, code: &str) -> Result<PluginCatalog> {
+        let mut c = PluginCatalog::parse(text)?;
+        c.plugins.retain_mut(|p| {
+            if p.url.is_empty() {
+                return true;
+            }
+            match super::dev_code::resolve(code, &p.url) {
+                Some(u) => {
+                    p.url = u;
+                    true
+                }
+                None => {
+                    tracing::warn!(
+                        "dev plugins catalogue: {} doesn't download from its dev folder, left out",
+                        p.id
+                    );
+                    false
+                }
+            }
+        });
+        for p in &mut c.plugins {
+            p.dev = true;
+        }
+        Ok(c)
+    }
+
+    /// `dev`'s entries over these: a published one with a dev entry's id gives way to it;
+    /// the dev entries come first.
+    pub fn with_dev(mut self, dev: PluginCatalog) -> PluginCatalog {
+        self.plugins
+            .retain(|p| !dev.plugins.iter().any(|d| d.id == p.id));
+        let mut plugins = dev.plugins;
+        plugins.append(&mut self.plugins);
+        self.plugins = plugins;
+        self
+    }
+
     pub fn builtin() -> PluginCatalog {
         let mut c = PluginCatalog::parse(include_str!("../../../docs/launcher/plugins.json"))
             .unwrap_or_default();
@@ -272,6 +315,21 @@ impl PluginCatalog {
 
     /// The published catalogue (kept), else the last one kept, else the built-in one.
     pub fn load() -> PluginCatalog {
+        let main = PluginCatalog::load_main();
+        match super::dev_code::load("plugins")
+            .map(|(code, text)| PluginCatalog::parse_dev(&text, &code))
+        {
+            Some(Ok(d)) => main.with_dev(d),
+            Some(Err(e)) => {
+                tracing::warn!("dev plugins catalogue unreadable: {e:#}");
+                main
+            }
+            None => main,
+        }
+    }
+
+    /// The published catalogue (kept), else the last one kept, else the built-in one.
+    fn load_main() -> PluginCatalog {
         let fetched = crate::core::http::get_text(CATALOG_URL)
             .and_then(|t| PluginCatalog::parse(&t).map(|c| (c, t)));
         match fetched {
@@ -399,6 +457,35 @@ pub fn remove(id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_folder_plugins_go_over_published_ones() {
+        const CODE: &str = "abcdefghijklmnopqrstuvwxyz";
+        let sha = "b".repeat(64);
+        let dev = format!(
+            r#"{{"plugins": [
+                {{"id": "event-lobbies", "name": "Event lobbies (dev)", "version": "0.2.0",
+                  "url": "files/event-lobbies.zip", "sha256": "{sha}"}},
+                {{"id": "outside", "name": "Outside", "url": "https://release.echovr.de/launcher/plugins/x.zip", "sha256": "{sha}"}}
+            ]}}"#
+        );
+        let d = PluginCatalog::parse_dev(&dev, CODE).unwrap();
+        assert_eq!(d.plugins.len(), 1);
+        assert!(d.plugins[0].dev);
+        assert_eq!(
+            d.plugins[0].url,
+            format!("https://release.echovr.de/launcher/dev/{CODE}/files/event-lobbies.zip")
+        );
+        let both = PluginCatalog::builtin().with_dev(d);
+        assert_eq!(both.entry("event-lobbies").unwrap().version, "0.2.0");
+        assert_eq!(
+            both.plugins
+                .iter()
+                .filter(|p| p.id == "event-lobbies")
+                .count(),
+            1
+        );
+    }
     use crate::core::launcher::store::{InstalledVersion, RelayAccount};
 
     const DESC: &str = r#"{"schema": 1, "id": "event-lobbies", "name": "Event lobbies",

@@ -1073,9 +1073,106 @@ fn update_action(d: &mut Dashboard, ctx: &egui::Context) {
 
 /// ADVANCED SETTINGS: the launcher's update channel (main, beta or alpha), with what the
 /// update check says on it and its update.
+/// Advanced settings' right column: a developer's dev code, which lists the unpublished
+/// mods and plugins of their dev folder too (`core::launcher::dev_code`).
+fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, y: f32, w: f32) {
+    use crate::core::launcher::dev_code::{self, Status};
+    // Said when the card opens with a code set.
+    d.check_dev_code(ctx);
+    let mut ry = y;
+    k.caption(x, ry, "DEV MODS AND PLUGINS");
+    ry += dz(34.0);
+    ry += k.caps_text(
+        x,
+        ry,
+        w,
+        "For mod and plugin makers: with your dev code, the launcher also lists what's in \
+         your dev folder on release.echovr.de, before it's published. Only whoever has the \
+         code sees it.",
+        16.0,
+        design::BODY,
+        0.0,
+    ) + dz(18.0);
+    let typed = dev_code::normalize(&d.dev_code_field);
+    let wrong = !d.dev_code_field.trim().is_empty() && typed.is_none();
+    k.secret_field(
+        "dev-code",
+        &mut d.dev_code_field,
+        x,
+        ry,
+        w,
+        BTN_H,
+        "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x",
+        wrong,
+        "Your dev code, as you got it (dashes and spaces don't matter)",
+    );
+    ry += BTN_H + dz(12.0);
+    let set = d.state.dev_code.as_deref().and_then(dev_code::normalize);
+    let use_w = k.button_width("Use code", None, BTN_H).max(140.0);
+    let can_use = typed.is_some() && typed != set;
+    if k.button(
+        "dev-code-use",
+        x,
+        ry,
+        use_w,
+        BTN_H,
+        Tone::Go,
+        None,
+        "Use code",
+        can_use,
+        if can_use {
+            "List your dev folder's mods and plugins too"
+        } else {
+            "Type or paste a dev code first"
+        },
+    )
+    .clicked
+    {
+        d.set_dev_code(ctx, typed.clone());
+    }
+    if set.is_some() {
+        let rm_w = k.button_width("Remove", None, BTN_H).max(120.0);
+        if k.button(
+            "dev-code-remove",
+            x + use_w + dz(12.0),
+            ry,
+            rm_w,
+            BTN_H,
+            Tone::Dark,
+            None,
+            "Remove",
+            true,
+            "Only published mods and plugins again",
+        )
+        .clicked
+        {
+            d.set_dev_code(ctx, None);
+        }
+    }
+    ry += BTN_H + dz(14.0);
+    let (line, color) = if wrong {
+        (
+            "That isn't a dev code: 26 letters and digits from 2 to 7.".to_string(),
+            design::QUEST_WARN,
+        )
+    } else {
+        let color = match d.dev_status {
+            Status::NotFound | Status::Failed(_) => design::QUEST_WARN,
+            Status::Found { .. } => design::BODY,
+            _ => design::GREY,
+        };
+        (d.dev_status.line(), color)
+    };
+    k.caps_text(x, ry, w, &line, 14.0, color, 0.0);
+}
+
 pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
-    let (w, h) = (dz(1000.0), dz(570.0));
-    let (x, y, cw, bottom) = setup::card(k, w, h, "Advanced settings");
+    let (w, h) = (dz(1180.0), dz(640.0));
+    let (x, y, full_w, bottom) = setup::card(k, w, h, "Advanced settings");
+    // Two columns: the launcher's channel, and a developer's dev code.
+    let gap = dz(44.0);
+    let cw = (full_w - gap) / 2.0;
+    dev_code_column(d, k, ctx, x + cw + gap, y, cw);
     let updating = super::hero::job_view(d, super::LAUNCHER_JOB).is_some();
     let mut ry = y;
     k.caption(x, ry, "LAUNCHER CHANNEL");
@@ -1125,7 +1222,7 @@ pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
 
     let by = bottom - BTN_H;
     let close_w = k.button_width("Close", None, BTN_H).max(110.0);
-    let right = x + cw;
+    let right = x + full_w;
     if k.button(
         "advanced-close",
         right - close_w,

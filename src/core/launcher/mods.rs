@@ -1298,6 +1298,9 @@ pub struct ModEntry {
     pub required: bool,
     /// What can be set, and how (see [`super::plugin_settings`]).
     pub settings: Option<Value>,
+    /// From the dev folder of the dev code in use ([`super::dev_code`]), not published.
+    #[serde(skip)]
+    pub dev: bool,
 }
 
 impl ModEntry {
@@ -1363,6 +1366,68 @@ impl ModCatalog {
         })
     }
 
+    /// A dev folder's catalogue (of `code`): like [`ModCatalog::parse`], but every entry
+    /// downloads from that folder (a relative `url` resolves into it, anything outside is
+    /// left out), is never "shipped", and is marked [`ModEntry::dev`].
+    pub fn parse_dev(text: &str, code: &str) -> Result<ModCatalog> {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            mods: Vec<Value>,
+        }
+        let raw: Raw = serde_json::from_str(text)?;
+        let mut seen = std::collections::HashSet::new();
+        let mut mods = Vec::new();
+        for (i, value) in raw.mods.into_iter().enumerate() {
+            let entry = serde_json::from_value::<ModEntry>(value)
+                .map_err(anyhow::Error::from)
+                .and_then(|mut m| {
+                    m.url = super::dev_code::resolve(code, &m.url).ok_or_else(|| {
+                        anyhow::anyhow!("{} doesn't download from its dev folder", m.id)
+                    })?;
+                    m.shipped = false;
+                    m.dev = true;
+                    m.validate().map(|()| m)
+                });
+            match entry {
+                Ok(m) if seen.insert(m.id.clone()) => mods.push(m),
+                Ok(m) => tracing::warn!("dev mods catalogue: duplicate id {}, left out", m.id),
+                Err(e) => tracing::warn!("dev mods catalogue: entry {i} left out: {e:#}"),
+            }
+        }
+        Ok(ModCatalog {
+            mods,
+            builtin: false,
+        })
+    }
+
+    /// `dev`'s entries over these: a published entry with a dev entry's id or file gives
+    /// way to it; the dev entries come first.
+    pub fn with_dev(mut self, dev: ModCatalog) -> ModCatalog {
+        self.mods.retain(|m| {
+            !dev.mods
+                .iter()
+                .any(|d| d.id == m.id || d.file.eq_ignore_ascii_case(&m.file))
+        });
+        let mut mods = dev.mods;
+        mods.append(&mut self.mods);
+        self.mods = mods;
+        self
+    }
+
+    /// The dev folder's entries over `self`, when a dev code is in use (`text` from
+    /// [`super::dev_code::load`] or [`super::dev_code::kept`]).
+    fn plus_dev(self, dev: Option<(String, String)>) -> ModCatalog {
+        match dev.map(|(code, text)| ModCatalog::parse_dev(&text, &code)) {
+            Some(Ok(d)) => self.with_dev(d),
+            Some(Err(e)) => {
+                tracing::warn!("dev mods catalogue unreadable: {e:#}");
+                self
+            }
+            None => self,
+        }
+    }
+
     /// The draft in this repo, for when the published one can't be had.
     pub fn builtin() -> ModCatalog {
         let mut c =
@@ -1376,7 +1441,7 @@ impl ModCatalog {
     pub fn load() -> ModCatalog {
         let fetched = crate::core::http::get_text(CATALOG_URL)
             .and_then(|t| ModCatalog::parse(&t).map(|c| (c, t)));
-        match fetched {
+        let main = match fetched {
             Ok((c, text)) => {
                 let _ = std::fs::create_dir_all(paths::data_dir());
                 let _ = std::fs::write(Self::cache_path(), text);
@@ -1384,9 +1449,10 @@ impl ModCatalog {
             }
             Err(e) => {
                 tracing::info!("mods catalogue unavailable ({e:#}); using the last one kept");
-                ModCatalog::cached()
+                ModCatalog::cached_main()
             }
-        }
+        };
+        main.plus_dev(super::dev_code::load("mods"))
     }
 
     fn cache_path() -> PathBuf {
@@ -1396,6 +1462,11 @@ impl ModCatalog {
     /// The last catalogue fetched, else the built-in one: no network, for reading the
     /// mods and before a start. (Tests always get the built-in one.)
     pub fn cached() -> ModCatalog {
+        ModCatalog::cached_main().plus_dev(super::dev_code::kept("mods"))
+    }
+
+    /// The published catalogue as kept last, else the built-in one (no dev entries).
+    fn cached_main() -> ModCatalog {
         if cfg!(test) {
             return ModCatalog::builtin();
         }
@@ -1414,6 +1485,48 @@ impl ModCatalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dev_folder_mods_go_over_published_ones() {
+        const CODE: &str = "abcdefghijklmnopqrstuvwxyz";
+        let sha = "a".repeat(64);
+        let dev = format!(
+            r#"{{"mods": [
+                {{"id": "gpu-rating", "name": "GPU Rating (dev)", "version": "1.1.0-dev",
+                  "file": "NvrGpuRating.dll", "url": "files/NvrGpuRating.dll", "sha256": "{sha}"}},
+                {{"id": "my-mod", "name": "Mine", "file": "NvrMine.dll",
+                  "url": "files/NvrMine.dll", "sha256": "{sha}", "shipped": true}},
+                {{"id": "elsewhere", "name": "Elsewhere", "file": "NvrElse.dll",
+                  "url": "https://release.echovr.de/launcher/mods/NvrGpuRating-1.0.0.dll", "sha256": "{sha}"}},
+                {{"id": "escape", "name": "Escape", "file": "NvrEsc.dll",
+                  "url": "../../mods/x.dll", "sha256": "{sha}"}}
+            ]}}"#
+        );
+        let d = ModCatalog::parse_dev(&dev, CODE).unwrap();
+        // Only what downloads from its own folder; never "shipped"; all marked.
+        assert_eq!(
+            d.mods.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["gpu-rating", "my-mod"]
+        );
+        assert!(d.mods.iter().all(|m| m.dev && !m.shipped));
+        assert_eq!(
+            d.mods[0].url,
+            format!("https://release.echovr.de/launcher/dev/{CODE}/files/NvrGpuRating.dll")
+        );
+        let main = ModCatalog::builtin();
+        let published = main.mods.len();
+        assert!(main.mods.iter().any(|m| m.id == "gpu-rating"));
+        let both = main.with_dev(d);
+        // The dev gpu-rating replaced the published one; the new one is added; dev first.
+        assert_eq!(both.mods.len(), published + 1);
+        assert_eq!(both.mods[0].version, "1.1.0-dev");
+        assert_eq!(
+            both.entry_for("nvrgpurating.dll").unwrap().version,
+            "1.1.0-dev"
+        );
+        assert_eq!(both.mods.iter().filter(|m| m.id == "gpu-rating").count(), 1);
+        assert!(both.mods.iter().any(|m| m.id == "asset-patches" && !m.dev));
+    }
 
     #[test]
     fn tells_a_missing_or_blocked_slot() {

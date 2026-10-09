@@ -384,7 +384,8 @@ pub fn sanitize(bytes: &[u8]) -> String {
         out.push(c);
     }
     flush_run(&mut out, &mut run);
-    break_lines(&out)
+    // Dev codes keep a developer's folder private: never in an upload.
+    break_lines(&crate::core::launcher::dev_code::redact(&out))
 }
 
 /// Appends a run of base64 characters, or a note in its place when it's long.

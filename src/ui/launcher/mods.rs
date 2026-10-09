@@ -98,6 +98,11 @@ impl Mods {
         }
     }
 
+    /// The catalogue is read again (a dev code came or went).
+    pub(super) fn reload_catalog(&mut self) {
+        self.catalog = None;
+    }
+
     pub(super) fn catalog_done(&mut self, c: ModCatalog) {
         self.catalog_loading = false;
         self.catalog = Some(c);
@@ -976,9 +981,18 @@ fn plugin_row(
             },
         );
     }
+    let dev = |id: &str| {
+        d.mods
+            .catalog
+            .as_ref()
+            .and_then(|c| c.mods.iter().find(|m| m.id == id))
+            .is_some_and(|m| m.dev)
+    };
     let source = match &p.source {
         Source::Shipped if !p.verified => ("Unverified", design::QUEST_WARN),
         Source::Shipped => ("Community update", design::SUBTLE),
+        // From the dev folder of the dev code in Advanced settings, not published.
+        Source::Catalog { id, .. } if dev(id) => ("Dev", design::RIM_BOTTOM),
         Source::Catalog { .. } => ("Catalogue", design::BLUE),
         Source::Local => ("Your DLL", design::QUEST_WARN),
     };
@@ -2079,6 +2093,8 @@ fn catalogue_card(
     };
     let note = if catalog.builtin {
         "The built-in list: release.echovr.de couldn't be reached."
+    } else if catalog.mods.iter().any(|m| m.dev) {
+        "From release.echovr.de; Dev ones from your dev folder (Advanced settings). Every download is checked against its checksum, and again before every start."
     } else {
         "From release.echovr.de. Every download is checked against its checksum, and again before every start."
     };
@@ -2341,8 +2357,18 @@ fn entry(
             design::GREY,
             f32::INFINITY,
         );
-        if vx + g.size().x < right - dz(14.0) {
+        let gw = g.size().x;
+        if vx + gw < right - dz(14.0) {
             k.put(vx, nr.center().y - k.origin.y - g.size().y / 2.0, g);
+            if m.dev && vx + gw + dz(14.0) + k.dot_tag_width("Dev", 12.0) < right - dz(14.0) {
+                k.dot_tag(
+                    vx + gw + dz(14.0),
+                    nr.center().y - k.origin.y,
+                    "Dev",
+                    12.0,
+                    design::RIM_BOTTOM,
+                );
+            }
         }
     }
     let mut ty = y + dz(40.0);

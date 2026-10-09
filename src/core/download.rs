@@ -393,6 +393,9 @@ fn fetch_from(
 
 /// Personalized patch URLs are credentials of a sort; keep only scheme and host in logs.
 pub fn redact(url: &str) -> String {
+    if url.contains("/launcher/dev/") {
+        return crate::core::launcher::dev_code::redact(url);
+    }
     match url::Url::parse(url) {
         Ok(u)
             if u.host_str() == Some("files.echovr.de")

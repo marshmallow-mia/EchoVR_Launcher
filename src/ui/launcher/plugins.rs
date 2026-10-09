@@ -44,6 +44,14 @@ pub(super) struct PluginsUi {
     remove_asked: Option<String>,
 }
 
+impl PluginsUi {
+    /// The plugins and their catalogue are read again (a dev code came or went).
+    pub fn reload(&mut self) {
+        self.started = false;
+        self.catalog = None;
+    }
+}
+
 enum Msg {
     Read(Vec<Installed>),
     Catalog(PluginCatalog),
@@ -1121,7 +1129,17 @@ fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
     let idle = d.plugins.busy.is_none();
     for e in offered {
         let name = k.label_galley(&e.name, design::din(20.0), design::TEXT, w * 0.6);
-        k.put(x, y, name);
+        let nr = k.put(x, y, name);
+        if e.dev {
+            // From the dev folder of the dev code in Advanced settings, not published.
+            k.dot_tag(
+                nr.max.x - k.origin.x + dz(14.0),
+                nr.center().y - k.origin.y,
+                "Dev",
+                12.0,
+                design::RIM_BOTTOM,
+            );
+        }
         let label = if e.downloadable() {
             "Get"
         } else {

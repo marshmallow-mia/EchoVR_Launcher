@@ -233,6 +233,9 @@ pub struct LauncherState {
     pub tray_at_login: bool,
     /// The launcher releases it updates to: main, beta or alpha (Advanced settings).
     pub launcher_channel: Channel,
+    /// A developer's dev code (Advanced settings): their unpublished mods and plugins are
+    /// listed too ([`super::dev_code`]).
+    pub dev_code: Option<String>,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -287,6 +290,7 @@ impl Default for LauncherState {
             tray_at_login: false,
             relay_account: None,
             launcher_channel: Channel::Main,
+            dev_code: None,
         }
     }
 }
@@ -311,6 +315,7 @@ impl LauncherState {
         let s = Self::load_upgraded(&state_file());
         crate::core::pc_update::set_channel(s.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(s.launcher_channel);
+        super::dev_code::set(s.dev_code.as_deref());
         s
     }
 
@@ -366,6 +371,7 @@ impl LauncherState {
     pub fn save(&self) -> Result<()> {
         crate::core::pc_update::set_channel(self.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(self.launcher_channel);
+        super::dev_code::set(self.dev_code.as_deref());
         self.save_to(&state_file())
     }
 
