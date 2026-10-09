@@ -340,7 +340,9 @@ impl LauncherState {
 
     pub fn load_from(path: &Path) -> LauncherState {
         match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str::<LauncherState>(&text)
+            // A file saved by hand may start with a byte order mark (PowerShell 5's UTF8,
+            // old Notepad): JSON without it.
+            Ok(text) => serde_json::from_str::<LauncherState>(text.trim_start_matches('\u{feff}'))
                 .map(LauncherState::migrated)
                 .unwrap_or_else(|e| {
                     // Keep the broken file for inspection instead of silently losing it.
@@ -702,6 +704,18 @@ mod tests {
         LauncherState::load_upgraded(&f);
         assert_eq!(LauncherState::schema_on_disk(&f), Some(SCHEMA));
         assert!(LauncherState::load_from(&f).event_builds);
+    }
+
+    #[test]
+    fn reads_a_launcher_json_saved_with_a_byte_order_mark() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        std::fs::write(&f, "\u{feff}{\"schema\":3,\"selected\":\"pc-latest\"}").unwrap();
+        assert_eq!(
+            LauncherState::load_from(&f).selected.as_deref(),
+            Some("pc-latest")
+        );
+        assert!(f.exists(), "not set aside as broken");
     }
 
     #[test]
