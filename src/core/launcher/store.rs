@@ -342,7 +342,12 @@ impl LauncherState {
                     let _ = std::fs::rename(path, path.with_extension("json.broken"));
                     LauncherState::default()
                 }),
-            Err(_) => LauncherState::default(),
+            // A fresh install follows the channel of the build installed (a beta's setup
+            // shouldn't offer the way back to main right away).
+            Err(_) => LauncherState {
+                launcher_channel: super::update_check::running_channel(),
+                ..LauncherState::default()
+            },
         }
     }
 
@@ -529,7 +534,14 @@ mod tests {
     fn round_trip_and_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("launcher.json");
-        assert_eq!(LauncherState::load_from(&f), LauncherState::default());
+        // No file: the defaults, following this build's channel.
+        assert_eq!(
+            LauncherState::load_from(&f),
+            LauncherState {
+                launcher_channel: super::super::update_check::running_channel(),
+                ..LauncherState::default()
+            }
+        );
         let mut s = LauncherState::default();
         s.profile.runtime = Runtime::Revive;
         s.upsert(InstalledVersion {
@@ -688,6 +700,11 @@ mod tests {
     fn keeps_the_launcher_channel() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("launcher.json");
+        // A fresh install: this build's channel.
+        assert_eq!(
+            LauncherState::load_from(&f).launcher_channel,
+            super::super::update_check::running_channel()
+        );
         // From before channels: main.
         std::fs::write(&f, r#"{"schema":3}"#).unwrap();
         assert_eq!(LauncherState::load_from(&f).launcher_channel, Channel::Main);
