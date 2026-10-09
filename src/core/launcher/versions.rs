@@ -287,7 +287,7 @@ impl Checksums {
             .unwrap_or_else(|_| "bin/win10".into());
         let mut skip = HashSet::new();
         if let Some(update) = manifest_url(v) {
-            let update = Manifest::fetch(&update)
+            let (update, _) = pc_update::fetch_manifest(&update)
                 .with_context(|| "Couldn't read the update's checksums from the server")?;
             // What the update replaces, and what it takes out (the build's own
             // dbgcore.dll, which nEVR won't start beside): neither is the build's file.
@@ -460,7 +460,7 @@ pub fn verify(
     on: &mut dyn FnMut(Step),
 ) -> Result<Vec<String>> {
     ensure_present(v)?;
-    let m = Manifest::fetch(&manifest_url(v).ok_or_else(|| no_updates(v))?)?;
+    let (m, _) = pc_update::fetch_manifest(&manifest_url(v).ok_or_else(|| no_updates(v))?)?;
     let bin = v.bin_dir();
     let adds: Vec<_> = m
         .adds()

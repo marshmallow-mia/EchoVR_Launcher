@@ -310,6 +310,7 @@ impl LauncherState {
     pub fn load() -> LauncherState {
         let s = Self::load_upgraded(&state_file());
         crate::core::pc_update::set_channel(s.update_manifest.as_deref());
+        crate::core::pc_update::set_launcher_channel(s.launcher_channel);
         s
     }
 
@@ -364,6 +365,7 @@ impl LauncherState {
 
     pub fn save(&self) -> Result<()> {
         crate::core::pc_update::set_channel(self.update_manifest.as_deref());
+        crate::core::pc_update::set_launcher_channel(self.launcher_channel);
         self.save_to(&state_file())
     }
 

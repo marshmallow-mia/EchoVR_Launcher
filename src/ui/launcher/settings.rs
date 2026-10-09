@@ -1105,6 +1105,8 @@ pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
             d.state.launcher_channel = c;
             d.save();
             d.check_launcher_update(ctx);
+            // The live build's files follow the channel too (its overlay on main's).
+            d.updates.check_soon();
         }
         let nh = k.caps_text(
             x + indent,

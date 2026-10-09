@@ -42,6 +42,9 @@ pub struct Entry {
     pub action: Action,
     pub path: String,
     pub sha256: Option<String>,
+    /// Where an overlay's entry downloads from: its own manifest's folder (`None`: this
+    /// manifest's, [`Manifest::base_url`]).
+    pub base: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -208,6 +211,7 @@ impl Manifest {
                 action,
                 path: path.to_string(),
                 sha256,
+                base: None,
             });
         }
 
@@ -232,7 +236,21 @@ impl Manifest {
     }
 
     pub fn url_for(&self, e: &Entry) -> String {
-        format!("{}/{}", self.base_url, e.path)
+        format!("{}/{}", e.base.as_deref().unwrap_or(&self.base_url), e.path)
+    }
+
+    /// `over` on top of this manifest: each of its lines replaces this one's for the same
+    /// path (case-insensitive) or is added, and downloads from `over`'s own folder. A
+    /// channel's overlay replaces main only where it has a replacement.
+    pub fn overlay(&mut self, over: Manifest) {
+        for e in over.entries {
+            self.entries
+                .retain(|m| !m.path.eq_ignore_ascii_case(&e.path));
+            self.entries.push(Entry {
+                base: Some(e.base.clone().unwrap_or_else(|| over.base_url.clone())),
+                ..e
+            });
+        }
     }
 
     /// A build file manifest's archive, beside it.

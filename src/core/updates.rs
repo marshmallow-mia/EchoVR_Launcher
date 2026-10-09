@@ -116,9 +116,10 @@ pub fn check(state: &LauncherState) -> Check {
         let Some(url) = versions::manifest_url(v) else {
             continue;
         };
-        match crate::core::http::get_bytes(&url) {
-            Ok(bytes) => {
-                let hash = sha256_hex(&bytes);
+        // The live build's: main's with the channel's overlays (pc_update::fetch_manifest).
+        match crate::core::pc_update::fetch_manifest(&url) {
+            Ok((_, text)) => {
+                let hash = sha256_hex(text.as_bytes());
                 match game_state(v.manifest_sha256.as_deref(), &hash, fake_game_update()) {
                     GameState::Baseline => out.baselines.push((v.id.clone(), hash)),
                     GameState::Outdated => out.findings.push(Finding::Game {

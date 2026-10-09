@@ -13,6 +13,7 @@ use anyhow::{anyhow, Context, Result};
 
 use super::download::{redact, sha256_matches};
 use super::http::{self, Cancelled};
+use super::launcher::update_check::Channel;
 use super::manifest::Manifest;
 
 /// The launcher's live PC update: the community update with the mod loader, nEVR runtime
@@ -20,6 +21,13 @@ use super::manifest::Manifest;
 /// `dbgcore.dll`, which it deletes). The old installer keeps its own channel, `updates/` on
 /// files.echovr.de (mirrored to release.echovr.de), without nEVR.
 pub const PC_MANIFEST_URL: &str = "https://release.echovr.de/updates-nevr/update.manifest";
+/// The launcher channels' overlays on the live PC update. A channel replaces main's files
+/// only where it has a replacement: its folder holds just those files and a manifest of
+/// just their lines; a channel without a folder (404) is exactly main. Alpha takes beta's
+/// replacements too, its own on top.
+pub const BETA_OVERLAY: &str = "https://release.echovr.de/updates-nevr-beta/update.manifest";
+pub const ALPHA_OVERLAY: &str = "https://release.echovr.de/updates-nevr-alpha/update.manifest";
+
 /// Where the update channels were read before; installs keep such a URL.
 const FILES_UPDATES: &str = "https://files.echovr.de/updates/";
 const RELEASE_UPDATES: &str = "https://release.echovr.de/updates/";
@@ -36,6 +44,60 @@ pub const MANIFEST_OVERRIDE: &str = "ECHOVR_UPDATE_MANIFEST";
 /// The channel launcher.json's `update_manifest` names, as the launcher's settings were
 /// last loaded or saved ([`set_channel`]).
 static CHANNEL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The launcher channel launcher.json follows ([`set_launcher_channel`]): which overlays
+/// the live PC update gets.
+static LAUNCHER_CHANNEL: std::sync::Mutex<Channel> = std::sync::Mutex::new(Channel::Main);
+
+/// Takes launcher.json's launcher channel; called whenever the settings are loaded or saved.
+pub fn set_launcher_channel(channel: Channel) {
+    *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner()) = channel;
+}
+
+/// The overlays on the live PC update for `channel`, in the order they apply (the last
+/// wins).
+pub fn overlays(channel: Channel) -> &'static [&'static str] {
+    match channel {
+        Channel::Main => &[],
+        Channel::Beta => &[BETA_OVERLAY],
+        Channel::Alpha => &[BETA_OVERLAY, ALPHA_OVERLAY],
+    }
+}
+
+/// The update manifest at `url`, parsed and as text. For the live PC update (no test
+/// channel chosen, [`manifest_for`] left it as is) that's main's with the followed
+/// channel's overlays on top. The text is what an update check hashes, so an overlay that
+/// changes, or a channel switch, shows up as an update.
+pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
+    let text = http::get_text(url)
+        .with_context(|| format!("Could not download the update manifest ({url})"))?;
+    let mut over = Vec::new();
+    if url == PC_MANIFEST_URL {
+        let channel = *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
+        for o in overlays(channel) {
+            let t = http::get_text_opt(o)
+                .with_context(|| format!("Could not download the channel's update ({o})"))?;
+            if let Some(t) = t {
+                over.push((*o, t));
+            }
+        }
+    }
+    with_overlays(url, &text, &over)
+}
+
+/// Pure: `text` (the manifest at `url`) with the overlays `(url, text)` on top, in order.
+fn with_overlays(url: &str, text: &str, overlays: &[(&str, String)]) -> Result<(Manifest, String)> {
+    let mut m = Manifest::parse(text, url)?;
+    let mut all = text.to_string();
+    for (o, t) in overlays {
+        m.overlay(
+            Manifest::parse(t, o)
+                .with_context(|| format!("The channel's update manifest is broken ({o})"))?,
+        );
+        all.push_str(&format!("\n# overlay: {o}\n{t}"));
+    }
+    Ok((m, all))
+}
 
 /// Takes launcher.json's `update_manifest` (the live PC update from another channel, e.g. a
 /// test one); called whenever the settings are loaded or saved. Said once per change.
@@ -176,7 +238,7 @@ pub fn apply_skipping(
     status: &mut dyn FnMut(String),
 ) -> Result<()> {
     tracing::info!("UpdateService: downloading manifest {manifest_url}");
-    let manifest = Manifest::fetch(manifest_url)?;
+    let (manifest, _) = fetch_manifest(manifest_url)?;
     let dels: Vec<_> = manifest
         .dels()
         .filter(|e| !skipped(&e.path, skip))
@@ -309,6 +371,58 @@ mod tests {
             pick_channel(None, Some("https://release.echovr.de/pc.zip.manifest")),
             None
         );
+    }
+
+    #[test]
+    fn channel_overlays_replace_main_only_where_they_have_a_replacement() {
+        let sha = |c: char| c.to_string().repeat(64);
+        let main = format!(
+            "add BugSplat64.dll {}\nadd plugins/NvrAssetPatches.dll {}\ndel dbgcore.dll\n",
+            sha('a'),
+            sha('b')
+        );
+        // No overlay: main as it is.
+        let (m, text) = with_overlays(PC_MANIFEST_URL, &main, &[]).unwrap();
+        assert_eq!(text, main);
+        assert!(m.entries.iter().all(|e| e.base.is_none()));
+        // Beta replaces BugSplat64.dll and adds a file, from its own folder.
+        let beta = format!(
+            "add bugsplat64.dll {}\nadd new.dll {}\n",
+            sha('c'),
+            sha('d')
+        );
+        let (m, text) =
+            with_overlays(PC_MANIFEST_URL, &main, &[(BETA_OVERLAY, beta.clone())]).unwrap();
+        let by = |p: &str| m.entries.iter().find(|e| e.path == p).unwrap();
+        assert_eq!(m.entries.len(), 4);
+        assert!(!m.entries.iter().any(|e| e.path == "BugSplat64.dll"));
+        assert_eq!(by("bugsplat64.dll").sha256, Some(sha('c')));
+        assert_eq!(
+            m.url_for(by("bugsplat64.dll")),
+            "https://release.echovr.de/updates-nevr-beta/bugsplat64.dll"
+        );
+        assert_eq!(
+            m.url_for(by("plugins/NvrAssetPatches.dll")),
+            "https://release.echovr.de/updates-nevr/plugins/NvrAssetPatches.dll"
+        );
+        assert!(text.starts_with(&main) && text.contains(BETA_OVERLAY));
+        // Alpha: beta's, then its own on top.
+        let alpha = format!("add new.dll {}\n", sha('e'));
+        let (m, _) = with_overlays(
+            PC_MANIFEST_URL,
+            &main,
+            &[(BETA_OVERLAY, beta), (ALPHA_OVERLAY, alpha)],
+        )
+        .unwrap();
+        let new = m.entries.iter().find(|e| e.path == "new.dll").unwrap();
+        assert_eq!(new.sha256, Some(sha('e')));
+        assert_eq!(
+            m.url_for(new),
+            "https://release.echovr.de/updates-nevr-alpha/new.dll"
+        );
+        assert_eq!(overlays(Channel::Main), &[] as &[&str]);
+        assert_eq!(overlays(Channel::Beta), &[BETA_OVERLAY]);
+        assert_eq!(overlays(Channel::Alpha), &[BETA_OVERLAY, ALPHA_OVERLAY]);
     }
 
     #[test]

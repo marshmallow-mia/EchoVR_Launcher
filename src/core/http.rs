@@ -105,6 +105,24 @@ pub fn get_text(url: &str) -> Result<String> {
     })
 }
 
+/// [`get_text`], but a resource that isn't there (404 or 410) is `None` instead of an error:
+/// for optional files such as a channel's overlay.
+pub fn get_text_opt(url: &str) -> Result<Option<String>> {
+    block_on(async {
+        let resp = client()
+            .get(url)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        match resp.status().as_u16() {
+            404 | 410 => Ok(None),
+            s if (200..300).contains(&s) => Ok(Some(resp.text().await?)),
+            _ => bail!("GET {url}: server responded with {}", resp.status()),
+        }
+    })
+}
+
 /// Fetches a small binary resource (feed images) in full.
 pub fn get_bytes(url: &str) -> Result<Vec<u8>> {
     block_on(async {
