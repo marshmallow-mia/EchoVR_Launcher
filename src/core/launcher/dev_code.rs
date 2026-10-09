@@ -76,8 +76,8 @@ pub fn resolve(code: &str, url: &str) -> Option<String> {
         .then_some(full)
 }
 
-/// Pure: `text` without dev codes: every `launcher/dev/<code>` path segment and any code
-/// in it (as it is or shown in groups) becomes `***`. For logs and error messages.
+/// `text` without dev codes: every `launcher/dev/<code>` path segment and the code in use
+/// (however it's written) become `***`. For logs and error messages.
 pub fn redact(text: &str) -> String {
     const MARK: &str = "launcher/dev/";
     let mut out = String::with_capacity(text.len());
@@ -95,9 +95,46 @@ pub fn redact(text: &str) -> String {
     }
     out.push_str(rest);
     match current() {
-        Some(code) => out.replace(&display(&code), "***").replace(&code, "***"),
+        Some(code) => hide(&out, &code),
         None => out,
     }
+}
+
+/// Pure: `text` with `code` as `***` wherever it is: in any case, and with dashes or
+/// spaces between its characters (groups of five, or any other).
+fn hide(text: &str, code: &str) -> String {
+    let want: Vec<char> = code.chars().collect();
+    let Some(&first) = want.first() else {
+        return text.to_string();
+    };
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut out = String::with_capacity(text.len());
+    let (mut i, mut copied) = (0, 0);
+    while i < chars.len() {
+        if chars[i].1.eq_ignore_ascii_case(&first) {
+            // The code from here, separators skipped; `last`: its last character.
+            let (mut j, mut k, mut last) = (i, 0, i);
+            while j < chars.len() && k < want.len() {
+                let c = chars[j].1;
+                if c.eq_ignore_ascii_case(&want[k]) {
+                    (k, last) = (k + 1, j);
+                } else if !(c == '-' || c == ' ') {
+                    break;
+                }
+                j += 1;
+            }
+            if k == want.len() {
+                let end = chars[last].0 + chars[last].1.len_utf8();
+                out.push_str(&text[copied..chars[i].0]);
+                out.push_str("***");
+                (copied, i) = (end, last + 1);
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 /// What the dev folder of the code in use held when last read (for Advanced settings).
@@ -269,6 +306,28 @@ mod tests {
             "launcher/dev/***/files/x.dll and /launcher/dev/"
         );
         assert_eq!(redact("nothing here"), "nothing here");
+    }
+
+    #[test]
+    fn hides_the_code_however_it_is_written() {
+        for written in [
+            CODE.to_string(),
+            display(CODE),
+            CODE.to_uppercase(),
+            "abcde-fghij-klmno-pqrst-uvwxyz".into(),
+            "abcd efgh ijkl mnop qrst uvwx yz".into(),
+        ] {
+            assert_eq!(
+                hide(&format!("code={written}, again: {written}."), CODE),
+                "code=***, again: ***.",
+                "{written}"
+            );
+        }
+        // Part of it, or broken by anything else, stays.
+        for kept in ["abcdefghijklm", "abcde_fghij-klmno-pqrst-uvwxy-z", "näbcdé"] {
+            assert_eq!(hide(kept, CODE), kept);
+        }
+        assert_eq!(hide("x", ""), "x");
     }
 
     #[test]
