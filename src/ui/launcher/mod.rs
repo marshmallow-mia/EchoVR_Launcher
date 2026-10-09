@@ -1899,7 +1899,7 @@ impl Dashboard {
                     self.dialogs.confirm(
                         setup::CONSENT_KEY,
                         "Administrator rights required",
-                        "This step needs administrator rights (it installs into Program Files).\n\nStart the privileged helper now? Windows will ask you to confirm.",
+                        "This step needs administrator rights.\n\nStart the privileged helper now? Windows will ask you to confirm.",
                         crate::ui::dialogs::Icon::Question,
                     );
                 }
