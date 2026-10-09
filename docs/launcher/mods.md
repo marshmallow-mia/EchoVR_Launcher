@@ -110,7 +110,8 @@ nEVR's logs are in the prefix's `drive_c/users/steamuser/AppData/Local/EchoVR/lo
 ## The mods catalogue
 
 The launcher reads `https://release.echovr.de/launcher/mods.json` (this folder has the
-current draft, which is also built in for when it can't be fetched):
+current draft, which is also built in for when it can't be fetched). To test a mod before
+it's in there, see [dev folders](dev-folders.md).
 
 ```json
 { "schema": 1,
