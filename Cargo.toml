@@ -1,6 +1,6 @@
 [package]
 name = "echovr-launcher"
-version = "0.11.10-beta.5"
+version = "0.11.10-beta.6"
 edition = "2021"
 license = "GPL-3.0-or-later"
 description = "Echo VR Launcher"
