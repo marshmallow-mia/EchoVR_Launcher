@@ -63,40 +63,6 @@ fn quoted(a: &str) -> String {
     }
 }
 
-/// Arguments as one Windows command line that gives them back unchanged (the C runtime's
-/// rules: quotes inside escaped, backslashes before a quote doubled), for shortcuts that
-/// hand arguments on, like Virtual Desktop's streamer.
-pub fn windows_command_line(args: &[String]) -> String {
-    args.iter()
-        .map(|a| {
-            if !a.is_empty() && !a.chars().any(|c| c.is_whitespace() || c == '"') {
-                return a.clone();
-            }
-            let mut out = String::from('"');
-            let mut backslashes = 0;
-            for c in a.chars() {
-                match c {
-                    '\\' => backslashes += 1,
-                    '"' => {
-                        out.push_str(&"\\".repeat(backslashes * 2 + 1));
-                        out.push('"');
-                        backslashes = 0;
-                    }
-                    c => {
-                        out.push_str(&"\\".repeat(backslashes));
-                        out.push(c);
-                        backslashes = 0;
-                    }
-                }
-            }
-            out.push_str(&"\\".repeat(backslashes * 2));
-            out.push('"');
-            out
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 /// A lobby id as the game expects it: a UUID (any `.node` suffix dropped).
 pub fn lobby_uuid(input: &str) -> Option<String> {
     let s = input.trim();
@@ -161,14 +127,21 @@ pub fn build(
     match profile.runtime {
         // Virtual Desktop's Oculus mode: its streamer starts the game and injects itself,
         // as its Games list (or its tray's "Inject Game") does; Meta's runtime alone has no
-        // headset under Virtual Desktop.
+        // headset under Virtual Desktop. Given anything after the game, the streamer (1.34)
+        // opens its own window instead, so the game's options stay out (`vd_left_out`).
         Runtime::VirtualDesktop => {
             let Some(streamer) = tools.vd_streamer else {
                 bail!("Virtual Desktop's streamer isn't installed. Install Virtual Desktop Streamer, or choose another way under Virtual Desktop in Settings.");
             };
+            if !args.is_empty() {
+                tracing::warn!(
+                    "Virtual Desktop's Oculus mode starts the game without {}",
+                    join_args(&args)
+                );
+            }
             Ok(Command {
                 program: streamer.to_path_buf(),
-                args: vd_streamer_args(exe, &args),
+                args: vec![exe.to_string_lossy().into_owned()],
                 cwd,
                 env: Vec::new(),
             })
@@ -224,13 +197,14 @@ pub fn build_relay(profile: &LaunchProfile, exe: &Path, tools: &Tools) -> Result
     Ok(c)
 }
 
-/// Virtual Desktop's streamer's arguments to start `exe` with `args`: the game, then its
-/// arguments. The streamer hands them on joined by spaces, their quotes dropped (an argument
-/// with a space would be two), so those with spaces get quotes of their own.
-pub fn vd_streamer_args(exe: &Path, args: &[String]) -> Vec<String> {
-    std::iter::once(exe.to_string_lossy().into_owned())
-        .chain(args.iter().map(|a| quoted(a)))
-        .collect()
+/// What Virtual Desktop's Oculus mode leaves out of a start: its streamer takes only the
+/// game, so the game's options and a match to join don't reach it.
+pub fn vd_left_out(profile: &LaunchProfile, lobby: Option<&str>) -> Vec<String> {
+    if profile.runtime == Runtime::VirtualDesktop && !profile.through_echoxr() {
+        game_args(profile, lobby)
+    } else {
+        Vec::new()
+    }
 }
 
 /// Virtual Desktop's streamer on this PC (Windows): the running one's executable, else the
@@ -303,25 +277,6 @@ mod tests {
         let args = split_args(r#"-a "b c" -d"#);
         assert_eq!(join_args(&args), r#"-a "b c" -d"#);
         assert_eq!(split_args(&join_args(&args)), args);
-    }
-
-    #[test]
-    fn windows_command_lines_give_the_arguments_back() {
-        let args: Vec<String> = [
-            "C:/E/echovr.exe",
-            "-a",
-            "",
-            "b c",
-            r#""C:/My Configs/a.json""#,
-            r#"x\"#,
-            r#"d\ e\"#,
-        ]
-        .map(String::from)
-        .into();
-        assert_eq!(
-            windows_command_line(&args),
-            r#"C:/E/echovr.exe -a "" "b c" "\"C:/My Configs/a.json\"" x\ "d\ e\\""#
-        );
     }
 
     #[test]
@@ -412,10 +367,12 @@ mod tests {
             build(&p, exe, &Tools::default(), None).unwrap().args,
             ["-foo"]
         );
+        // Oculus mode: the streamer gets the game alone (it starts nothing when given more),
+        // and what that leaves out is known for the notice.
         p.runtime = Runtime::VirtualDesktop;
         assert_eq!(
             build(&p, exe, &vd_tools, None).unwrap().args,
-            [exe.to_string_lossy().as_ref(), "-foo"]
+            [exe.to_string_lossy().as_ref()]
         );
         let vd = |via| LaunchProfile {
             runtime: Runtime::VirtualDesktop,
@@ -426,22 +383,17 @@ mod tests {
         assert!(build(&vd(VdVia::Meta), exe, &Tools::default(), None).is_err());
         let c = build(&vd(VdVia::Meta), exe, &vd_tools, Some(LOBBY)).unwrap();
         assert_eq!(c.program, streamer);
-        assert_eq!(
-            c.args,
-            [exe.to_string_lossy().as_ref(), "-lobbyid", LOBBY, "-foo"]
-        );
+        assert_eq!(c.args, [exe.to_string_lossy().as_ref()]);
         assert_eq!(c.cwd, bin);
-        // The streamer drops quotes: an argument with spaces gets its own.
-        let mut spaced = vd(VdVia::Meta);
-        spaced.extra_args = r#"-config "C:/My Configs/a.json""#.into();
         assert_eq!(
-            build(&spaced, exe, &vd_tools, None).unwrap().args,
-            [
-                exe.to_string_lossy().as_ref(),
-                "-config",
-                r#""C:/My Configs/a.json""#
-            ]
+            vd_left_out(&vd(VdVia::Meta), Some(LOBBY)),
+            ["-lobbyid", LOBBY, "-foo"]
         );
+        assert!(vd_left_out(&vd(VdVia::SteamVr), Some(LOBBY)).is_empty());
+        assert!(vd_left_out(&vd(VdVia::VdXr), None).is_empty());
+        let mut plain = vd(VdVia::Meta);
+        plain.extra_args.clear();
+        assert!(vd_left_out(&plain, None).is_empty());
         let c = build(&vd(VdVia::SteamVr), exe, &Tools::default(), Some(LOBBY)).unwrap();
         assert_eq!(c.program, bin.join(echoxr::LAUNCHER));
         assert_eq!(c.args, ["-lobbyid", LOBBY, "-foo"]);

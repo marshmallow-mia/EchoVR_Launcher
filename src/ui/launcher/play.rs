@@ -1402,6 +1402,11 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         revive_dir: revive_dir.as_deref(),
         vd_streamer: vd_streamer.as_deref(),
     };
+    // What the streamer can't hand the game (event builds start without options anyway).
+    let left_out = match v.publisher_lock {
+        Some(_) => Vec::new(),
+        None => launch::vd_left_out(&profile, lobby.as_ref().map(|j| j.lobby.as_str())),
+    };
     let command = if v.publisher_lock.is_some() {
         launch::build_relay(&profile, &exe, &tools)
     } else {
@@ -1435,6 +1440,13 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             d.child_echoxr = through_echoxr;
             d.launched = Some(super::Launched::now());
             d.login_watch = Some(LoginWatching::new(&v.root, &profile));
+            if !left_out.is_empty() {
+                d.notify(if lobby.is_some() {
+                    "VD's Oculus mode can't join matches: Echo VR started without joining"
+                } else {
+                    "VD's Oculus mode can't pass launch options: Echo VR started without them"
+                });
+            }
             if d.state.minimize_on_launch {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
             }

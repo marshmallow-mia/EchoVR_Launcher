@@ -645,21 +645,14 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         (Runtime::Revive, Some(dir)) => {
             revive::create_injector_shortcut(&format!("{name} (Revive)"), &dir, &exe, &args)
         }
-        _ if vd_streamer.is_some() => {
-            // The streamer drops its arguments' quotes: those with spaces get their own,
-            // written so the shortcut's command line hands them on as they are.
-            let vd_args = launch::windows_command_line(&launch::vd_streamer_args(
-                &exe,
-                &launch::split_args(&args),
-            ));
-            platform::create_shortcut(
-                &name,
-                vd_streamer.as_deref().unwrap_or(&exe),
-                Some(vd_args.as_str()),
-                Some(&v.bin_dir()),
-                Some(&exe),
-            )
-        }
+        // The streamer takes only the game: given anything more, it starts nothing.
+        _ if vd_streamer.is_some() => platform::create_shortcut(
+            &name,
+            vd_streamer.as_deref().unwrap_or(&exe),
+            Some(launch::join_args(&[exe.to_string_lossy().into_owned()]).as_str()),
+            Some(&v.bin_dir()),
+            Some(&exe),
+        ),
         _ => platform::create_shortcut(
             &name,
             &exe,
@@ -669,6 +662,9 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
         ),
     };
     match result {
+        Ok(()) if vd_streamer.is_some() && !args.is_empty() => d.notify(
+            "Desktop shortcut ready, without launch options: VD's Oculus mode can't pass them",
+        ),
         Ok(()) => d.notify("The desktop shortcut is ready"),
         Err(e) => d.dialogs.error(
             "Couldn't create shortcut",

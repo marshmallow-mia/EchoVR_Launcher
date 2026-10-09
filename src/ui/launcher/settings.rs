@@ -294,11 +294,17 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         "Passed to echovr.exe after the options above",
     );
     y += BTN_H + dz(12.0);
+    let vd_oculus =
+        d.state.profile.runtime == Runtime::VirtualDesktop && !d.state.profile.through_echoxr();
     y += kit.caps_text(
         x,
         y,
         w,
-        "Added to every start as typed; quotes group words. Desktop shortcuts get them too.",
+        if vd_oculus {
+            "Not in Virtual Desktop's Oculus mode: VD starts Echo VR without them."
+        } else {
+            "Added to every start as typed; quotes group words. Desktop shortcuts get them too."
+        },
         14.0,
         design::GREY,
         0.0,
