@@ -51,13 +51,47 @@ pub fn split_args(s: &str) -> Vec<String> {
 
 /// Arguments back into one command line (for shortcuts): those with spaces in quotes.
 pub fn join_args(args: &[String]) -> String {
+    args.iter().map(|a| quoted(a)).collect::<Vec<_>>().join(" ")
+}
+
+/// An argument as a command line has it: in quotes when it has spaces (or is empty).
+fn quoted(a: &str) -> String {
+    if a.is_empty() || a.chars().any(char::is_whitespace) {
+        format!("\"{a}\"")
+    } else {
+        a.to_string()
+    }
+}
+
+/// Arguments as one Windows command line that gives them back unchanged (the C runtime's
+/// rules: quotes inside escaped, backslashes before a quote doubled), for shortcuts that
+/// hand arguments on, like Virtual Desktop's streamer.
+pub fn windows_command_line(args: &[String]) -> String {
     args.iter()
         .map(|a| {
-            if a.is_empty() || a.chars().any(char::is_whitespace) {
-                format!("\"{a}\"")
-            } else {
-                a.clone()
+            if !a.is_empty() && !a.chars().any(|c| c.is_whitespace() || c == '"') {
+                return a.clone();
             }
+            let mut out = String::from('"');
+            let mut backslashes = 0;
+            for c in a.chars() {
+                match c {
+                    '\\' => backslashes += 1,
+                    '"' => {
+                        out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                        out.push('"');
+                        backslashes = 0;
+                    }
+                    c => {
+                        out.push_str(&"\\".repeat(backslashes));
+                        out.push(c);
+                        backslashes = 0;
+                    }
+                }
+            }
+            out.push_str(&"\\".repeat(backslashes * 2));
+            out.push('"');
+            out
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -132,11 +166,9 @@ pub fn build(
             let Some(streamer) = tools.vd_streamer else {
                 bail!("Virtual Desktop's streamer isn't installed. Install Virtual Desktop Streamer, or choose another way under Virtual Desktop in Settings.");
             };
-            let mut a = vec![exe.to_string_lossy().into_owned()];
-            a.extend(args);
             Ok(Command {
                 program: streamer.to_path_buf(),
-                args: a,
+                args: vd_streamer_args(exe, &args),
                 cwd,
                 env: Vec::new(),
             })
@@ -190,6 +222,15 @@ pub fn build_relay(profile: &LaunchProfile, exe: &Path, tools: &Tools) -> Result
         }
     }
     Ok(c)
+}
+
+/// Virtual Desktop's streamer's arguments to start `exe` with `args`: the game, then its
+/// arguments. The streamer hands them on joined by spaces, their quotes dropped (an argument
+/// with a space would be two), so those with spaces get quotes of their own.
+pub fn vd_streamer_args(exe: &Path, args: &[String]) -> Vec<String> {
+    std::iter::once(exe.to_string_lossy().into_owned())
+        .chain(args.iter().map(|a| quoted(a)))
+        .collect()
 }
 
 /// Virtual Desktop's streamer on this PC (Windows): the running one's executable, else the
@@ -262,6 +303,25 @@ mod tests {
         let args = split_args(r#"-a "b c" -d"#);
         assert_eq!(join_args(&args), r#"-a "b c" -d"#);
         assert_eq!(split_args(&join_args(&args)), args);
+    }
+
+    #[test]
+    fn windows_command_lines_give_the_arguments_back() {
+        let args: Vec<String> = [
+            "C:/E/echovr.exe",
+            "-a",
+            "",
+            "b c",
+            r#""C:/My Configs/a.json""#,
+            r#"x\"#,
+            r#"d\ e\"#,
+        ]
+        .map(String::from)
+        .into();
+        assert_eq!(
+            windows_command_line(&args),
+            r#"C:/E/echovr.exe -a "" "b c" "\"C:/My Configs/a.json\"" x\ "d\ e\\""#
+        );
     }
 
     #[test]
@@ -347,6 +407,11 @@ mod tests {
             ..Default::default()
         };
         // In VR, Windowed left on doesn't start it flat (nEVR: -windowed = no headset).
+        p.runtime = Runtime::MetaLink;
+        assert_eq!(
+            build(&p, exe, &Tools::default(), None).unwrap().args,
+            ["-foo"]
+        );
         p.runtime = Runtime::VirtualDesktop;
         assert_eq!(
             build(&p, exe, &vd_tools, None).unwrap().args,
@@ -366,6 +431,17 @@ mod tests {
             [exe.to_string_lossy().as_ref(), "-lobbyid", LOBBY, "-foo"]
         );
         assert_eq!(c.cwd, bin);
+        // The streamer drops quotes: an argument with spaces gets its own.
+        let mut spaced = vd(VdVia::Meta);
+        spaced.extra_args = r#"-config "C:/My Configs/a.json""#.into();
+        assert_eq!(
+            build(&spaced, exe, &vd_tools, None).unwrap().args,
+            [
+                exe.to_string_lossy().as_ref(),
+                "-config",
+                r#""C:/My Configs/a.json""#
+            ]
+        );
         let c = build(&vd(VdVia::SteamVr), exe, &Tools::default(), Some(LOBBY)).unwrap();
         assert_eq!(c.program, bin.join(echoxr::LAUNCHER));
         assert_eq!(c.args, ["-lobbyid", LOBBY, "-foo"]);

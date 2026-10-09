@@ -646,11 +646,12 @@ pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
             revive::create_injector_shortcut(&format!("{name} (Revive)"), &dir, &exe, &args)
         }
         _ if vd_streamer.is_some() => {
-            let vd_args = launch::join_args(
-                &std::iter::once(exe.to_string_lossy().into_owned())
-                    .chain(launch::split_args(&args))
-                    .collect::<Vec<_>>(),
-            );
+            // The streamer drops its arguments' quotes: those with spaces get their own,
+            // written so the shortcut's command line hands them on as they are.
+            let vd_args = launch::windows_command_line(&launch::vd_streamer_args(
+                &exe,
+                &launch::split_args(&args),
+            ));
             platform::create_shortcut(
                 &name,
                 vd_streamer.as_deref().unwrap_or(&exe),
