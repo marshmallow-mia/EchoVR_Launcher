@@ -1,10 +1,11 @@
+// Filled in by build.rs (the version from Cargo.toml) and compiled from OUT_DIR.
 #include <winver.h>
-1 ICON "../icon.ico"
-1 24 "app.manifest"
+1 ICON "@ROOT@/icon.ico"
+1 24 "@ROOT@/windows/app.manifest"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 0,9,5,1
-PRODUCTVERSION 0,9,5,1
+FILEVERSION @NUMBERS@
+PRODUCTVERSION @NUMBERS@
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -14,12 +15,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "Echo VR Launcher contributors"
       VALUE "FileDescription", "Echo VR Launcher"
-      VALUE "FileVersion", "0.9.5-001"
+      VALUE "FileVersion", "@VERSION@"
       VALUE "InternalName", "EchoVR_Launcher"
       VALUE "LegalCopyright", "GPL-3.0-or-later"
       VALUE "OriginalFilename", "EchoVR_Launcher.exe"
       VALUE "ProductName", "Echo VR Launcher"
-      VALUE "ProductVersion", "0.9.5-001"
+      VALUE "ProductVersion", "@VERSION@"
     END
   END
   BLOCK "VarFileInfo"
