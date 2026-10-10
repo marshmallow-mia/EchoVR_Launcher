@@ -536,10 +536,13 @@ impl Status {
     /// Pure: the plugin lines of a log (JSON lines with a `msg`, or plain lines). A
     /// plugin is named by the name it reports (`asset_patches`); its file comes from the
     /// path when the line has one, else from the load order logged before (the config's
-    /// names, in the order the results follow).
+    /// names, in the order the results follow). nEVR loads in two passes when a plugin is
+    /// marked early, each with its own load order.
     pub fn parse(text: &str) -> Status {
         let mut st = Status::default();
         let mut order: Vec<String> = Vec::new();
+        // How many results came before the load order in use.
+        let mut before = 0;
         for line in text.lines() {
             let msg = message(line);
             let Some(rest) = msg.split("[NEVR.PLUGIN]").nth(1) else {
@@ -548,11 +551,15 @@ impl Status {
             let rest = rest.trim();
             // The load order lists what nEVR goes on to load: its results (loaded or
             // failed, not the skipped ones) follow it in that order.
-            let next_file = |st: &Status, order: &[String]| {
-                let tried = st.plugins.iter().filter(|p| p.status != "skipped").count();
-                order.get(tried).map(|n| file_of(n)).unwrap_or_default()
+            let tried = |st: &Status| st.plugins.iter().filter(|p| p.status != "skipped").count();
+            let next_file = |st: &Status, order: &[String], before: usize| {
+                order
+                    .get(tried(st) - before)
+                    .map(|n| file_of(n))
+                    .unwrap_or_default()
             };
             if let Some(list) = rest.strip_prefix("load order (priority-sorted):") {
+                before = tried(&st);
                 order = list
                     .split(',')
                     .map(|n| n.trim().to_string())
@@ -562,7 +569,7 @@ impl Status {
                 st.complete = true;
             } else if let Some(mut p) = loaded(rest) {
                 if p.file.is_empty() {
-                    p.file = next_file(&st, &order);
+                    p.file = next_file(&st, &order, before);
                 }
                 st.plugins.push(p);
             } else if let Some(r) = rest.strip_prefix("SKIPPED ") {
@@ -867,6 +874,29 @@ mod tests {
         let st = Status::parse(&skipped);
         assert!(st.of("NvrAssetPatches.dll").unwrap().loaded());
         assert_eq!(st.of("Extra.dll").unwrap().status, "skipped");
+    }
+
+    #[test]
+    fn names_plugins_of_both_load_passes() {
+        // A plugin marked early loads in a pass of its own, with its own load order.
+        let log = [
+            r#"{"msg":"[NEVR.PLUGIN] early pass: 1 plugin(s) marked early; loading them before the game reads its data, from X:\\g\\plugins\\"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] load order (priority-sorted): NvrContentOverlay"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] Loaded: content_overlay v1.0.0 (API v5) caps=0x24 via InitEx"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] early pass complete: 1/1 loaded"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] 3 plugin(s) configured, 3 enabled; loading in list order from X:\\g\\plugins\\"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] load order (priority-sorted): NvrGpuRating, DroneFix"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] Loaded: gpu_rating v1.0.0 (API v5) caps=0x22 via InitEx"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] Loaded: drone_fix v1.0.0 (API v5) caps=0x24 via InitEx"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] plugin load complete: 3/3 loaded"}"#,
+        ]
+        .join("\n");
+        let st = Status::parse(&log);
+        let name = |f: &str| st.of(f).map(|p| p.name.clone()).unwrap_or_default();
+        assert_eq!(name("NvrContentOverlay.dll"), "content_overlay");
+        assert_eq!(name("NvrGpuRating.dll"), "gpu_rating");
+        assert_eq!(name("DroneFix.dll"), "drone_fix");
+        assert!(st.complete);
     }
 
     #[test]
