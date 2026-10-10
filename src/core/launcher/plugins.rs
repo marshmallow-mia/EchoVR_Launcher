@@ -181,10 +181,14 @@ pub fn launcher_context(state: &LauncherState) -> Value {
         "server": {
             "address": server.server.address,
             "name": server.name,
+            "kind": if state.game_server.is_some() { serde_json::to_value(server.kind).unwrap_or_default() } else { Value::String(String::new()) },
             "discord_id": server.server.discord_id,
+            "display_name": server.display_name,
             "plugin": server.plugin,
         },
         "event_builds": builds,
+        // What this launcher can do for a plugin, so one can say when it needs a newer one.
+        "features": {"server": true, "echorelay": true},
     })
 }
 
@@ -612,11 +616,12 @@ mod tests {
                 password: "pw".into(),
             },
             plugin: "servers".into(),
+            ..Default::default()
         });
         let c = launcher_context(&s);
         assert_eq!(
             c["server"],
-            json!({"address": "test.example", "name": "Test", "discord_id": "42", "plugin": "servers"})
+            json!({"address": "test.example", "name": "Test", "kind": "nakama", "discord_id": "42", "display_name": "", "plugin": "servers"})
         );
         assert_eq!(c["relay"]["name"], "Alice");
         assert_eq!(c["relay"]["server"], relay::DEFAULT_SERVER);

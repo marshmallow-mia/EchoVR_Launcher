@@ -524,6 +524,24 @@ pub(super) fn event_build(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledV
     );
 }
 
+/// Sets the live build `v` up for the EchoRelay server a plugin chose (EchoLoader and
+/// EchoRelay's patch in nEVR's place), before its PLAY.
+pub(super) fn live_relay(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion) {
+    let v = v.clone();
+    d.start_job(
+        ctx,
+        JobKind::Revive,
+        EVENT_JOB,
+        vec![Res::Relay, Res::Version(v.id.clone())],
+        &format!("Setting up {} for EchoRelay", v.name),
+        "Adding EchoLoader and EchoRelay's patch...",
+        move |cancel, on| match relay::set_up_live(&v, cancel, on) {
+            Ok(()) => JobResult::LiveRelayReady,
+            Err(e) => job_err(e, "Couldn't set up EchoRelay"),
+        },
+    );
+}
+
 /// Sets up EchoXR on Windows (for SteamVR, or Virtual Desktop through it): EchoXR, then
 /// EchoXR into the selected version's folder (asking for administrator rights for the Meta
 /// library's).

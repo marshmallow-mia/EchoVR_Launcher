@@ -272,10 +272,43 @@ pub struct PackServer {
 pub struct GameServer {
     /// What the plugin calls it ("EchoCombat test server"); empty: its address.
     pub name: String,
+    /// EchoVRCE's kind of server (Nakama, through nEVR), or an EchoRelay server.
+    pub kind: ServerKind,
+    /// Where and as whom. On EchoRelay: `host:port`, and the password with
+    /// [`GameServer::display_name`].
     #[serde(flatten)]
     pub server: PackServer,
+    /// EchoRelay: your display name there.
+    pub display_name: String,
     /// The plugin's id.
     pub plugin: String,
+}
+
+/// What kind of server a [`GameServer`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ServerKind {
+    /// EchoVRCE's kind (Nakama): nEVR connects to it.
+    #[default]
+    Nakama,
+    /// An EchoRelay server: the live build plays there as the event builds do, with
+    /// EchoLoader and EchoRelay's patch in nEVR's place.
+    EchoRelay,
+}
+
+impl GameServer {
+    /// An EchoRelay server: its `host:port` and the account there.
+    pub fn echorelay(&self) -> Option<(String, RelayAccount)> {
+        (self.kind == ServerKind::EchoRelay).then(|| {
+            (
+                self.server.address.trim().to_string(),
+                RelayAccount {
+                    name: self.display_name.trim().to_string(),
+                    password: self.server.password.clone(),
+                },
+            )
+        })
+    }
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config

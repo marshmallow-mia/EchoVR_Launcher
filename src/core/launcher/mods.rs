@@ -26,7 +26,7 @@ use super::catalog;
 use super::nevr::{self, PluginLine};
 use super::packs::{self, PackRecord, PackSpec};
 use super::plugin_settings;
-use super::store::{InstalledVersion, LauncherState, PackServer};
+use super::store::{InstalledVersion, LauncherState, PackServer, RelayAccount};
 use super::versions::Step;
 use crate::core::{download, paths};
 
@@ -1015,6 +1015,10 @@ pub fn before_start(
     servers: &Servers,
 ) -> Result<()> {
     let bin = v.bin_dir();
+    // After playing on an EchoRelay server: nEVR back in its place first.
+    if super::relay::leave_live(v)? {
+        tracing::info!("{}: nEVR is back in its place (EchoRelay before)", v.id);
+    }
     if !nevr_in(&bin) {
         // Without nEVR the game needs its config again (Verify put the stock DLL back).
         if nevr::restore_game_config(v)? == nevr::GameConfigStep::Restored {
@@ -1126,9 +1130,34 @@ impl Servers {
     pub fn of(state: &LauncherState) -> Servers {
         Servers {
             packs: state.pack_servers.clone(),
-            game: state.game_server.as_ref().map(|g| g.server.clone()),
+            // An EchoRelay server isn't nEVR's: those starts go without it.
+            game: state
+                .game_server
+                .as_ref()
+                .filter(|g| g.echorelay().is_none())
+                .map(|g| g.server.clone()),
         }
     }
+}
+
+/// The EchoRelay server (its `host:port`, and the account there) the live build `v` plays
+/// on, when a plugin chose one: its starts then go without nEVR (`relay::set_up_live`).
+/// A content pack that is on with a server of its own keeps nEVR, as it needs it.
+pub fn echorelay_for(
+    state: &LauncherState,
+    v: &InstalledVersion,
+) -> Option<(String, RelayAccount)> {
+    if v.publisher_lock.is_some() {
+        return None;
+    }
+    let relay = state.game_server.as_ref()?.echorelay()?;
+    let overlay = Overlay::read(&choices_path(v));
+    let pack_server = overlay.enabled()
+        && overlay
+            .packs()
+            .iter()
+            .any(|p| p.enabled && state.pack_servers.get(&p.id).and_then(backend_of).is_some());
+    (!pack_server).then_some(relay)
 }
 
 /// Pure: the server `s` stands for, when it names one (an empty address: EchoVRCE).
@@ -2662,6 +2691,50 @@ mod tests {
         prepare(&v, &Servers::default()).unwrap();
         assert!(!text().contains("services:"));
         assert!(login.is_file());
+    }
+
+    /// The live build plays on a plugin's EchoRelay server, unless a pack that is on has a
+    /// server of its own (it needs nEVR); event builds keep the classic lobbies, and nEVR's
+    /// config never gets an EchoRelay server.
+    #[test]
+    fn echorelay_unless_a_pack_with_its_own_server_is_on() {
+        use crate::core::launcher::store::{GameServer, ServerKind};
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        with_pack(&v);
+        let mut state = LauncherState::default();
+        assert!(echorelay_for(&state, &v).is_none());
+        state.game_server = Some(GameServer {
+            kind: ServerKind::EchoRelay,
+            server: PackServer {
+                address: "relay.example:777".into(),
+                password: "pw".into(),
+                ..Default::default()
+            },
+            display_name: "Pebbles".into(),
+            ..Default::default()
+        });
+        let (server, account) = echorelay_for(&state, &v).unwrap();
+        assert_eq!(
+            (server.as_str(), account.name.as_str()),
+            ("relay.example:777", "Pebbles")
+        );
+        assert!(Servers::of(&state).game.is_none());
+        state.pack_servers.insert(
+            "test".into(),
+            PackServer {
+                address: "pack.example".into(),
+                ..Default::default()
+            },
+        );
+        assert!(echorelay_for(&state, &v).is_none());
+        set_pack_enabled(&v, "test", false).unwrap();
+        assert!(echorelay_for(&state, &v).is_some());
+        let event = InstalledVersion {
+            publisher_lock: Some("rad15_summer".into()),
+            ..v.clone()
+        };
+        assert!(echorelay_for(&state, &event).is_none());
     }
 
     #[test]

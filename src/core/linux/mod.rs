@@ -392,7 +392,19 @@ pub fn play_from_steam() -> i32 {
     // Started from Steam without the launcher's window too: nEVR's plugin list (the live
     // build's; EchoXR Hands only with it).
     let hands = !event && profile.hands(state.echoxr_hands);
-    if !event {
+    // The live build on an EchoRelay server a plugin chose: as the event builds, without
+    // nEVR (EchoLoader and EchoRelay's patch in its place).
+    let echorelay = crate::core::launcher::mods::echorelay_for(&state, &v);
+    if let Some((server, account)) = &echorelay {
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let set_up = crate::core::launcher::relay::set_up_live(&v, &cancel, &mut |_| {})
+            .and_then(|()| crate::core::launcher::relay::write_live_config(&v, server, account));
+        if let Err(e) = set_up {
+            tracing::error!("--play: {} not set up for EchoRelay: {e:#}", v.id);
+            return 2;
+        }
+    }
+    if !event && echorelay.is_none() {
         if let Err(e) = crate::core::launcher::mods::before_start(
             &v,
             state.own_game_config,

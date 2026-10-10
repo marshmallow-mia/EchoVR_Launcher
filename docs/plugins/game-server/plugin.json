@@ -2,9 +2,9 @@
   "schema": 1,
   "id": "game-server",
   "name": "Game server",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "marshmallow-mia",
-  "summary": "Play Echo VR on another server than EchoVRCE: its address and key, and your account there. Back to EchoVRCE with one button.",
+  "summary": "Play Echo VR on another server than EchoVRCE: a community EchoRelay server (just its address and a name), or a Nakama server. Back to EchoVRCE with one button.",
   "icon": "plugin",
   "settings": {
     "store": {
@@ -13,45 +13,44 @@
     },
     "sections": [
       {
-        "title": "Server",
+        "title": "EchoRelay",
         "fields": [
-          {
-            "key": "name",
-            "type": "text",
-            "label": "Name"
-          },
-          {
-            "key": "address",
-            "type": "text",
-            "label": "Address"
-          },
-          {
-            "key": "key",
-            "type": "secret",
-            "label": "Server key"
-          },
-          {
-            "key": "discord_id",
-            "type": "text",
-            "label": "Discord ID"
-          },
-          {
-            "key": "password",
-            "type": "secret",
-            "label": "Password"
-          }
+          { "key": "relay_address", "type": "text", "label": "Address" },
+          { "key": "relay_name", "type": "text", "label": "Display name" },
+          { "key": "relay_password", "type": "secret", "label": "Password" }
+        ]
+      },
+      {
+        "title": "Nakama",
+        "fields": [
+          { "key": "name", "type": "text", "label": "Name" },
+          { "key": "address", "type": "text", "label": "Address" },
+          { "key": "key", "type": "secret", "label": "Server key" },
+          { "key": "discord_id", "type": "text", "label": "Discord ID" },
+          { "key": "password", "type": "secret", "label": "Password" }
         ]
       }
     ]
   },
   "actions": {
-    "use": [
+    "relay": [
+      {
+        "server": {
+          "kind": "echorelay",
+          "address": "{settings.relay_address|launcher.relay.server}",
+          "display_name": "{settings.relay_name|launcher.relay.name}",
+          "password": "{settings.relay_password|launcher.relay.password}"
+        }
+      }
+    ],
+    "nakama": [
       {
         "require": "{settings.address}",
-        "otherwise": "Fill in the server's address first."
+        "otherwise": "Fill in the Nakama server's address first."
       },
       {
         "server": {
+          "kind": "nakama",
           "name": "{settings.name}",
           "address": "{settings.address}",
           "key": "{settings.key}",
@@ -61,9 +60,7 @@
       }
     ],
     "back": [
-      {
-        "server": null
-      }
+      { "server": null }
     ]
   },
   "page": {
@@ -73,53 +70,68 @@
           "title": "Where Echo VR plays",
           "blocks": [
             {
-              "text": "This plugin needs launcher 0.11.11-beta.1 or newer: Settings, Advanced settings, the Beta channel.",
+              "text": "This plugin needs a newer launcher: Settings, Update now.",
               "tone": "warn",
-              "when": "!{launcher.server}"
+              "when": "!{launcher.features.echorelay}"
+            },
+            { "text": "On EchoVRCE.", "tone": "good", "when": "!{launcher.server.address}" },
+            {
+              "value": "{launcher.server.name|launcher.server.address}",
+              "label": "On an EchoRelay server",
+              "when": "{launcher.server.kind} == echorelay"
             },
             {
-              "text": "On EchoVRCE.",
-              "tone": "good",
-              "when": "!{launcher.server.address}"
+              "value": "{launcher.server.display_name}",
+              "label": "As",
+              "when": "{launcher.server.kind} == echorelay"
             },
             {
               "value": "{launcher.server.name|launcher.server.address}",
-              "label": "On",
-              "when": "{launcher.server.address}"
-            },
-            {
-              "value": "{launcher.server.address}",
-              "label": "Address",
-              "when": "{launcher.server.address}"
+              "label": "On a Nakama server",
+              "when": "{launcher.server.kind} == nakama"
             },
             {
               "value": "{launcher.server.discord_id|'(none)'}",
               "label": "Your Discord ID there",
-              "when": "{launcher.server.address}"
+              "when": "{launcher.server.kind} == nakama"
             },
+            { "text": "{page.error}", "tone": "warn", "when": "{page.error}" },
             {
-              "text": "{page.error}",
-              "tone": "warn",
-              "when": "{page.error}"
-            },
-            {
-              "button": {
-                "label": "Back to EchoVRCE",
-                "action": "back"
-              },
+              "button": { "label": "Back to EchoVRCE", "action": "back" },
               "when": "{launcher.server.address}"
             }
           ]
         },
         {
-          "title": "Another server",
-          "help": "What the server's host gives you, and your account there.",
+          "title": "EchoRelay server",
+          "help": "A community server. Its host gives you the address; your name and password are your account there.",
           "blocks": [
             {
-              "field": "settings.name",
-              "label": "Name",
-              "hint": "For you, e.g. EchoCombat test"
+              "field": "settings.relay_address",
+              "label": "Address",
+              "hint": "host:port. Empty: {launcher.relay.server}, the classic lobbies"
             },
+            {
+              "field": "settings.relay_name",
+              "label": "Display name",
+              "hint": "Empty: your classic lobbies name ({launcher.relay.name|'none yet'})"
+            },
+            {
+              "field": "settings.relay_password",
+              "label": "Password",
+              "hint": "Empty: your classic lobbies password",
+              "secret": true
+            },
+            {
+              "button": { "label": "Play there", "action": "relay", "primary": true }
+            }
+          ]
+        },
+        {
+          "title": "Nakama server",
+          "help": "A server like EchoVRCE's (for example a mod pack's test server): what its host gives you.",
+          "blocks": [
+            { "field": "settings.name", "label": "Name", "hint": "For you, e.g. EchoCombat test" },
             {
               "field": "settings.address",
               "label": "Address",
@@ -131,11 +143,7 @@
               "hint": "Unless the address carries it (token=)",
               "secret": true
             },
-            {
-              "field": "settings.discord_id",
-              "label": "Discord ID",
-              "hint": "Your account there"
-            },
+            { "field": "settings.discord_id", "label": "Discord ID", "hint": "Your account there" },
             {
               "field": "settings.password",
               "label": "Password",
@@ -143,12 +151,7 @@
               "secret": true
             },
             {
-              "button": {
-                "label": "Play there",
-                "action": "use",
-                "enabled": "{settings.address}",
-                "primary": true
-              }
+              "button": { "label": "Play there", "action": "nakama", "enabled": "{settings.address}" }
             }
           ]
         }
@@ -158,7 +161,11 @@
           "title": "How it works",
           "blocks": [
             {
-              "text": "From the next start the live build signs in and finds matches on this server instead of EchoVRCE. Play's line then says Server: and its name.",
+              "text": "From the next start the live build signs in and finds matches on the server you picked, instead of EchoVRCE. Play's line says Server: and its name.",
+              "tone": "muted"
+            },
+            {
+              "text": "On EchoRelay, Echo VR starts the way the event builds do: nEVR's mods and EchoVRCE's friends and parties are off there. Matches need a game server for the live build on that EchoRelay.",
               "tone": "muted"
             },
             {
@@ -166,7 +173,7 @@
               "tone": "muted"
             },
             {
-              "text": "Your EchoVRCE sign-in waits meanwhile and is back with Back to EchoVRCE. Removing this plugin puts EchoVRCE back too.",
+              "text": "Back to EchoVRCE puts everything back. Removing this plugin does too.",
               "tone": "muted"
             }
           ]

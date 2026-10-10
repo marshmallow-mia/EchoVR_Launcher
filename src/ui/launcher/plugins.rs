@@ -12,7 +12,8 @@ use crate::core::launcher::plugin_page::{
     self as pp, Block, Button, Card, Method, PluginPage, Request, Step, Tone as TextTone,
 };
 use crate::core::launcher::plugins::{self as core, Installed, PluginCatalog};
-use crate::core::launcher::store::{GameServer, PackServer};
+use crate::core::launcher::relay;
+use crate::core::launcher::store::{GameServer, PackServer, ServerKind};
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::kit::Kit;
 use crate::ui::parts::Worker;
@@ -183,6 +184,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                         );
                     }
                     d.save();
+                    back_to_nevr(d);
                     d.notify("Echo VR plays on EchoVRCE again");
                 }
             }
@@ -234,8 +236,12 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                         "plugin {id}: the live build plays on {} (the player said yes)",
                         server.server.address
                     );
+                    let to_nakama = server.kind == ServerKind::Nakama;
                     d.state.game_server = Some(server);
                     d.save();
+                    if to_nakama {
+                        back_to_nevr(d);
+                    }
                     d.notify("Echo VR's server changed");
                     if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
                         r.waiting = false;
@@ -554,20 +560,29 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                 }
             }
             Step::Server {
+                kind,
                 name,
                 address,
                 key,
                 discord_id,
+                display_name,
                 password,
             } => {
+                let kind = if pp::render(&kind, &c).trim() == "echorelay" {
+                    ServerKind::EchoRelay
+                } else {
+                    ServerKind::Nakama
+                };
                 let server = GameServer {
                     name: pp::render(&name, &c).trim().to_string(),
+                    kind,
                     server: PackServer {
                         address: pp::render(&address, &c).trim().to_string(),
                         server_key: pp::render(&key, &c).trim().to_string(),
                         discord_id: pp::render(&discord_id, &c).trim().to_string(),
                         password: pp::render(&password, &c),
                     },
+                    display_name: pp::render(&display_name, &c).trim().to_string(),
                     plugin: id.clone(),
                 };
                 if server.server.address.is_empty() {
@@ -578,11 +593,34 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                             g.server.address
                         );
                         d.save();
+                        back_to_nevr(d);
                         d.notify("Echo VR plays on EchoVRCE again");
                     }
                     continue;
                 }
-                if crate::core::launcher::mods::backend_of(&server.server).is_none() {
+                if let Some((address, account)) = server.echorelay() {
+                    if !relay::valid_server(&address) {
+                        return fail(
+                            d,
+                            &id,
+                            format!(
+                                "{address} isn't an EchoRelay address: host:port, e.g. {}.",
+                                relay::DEFAULT_SERVER
+                            ),
+                        );
+                    }
+                    if !relay::valid_account(&account) {
+                        return fail(
+                            d,
+                            &id,
+                            format!(
+                                "EchoRelay needs a display name (up to {} characters) and a password (up to {}).",
+                                relay::NAME_MAX,
+                                relay::PASSWORD_MAX
+                            ),
+                        );
+                    }
+                } else if crate::core::launcher::mods::backend_of(&server.server).is_none() {
                     return fail(
                         d,
                         &id,
@@ -613,6 +651,27 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
     }
 }
 
+/// The live builds set up for an EchoRelay server get nEVR back now (the next start would
+/// otherwise), unless Echo VR runs from them.
+fn back_to_nevr(d: &mut Dashboard) {
+    let local = d.local();
+    for v in d
+        .state
+        .versions
+        .iter()
+        .filter(|v| v.publisher_lock.is_none())
+    {
+        if local.runs(&v.id, &v.root) {
+            continue;
+        }
+        match relay::leave_live(v) {
+            Ok(true) => tracing::info!("{}: nEVR is back in its place (EchoVRCE again)", v.id),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("{}: {e:#}", v.id),
+        }
+    }
+}
+
 /// Pure: what the player is asked before plugin `plugin` sets the game's server.
 fn server_question(plugin: &str, s: &GameServer) -> String {
     let address = &s.server.address;
@@ -621,6 +680,16 @@ fn server_question(plugin: &str, s: &GameServer) -> String {
     } else {
         format!("{} ({address})", s.name)
     };
+    if s.kind == ServerKind::EchoRelay {
+        return format!(
+            "{plugin} wants Echo VR to play on {place}, an EchoRelay server, instead of \
+             EchoVRCE. From the next start the live build signs in there as {}. On EchoRelay \
+             it starts with EchoLoader in nEVR's place: nEVR's mods, and EchoVRCE's friends \
+             and parties, are off there. Only say yes to a server you trust. Back to EchoVRCE: \
+             in {plugin}, or remove the plugin.",
+            s.display_name
+        );
+    }
     let account = if s.server.discord_id.is_empty() {
         String::new()
     } else {
@@ -1541,11 +1610,9 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
         warnings: Vec::new(),
     });
     let settings = [
-        ("name", "EchoCombat test"),
-        ("address", "203.0.113.7:7350"),
-        ("key", "defaultkey"),
-        ("discord_id", "900000000000000001"),
-        ("password", "test"),
+        ("relay_address", "203.0.113.7:6800"),
+        ("relay_name", "Pebbles"),
+        ("relay_password", "test"),
     ];
     d.plugins.views.insert(
         ID.into(),
@@ -1560,14 +1627,15 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
         },
     );
     let server = GameServer {
-        name: "EchoCombat test".into(),
+        kind: ServerKind::EchoRelay,
+        display_name: "Pebbles".into(),
         server: PackServer {
-            address: "203.0.113.7:7350".into(),
-            server_key: "defaultkey".into(),
-            discord_id: "900000000000000001".into(),
+            address: "203.0.113.7:6800".into(),
             password: "test".into(),
+            ..Default::default()
         },
         plugin: ID.into(),
+        ..Default::default()
     };
     match state {
         SnapServer::Filled => {}

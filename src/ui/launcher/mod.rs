@@ -199,6 +199,8 @@ enum JobResult {
     EchoXrReady,
     /// An event build is set up for the classic lobbies (EchoLoader, EchoRelay's patch).
     EventBuildReady,
+    /// The live build is set up for the EchoRelay server a plugin chose.
+    LiveRelayReady,
     QuestInstalled(crate::core::launcher::quest::Installed),
     QuestUpdated,
     /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
@@ -1957,8 +1959,15 @@ impl Dashboard {
             let g = self.state.game_server.as_ref()?;
             let address = g.server.address.trim();
             let name = g.name.trim();
-            (!address.is_empty())
-                .then(|| format!("Server: {}", if name.is_empty() { address } else { name }))
+            let label = if name.is_empty() { address } else { name };
+            let relay = g.kind == crate::core::launcher::store::ServerKind::EchoRelay;
+            (!address.is_empty()).then(|| {
+                if relay {
+                    format!("Server: {label} (EchoRelay)")
+                } else {
+                    format!("Server: {label}")
+                }
+            })
         })
     }
 
@@ -2480,6 +2489,7 @@ impl Dashboard {
                     | JobResult::EchoXrReady
                     | JobResult::LinuxReady(_)
                     | JobResult::EventBuildReady
+                    | JobResult::LiveRelayReady
             );
         match r {
             JobResult::Installed(mut v, update_failed) => {
@@ -2670,6 +2680,11 @@ impl Dashboard {
             JobResult::EventBuildReady => {
                 if !play_after {
                     self.notify("The event build is set up: PLAY starts it");
+                }
+            }
+            JobResult::LiveRelayReady => {
+                if !play_after {
+                    self.notify("Set up for EchoRelay: PLAY starts Echo VR there");
                 }
             }
             JobResult::EchoXrReady => {

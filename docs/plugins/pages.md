@@ -75,7 +75,8 @@ Every text in a page is a template. `{path}` is filled from the page's context:
 | `data.<name>` | what data source `<name>` fetched (its JSON). When it failed: `{"error": "…", "failed": "…"}`, `failed` saying why: `unreachable` (no connection, or no answer in time), `missing` (the server doesn't have that address: 404, 405, 501) or `server` (another error answer). The next fetch that works replaces it |
 | `launcher.relay.server`, `.name`, `.password` | the classic lobbies server and account from the launcher's settings |
 | `launcher.event_builds` | the installed event builds: `[{"id": "halloween", "version": "pc-halloween-2018", "name": "Halloween 2018"}]` |
-| `launcher.server.address`, `.name`, `.discord_id`, `.plugin` | the server the live build plays on instead of EchoVRCE, as a plugin's `server` step set it (empty: EchoVRCE), and that plugin's id. Its key and password aren't shown. Launchers before 0.11.11-beta.1 have no `launcher.server` |
+| `launcher.server.address`, `.name`, `.kind`, `.discord_id`, `.display_name`, `.plugin` | the server the live build plays on instead of EchoVRCE, as a plugin's `server` step set it (empty: EchoVRCE; `kind`: `nakama` or `echorelay`), and that plugin's id. Its key and password aren't shown. Launchers before 0.11.11-beta.1 have no `launcher.server` |
+| `launcher.features.server`, `.echorelay` | `true` when this launcher has the `server` step, and its EchoRelay kind (0.11.12 on): a plugin can say when it needs a newer launcher |
 | `item` | inside a list: its row |
 
 Template syntax:
@@ -141,7 +142,8 @@ to why (the page shows it where it likes, e.g. `{"text": "{page.error}", "tone":
 | `{"play": "{page.answer.build}"}` | starts that installed version as PLAY does: an event build's classic lobbies id (`halloween`, `summer`, `winter`, `christmas`, `halloween2017`), a catalogue id or a version's id. Event builds don't start on Linux yet |
 | `{"copy": "{data.current.match.id}"}` | copies the text |
 | `{"refresh": ["matches", "current"]}` | fetches those data sources again now |
-| `{"server": {"address": "…", "key": "…", "discord_id": "…", "password": "…", "name": "…"}}` | the live build plays on that server instead of EchoVRCE from its next start: the launcher asks the player first, and No ends the action. `{"server": null}` (or an empty address) is EchoVRCE again, without asking. See **The game's server** |
+| `{"server": {"kind": "nakama", "address": "…", "key": "…", "discord_id": "…", "password": "…", "name": "…"}}` | the live build plays on that Nakama server instead of EchoVRCE from its next start: the launcher asks the player first, and No ends the action. `{"server": null}` (or an empty address) is EchoVRCE again, without asking. See **The game's server** |
+| `{"server": {"kind": "echorelay", "address": "host:port", "display_name": "…", "password": "…"}}` | the same for an EchoRelay server, as that name and password |
 
 ### The game's server
 
@@ -151,6 +153,13 @@ server ([../launcher/mods.md](../launcher/mods.md#a-packs-own-server): the same 
 rules for the address). The game's own `_local/config.json` can't do it while nEVR runs:
 nEVR sends every `ws://` and `wss://` address in it through its bridge to its own server.
 
+- **On an EchoRelay server** the live build starts the way the event builds do: EchoLoader 2
+  in nEVR's place (nEVR waits beside it as `BugSplat64.nevr.dll`), EchoRelay's patch as its
+  plugin in `plugins-echorelay/` (nEVR's mods in `plugins/` stay out), and a `_local/config.json`
+  naming the server and the account (a player's own kept as `config.json.before-echorelay`).
+  The first PLAY sets that up (EchoRelay's game files, EchoLoader). A start on EchoVRCE or a
+  Nakama server, Back to EchoVRCE, or removing the plugin puts it all back. JOIN on an
+  EchoVRCE match says why it can't while the live build plays on EchoRelay.
 - **Which server a start uses:** a content pack that is on and has a server of its own uses
   that one. Otherwise the start uses the server a plugin set, and otherwise EchoVRCE.
   Event builds keep the classic lobbies.

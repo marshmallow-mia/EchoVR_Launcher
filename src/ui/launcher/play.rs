@@ -1358,6 +1358,25 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
             None => start(d, ctx, None),
         };
     }
+    // The live build on an EchoRelay server a plugin chose: EchoLoader and EchoRelay's
+    // patch in nEVR's place first; then it starts. EchoVRCE's matches aren't there.
+    if let Target::Installed(v) = d.target() {
+        let echorelay = crate::core::launcher::mods::echorelay_for(&d.state, &v).is_some();
+        if echorelay && lobby.is_some() {
+            d.notify("That match is on EchoVRCE: Echo VR plays on an EchoRelay server now (Back to EchoVRCE in its plugin)");
+            return;
+        }
+        if echorelay && !relay::live_in_place(&v) {
+            if let Some(busy) = d.busy_with(&[Res::Relay, Res::Version(v.id.clone())]) {
+                d.notify(&busy);
+                return;
+            }
+            setup::live_relay(d, ctx, &v);
+            d.pending_lobby = lobby;
+            d.play_after_prep = d.jobs.contains_key(setup::EVENT_JOB);
+            return;
+        }
+    }
     // A version not installed here: the licence question first, once.
     let unpatched = matches!(d.target(), Target::Installed(v) if !v.patched);
     if d.state.owner.is_none() && unpatched && !d.demo {
@@ -1464,8 +1483,20 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             return;
         }
     }
+    // The live build on an EchoRelay server: pointed at it as the account there each time.
+    let echorelay = crate::core::launcher::mods::echorelay_for(&d.state, &v);
+    if let Some((server, account)) = &echorelay {
+        if let Err(e) = relay::write_live_config(&v, server, account) {
+            d.dialogs.error(
+                "Couldn't set up EchoRelay",
+                &format!("{e:#}"),
+                Default::default(),
+            );
+            return;
+        }
+    }
     // The live build with nEVR: its plugins list (config.yaml) as the Mods page has it.
-    if v.publisher_lock.is_none() {
+    if v.publisher_lock.is_none() && echorelay.is_none() {
         let hands = d.state.profile.hands(d.state.echoxr_hands);
         if let Err(e) = crate::core::launcher::mods::before_start(
             &v,

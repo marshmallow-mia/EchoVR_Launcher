@@ -299,9 +299,209 @@ pub fn valid_account(account: &RelayAccount) -> bool {
         && account.password.chars().count() <= PASSWORD_MAX
 }
 
+// ---- the live build on an EchoRelay server ----
+
+/// The live build's lock on an EchoRelay server.
+const LIVE_LOCK: &str = "rad15_live";
+/// Where EchoLoader finds the live build's plugins on EchoRelay: a folder of its own, so
+/// nEVR's mods in `plugins/` stay out (they're nEVR's).
+const LIVE_PLUGINS: &str = "plugins-echorelay";
+/// nEVR, beside its slot while EchoLoader is in it.
+pub const NEVR_ASIDE: &str = "BugSplat64.nevr.dll";
+const LIVE_LOADER_CONFIG_JSON: &str =
+    "{\n    \"log_path\": \"plugin_logs\",\n    \"plugins_dir\": \"plugins-echorelay\"\n}\n";
+/// A key the game doesn't read, marking the `config.json` the launcher wrote for EchoRelay:
+/// a start on EchoVRCE takes that one out again, and leaves anyone else's.
+const MARK_KEY: &str = "x-echovr-launcher";
+const MARK: &str = "echorelay";
+/// A player's own `config.json`, kept while the launcher's EchoRelay one is in its place.
+const CONFIG_ASIDE: &str = "config.json.before-echorelay";
+
+/// Whether the live build `v` is set up for EchoRelay: EchoLoader in nEVR's place (nEVR
+/// beside it), EchoRelay's patch in its plugins folder, the loader's settings for it.
+pub fn live_in_place(v: &InstalledVersion) -> bool {
+    let bin = v.bin_dir();
+    download::sha256_matches(&bin.join(SLOT), LOADER_SHA256)
+        && download::sha256_matches(&bin.join(LIVE_PLUGINS).join(PATCH_PLUGIN), PATCH_SHA256)
+        && std::fs::read_to_string(bin.join(LOADER_CONFIG))
+            .is_ok_and(|t| t == LIVE_LOADER_CONFIG_JSON)
+}
+
+/// Sets the live build `v` up to play on an EchoRelay server, as the event builds are:
+/// EchoLoader 2 in the crash reporter's place (nEVR waits beside it), EchoRelay's patch
+/// as its plugin. Fetched once and checked against their pinned checksums.
+pub fn set_up_live(
+    v: &InstalledVersion,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<()> {
+    if live_in_place(v) {
+        return Ok(());
+    }
+    let zip = game_files(cancel)?;
+    let patch = read_member(&zip, "latest/bin/win10/dbgcore.dll")?;
+    if !download::sha256_reader(&mut patch.as_slice())?.eq_ignore_ascii_case(PATCH_SHA256) {
+        bail!("EchoRelay's patch doesn't match its checksum. Please try again.");
+    }
+    on(Step::Status("Downloading EchoLoader...".into()));
+    let loader = std::fs::read(echoxr::fetch_pinned(
+        LOADER_URL,
+        LOADER_FILE,
+        LOADER_SHA256,
+        cancel,
+        on,
+    )?)?;
+    install_live(&v.bin_dir(), &loader, &patch)?;
+    tracing::info!("{}: EchoLoader and EchoRelay's patch in nEVR's place", v.id);
+    Ok(())
+}
+
+/// Puts `loader` into the slot in `bin` (nEVR, when that's what is there, beside it as
+/// [`NEVR_ASIDE`]) with `patch` as its plugin.
+fn install_live(bin: &Path, loader: &[u8], patch: &[u8]) -> Result<()> {
+    if !bin.is_dir() {
+        bail!("Couldn't find the game's folder {}.", bin.display());
+    }
+    let slot = bin.join(SLOT);
+    let is_loader = std::fs::read(&slot).is_ok_and(|b| b == loader);
+    if slot.is_file() && !is_loader {
+        let aside = bin.join(NEVR_ASIDE);
+        if aside.is_file() {
+            std::fs::remove_file(&aside).with_context(|| format!("remove {}", aside.display()))?;
+        }
+        std::fs::rename(&slot, &aside).context(
+            "Couldn't move nEVR aside for EchoRelay. Please close Echo VR and try again.",
+        )?;
+    }
+    let dir = bin.join(LIVE_PLUGINS);
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    write_atomic(&dir.join(PATCH_PLUGIN), patch)?;
+    write_atomic(&bin.join(LOADER_CONFIG), LIVE_LOADER_CONFIG_JSON.as_bytes())?;
+    write_atomic(&slot, loader)
+}
+
+/// Points the live build `v` at EchoRelay `server` as `account`: its `_local/config.json`
+/// (a player's own kept aside meanwhile).
+pub fn write_live_config(v: &InstalledVersion, server: &str, account: &RelayAccount) -> Result<()> {
+    let local = Path::new(&v.root).join(paths::ARENA_DIR).join("_local");
+    std::fs::create_dir_all(&local).with_context(|| format!("create {}", local.display()))?;
+    let config = local.join("config.json");
+    if config.is_file() && !ours(&config) && !local.join(CONFIG_ASIDE).exists() {
+        std::fs::rename(&config, local.join(CONFIG_ASIDE))
+            .with_context(|| format!("move {} aside", config.display()))?;
+    }
+    write_atomic(&config, live_config_json(server, account).as_bytes())
+}
+
+/// Pure: the live build's `config.json` on `server` as `account`, marked as the launcher's.
+fn live_config_json(server: &str, account: &RelayAccount) -> String {
+    let mut c: serde_json::Value =
+        serde_json::from_str(&config_json(server, LIVE_LOCK, false, account)).unwrap_or_default();
+    if let Some(m) = c.as_object_mut() {
+        m.insert(MARK_KEY.into(), MARK.into());
+    }
+    serde_json::to_string_pretty(&c).unwrap_or_default()
+}
+
+/// Whether the `config.json` at `path` is the one the launcher wrote for EchoRelay.
+fn ours(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|c| c[MARK_KEY] == MARK)
+}
+
+/// Before a start of the live build `v` on EchoVRCE (or a Nakama server): what EchoRelay
+/// needed goes, nEVR is back in its slot, and a player's own `config.json` back in its
+/// place. Nothing happens for a build that never played on EchoRelay. Whether anything
+/// changed.
+pub fn leave_live(v: &InstalledVersion) -> Result<bool> {
+    let bin = v.bin_dir();
+    let local = Path::new(&v.root).join(paths::ARENA_DIR).join("_local");
+    let mut changed = false;
+    let aside = bin.join(NEVR_ASIDE);
+    if aside.is_file() {
+        let slot = bin.join(SLOT);
+        if slot.is_file() {
+            std::fs::remove_file(&slot)
+                .context("Couldn't take EchoLoader out. Please close Echo VR and try again.")?;
+        }
+        std::fs::rename(&aside, &slot).context("Couldn't put nEVR back in its place")?;
+        changed = true;
+    }
+    if std::fs::read_to_string(bin.join(LOADER_CONFIG)).is_ok_and(|t| t == LIVE_LOADER_CONFIG_JSON)
+    {
+        std::fs::remove_file(bin.join(LOADER_CONFIG))?;
+        changed = true;
+    }
+    if bin.join(LIVE_PLUGINS).is_dir() {
+        std::fs::remove_dir_all(bin.join(LIVE_PLUGINS))
+            .context("Couldn't remove EchoRelay's patch. Please close Echo VR and try again.")?;
+        changed = true;
+    }
+    let config = local.join("config.json");
+    if ours(&config) {
+        std::fs::remove_file(&config)?;
+        changed = true;
+    }
+    let kept = local.join(CONFIG_ASIDE);
+    if kept.is_file() && !config.exists() {
+        std::fs::rename(&kept, &config)?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live build to EchoRelay and back: EchoLoader in nEVR's place with the patch in a
+    /// folder of its own and the marked config (a player's own kept), then all as it was.
+    #[test]
+    fn the_live_build_to_echorelay_and_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = InstalledVersion {
+            id: "pc-latest".into(),
+            root: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let bin = v.bin_dir();
+        let local = dir.path().join(paths::ARENA_DIR).join("_local");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::write(bin.join(SLOT), "nevr").unwrap();
+        std::fs::write(local.join("config.json"), "{\"mine\": 1}").unwrap();
+
+        install_live(&bin, b"loader", b"patch").unwrap();
+        write_live_config(&v, "relay.example:777", &account()).unwrap();
+        assert_eq!(std::fs::read(bin.join(SLOT)).unwrap(), b"loader");
+        assert_eq!(std::fs::read(bin.join(NEVR_ASIDE)).unwrap(), b"nevr");
+        assert_eq!(
+            std::fs::read(bin.join(LIVE_PLUGINS).join(PATCH_PLUGIN)).unwrap(),
+            b"patch"
+        );
+        let c: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(local.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(c["publisher_lock"], "rad15_live");
+        assert_eq!(c["matchingservice_host"], "ws://relay.example:777/matching");
+        assert!(local.join(CONFIG_ASIDE).is_file());
+        // Again (the next start on EchoRelay): nEVR stays aside, nothing doubles.
+        install_live(&bin, b"loader", b"patch").unwrap();
+        write_live_config(&v, "relay.example:777", &account()).unwrap();
+        assert_eq!(std::fs::read(bin.join(NEVR_ASIDE)).unwrap(), b"nevr");
+
+        assert!(leave_live(&v).unwrap());
+        assert_eq!(std::fs::read(bin.join(SLOT)).unwrap(), b"nevr");
+        assert!(!bin.join(NEVR_ASIDE).exists() && !bin.join(LIVE_PLUGINS).exists());
+        assert!(!bin.join(LOADER_CONFIG).exists());
+        assert_eq!(
+            std::fs::read_to_string(local.join("config.json")).unwrap(),
+            "{\"mine\": 1}"
+        );
+        assert!(!leave_live(&v).unwrap());
+    }
 
     fn account() -> RelayAccount {
         RelayAccount {

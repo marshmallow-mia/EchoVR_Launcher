@@ -179,10 +179,14 @@ pub enum Step {
     /// Sets the server the live build plays on instead of EchoVRCE, and the account there
     /// (the launcher asks the player first). An empty address: EchoVRCE again.
     Server {
+        /// `echorelay`, or empty / `nakama` for EchoVRCE's kind.
+        kind: String,
         name: String,
         address: String,
         key: String,
         discord_id: String,
+        /// EchoRelay: the display name there.
+        display_name: String,
         password: String,
     },
 }
@@ -568,15 +572,26 @@ fn parse_step(v: &Value, path: &str, w: &mut Vec<Warning>) -> Option<Step> {
             warn(
                 w,
                 path,
-                "server takes {address, key, discord_id, password, name}, or null for EchoVRCE",
+                "server takes {kind, address, key, discord_id, display_name, password, name}, or null for EchoVRCE",
+            );
+            return None;
+        }
+        let kind = s(server, "kind");
+        if !matches!(kind.as_str(), "" | "nakama" | "echorelay") {
+            warn(
+                w,
+                path,
+                format!("{kind:?}: a server's kind is nakama or echorelay"),
             );
             return None;
         }
         return Some(Step::Server {
+            kind,
             name: s(server, "name"),
             address: s(server, "address"),
             key: s(server, "key"),
             discord_id: s(server, "discord_id"),
+            display_name: s(server, "display_name"),
             password: s(server, "password"),
         });
     }
@@ -855,23 +870,31 @@ mod tests {
                                   "key": "{settings.key}", "discord_id": "{settings.id}",
                                   "password": "{settings.password}"}}],
               "back": [{"server": null}],
+              "relay": [{"server": {"kind": "echorelay", "address": "h:1", "display_name": "n"}}],
+              "odd": [{"server": {"kind": "steam"}}],
               "bad": [{"server": "echovrce"}]}}"#,
         );
         let p = p.unwrap();
         assert_eq!(
             p.actions["use"],
             [Step::Server {
+                kind: String::new(),
                 name: "{settings.name}".into(),
                 address: "{settings.address}".into(),
                 key: "{settings.key}".into(),
                 discord_id: "{settings.id}".into(),
+                display_name: String::new(),
                 password: "{settings.password}".into(),
             }]
         );
         assert!(
             matches!(&p.actions["back"][..], [Step::Server { address, .. }] if address.is_empty())
         );
-        assert!(p.actions["bad"].is_empty());
+        assert!(
+            matches!(&p.actions["relay"][..], [Step::Server { kind, display_name, .. }] if kind == "echorelay" && display_name == "n")
+        );
+        assert!(p.actions["odd"].is_empty() && p.actions["bad"].is_empty());
+        assert!(w.iter().any(|x| x.contains("nakama or echorelay")), "{w:?}");
         assert!(w.iter().any(|x| x.contains("null for EchoVRCE")), "{w:?}");
     }
 
@@ -885,14 +908,24 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         let p = p.unwrap();
         assert!(matches!(
-            &p.actions["use"][..],
+            &p.actions["relay"][..],
+            [Step::Server { kind, .. }] if kind == "echorelay"
+        ));
+        assert!(matches!(
+            &p.actions["nakama"][..],
             [Step::Require { .. }, Step::Server { .. }]
         ));
-        let new = serde_json::json!({"launcher": {"server": {"address": "", "name": ""}}});
-        let old = serde_json::json!({"launcher": {"relay": {"server": "x"}}});
-        assert!(!truthy("!{launcher.server}", &new));
-        assert!(truthy("!{launcher.server}", &old));
+        let new = serde_json::json!({"launcher": {"features": {"echorelay": true},
+            "server": {"address": "", "kind": ""}, "relay": {"server": "h:1", "name": "N"}}});
+        let old = serde_json::json!({"launcher": {"server": {"address": ""}}});
+        assert!(!truthy("!{launcher.features.echorelay}", &new));
+        assert!(truthy("!{launcher.features.echorelay}", &old));
         assert!(truthy("!{launcher.server.address}", &new));
+        // An empty field falls back to the classic lobbies account.
+        assert_eq!(
+            render("{settings.relay_name|launcher.relay.name}", &new),
+            "N"
+        );
     }
 
     #[test]
