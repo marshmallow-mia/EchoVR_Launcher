@@ -151,6 +151,21 @@ pub fn shots() -> Vec<Shot> {
             SnapVariant::InstallingAnother,
         ),
         ("mods_installing", Page::Mods, SnapVariant::ModsInstalling),
+        (
+            "settings_pack_server",
+            Page::Settings,
+            SnapVariant::SettingsPackServer,
+        ),
+        (
+            "settings_pack_server_card",
+            Page::Settings,
+            SnapVariant::PackServerCard,
+        ),
+        (
+            "play_pack_server",
+            Page::Play,
+            SnapVariant::SettingsPackServer,
+        ),
         ("play_quest_running", Page::Play, SnapVariant::QuestRunning),
         (
             "echovrce_signed_in",

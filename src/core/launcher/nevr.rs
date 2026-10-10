@@ -26,6 +26,9 @@ use crate::core::paths;
 pub const MARKER: &[u8] = b"[NEVR.BOOT]";
 pub const CONFIG: &str = "config.yaml";
 pub const CREDENTIALS: &str = ".credentials.json";
+/// The game's EchoVRCE sign-in while it plays on another server ([`Backend`]): nEVR tries
+/// a sign-in it finds before the config's account, so it waits beside it.
+pub const CREDENTIALS_ASIDE: &str = ".credentials.json.echovrce";
 /// The file nEVR refuses to start beside.
 pub const DBGCORE: &str = "dbgcore.dll";
 /// The game's own config, which nEVR doesn't need: without one it supplies its built-in
@@ -278,9 +281,87 @@ pub fn local_plugins(v: &InstalledVersion) -> bool {
     std::fs::read_to_string(local_dir(v).join(CONFIG)).is_ok_and(|t| local_plugins_in(&t))
 }
 
-/// Pure: the launcher's `config.yaml`: the plugins (none with mods off), and the local
-/// plugins switch when it is on. Values are written as JSON, which YAML reads as it is.
-pub fn render_config(plugins: &[PluginLine], local: bool) -> String {
+/// A server other than EchoVRCE that a start plays on (a content pack's own, Settings):
+/// its game socket, and the account there. nEVR logs in, matchmakes and (as a dedicated
+/// server) registers there instead.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Backend {
+    /// `ws://host:7350/ws?format=evr&token=<server key>`.
+    pub socket_uri: String,
+    pub server_key: String,
+    pub discord_id: String,
+    pub password: String,
+}
+
+/// Nakama's port, when an address leaves it out.
+const BACKEND_PORT: u16 = 7350;
+
+/// Pure: the game socket for `address` as a server's host gives it out: a `ws://` or
+/// `wss://` address as it is, or `host[:port]` on Nakama's `/ws`; asking for the game's
+/// own message format, and with `key` as its token when it carries none. `None`: not
+/// an address.
+pub fn socket_uri(address: &str, key: &str) -> Option<String> {
+    let a = address.trim();
+    let mut url = if a.starts_with("ws://") || a.starts_with("wss://") {
+        url::Url::parse(a).ok()?
+    } else {
+        if a.is_empty() || a.contains(['/', '?', '#', ' ']) {
+            return None;
+        }
+        let with_port = if a.contains(':') {
+            a.to_string()
+        } else {
+            format!("{a}:{BACKEND_PORT}")
+        };
+        url::Url::parse(&format!("ws://{with_port}/ws")).ok()?
+    };
+    url.host_str().filter(|h| !h.is_empty())?;
+    let has = |k: &str| url.query_pairs().any(|(n, _)| n == k);
+    let mut add = Vec::new();
+    if !has("format") {
+        add.push(("format", "evr"));
+    }
+    if !key.trim().is_empty() && !has("token") {
+        add.push(("token", key.trim()));
+    }
+    if !add.is_empty() {
+        url.query_pairs_mut().extend_pairs(add);
+    }
+    Some(url.to_string())
+}
+
+/// Pure: the launcher's `config.yaml`: the plugins (none with mods off), the local
+/// plugins switch when it is on, and another server than EchoVRCE when this start plays
+/// on one. Values are written as JSON, which YAML reads as it is.
+pub fn render_config(plugins: &[PluginLine], local: bool, backend: Option<&Backend>) -> String {
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+    let mut out = render_plugins(plugins, local);
+    if let Some(b) = backend {
+        // nEVR reads ${…} in any value as an environment variable (and drops the whole
+        // file when one isn't set): $${ is a literal ${.
+        let v = |s: &str| q(&s.replace("${", "$${"));
+        out.push_str("# The server this start plays on (Settings), instead of EchoVRCE.\n");
+        out.push_str(&format!("services:\n  socket_uri: {}\n", v(&b.socket_uri)));
+        if !b.discord_id.is_empty() {
+            out.push_str(&format!("identity:\n  discord_id: {}\n", v(&b.discord_id)));
+        }
+        let mut auth = String::new();
+        if !b.password.is_empty() {
+            auth.push_str(&format!("  password: {}\n", v(&b.password)));
+        }
+        if !b.server_key.is_empty() {
+            auth.push_str(&format!("  server_key: {}\n", v(&b.server_key)));
+        }
+        if !auth.is_empty() {
+            out.push_str("auth:\n");
+            out.push_str(&auth);
+        }
+    }
+    out
+}
+
+/// Pure: the plugins part of [`render_config`].
+fn render_plugins(plugins: &[PluginLine], local: bool) -> String {
     let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
     let mut out = String::from(
         "# Written by the Echo VR launcher before every start, from its Mods page.\n\
@@ -311,11 +392,16 @@ pub fn render_config(plugins: &[PluginLine], local: bool) -> String {
 }
 
 /// Writes `v`'s `config.yaml` (only when it changed).
-pub fn write_config(v: &InstalledVersion, plugins: &[PluginLine], local: bool) -> Result<()> {
+pub fn write_config(
+    v: &InstalledVersion,
+    plugins: &[PluginLine],
+    local: bool,
+    backend: Option<&Backend>,
+) -> Result<()> {
     let dir = local_dir(v);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join(CONFIG);
-    let text = render_config(plugins, local);
+    let text = render_config(plugins, local, backend);
     if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
         return Ok(());
     }
@@ -374,14 +460,55 @@ impl GameLogin {
     }
 }
 
-/// The sign-in nEVR would use for `v` (the first `.credentials.json` in its search).
+/// The sign-in nEVR would use for `v` (the first `.credentials.json` in its search), or
+/// the one waiting while it plays on another server.
 pub fn read_login(v: &InstalledVersion) -> Option<GameLogin> {
-    search(v)
+    [CREDENTIALS, CREDENTIALS_ASIDE]
         .into_iter()
-        .map(|d| d.join(CREDENTIALS))
+        .flat_map(|name| search(v).map(|d| d.join(name)))
         .find(|p| p.is_file())
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
+}
+
+/// Before a start of `v` on another server than EchoVRCE: its EchoVRCE sign-ins wait
+/// beside them (nEVR would try them there first). Returns whether one did.
+pub fn login_aside(v: &InstalledVersion) -> Result<bool> {
+    let mut moved = false;
+    for d in search(v) {
+        let (path, aside) = (d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE));
+        if path.is_file() {
+            // Windows won't replace a hidden file (nEVR hides it): the old one goes first.
+            if aside.is_file() {
+                std::fs::remove_file(&aside)
+                    .with_context(|| format!("remove {}", aside.display()))?;
+            }
+            std::fs::rename(&path, &aside)
+                .with_context(|| format!("move {} aside", path.display()))?;
+            moved = true;
+        }
+    }
+    Ok(moved)
+}
+
+/// Before a start of `v` on EchoVRCE: a sign-in set aside is back (unless a newer one is
+/// there already). Returns whether one came back.
+pub fn login_back(v: &InstalledVersion) -> Result<bool> {
+    let mut back = false;
+    for d in search(v) {
+        let (path, aside) = (d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE));
+        if !aside.is_file() {
+            continue;
+        }
+        if path.is_file() {
+            std::fs::remove_file(&aside).with_context(|| format!("remove {}", aside.display()))?;
+        } else {
+            std::fs::rename(&aside, &path)
+                .with_context(|| format!("put {} back", path.display()))?;
+            back = true;
+        }
+    }
+    Ok(back)
 }
 
 /// Gives `v`'s game `login`: in the game's `_local`, beside `config.yaml`, with any other
@@ -390,8 +517,10 @@ pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
     let dir = local_dir(v);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let ours = dir.join(CREDENTIALS);
-    for d in search(v) {
-        let p = d.join(CREDENTIALS);
+    for p in search(v)
+        .into_iter()
+        .flat_map(|d| [d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE)])
+    {
         // nEVR hides the file, and Windows won't overwrite a hidden file in place.
         if p.is_file() {
             std::fs::remove_file(&p).with_context(|| format!("remove {}", p.display()))?;
@@ -404,8 +533,10 @@ pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
 /// Removes `v`'s game sign-ins that are `user_id`'s (signing out of the launcher signs
 /// the game out too).
 pub fn forget_login(v: &InstalledVersion, user_id: &str) {
-    for d in search(v) {
-        let p = d.join(CREDENTIALS);
+    for p in search(v)
+        .into_iter()
+        .flat_map(|d| [d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE)])
+    {
         let theirs = std::fs::read_to_string(&p)
             .ok()
             .and_then(|t| serde_json::from_str::<GameLogin>(&t).ok())
@@ -749,18 +880,83 @@ mod tests {
                 },
             ],
             false,
+            None,
         );
         assert!(text.contains(
             "plugins:\n  - name: \"NvrAssetPatches\"\n    file: \"NvrAssetPatches.dll\"\n    enabled: true\n    args: {\"logging\":\"normal\"}\n"
         ));
         assert!(text.contains("  - name: \"Other\"\n    file: \"Other.dll\"\n    enabled: false\n"));
-        assert!(render_config(&[], false).ends_with("plugins: []\n"));
+        assert!(render_config(&[], false, None).ends_with("plugins: []\n"));
         assert!(!local_plugins_in(&text));
     }
 
     #[test]
+    fn writes_another_server() {
+        let b = Backend {
+            socket_uri: "ws://127.0.0.1:7350/ws?format=evr&token=k".into(),
+            server_key: "k".into(),
+            discord_id: "900000000000000001".into(),
+            password: "pa${ss".into(),
+        };
+        let text = render_config(&[], false, Some(&b));
+        assert!(text.contains(
+            "services:\n  socket_uri: \"ws://127.0.0.1:7350/ws?format=evr&token=k\"\n\
+             identity:\n  discord_id: \"900000000000000001\"\n\
+             auth:\n  password: \"pa$${ss\"\n  server_key: \"k\"\n"
+        ));
+        // Without one: EchoVRCE, nothing of the kind.
+        assert!(!render_config(&[], false, None).contains("services:"));
+    }
+
+    #[test]
+    fn makes_the_game_socket_of_an_address() {
+        let s = |a: &str, k: &str| socket_uri(a, k);
+        assert_eq!(
+            s("127.0.0.1", "").as_deref(),
+            Some("ws://127.0.0.1:7350/ws?format=evr")
+        );
+        assert_eq!(
+            s("192.168.178.126:7350", "abc").as_deref(),
+            Some("ws://192.168.178.126:7350/ws?format=evr&token=abc")
+        );
+        assert_eq!(
+            s("wss://combat.example.org/ws", "abc").as_deref(),
+            Some("wss://combat.example.org/ws?format=evr&token=abc")
+        );
+        // An address that carries them keeps its own.
+        assert_eq!(
+            s("ws://h:7350/ws?format=evr&token=own", "abc").as_deref(),
+            Some("ws://h:7350/ws?format=evr&token=own")
+        );
+        for bad in ["", "  ", "http://h", "h/ws", "a b"] {
+            assert_eq!(s(bad, ""), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn puts_the_echovrce_sign_in_aside_and_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = InstalledVersion {
+            root: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let local = local_dir(&v);
+        std::fs::create_dir_all(&local).unwrap();
+        let login = GameLogin::new("rt", "u1", "name", 0);
+        write_login(&v, &login).unwrap();
+        assert!(login_aside(&v).unwrap());
+        assert!(!local.join(CREDENTIALS).exists());
+        // Still the game's sign-in as far as the launcher goes: no new device for it.
+        assert_eq!(read_login(&v).map(|l| l.user_id).as_deref(), Some("u1"));
+        assert!(login_back(&v).unwrap());
+        assert!(local.join(CREDENTIALS).is_file());
+        assert!(!local.join(CREDENTIALS_ASIDE).exists());
+        assert!(!login_back(&v).unwrap());
+    }
+
+    #[test]
     fn keeps_the_local_plugins_switch() {
-        let on = render_config(&[], true);
+        let on = render_config(&[], true, None);
         assert!(on.contains("\nx-local-plugins: true\n"));
         assert!(local_plugins_in(&on));
         for yes in [
@@ -971,7 +1167,7 @@ mod tests {
     fn notices_a_config_read_before_ours() {
         let dir = tempfile::tempdir().unwrap();
         let v = version_at(dir.path());
-        write_config(&v, &[], false).unwrap();
+        write_config(&v, &[], false, None).unwrap();
         assert_eq!(shadowing_config(&v), None);
         let near = v.bin_dir().join("_local");
         std::fs::create_dir_all(&near).unwrap();

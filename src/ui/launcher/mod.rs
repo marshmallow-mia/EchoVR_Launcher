@@ -655,6 +655,9 @@ pub enum SnapVariant {
     InstallingAnotherMenu,
     /// Mods while the chosen build is still downloading.
     ModsInstalling,
+    /// Settings with EchoCombat installed and on its own server (and that server's card).
+    SettingsPackServer,
+    PackServerCard,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -753,6 +756,12 @@ pub struct Dashboard {
     library_wanted: Option<bool>,
     /// A spark:// link that came while another card was open: it opens once that closes.
     held_link: Option<String>,
+    /// The content packs installed in each live version (its id, the pack), and when
+    /// that was read: Settings shows their servers, Play where a start goes.
+    packs_seen: Option<(
+        std::time::Instant,
+        Vec<(String, crate::core::launcher::packs::PackRecord)>,
+    )>,
     /// Versions being installed for the first time (they were selected when it started),
     /// with what was selected before: back to it if the install fails or is cancelled.
     select_back: HashMap<String, Option<String>>,
@@ -1513,6 +1522,24 @@ impl Dashboard {
                 let id = crate::ui::widgets::menu_id(play::VERSION_MENU);
                 ctx.data_mut(|d| d.insert_temp(id, true));
             }
+            Some(v @ (SnapVariant::SettingsPackServer | SnapVariant::PackServerCard)) => {
+                let server = crate::core::launcher::store::PackServer {
+                    address: "192.168.178.126:7350".into(),
+                    server_key: "defaultkey".into(),
+                    discord_id: "900000000000000001".into(),
+                    password: "test".into(),
+                };
+                self.state
+                    .pack_servers
+                    .insert("echocombat".into(), server.clone());
+                if v == SnapVariant::PackServerCard {
+                    self.overlay = Some(setup::Overlay::PackServer {
+                        pack: "echocombat".into(),
+                        name: "EchoCombat".into(),
+                        server,
+                    });
+                }
+            }
             Some(
                 v @ (SnapVariant::InstallingAnother
                 | SnapVariant::InstallingAnotherMenu
@@ -1828,6 +1855,63 @@ impl Dashboard {
             || self.launched.is_some()
             || self.local().ours.is_some()
             || matches!(self.snap_game, Some(SnapGame::Launching))
+    }
+
+    /// The content packs installed in each live version (version id, pack), read again
+    /// every few seconds (small files, while a page shows them).
+    fn packs(&mut self) -> Vec<(String, crate::core::launcher::packs::PackRecord)> {
+        if self.demo {
+            let shown = matches!(
+                self.snap_variant,
+                Some(SnapVariant::SettingsPackServer | SnapVariant::PackServerCard)
+            );
+            if !shown {
+                return Vec::new();
+            }
+            let pack = crate::core::launcher::packs::PackRecord {
+                id: "echocombat".into(),
+                name: "EchoCombat".into(),
+                enabled: true,
+                ..Default::default()
+            };
+            return vec![("pc-latest".to_string(), pack)];
+        }
+        let fresh = self
+            .packs_seen
+            .as_ref()
+            .is_some_and(|(at, _)| at.elapsed() < std::time::Duration::from_secs(5));
+        if !fresh {
+            let seen = self
+                .state
+                .versions
+                .iter()
+                .filter(|v| v.publisher_lock.is_none() && (self.demo || v.present()))
+                .flat_map(|v| {
+                    crate::core::launcher::mods::installed_packs(v)
+                        .into_iter()
+                        .map(|p| (v.id.clone(), p))
+                })
+                .collect();
+            self.packs_seen = Some((std::time::Instant::now(), seen));
+        }
+        self.packs_seen
+            .as_ref()
+            .map(|(_, p)| p.clone())
+            .unwrap_or_default()
+    }
+
+    /// Where a start of version `id` plays when a pack that is on there has a server of
+    /// its own: "EchoCombat on 192.168.1.5:7350".
+    fn pack_server_for(&mut self, id: &str) -> Option<String> {
+        let packs = self.packs();
+        packs
+            .iter()
+            .filter(|(v, p)| v == id && p.enabled)
+            .find_map(|(_, p)| {
+                let s = self.state.pack_servers.get(&p.id)?;
+                let address = s.address.trim();
+                (!address.is_empty()).then(|| format!("{} on {address}", p.name))
+            })
     }
 
     /// Why version `v`'s files can't be changed now (`None`: they can): Echo VR runs, or

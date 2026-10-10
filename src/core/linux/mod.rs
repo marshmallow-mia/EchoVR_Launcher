@@ -393,8 +393,12 @@ pub fn play_from_steam() -> i32 {
     // build's; EchoXR Hands only with it).
     let hands = !event && profile.hands(state.echoxr_hands);
     if !event {
-        if let Err(e) = crate::core::launcher::mods::before_start(&v, state.own_game_config, hands)
-        {
+        if let Err(e) = crate::core::launcher::mods::before_start(
+            &v,
+            state.own_game_config,
+            hands,
+            &state.pack_servers,
+        ) {
             tracing::warn!("--play: mods not prepared: {e:#}");
         }
     }

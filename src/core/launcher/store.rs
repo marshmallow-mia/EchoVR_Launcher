@@ -214,6 +214,9 @@ pub struct LauncherState {
     pub relay_server: String,
     /// Your account there, asked for at an event build's first PLAY.
     pub relay_account: Option<RelayAccount>,
+    /// Content packs that play on a server of their own instead of EchoVRCE (by the pack's
+    /// id, e.g. "echocombat"): where, and as whom. None set: EchoVRCE, as without the pack.
+    pub pack_servers: std::collections::BTreeMap<String, PackServer>,
     /// Event builds can be installed. On by default since 0.11.2 (also for a launcher.json
     /// from before, once: schema 1), and on Linux since they run there through EchoXR
     /// (schema 3, once); off, they are listed as coming soon. `"event_builds": false` in
@@ -236,6 +239,21 @@ pub struct LauncherState {
     /// A developer's dev code (Advanced settings): their unpublished mods and plugins are
     /// listed too ([`super::dev_code`]).
     pub dev_code: Option<String>,
+}
+
+/// The server a content pack plays on instead of EchoVRCE (Settings), and your account
+/// there. Like the classic lobbies account, the password goes into the game's config in
+/// plain text (nEVR reads it from there).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct PackServer {
+    /// What the server's host gives out: `host[:port]`, or its `ws://`/`wss://` address.
+    pub address: String,
+    /// The server's key (its host has it), when the address doesn't carry it.
+    pub server_key: String,
+    /// Your account there: a Discord ID and a password.
+    pub discord_id: String,
+    pub password: String,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -289,6 +307,7 @@ impl Default for LauncherState {
             tray: true,
             tray_at_login: false,
             relay_account: None,
+            pack_servers: Default::default(),
             launcher_channel: Channel::Main,
             dev_code: None,
         }

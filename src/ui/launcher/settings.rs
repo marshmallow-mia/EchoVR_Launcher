@@ -335,12 +335,73 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         d.save();
     }
     if d.state.has_event_builds() {
-        classic_lobbies(d, kit, x, y + dz(26.0), w);
+        y = classic_lobbies(d, kit, x, y + dz(26.0), w);
+    }
+    // Content packs installed anywhere: each one's server (EchoCombat's).
+    let mut packs: Vec<(String, String)> =
+        d.packs().into_iter().map(|(_, p)| (p.id, p.name)).collect();
+    packs.sort();
+    packs.dedup_by(|a, b| a.0 == b.0);
+    for (id, name) in packs {
+        y = pack_server(d, kit, x, y + dz(22.0), w, &id, &name);
     }
 }
 
-/// The classic lobbies server the event builds play on, and your account there.
-fn classic_lobbies(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) {
+/// A content pack that can play on a server of its own (EchoCombat): which one it plays
+/// on, and Server… to change it. Returns where the next part starts.
+#[allow(clippy::too_many_arguments)]
+fn pack_server(
+    d: &mut Dashboard,
+    kit: &mut Kit,
+    x: f32,
+    y: f32,
+    w: f32,
+    id: &str,
+    name: &str,
+) -> f32 {
+    kit.caption(x, y, &format!("{name} server"));
+    let fy = y + dz(30.0);
+    let label = "Server…";
+    let bw = kit.button_width(label, None, BTN_H).max(dz(150.0));
+    let set = d
+        .state
+        .pack_servers
+        .get(id)
+        .filter(|s| !s.address.trim().is_empty());
+    let text = match set {
+        Some(s) => s.address.trim().to_string(),
+        None => "EchoVRCE, as without it".to_string(),
+    };
+    let tw = w - bw - dz(14.0);
+    let g = kit.label_galley(&text, design::din(16.0), design::BODY, tw);
+    kit.put(x, fy + (BTN_H - g.size().y) / 2.0, g);
+    if kit
+        .button(
+            &format!("pack-server-{id}"),
+            x + w - bw,
+            fy,
+            bw,
+            BTN_H,
+            Tone::Dark,
+            None,
+            label,
+            true,
+            &format!("Where {name} plays while it's on: EchoVRCE, or a server of its own, and your account there"),
+        )
+        .clicked
+    {
+        d.overlay = Some(setup::Overlay::PackServer {
+            pack: id.to_string(),
+            name: name.to_string(),
+            server: d.state.pack_servers.get(id).cloned().unwrap_or_default(),
+        });
+    }
+    fy + BTN_H
+}
+
+/// The classic lobbies server the event builds play on, and your account there. Returns
+/// where the next part starts.
+fn classic_lobbies(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
     kit.caption(x, y, "Classic lobbies server (event builds)");
     let fy = y + dz(30.0);
     let bw = kit.button_width("Account", None, BTN_H).max(dz(150.0));
@@ -398,7 +459,8 @@ fn classic_lobbies(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) {
         Some(a) => format!("You play there as {}.", a.name),
         None => "An event build asks for your account there when you first play it.".into(),
     };
-    kit.caps_text(x, fy + BTN_H + dz(12.0), w, &note, 14.0, design::GREY, 0.0);
+    let ny = fy + BTN_H + dz(12.0);
+    ny + kit.caps_text(x, ny, w, &note, 14.0, design::GREY, 0.0)
 }
 
 /// STORAGE: where versions go, and the cache.

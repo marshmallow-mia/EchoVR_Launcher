@@ -337,9 +337,12 @@ fn pc_action(d: &mut Dashboard) -> Action {
             };
             a.line.parts.push(state.into());
             a.line.parts.push(v.name.clone());
-            // An event build plays on the classic lobbies server.
+            // An event build plays on the classic lobbies server; a pack with a server of its
+            // own on that.
             if event {
                 a.line.parts.push(d.state.relay_server.clone());
+            } else if let Some(server) = d.pack_server_for(&v.id) {
+                a.line.parts.push(server);
             }
             a.line.parts.extend(size);
             a.line.parts.extend(servers_here(local.servers.len()));
@@ -1448,9 +1451,12 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     // The live build with nEVR: its plugins list (config.yaml) as the Mods page has it.
     if v.publisher_lock.is_none() {
         let hands = d.state.profile.hands(d.state.echoxr_hands);
-        if let Err(e) =
-            crate::core::launcher::mods::before_start(&v, d.state.own_game_config, hands)
-        {
+        if let Err(e) = crate::core::launcher::mods::before_start(
+            &v,
+            d.state.own_game_config,
+            hands,
+            &d.state.pack_servers,
+        ) {
             d.dialogs.error(
                 "Couldn't prepare the mods",
                 &format!("{e:#}"),

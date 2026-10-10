@@ -15,7 +15,9 @@ use crate::core::launcher::launch;
 use crate::core::launcher::patch::{self, FetchError, Source};
 use crate::core::launcher::quest::{self as quest_core, ApkSource, JobError, UpdateOutcome};
 use crate::core::launcher::relay;
-use crate::core::launcher::store::{InstalledVersion, RelayAccount, Runtime, SteamVrVia, Target};
+use crate::core::launcher::store::{
+    InstalledVersion, PackServer, RelayAccount, Runtime, SteamVrVia, Target,
+};
 use crate::core::launcher::versions::Step;
 use crate::core::{download, echoxr, elevation, oauth, paths, platform, revive};
 use crate::ui::design::{self, dz};
@@ -50,6 +52,13 @@ pub(super) enum Overlay {
         name: String,
         password: String,
         play: bool,
+    },
+    /// The server content pack `pack` (its name: `name`) plays on instead of EchoVRCE, and
+    /// your account there, as typed.
+    PackServer {
+        pack: String,
+        name: String,
+        server: PackServer,
     },
     /// The licence patch for installed version `id`: authorize with Discord, or (`link`)
     /// use a patch link.
@@ -878,6 +887,7 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::Install(_)) => install_card(d, k, ctx),
         Some(Overlay::Owner) => owner_card(d, k, ctx),
         Some(Overlay::RelayAccount { .. }) => relay_account_card(d, k, ctx),
+        Some(Overlay::PackServer { .. }) => pack_server_card(d, k),
         Some(Overlay::Licence { .. }) => licence_card(d, k, ctx),
         Some(Overlay::JoinLobby { .. }) => super::play::lobby_card(d, k, ctx),
         Some(Overlay::LoginNotice(_)) => super::play::login_card(d, k, ctx),
@@ -1618,6 +1628,118 @@ fn relay_account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     }
 }
 
+/// A content pack's own server (Settings): its address and key, and your account there.
+/// Saved with an empty address, the pack plays on EchoVRCE.
+fn pack_server_card(d: &mut Dashboard, k: &mut Kit) {
+    let Some(Overlay::PackServer { pack, name, server }) = &mut d.overlay else {
+        return;
+    };
+    let text = PACK_SERVER_NOTE.replace("{name}", name);
+    let (w, pad, gap) = (dz(1000.0), dz(30.0), dz(20.0));
+    let row = dz(30.0) + BTN_H + dz(22.0);
+    let h = dz(46.0)
+        + 2.0 * pad
+        + text_height(k, &text, w - 2.0 * pad)
+        + dz(24.0)
+        + 2.0 * row
+        + dz(10.0)
+        + BTN_H;
+    let (x, mut y, cw, bottom) = card(k, w, h, &format!("{name} server"));
+    y += k.caps_text(x, y, cw, &text, 17.0, design::BODY, dz(PARA)) + dz(24.0);
+    let fw = (cw - gap) / 2.0;
+    // The address and its key; then your account there.
+    let typed = server.address.trim().to_string();
+    let bad_address =
+        !typed.is_empty() && crate::core::launcher::nevr::socket_uri(&typed, "").is_none();
+    k.caption(x, y, "Address");
+    k.caption(x + fw + gap, y, "Server key");
+    k.field(
+        "pack-server-address",
+        &mut server.address,
+        x,
+        y + dz(30.0),
+        fw,
+        BTN_H,
+        "Empty: EchoVRCE",
+        bad_address,
+        "What the server's host gives you: host:port, or a ws:// or wss:// address",
+    );
+    k.secret_field(
+        "pack-server-key",
+        &mut server.server_key,
+        x + fw + gap,
+        y + dz(30.0),
+        fw,
+        BTN_H,
+        "From the server's host",
+        false,
+        "The server's key, unless its address carries it (token=…)",
+    );
+    y += row;
+    let bad_id = !server.discord_id.trim().chars().all(|c| c.is_ascii_digit());
+    k.caption(x, y, "Discord ID");
+    k.caption(x + fw + gap, y, "Password");
+    k.field(
+        "pack-server-id",
+        &mut server.discord_id,
+        x,
+        y + dz(30.0),
+        fw,
+        BTN_H,
+        "Your account's Discord ID",
+        bad_id,
+        "Digits only: Discord's Developer Mode → right-click your name → Copy User ID",
+    );
+    k.secret_field(
+        "pack-server-password",
+        &mut server.password,
+        x + fw + gap,
+        y + dz(30.0),
+        fw,
+        BTN_H,
+        "Your password there",
+        false,
+        "Not one you use anywhere else: it goes into the game's config in plain text",
+    );
+    let on_echovrce = typed.is_empty();
+    let account = !server.discord_id.trim().is_empty() && !server.password.is_empty();
+    let ready = on_echovrce || (!bad_address && !bad_id && account);
+    let tip = if on_echovrce {
+        "Play on EchoVRCE while it's on, as without it"
+    } else if bad_address {
+        "That isn't an address: host:port, or ws://… / wss://…"
+    } else if bad_id {
+        "A Discord ID is digits only"
+    } else if !account {
+        "Your Discord ID and password there first"
+    } else {
+        "Play on this server while it's on"
+    };
+    let (go, cancel) = card_buttons(k, "pack-server", x + cw, bottom - BTN_H, "Save", ready, tip);
+    if cancel {
+        d.overlay = None;
+    } else if go {
+        let (pack, name) = (pack.clone(), name.clone());
+        let mut s = server.clone();
+        s.address = typed;
+        s.server_key = s.server_key.trim().to_string();
+        s.discord_id = s.discord_id.trim().to_string();
+        d.overlay = None;
+        if s.address.is_empty() {
+            d.state.pack_servers.remove(&pack);
+            d.notify(&format!("{name} plays on EchoVRCE"));
+        } else {
+            d.notify(&format!(
+                "{name} plays on {} from its next start",
+                s.address
+            ));
+            d.state.pack_servers.insert(pack, s);
+        }
+        d.save();
+    }
+}
+
+const PACK_SERVER_NOTE: &str = "While {name} is on, Echo VR plays on this server instead of EchoVRCE: you sign in, find matches and play there, with the others who have {name}. Its host gives you the address and its key. Leave the address empty to play on EchoVRCE.\n\nYour account there is a Discord ID and a password. The password goes into the game's config in plain text: don't reuse a real one.";
 const RELAY_NOTE: &str = "Event builds play on the community's classic lobbies server ({server}). Pick a display name and a password: your first login locks the account to that password, and it works in every event build.\n\nDon't reuse a real password: it is sent without encryption.";
 const EVENT_NOTE: &str = "An event build: it plays on the community's classic lobbies server, with EchoRelay's patch instead of the licence check. You pick your account there when you first play it.";
 const PC_LICENCE: &str = "New players need a personal licence patch. Authorize with Discord and the Echo VR Patcher bot builds one for your account; you need to be a member of its server.\n\nIt replaces pnsovr.dll in {version}. The original is kept, so you can take the patch off again in MANAGE.";
