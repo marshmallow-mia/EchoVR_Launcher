@@ -67,6 +67,12 @@ impl<'a> Kit<'a> {
         *offset = offset.clamp(0.0, (content_h - h).max(0.0));
     }
 
+    /// Whether `key` was pressed for what this kit draws: not while a dialog over it has
+    /// the keys (Escape there closes the dialog, not the card under it).
+    pub fn key(&self, key: egui::Key) -> bool {
+        !self.blocked && self.ui.input(|i| i.key_pressed(key))
+    }
+
     pub fn ctx(&self) -> egui::Context {
         self.ui.ctx().clone()
     }

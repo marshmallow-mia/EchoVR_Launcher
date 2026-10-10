@@ -750,6 +750,8 @@ pub struct Dashboard {
     /// SteamVR's library entry being added (`true`) or taken out: Settings' box goes back
     /// if that fails.
     library_wanted: Option<bool>,
+    /// A spark:// link that came while another card was open: it opens once that closes.
+    held_link: Option<String>,
     /// Versions being installed for the first time (they were selected when it started),
     /// with what was selected before: back to it if the install fails or is cancelled.
     select_back: HashMap<String, Option<String>>,
@@ -934,14 +936,25 @@ impl Dashboard {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        let Some(link) = links::take_incoming().filter(|l| links::parse(l).is_some()) else {
+        if let Some(link) = links::take_incoming().filter(|l| links::parse(l).is_some()) {
+            self.held_link = Some(link);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        // Another card is open, maybe half filled in: the link waits until it's closed.
+        let other_card = self
+            .overlay
+            .as_ref()
+            .is_some_and(|o| !matches!(o, setup::Overlay::JoinLobby { .. }));
+        if other_card {
+            return;
+        }
+        let Some(link) = self.held_link.take() else {
             return;
         };
         tracing::info!("opening a spark:// link");
         self.page = Page::Play;
         self.overlay = Some(setup::Overlay::JoinLobby { input: link });
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
     }
 
     /// Settings: open spark:// links with the launcher (taking them over from Spark), or
@@ -2326,6 +2339,9 @@ impl Dashboard {
                 self.check_slot_soon(ctx, &installed);
                 // A new player's patch goes in now, if it is already here.
                 setup::apply_pending(self, ctx);
+                if update_failed.is_none() {
+                    self.update_note.remove(id);
+                }
                 match update_failed {
                     None if elsewhere => self.notify(&format!(
                         "{name} is installed: choose it next to PLAY to play it"
@@ -2353,6 +2369,9 @@ impl Dashboard {
                 self.save();
                 self.check_slot_soon(ctx, id);
                 setup::apply_pending(self, ctx);
+                if r.update_failed.is_none() {
+                    self.update_note.remove(id);
+                }
                 match (r.update_failed, r.repaired.len()) {
                     (Some(why), _) => {
                         self.update_note
@@ -2552,8 +2571,14 @@ impl Dashboard {
                 self.dialogs.error_ui(&e);
             }
         }
+        // The match a JOIN was for, when that waited for the preparation.
+        let lobby = if play_after {
+            self.pending_lobby.take()
+        } else {
+            None
+        };
         if start_now {
-            play::try_start(self, ctx, None);
+            play::try_start(self, ctx, lobby);
         }
         // Cancelled: the updates queued after it don't go on either.
         if cancelled {
@@ -2668,6 +2693,7 @@ impl Dashboard {
         }
         versions::handle_answers(self, &ctx);
         settings::uninstall_answers(self, &ctx);
+        play::answers(self, &ctx);
         // The page right of the unfolded rail: laid out that much narrower (as for a
         // narrower window), at the same height.
         let shift = self.rail_extra(&ctx);
@@ -2805,19 +2831,25 @@ impl Dashboard {
                 design::QUEST_ON,
             ));
         }
-        let games: Vec<&str> = self
+        let games: Vec<(&str, &str)> = self
             .updates
             .findings
             .iter()
             .filter_map(|f| match f {
-                crate::core::updates::Finding::Game { name, .. } => Some(name.as_str()),
+                crate::core::updates::Finding::Game { id, name, .. } => {
+                    Some((id.as_str(), name.as_str()))
+                }
                 _ => None,
             })
             .collect();
-        // Short: the reason fits under the name in the unfolded rail.
+        // Short: the reason fits under the name in the unfolded rail. Play shows the
+        // chosen version's: another one's is named (the version menu marks it too).
         match games.as_slice() {
             [] => {}
-            [_] => out.push((Page::Play, "Update ready".into(), design::QUEST_ON)),
+            [(id, _)] if self.state.selected.as_deref() == Some(*id) => {
+                out.push((Page::Play, "Update ready".into(), design::QUEST_ON))
+            }
+            [(_, name)] => out.push((Page::Play, format!("Update for {name}"), design::QUEST_ON)),
             more => out.push((
                 Page::Play,
                 format!("{} updates ready", more.len()),
@@ -2826,8 +2858,8 @@ impl Dashboard {
         }
         match self.updates.plugins() {
             0 => {}
-            1 => out.push((Page::Mods, "1 plugin update".into(), design::QUEST_ON)),
-            n => out.push((Page::Mods, format!("{n} plugin updates"), design::QUEST_ON)),
+            1 => out.push((Page::Mods, "1 mod update".into(), design::QUEST_ON)),
+            n => out.push((Page::Mods, format!("{n} mod updates"), design::QUEST_ON)),
         }
         if matches!(self.launcher_update, LauncherUpdate::Available(_)) {
             out.push((
@@ -3092,6 +3124,8 @@ impl Dashboard {
                     ("PCVR: set up EchoXR", design::QUEST_WARN)
                 } else if needs_steamvr {
                     ("PCVR: set up SteamVR", design::QUEST_WARN)
+                } else if cfg!(target_os = "macos") && !self.demo {
+                    ("PCVR: not on macOS", design::QUEST_OFF)
                 } else {
                     ("PCVR: ready", design::QUEST_ON)
                 }

@@ -72,43 +72,6 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             d.check_quest(ctx, false);
         }
     }
-    if !kit.ghost {
-        if d.dialogs.take(PREPARE_LINUX).is_some_and(|a| a.is_yes()) {
-            d.play_after_prep = true;
-            setup::linux_setup(d, ctx);
-        }
-        if let Some(answer) = d.dialogs.take(LAUNCH_ANYWAY) {
-            let lobby = d.pending_lobby.take();
-            if answer.is_yes() {
-                start(d, ctx, lobby);
-            }
-        }
-        if let Some(answer) = d.dialogs.take(NEVR_BLOCKED) {
-            let id = d.nevr_blocked.take();
-            match (answer, id) {
-                (Answer::Button(0), Some(id)) => allow_and_repair(d, ctx, &id),
-                (Answer::Button(1), _) => {
-                    crate::core::platform::open_url("windowsdefender://threat")
-                }
-                _ => {}
-            }
-        }
-        if let Some(Answer::Button(i)) = d.dialogs.take(VD_SWITCH) {
-            let via = match i {
-                0 => Some(VdVia::SteamVr),
-                1 => Some(VdVia::VdXr),
-                _ => None,
-            };
-            if let Some(via) = via {
-                d.state.profile.vd_via = via;
-                d.save();
-                d.notify(match via {
-                    VdVia::SteamVr => "Virtual Desktop plays through SteamVR (EchoXR) now: PLAY again",
-                    _ => "Virtual Desktop plays through its own OpenXR runtime (EchoXR) now: PLAY again",
-                });
-            }
-        }
-    }
     kit.image_d("logo_echovr.png", hero::LOGO);
     easter_egg(d, kit);
     let mut a = match d.platform {
@@ -140,6 +103,47 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     }
     news(d, kit);
     panel::at_right(kit, |k| now::show(d, k, ctx));
+}
+
+/// The answers to PLAY's questions (launch anyway, Windows blocked the mod loader, VD's
+/// Oculus mode, adding Echo VR to Steam), whichever page is showing: they come up off
+/// Play too (after an install, JOIN on Servers).
+pub(super) fn answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if d.dialogs.take(PREPARE_LINUX).is_some_and(|a| a.is_yes()) {
+        setup::linux_setup(d, ctx);
+        d.play_after_prep = d.jobs.contains_key(setup::LINUX_JOB);
+    }
+    if let Some(answer) = d.dialogs.take(LAUNCH_ANYWAY) {
+        let lobby = d.pending_lobby.take();
+        if answer.is_yes() {
+            start(d, ctx, lobby);
+        }
+    }
+    if let Some(answer) = d.dialogs.take(NEVR_BLOCKED) {
+        let id = d.nevr_blocked.take();
+        match (answer, id) {
+            (Answer::Button(0), Some(id)) => allow_and_repair(d, ctx, &id),
+            (Answer::Button(1), _) => crate::core::platform::open_url("windowsdefender://threat"),
+            _ => {}
+        }
+    }
+    if let Some(Answer::Button(i)) = d.dialogs.take(VD_SWITCH) {
+        let via = match i {
+            0 => Some(VdVia::SteamVr),
+            1 => Some(VdVia::VdXr),
+            _ => None,
+        };
+        if let Some(via) = via {
+            d.state.profile.vd_via = via;
+            d.save();
+            d.notify(match via {
+                VdVia::SteamVr => "Virtual Desktop plays through SteamVR (EchoXR) now: PLAY again",
+                _ => {
+                    "Virtual Desktop plays through its own OpenXR runtime (EchoXR) now: PLAY again"
+                }
+            });
+        }
+    }
 }
 
 /// What PLAY does.
@@ -430,6 +434,13 @@ fn pc_action(d: &mut Dashboard) -> Action {
             if a.update_ready && a.update_enabled {
                 a.update_tip = ready_tip(d, game, plugins, launcher);
             }
+            // The orange "!": what it means, and that a click tries again.
+            if a.update_alert && a.update_enabled {
+                a.update_tip = format!(
+                    "Its last update didn't finish: click to try again. {}",
+                    a.update_tip
+                );
+            }
             a.update = Update::Pc(Box::new(v));
         }
         Target::Missing(_) => {
@@ -627,22 +638,28 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
             Main::Stop => stop(d),
             Main::Patch(id) => d.overlay = Some(setup::licence(&id)),
             Main::PrepareRevive => {
-                d.play_after_prep = true;
+                d.pending_lobby = None;
                 setup::revive(d, ctx);
+                d.play_after_prep = d.jobs.contains_key(setup::REVIVE_JOB);
             }
             Main::PrepareEchoXr => {
-                d.play_after_prep = true;
+                d.pending_lobby = None;
                 setup::echoxr_windows(d, ctx);
+                d.play_after_prep = d.jobs.contains_key(setup::ECHOXR_JOB);
             }
-            Main::PrepareLinux if setup::linux_needs_shortcut() => d.dialogs.confirm(
-                PREPARE_LINUX,
-                "Add Echo VR to Steam",
-                "On Linux, Echo VR starts through Steam: it is added to your Steam library once, and Steam closes and restarts for that.\n\nThen Echo VR starts.",
-                crate::ui::dialogs::Icon::Info,
-            ),
+            Main::PrepareLinux if setup::linux_needs_shortcut() => {
+                d.pending_lobby = None;
+                d.dialogs.confirm(
+                    PREPARE_LINUX,
+                    "Add Echo VR to Steam",
+                    "On Linux, Echo VR starts through Steam: it is added to your Steam library once, and Steam closes and restarts for that.\n\nThen Echo VR starts.",
+                    crate::ui::dialogs::Icon::Info,
+                )
+            }
             Main::PrepareLinux => {
-                d.play_after_prep = true;
+                d.pending_lobby = None;
                 setup::linux_setup(d, ctx);
+                d.play_after_prep = d.jobs.contains_key(setup::LINUX_JOB);
             }
             Main::QuestConnect => d.check_quest(ctx, true),
             Main::QuestPlay => quest_launch(d, ctx),
@@ -774,7 +791,7 @@ pub(super) fn lobby_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         return;
@@ -784,6 +801,12 @@ pub(super) fn lobby_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         (true, true) => ("Watch", "Start Echo VR on the monitor and watch this match"),
         (true, false) => ("Join", "Start Echo VR and join this lobby"),
         (false, _) => ("Join", "Queue this match as your next one"),
+    };
+    // Off: what's missing.
+    let tip = match (&id, direct || signed_in) {
+        (None, _) => "Paste a lobby link or ID first",
+        (Some(_), false) => "Sign in with EchoVRCE to queue a match while Echo VR runs",
+        _ => tip,
     };
     let join = k
         .button(
@@ -799,15 +822,13 @@ pub(super) fn lobby_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             tip,
         )
         .clicked
-        || (id.is_some()
-            && (direct || signed_in)
-            && ctx.input(|i| i.key_pressed(egui::Key::Enter)));
+        || (id.is_some() && (direct || signed_in) && k.key(egui::Key::Enter));
     if let (true, Some(id)) = (join, id) {
         d.overlay = None;
         d.state.last_lobby = text;
         d.save();
         if direct {
-            try_start(d, ctx, Some(id));
+            self::join(d, ctx, id);
         } else {
             super::servers::queue_lobby(d, ctx, &id.lobby);
         }
@@ -1230,6 +1251,56 @@ impl Join {
     }
 }
 
+/// Starts Echo VR into `lobby` (JOIN on Servers or Friends, Join a lobby, a link) the way
+/// PLAY would start it: the licence patch or the VR setup first (the game then starts into
+/// the match), or says why it can't.
+pub(super) fn join(d: &mut Dashboard, ctx: &egui::Context, lobby: Join) {
+    let a = pc_action(d);
+    if !a.enabled {
+        d.notify(&a.tip);
+        return;
+    }
+    let prepare = |d: &mut Dashboard,
+                   ctx: &egui::Context,
+                   job: &str,
+                   f: fn(&mut Dashboard, &egui::Context)| {
+        d.pending_lobby = Some(lobby.clone());
+        f(d, ctx);
+        d.play_after_prep = d.jobs.contains_key(job);
+    };
+    match a.main {
+        // An event build plays the classic lobbies: these matches are the live build's.
+        Main::Play if matches!(d.target(), Target::Installed(v) if v.publisher_lock.is_some()) => {
+            d.dialogs.info(
+                "Choose the live build to join",
+                "Event builds play on the classic lobbies server, not in these matches. Choose the live build next to PLAY, then join again.",
+            )
+        }
+        Main::Play => try_start(d, ctx, Some(lobby)),
+        Main::Patch(id) => {
+            d.notify("Your licence patch first: then join again");
+            d.overlay = Some(setup::licence(&id));
+        }
+        Main::PrepareRevive => prepare(d, ctx, setup::REVIVE_JOB, setup::revive),
+        Main::PrepareEchoXr => prepare(d, ctx, setup::ECHOXR_JOB, setup::echoxr_windows),
+        Main::PrepareLinux if setup::linux_needs_shortcut() => {
+            d.pending_lobby = Some(lobby);
+            d.dialogs.confirm(
+                PREPARE_LINUX,
+                "Add Echo VR to Steam",
+                "On Linux, Echo VR starts through Steam: it is added to your Steam library once, and Steam closes and restarts for that.\n\nThen Echo VR starts.",
+                crate::ui::dialogs::Icon::Info,
+            )
+        }
+        Main::PrepareLinux => prepare(d, ctx, setup::LINUX_JOB, setup::linux_setup),
+        Main::ToInstall => {
+            d.notify("Install Echo VR first: then join again");
+            d.page = Page::Install;
+        }
+        _ => d.notify(&a.tip),
+    }
+}
+
 /// Starts the PC game (joining a match when given), after warning about anything that
 /// looks wrong.
 pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
@@ -1245,8 +1316,8 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
         // installed has the patch as EchoRelay's own installer puts it in); then it starts.
         if let Target::Installed(v) = d.target() {
             if !relay::in_place(&v) {
-                d.play_after_prep = true;
                 setup::event_build(d, ctx, &v);
+                d.play_after_prep = d.jobs.contains_key(setup::EVENT_JOB);
                 return;
             }
         }
@@ -1716,7 +1787,7 @@ pub(super) fn login_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         return;

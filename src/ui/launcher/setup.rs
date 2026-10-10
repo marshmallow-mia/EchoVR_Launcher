@@ -129,9 +129,13 @@ pub(super) fn licence(id: &str) -> Overlay {
 /// Asks before installing `e` on this PC: your licence and how you play, prefilled with
 /// your last answers.
 pub(super) fn ask_install(d: &mut Dashboard, e: VersionEntry) {
-    // Event builds always start in VR.
+    // Event builds always start in VR: the first VR choice this system offers (Meta
+    // Link isn't one on Linux).
     let runtime = match d.state.profile.runtime {
-        Runtime::Flat if e.publisher_lock.is_some() => Runtime::MetaLink,
+        Runtime::Flat if e.publisher_lock.is_some() => runtimes(d)
+            .into_iter()
+            .find(|rt| *rt != Runtime::Flat)
+            .unwrap_or(Runtime::MetaLink),
         rt => rt,
     };
     let copy = offers_copy(d, &e)
@@ -881,8 +885,8 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::StartServer { .. }) => super::servers::start_card(d, k, ctx),
         Some(Overlay::ShareMatch { .. }) => super::servers::share_card(d, k, ctx),
         Some(Overlay::UploadLogs { .. }) => super::settings::upload_card(d, k, ctx),
-        Some(Overlay::Credits { .. }) => super::settings::credits_card(d, k, ctx),
-        Some(Overlay::Uninstall { .. }) => super::settings::uninstall_card(d, k, ctx),
+        Some(Overlay::Credits { .. }) => super::settings::credits_card(d, k),
+        Some(Overlay::Uninstall { .. }) => super::settings::uninstall_card(d, k),
         Some(Overlay::PluginSettings(_)) => super::mods::settings_card(d, k, ctx),
         Some(Overlay::Advanced) => super::settings::advanced_card(d, k, ctx),
         None => {}
@@ -1071,7 +1075,6 @@ fn patch_options(
 #[allow(clippy::too_many_arguments)]
 fn card_buttons(
     k: &mut Kit,
-    ctx: &egui::Context,
     key: &str,
     right: f32,
     by: f32,
@@ -1095,7 +1098,7 @@ fn card_buttons(
             "",
         )
         .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        || k.key(egui::Key::Escape);
     let go = k
         .button(
             &format!("{key}-go"),
@@ -1374,7 +1377,6 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     };
     let (go, cancel) = card_buttons(
         k,
-        ctx,
         "install",
         x + cw,
         bottom - BTN_H,
@@ -1447,7 +1449,7 @@ fn owner_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             "",
         )
         .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        || k.key(egui::Key::Escape);
     if cancel {
         d.overlay = None;
         d.pending_lobby = None;
@@ -1509,7 +1511,6 @@ fn licence_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     };
     let (go, cancel) = card_buttons(
         k,
-        ctx,
         "licence",
         x + cw,
         bottom - BTN_H,
@@ -1595,8 +1596,15 @@ fn relay_account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     } else {
         ("Save", "Keep this account for every event build")
     };
+    // Off: what's missing.
+    let tip = match (account.name.is_empty(), account.password.is_empty()) {
+        _ if ready => tip,
+        (true, _) => "Type a display name first",
+        (false, true) => "Type a password first",
+        (false, false) => "The name or password is too long",
+    };
     let play = *play;
-    let (go, cancel) = card_buttons(k, ctx, "relay", x + cw, bottom - BTN_H, label, ready, tip);
+    let (go, cancel) = card_buttons(k, "relay", x + cw, bottom - BTN_H, label, ready, tip);
     if cancel {
         d.overlay = None;
     } else if go {

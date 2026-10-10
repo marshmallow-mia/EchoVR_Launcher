@@ -1411,7 +1411,7 @@ pub(super) fn tokens_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         return;

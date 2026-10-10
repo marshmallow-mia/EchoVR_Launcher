@@ -708,7 +708,7 @@ fn commit_text(
         }
         return;
     }
-    if k.ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if k.key(egui::Key::Escape) {
         st.drafts.remove(&f.key);
         st.errors.remove(&f.key);
         return;

@@ -727,7 +727,7 @@ fn join(d: &mut Dashboard, ctx: &egui::Context, match_id: &str) {
     };
     if starts_pc(d) {
         let lobby = super::play::Join::lobby(game::lobby_id(match_id));
-        super::play::try_start(d, ctx, Some(lobby));
+        super::play::join(d, ctx, lobby);
         return;
     }
     let quest = d.platform == Platform::Quest;
@@ -830,7 +830,7 @@ fn share(d: &mut Dashboard, match_id: &str, started: bool) {
 pub(super) fn follow_up(d: &mut Dashboard, ctx: &egui::Context) {
     if let Some(lobby) = d.servers.launch.take() {
         if starts_pc(d) {
-            super::play::try_start(d, ctx, Some(super::play::Join::lobby(lobby)));
+            super::play::join(d, ctx, super::play::Join::lobby(lobby));
         }
     }
     if let Some(id) = d.servers.ready.take() {
@@ -1041,7 +1041,7 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         return;
@@ -1223,7 +1223,7 @@ pub(super) fn share_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         return;

@@ -208,7 +208,7 @@ fn find_card(
     );
     let text = d.servers.search.trim().to_string();
     let can = game::search_pattern(&text).is_some() && !d.servers.searching;
-    let enter = ended && ctx.input(|i| i.key_pressed(egui::Key::Enter));
+    let enter = ended && k.key(egui::Key::Enter);
     let clicked = k
         .button(
             "friends-search-go",

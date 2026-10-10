@@ -364,20 +364,40 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
             h.line
                 .parts
                 .extend(e.size.map(|s| format!("{} download", play::gb(s))));
-            h.line.path = Some(crate::core::launcher::versions::root_for(
-                &d.state.library,
-                &e.id,
-            ));
-            h.line.path_click = PathClick::ChooseLibrary;
-            let short = matches!((e.size, free), (Some(need), Some(free)) if need > free);
+            // Its files gone: REINSTALL puts them back into its own folder.
+            match &gone {
+                Some(v) => {
+                    h.line.path = Some(v.root.clone());
+                    h.line.path_click = PathClick::Nothing;
+                }
+                None => {
+                    h.line.path = Some(crate::core::launcher::versions::root_for(
+                        &d.state.library,
+                        &e.id,
+                    ));
+                    h.line.path_click = PathClick::ChooseLibrary;
+                }
+            }
+            // The zip is unpacked next to itself, into about 1.2-1.6 times its size
+            // (measured), and deleted only after.
+            let need = e.size.map(|s| s.saturating_mul(27) / 10);
+            let short = matches!((need, free), (Some(need), Some(free)) if need > free);
             h.tip = if missing {
                 "Download this version again".into()
             } else {
                 "Download and install Echo VR into the folder shown above".into()
             };
+            if cfg!(target_os = "macos") && !d.demo {
+                h.tip
+                    .push_str(" (it plays on Windows and Linux, not on macOS)");
+            }
             if short {
-                h.line.problem("Not enough space");
-                h.tip = "Not enough space here: change the folder".into();
+                let need = need.map(play::gb).unwrap_or_default();
+                h.line
+                    .problem(format!("Not enough space (needs about {need})"));
+                h.tip = format!(
+                    "Installing needs about {need} free here while the download is unpacked: change the folder"
+                );
             }
             if external {
                 h.line

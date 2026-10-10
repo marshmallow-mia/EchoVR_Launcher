@@ -635,7 +635,7 @@ pub(super) fn ask_uninstall(d: &mut Dashboard) {
 }
 
 /// UNINSTALL: each part with what it removes, ticked or not; then a confirmation.
-pub(super) fn uninstall_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+pub(super) fn uninstall_card(d: &mut Dashboard, k: &mut Kit) {
     use crate::core::uninstall::Part;
     let parts = Part::all();
     let Some(setup::Overlay::Uninstall { picked }) = &mut d.overlay else {
@@ -714,7 +714,7 @@ pub(super) fn uninstall_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         return;
@@ -1263,7 +1263,7 @@ pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         return;
@@ -1426,7 +1426,7 @@ pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
         d.upload_sources.clear();
@@ -1454,7 +1454,7 @@ pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
 
 /// CREDITS: each part of the launcher and what it brings along, with who made it, its
 /// licence and a link; Echo VR's owners under it.
-pub(super) fn credits_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+pub(super) fn credits_card(d: &mut Dashboard, k: &mut Kit) {
     let (w, h) = (dz(1100.0), dz(860.0));
     let (x, y, cw, bottom) = setup::card(k, w, h, "Credits");
     let note_h: f32 = k
@@ -1601,7 +1601,7 @@ pub(super) fn credits_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) 
         "",
     )
     .clicked
-        || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        || k.key(egui::Key::Escape)
     {
         d.overlay = None;
     }
