@@ -3,7 +3,7 @@
 //! About) in the right-hand panel.
 
 use super::install::{myriad, text_link};
-use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg, Res};
+use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg, Page, Res};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{Runtime, SteamVrVia, VdVia};
 use crate::core::launcher::update_check::Channel;
@@ -148,12 +148,30 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     // SteamVR through Revive (on Windows; EchoXR instead is its switch on the Mods
     // page): Revive's own options.
     if cfg!(windows) || d.demo {
-        if d.state.profile.runtime != Runtime::Revive
-            || d.state.profile.steamvr_via != SteamVrVia::Revive
-        {
+        if d.state.profile.runtime != Runtime::Revive {
             return;
         }
         let ay = top + dz(TILE_H) + dz(24.0);
+        // Through EchoXR: Revive's options don't apply; where that's switched.
+        if d.state.profile.steamvr_via != SteamVrVia::Revive {
+            let text = "SteamVR plays through EchoXR. Revive's options (artwork, SteamVR's library) come back when EchoXR is removed on the Mods page.";
+            let lw = kit.link_width("Mods page", 14.0);
+            let th = kit.caps_text(x, ay, w - lw - dz(20.0), text, 14.0, design::GREY, 0.0);
+            if kit
+                .link(
+                    "settings-to-mods",
+                    x + w - lw,
+                    ay + (th - dz(18.0)).max(0.0) / 2.0,
+                    "Mods page",
+                    14.0,
+                    "Open the Mods page (EchoXR's row)",
+                )
+                .clicked
+            {
+                d.page = Page::Mods;
+            }
+            return;
+        }
         let cx = x;
         let cy = ay;
         if kit.check(
@@ -340,12 +358,19 @@ fn classic_lobbies(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) {
     );
     if done {
         let typed = d.relay_server_field.trim().to_string();
-        if typed.is_empty() || invalid {
-            // Back to what it was (empty: the community's server).
-            if typed.is_empty() {
-                d.state.relay_server = relay::DEFAULT_SERVER.into();
-            }
+        if typed.is_empty() {
+            // Empty: the community's server.
+            d.state.relay_server = relay::DEFAULT_SERVER.into();
             d.relay_server_field = d.state.relay_server.clone();
+            d.save();
+            setup::write_relay_configs(d);
+        } else if invalid {
+            // Kept as typed (red) to be fixed; the server stays what it was.
+            let msg = format!(
+                "Not an address and port (like 168.119.2.92:6800): the event builds stay on {}",
+                d.state.relay_server
+            );
+            d.notify(&msg);
         } else if typed != d.state.relay_server {
             d.state.relay_server = typed;
             d.save();
@@ -627,11 +652,10 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
 const UNINSTALL_KEY: &str = "uninstall";
 const UNINSTALLED_KEY: &str = "uninstalled";
 
-/// Opens the uninstall card with every part ticked.
+/// Opens the uninstall card with nothing ticked: what goes is picked (Everything ticks
+/// it all).
 pub(super) fn ask_uninstall(d: &mut Dashboard) {
-    d.overlay = Some(setup::Overlay::Uninstall {
-        picked: crate::core::uninstall::Part::all(),
-    });
+    d.overlay = Some(setup::Overlay::Uninstall { picked: Vec::new() });
 }
 
 /// UNINSTALL: each part with what it removes, ticked or not; then a confirmation.
@@ -729,7 +753,11 @@ pub(super) fn uninstall_card(d: &mut Dashboard, k: &mut Kit) {
         Some(Icon::Trash),
         "Uninstall",
         !chosen.is_empty(),
-        "Remove the ticked parts (asks once more)",
+        if chosen.is_empty() {
+            "Tick what should go first"
+        } else {
+            "Remove the ticked parts (asks once more)"
+        },
     )
     .clicked
     {
