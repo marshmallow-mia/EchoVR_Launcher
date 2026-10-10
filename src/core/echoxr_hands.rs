@@ -193,7 +193,10 @@ mod tests {
 
     #[test]
     fn enables_its_layer_by_name_and_folder() {
-        let env = layer_env(Path::new("/g/bin/win10"), |p| format!("X:{}", p.display()));
+        // Joined with the system's separator: the converter makes them one kind.
+        let env = layer_env(Path::new("/g/bin/win10"), |p| {
+            format!("X:{}", p.display()).replace('\\', "/")
+        });
         assert_eq!(env[0].0, "XR_API_LAYER_PATH");
         assert_eq!(env[0].1, "X:/g/bin/win10/EchoXR/Hands/layer");
         assert_eq!(env[1], ("XR_ENABLE_API_LAYERS".into(), LAYER_NAME.into()));

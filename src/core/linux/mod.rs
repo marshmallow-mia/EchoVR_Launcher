@@ -204,11 +204,16 @@ impl CompositorLog {
                 let Ok(meta) = std::fs::metadata(&path) else {
                     return false;
                 };
-                if meta.modified().is_ok_and(|t| t < self.since) {
+                // The log as it was at the start (maybe moved since): what came after.
+                // Another one counts when it changed since the start; file times run on a
+                // coarse clock that can lag the start by a few milliseconds.
+                let marked = matches!(self.file, Some((id, _)) if id == file_id(&meta));
+                let slack = std::time::Duration::from_secs(1);
+                if !marked && meta.modified().is_ok_and(|t| t + slack < self.since) {
                     return false;
                 }
                 let from = match self.file {
-                    Some((id, len)) if id == file_id(&meta) => len,
+                    Some((_, len)) if marked => len,
                     _ => 0,
                 };
                 let bytes = std::fs::read(&path).unwrap_or_default();
