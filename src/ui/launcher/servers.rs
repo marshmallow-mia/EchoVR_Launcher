@@ -74,7 +74,7 @@ pub(super) enum Tab {
 
 enum Msg {
     List(Result<Vec<Match>, String>),
-    Friends(Vec<Friend>),
+    Friends(Result<Vec<Friend>, String>),
     Tickets(Vec<Ticket>),
     Role(Role, Vec<(String, String)>),
     History(Result<Vec<Summary>, String>),
@@ -128,6 +128,8 @@ pub(super) struct Servers {
     pub friends: Vec<Friend>,
     /// Friend requests you sent and got.
     pub requests: Vec<Friend>,
+    /// How the last read of them went (`None`: no answer yet).
+    pub friends_read: Option<Result<(), String>>,
     /// Friends: the search field, and what the last search found (for which text).
     pub search: String,
     pub found: Option<(String, Result<Vec<Found>, String>)>,
@@ -145,6 +147,8 @@ pub(super) struct Servers {
     pub regions: Option<Result<Vec<Region>, String>>,
     /// A join or start under way.
     pub busy: bool,
+    /// Start a server's list of places, scrolled.
+    pub start_scroll: f32,
     list_at: Option<Instant>,
     tickets_at: Option<Instant>,
     friends_at: Option<Instant>,
@@ -240,11 +244,14 @@ impl Servers {
                         Err(e) => self.error = Some(e),
                     }
                 }
-                Msg::Friends(f) => {
+                Msg::Friends(Ok(f)) => {
                     (self.friends, self.requests) = f
                         .into_iter()
                         .partition(|f| f.state == game::FriendState::Friend);
+                    self.friends_read = Some(Ok(()));
                 }
+                // The lists stay as they were; with none yet, the pages say why.
+                Msg::Friends(Err(e)) => self.friends_read = Some(Err(e)),
                 Msg::Tickets(t) => self.tickets = t,
                 Msg::Role(r, g) => {
                     self.role = Some(r);
@@ -348,9 +355,9 @@ impl Servers {
             self.friends_at = Some(Instant::now());
             let t = token.clone();
             self.worker.spawn(ctx, move |tx| {
-                if let Ok(f) = game::friends(&t) {
-                    tx.send(Msg::Friends(f));
-                }
+                tx.send(Msg::Friends(
+                    game::friends(&t).map_err(|e| format!("{e:#}")),
+                ));
             });
         }
         if due(self.invites_at, INVITES_EVERY) {
@@ -922,15 +929,17 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         .or_else(|| guilds.first().map(|(id, _)| id.clone()));
     if guilds.len() > 1 {
         k.caption(x, ty, "Guild");
-        for (i, (id, name)) in guilds.iter().take(4).enumerate() {
+        // Four to a row, as many rows as there are guilds.
+        for (i, (id, name)) in guilds.iter().enumerate() {
             let on = chosen_guild.as_deref() == Some(id);
             let tone = if on { Tone::Blue } else { Tone::Dark };
-            let bx = x + i as f32 * (bw + dz(10.0));
+            let bx = x + (i % 4) as f32 * (bw + dz(10.0));
+            let gy = ty + dz(26.0) + (i / 4) as f32 * dz(50.0);
             let label = if name.is_empty() { id } else { name };
             if k.button(
                 &format!("start-guild-{i}"),
                 bx,
-                ty + dz(26.0),
+                gy,
                 bw,
                 dz(40.0),
                 tone,
@@ -944,15 +953,19 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                 set(d, mode, region.clone(), Some(id.clone()), level);
             }
         }
-        ty += dz(26.0 + 40.0 + 24.0);
+        ty += dz(26.0 + 24.0) + guilds.len().div_ceil(4) as f32 * dz(50.0) - dz(10.0);
     }
 
-    // Where: the places a server waits for this guild.
+    // Where: the places a server waits for this guild (the first one picked until
+    // another is).
     k.caption(x, ty, "Where");
     let list_top = ty + dz(26.0);
     let by = bottom - BTN_H;
+    let mut region = region;
+    let mut why_not = None;
     match d.servers.regions.clone() {
         None => {
+            why_not = Some("Looking for free servers…");
             k.caps_text(
                 x,
                 list_top,
@@ -964,6 +977,7 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             );
         }
         Some(Err(e)) => {
+            why_not = Some("No free server was found");
             k.caps_text(
                 x,
                 list_top,
@@ -981,6 +995,7 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                 .filter(|r| operator || chosen_guild.as_ref().is_some_and(|g| r.groups.contains(g)))
                 .collect();
             if usable.is_empty() {
+                why_not = Some("No free server is waiting for your guild right now");
                 k.caps_text(
                     x,
                     list_top,
@@ -991,35 +1006,62 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                     0.0,
                 );
             }
+            if !region
+                .as_ref()
+                .is_some_and(|c| usable.iter().any(|r| &r.code == c))
+            {
+                region = usable.first().map(|r| r.code.clone());
+            }
+            // Three to a row; more rows than fit scroll.
             let cols = 3usize;
             let rw = (cw - 2.0 * dz(10.0)) / cols as f32;
-            let max_rows = ((by - dz(20.0) - list_top) / dz(50.0)).floor().max(1.0) as usize;
-            for (i, r) in usable.iter().take(cols * max_rows).enumerate() {
-                let on = region.as_deref() == Some(r.code.as_str());
-                let tone = if on { Tone::Blue } else { Tone::Dark };
-                let bx = x + (i % cols) as f32 * (rw + dz(10.0));
-                let byy = list_top + (i / cols) as f32 * dz(50.0);
-                let label = if r.location.is_empty() {
-                    &r.code
-                } else {
-                    &r.location
-                };
-                if k.button(
-                    &format!("start-region-{i}"),
-                    bx,
-                    byy,
-                    rw,
-                    dz(40.0),
-                    tone,
-                    Some(Icon::Globe),
-                    label,
-                    true,
-                    &r.code,
-                )
-                .clicked
-                {
-                    set(d, mode, Some(r.code.clone()), chosen_guild.clone(), level);
+            let list_h = by - dz(20.0) - list_top;
+            let content_h = usable.len().div_ceil(cols) as f32 * dz(50.0) - dz(10.0);
+            k.scroll_area(
+                "start-regions",
+                x,
+                list_top,
+                cw + dz(14.0),
+                list_h,
+                content_h,
+                &mut d.servers.start_scroll,
+            );
+            let scroll = d.servers.start_scroll;
+            let mut picked = None;
+            k.clipped(x, list_top, cw, list_h, |k| {
+                for (i, r) in usable.iter().enumerate() {
+                    let on = region.as_deref() == Some(r.code.as_str());
+                    let tone = if on { Tone::Blue } else { Tone::Dark };
+                    let bx = x + (i % cols) as f32 * (rw + dz(10.0));
+                    let byy = list_top - scroll + (i / cols) as f32 * dz(50.0);
+                    if byy + dz(40.0) < list_top || byy > list_top + list_h {
+                        continue;
+                    }
+                    let label = if r.location.is_empty() {
+                        &r.code
+                    } else {
+                        &r.location
+                    };
+                    if k.button(
+                        &format!("start-region-{i}"),
+                        bx,
+                        byy,
+                        rw,
+                        dz(40.0),
+                        tone,
+                        Some(Icon::Globe),
+                        label,
+                        true,
+                        &r.code,
+                    )
+                    .clicked
+                    {
+                        picked = Some(r.code.clone());
+                    }
                 }
+            });
+            if let Some(code) = picked {
+                set(d, mode, Some(code), chosen_guild.clone(), level);
             }
         }
     }
@@ -1047,6 +1089,12 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         return;
     }
     let ready = region.is_some() && chosen_guild.is_some() && !d.servers.busy;
+    let tip = match why_not {
+        Some(why) => why,
+        None if d.servers.busy => "Wait: a join or start is under way",
+        None if region.is_none() => "Pick where first",
+        None => "Start the match: then copy its link, invite friends and join it",
+    };
     if k.button(
         "start-go",
         right - cw2 - dz(12.0) - sw,
@@ -1057,7 +1105,7 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         None,
         "Start",
         ready,
-        "Start the match: then copy its link, invite friends and join it",
+        tip,
     )
     .clicked
     {
@@ -1164,12 +1212,28 @@ pub(super) fn share_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     friends.sort_by_key(|f| f.name.to_ascii_lowercase());
     let list_h = by - dz(24.0) - ty;
     if friends.is_empty() {
-        let text = if d.servers.friends.is_empty() {
-            "No friends yet: add them on the EchoVRCE page."
-        } else {
-            "All your friends are in this match."
+        let text = match (&d.servers.friends_read, d.servers.friends.is_empty()) {
+            (_, false) => "All your friends are in this match.".to_string(),
+            (None, true) => "Reading your friends…".to_string(),
+            (Some(Err(e)), true) => format!("Couldn't read your friends: {e}"),
+            (Some(Ok(())), true) => "No friends yet: add them on the Friends page.".to_string(),
         };
-        k.caps_text(x, ty, cw, text, 15.0, design::GREY, 0.0);
+        let th = k.caps_text(x, ty, cw, &text, 15.0, design::GREY, 0.0);
+        if d.servers.friends.is_empty()
+            && k.link(
+                "share-open-friends",
+                x,
+                ty + th + dz(14.0),
+                "Find friends",
+                14.0,
+                "",
+            )
+            .clicked
+        {
+            d.overlay = None;
+            d.page = Page::Friends;
+            return;
+        }
     } else {
         let row_h = dz(56.0);
         k.scroll_area(
@@ -1462,12 +1526,29 @@ fn live_rows(
         .cloned()
         .collect();
     if list.is_empty() {
-        let text = match (&d.servers.error, d.servers.updated) {
-            (Some(e), _) => format!("The servers couldn't be read: {e}"),
-            (None, None) => "Reading the servers…".to_string(),
-            (None, Some(_)) => "No match is running right now.".to_string(),
+        let text = match (&d.servers.error, d.servers.updated, filter) {
+            (Some(e), _, _) => format!("The servers couldn't be read: {e}"),
+            (None, None, _) => "Reading the servers…".to_string(),
+            (None, Some(_), Some(f)) => format!("No {} match right now.", f.label()),
+            (None, Some(_), None) => "No match is running right now.".to_string(),
         };
-        kit.caps_text(x, top, w, &text, 16.0, design::BODY, 0.0);
+        let th = kit.caps_text(x, top, w, &text, 16.0, design::BODY, 0.0);
+        // Filtered: the others may be running.
+        if filter.is_some()
+            && d.servers.error.is_none()
+            && kit
+                .link(
+                    "servers-show-all",
+                    x,
+                    top + th + dz(14.0),
+                    "Show all",
+                    14.0,
+                    "Every mode's matches",
+                )
+                .clicked
+        {
+            d.servers.filter = None;
+        }
         return;
     }
     let (row_h, pad) = (dz(ROW_H), dz(ROW_PAD));
@@ -2033,12 +2114,18 @@ pub(super) fn friend_tiles(
         .collect();
     friends.sort_by_key(|(f, m)| (m.is_none(), f.name.to_ascii_lowercase()));
     if friends.is_empty() {
-        let text = if removable {
-            "No friends yet: find players by name, or add the players of your last matches."
-        } else {
-            "No friends yet: find players and add them on the Friends page."
+        let text = match &d.servers.friends_read {
+            None => "Reading your friends…".to_string(),
+            Some(Err(e)) => format!("Couldn't read your friends: {e}"),
+            Some(Ok(())) if removable => {
+                "No friends yet: find players by name, or add the players of your last matches."
+                    .to_string()
+            }
+            Some(Ok(())) => {
+                "No friends yet: find players and add them on the Friends page.".to_string()
+            }
         };
-        let th = k.caps_text(x, y, w, text, 15.0, design::GREY, 0.0);
+        let th = k.caps_text(x, y, w, &text, 15.0, design::GREY, 0.0);
         if !removable
             && k.link(
                 &format!("{key}-open-friends"),

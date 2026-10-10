@@ -37,6 +37,9 @@ pub(super) struct PluginsUi {
     /// When the catalogue was read (the built-in one is replaced when it can be).
     catalog_at: Option<std::time::Instant>,
     started: bool,
+    /// The two lists, scrolled.
+    installed_scroll: f32,
+    more_scroll: f32,
     views: HashMap<String, View>,
     worker: Worker<Msg>,
     /// The plugin being installed, updated or removed.
@@ -998,7 +1001,7 @@ const TILE_H: f32 = 118.0;
 
 pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (dx, dy) = (kit.dx(), kit.dy());
-    let (x, mut y, w, _) = hero::card_frame(
+    let (x, y, w, bottom) = hero::card_frame(
         kit,
         INSTALLED_CARD.wider(dx).taller(dy),
         "Installed plugins",
@@ -1016,109 +1019,152 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
     }
     let busy = d.plugins.busy.clone();
     let catalog = d.plugins.catalog.clone().unwrap_or_default();
-    for (i, p) in d.plugins.list.clone().iter().enumerate() {
-        hero::tile(kit, x, y, w, dz(TILE_H), false);
-        let pad = dz(18.0);
-        let mut meta = Vec::new();
-        if !p.page.version.is_empty() {
-            meta.push(format!("v{}", p.page.version));
-        }
-        if !p.page.author.is_empty() {
-            meta.push(format!("by {}", p.page.author));
-        }
-        if p.from_catalog.is_none() {
-            meta.push("added by hand".into());
-        }
-        if !p.warnings.is_empty() {
-            // The details are in the launcher's log.
-            meta.push(format!(
-                "{} problem(s) in its plugin.json, see the log",
-                p.warnings.len()
-            ));
-        }
-        let name = kit.label_galley(&p.page.name, design::din(22.0), design::TEXT, w * 0.5);
-        kit.put(x + pad, y + dz(14.0), name);
-        let m = kit.label_galley(&meta.join(" · "), design::din(14.0), design::GREY, w * 0.5);
-        kit.put(x + pad, y + dz(48.0), m);
-        let s = kit.label_galley(
-            &p.page.summary,
-            design::myriad(17.0),
-            design::BODY,
-            w - pad * 2.0,
-        );
-        kit.put(x + pad, y + dz(76.0), s);
-        // Its buttons, right to left.
-        let mut right = x + w - pad;
-        let by = y + dz(14.0);
-        let mut button =
-            |kit: &mut Kit, key: &str, label: &str, tone: Tone, enabled: bool, tip: &str| {
-                let bw = kit.button_width(label, None, BTN_H).max(dz(110.0));
-                right -= bw;
-                let hit = kit
-                    .button(key, right, by, bw, BTN_H, tone, None, label, enabled, tip)
-                    .clicked;
-                right -= dz(12.0);
-                hit
-            };
-        let idle = busy.is_none();
-        if button(
-            kit,
-            &format!("plugins-remove-{}", p.page.id),
-            "Remove",
-            Tone::Dark,
-            idle,
-            "Remove it and its settings",
-        ) {
-            d.plugins.remove_asked = Some(p.page.id.clone());
-            d.dialogs.confirm_danger(
-                REMOVE_KEY,
-                "Remove plugin",
-                &format!("Remove {} and its settings?", p.page.name),
-                "Remove",
+    let list = d.plugins.list.clone();
+    let pad = dz(18.0);
+    // Each tile as tall as its summary needs; more than fit scroll.
+    let heights: Vec<f32> = list
+        .iter()
+        .map(|p| {
+            let summary: f32 = kit
+                .caps_block(&p.page.summary, 15.0, design::BODY, w - pad * 2.0)
+                .iter()
+                .map(|g| g.size().y)
+                .sum();
+            (dz(76.0) + summary + pad).max(dz(TILE_H))
+        })
+        .collect();
+    let gap = dz(12.0);
+    let content_h = heights.iter().map(|h| h + gap).sum::<f32>() - gap;
+    let list_h = bottom - y;
+    kit.scroll_area(
+        "plugins-installed",
+        x,
+        y,
+        w + dz(16.0),
+        list_h,
+        content_h,
+        &mut d.plugins.installed_scroll,
+    );
+    let list_top = y;
+    let mut ty = y - d.plugins.installed_scroll;
+    // Why Remove and Update wait: the plugin being worked on.
+    let busy_tip = busy.as_ref().map(|id| {
+        let name = list
+            .iter()
+            .find(|p| &p.page.id == id)
+            .map_or(id.as_str(), |p| p.page.name.as_str());
+        format!("Wait: {name} is being installed or updated")
+    });
+    kit.clipped(x, y, w, list_h, |kit| {
+        for ((i, p), &th) in list.iter().enumerate().zip(&heights) {
+            let y = ty;
+            ty += th + gap;
+            if y + th < list_top || y > bottom {
+                continue;
+            }
+            hero::tile(kit, x, y, w, th, false);
+            let mut meta = Vec::new();
+            if !p.page.version.is_empty() {
+                meta.push(format!("v{}", p.page.version));
+            }
+            if !p.page.author.is_empty() {
+                meta.push(format!("by {}", p.page.author));
+            }
+            if p.from_catalog.is_none() {
+                meta.push("added by hand".into());
+            }
+            if !p.warnings.is_empty() {
+                // The details are in the launcher's log.
+                meta.push(format!(
+                    "{} problem(s) in its plugin.json, see the log",
+                    p.warnings.len()
+                ));
+            }
+            let name = kit.label_galley(&p.page.name, design::din(22.0), design::TEXT, w * 0.5);
+            kit.put(x + pad, y + dz(14.0), name);
+            let m = kit.label_galley(&meta.join(" · "), design::din(14.0), design::GREY, w * 0.5);
+            kit.put(x + pad, y + dz(48.0), m);
+            kit.caps_text(
+                x + pad,
+                y + dz(76.0),
+                w - pad * 2.0,
+                &p.page.summary,
+                15.0,
+                design::BODY,
+                0.0,
             );
-        }
-        if let Some(e) = core::update_for(p, &catalog) {
-            let label = format!("Update to {}", e.version);
+            // Its buttons, right to left.
+            let mut right = x + w - pad;
+            let by = y + dz(14.0);
+            let mut button =
+                |kit: &mut Kit, key: &str, label: &str, tone: Tone, enabled: bool, tip: &str| {
+                    let bw = kit.button_width(label, None, BTN_H).max(dz(110.0));
+                    right -= bw;
+                    let hit = kit
+                        .button(key, right, by, bw, BTN_H, tone, None, label, enabled, tip)
+                        .clicked;
+                    right -= dz(12.0);
+                    hit
+                };
+            let idle = busy.is_none();
             if button(
                 kit,
-                &format!("plugins-update-{}", p.page.id),
-                &label,
-                Tone::Go,
+                &format!("plugins-remove-{}", p.page.id),
+                "Remove",
+                Tone::Dark,
                 idle,
-                "Get the catalogue's version",
+                busy_tip.as_deref().unwrap_or("Remove it and its settings"),
             ) {
-                get(d, ctx, e.clone(), "Plugin updated");
+                d.plugins.remove_asked = Some(p.page.id.clone());
+                d.dialogs.confirm_danger(
+                    REMOVE_KEY,
+                    "Remove plugin",
+                    &format!("Remove {} and its settings?", p.page.name),
+                    "Remove",
+                );
+            }
+            if let Some(e) = core::update_for(p, &catalog) {
+                let label = format!("Update to {}", e.version);
+                if button(
+                    kit,
+                    &format!("plugins-update-{}", p.page.id),
+                    &label,
+                    Tone::Go,
+                    idle,
+                    busy_tip.as_deref().unwrap_or("Get the catalogue's version"),
+                ) {
+                    get(d, ctx, e.clone(), "Plugin updated");
+                }
+            }
+            if button(
+                kit,
+                &format!("plugins-open-{}", p.page.id),
+                "Open",
+                Tone::Blue,
+                true,
+                "Open its tab",
+            ) {
+                d.page = Page::Plugin(i as u8);
+            }
+            if busy.as_deref() == Some(p.page.id.as_str()) {
+                kit.chip(
+                    right - dz(120.0),
+                    by + dz(6.0),
+                    "Working…",
+                    design::QUEST_WARN,
+                );
             }
         }
-        if button(
-            kit,
-            &format!("plugins-open-{}", p.page.id),
-            "Open",
-            Tone::Blue,
-            true,
-            "Open its tab",
-        ) {
-            d.page = Page::Plugin(i as u8);
-        }
-        if busy.as_deref() == Some(p.page.id.as_str()) {
-            kit.chip(
-                right - dz(120.0),
-                by + dz(6.0),
-                "Working…",
-                design::QUEST_WARN,
-            );
-        }
-        y += dz(TILE_H + 12.0);
-    }
+    });
     panel::at_right(kit, |k| more_card(d, k, ctx, MORE_CARD.taller(dy)));
 }
 
 fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
-    let (x, mut y, w, _) = hero::card_frame(k, r, "More plugins");
+    let (x, top, w, bottom) = hero::card_frame(k, r, "More plugins");
     let Some(catalog) = d.plugins.catalog.clone() else {
         k.caps_text(
             x,
-            y,
+            top,
             w,
             "Reading the plugins list…",
             TEXT_SIZE,
@@ -1136,7 +1182,7 @@ fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
     if offered.is_empty() {
         k.caps_text(
             x,
-            y,
+            top,
             w,
             "You have every plugin there is.",
             TEXT_SIZE,
@@ -1145,55 +1191,95 @@ fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
         );
     }
     let idle = d.plugins.busy.is_none();
-    for e in offered {
-        let name = k.label_galley(&e.name, design::din(20.0), design::TEXT, w * 0.6);
-        let nr = k.put(x, y, name);
-        if e.dev {
-            // From the dev folder of the dev code in Advanced settings, not published.
-            k.dot_tag(
-                nr.max.x - k.origin.x + dz(14.0),
-                nr.center().y - k.origin.y,
-                "Dev",
-                12.0,
-                design::RIM_BOTTOM,
-            );
-        }
-        let label = if e.downloadable() {
-            "Get"
+    let busy_id = d.plugins.busy.clone();
+    // Each entry: its name and Get, the download's chip, its summary. More than fit
+    // scroll.
+    let height = |k: &Kit, e: &core::PluginEntry| {
+        let summary: f32 = k
+            .caps_block(&e.summary, 15.0, design::GREY, w)
+            .iter()
+            .map(|g| g.size().y)
+            .sum();
+        let chip = if busy_id.as_deref() == Some(e.id.as_str()) {
+            dz(34.0)
         } else {
-            "Coming soon"
+            0.0
         };
-        let bw = k.button_width(label, None, BTN_H).max(dz(110.0));
-        let tip = if e.downloadable() {
-            "Download and add it"
-        } else {
-            "Not published yet"
-        };
-        if k.button(
-            &format!("plugins-get-{}", e.id),
-            x + w - bw,
-            y - dz(4.0),
-            bw,
-            BTN_H,
-            Tone::Go,
-            None,
-            label,
-            idle && e.downloadable(),
-            tip,
-        )
-        .clicked
-        {
-            get(d, ctx, e.clone(), "Plugin added: it has its own tab now");
+        BTN_H + dz(8.0) + chip + summary + dz(26.0)
+    };
+    let content_h: f32 = offered.iter().map(|e| height(k, e)).sum();
+    let list_h = bottom - top + dz(4.0);
+    k.scroll_area(
+        "plugins-more",
+        x,
+        top - dz(4.0),
+        w + dz(16.0),
+        list_h,
+        content_h,
+        &mut d.plugins.more_scroll,
+    );
+    let mut y = top - d.plugins.more_scroll;
+    let busy_tip = d
+        .plugins
+        .busy
+        .as_ref()
+        .map(|id| format!("Wait: {id} is being installed"));
+    k.clipped(x, top - dz(4.0), w, list_h, |k| {
+        for e in offered {
+            let h = height(k, &e);
+            if y + h < top || y > bottom {
+                y += h;
+                continue;
+            }
+            let name = k.label_galley(&e.name, design::din(20.0), design::TEXT, w * 0.6);
+            let nr = k.put(x, y, name);
+            if e.dev {
+                // From the dev folder of the dev code in Advanced settings, not published.
+                k.dot_tag(
+                    nr.max.x - k.origin.x + dz(14.0),
+                    nr.center().y - k.origin.y,
+                    "Dev",
+                    12.0,
+                    design::RIM_BOTTOM,
+                );
+            }
+            let label = if e.downloadable() {
+                "Get"
+            } else {
+                "Coming soon"
+            };
+            let bw = k.button_width(label, None, BTN_H).max(dz(110.0));
+            let tip = match &busy_tip {
+                _ if !e.downloadable() => "Not published yet",
+                Some(b) => b.as_str(),
+                None => "Download and add it",
+            };
+            if k.button(
+                &format!("plugins-get-{}", e.id),
+                x + w - bw,
+                y - dz(4.0),
+                bw,
+                BTN_H,
+                Tone::Go,
+                None,
+                label,
+                idle && e.downloadable(),
+                tip,
+            )
+            .clicked
+            {
+                get(d, ctx, e.clone(), "Plugin added: it has its own tab now");
+            }
+            // The summary under the button, not beside it.
+            let mut ey = y + BTN_H + dz(8.0);
+            if d.plugins.busy.as_deref() == Some(e.id.as_str()) {
+                k.chip(x, ey, "Downloading…", design::QUEST_WARN);
+                ey += dz(34.0);
+            }
+            k.caps_text(x, ey, w, &e.summary, 15.0, design::GREY, 0.0);
+            y += h;
         }
-        // The summary under the button, not beside it.
-        y += BTN_H + dz(8.0);
-        if d.plugins.busy.as_deref() == Some(e.id.as_str()) {
-            k.chip(x, y, "Downloading…", design::QUEST_WARN);
-            y += dz(34.0);
-        }
-        y += k.caps_text(x, y, w, &e.summary, 15.0, design::GREY, 0.0) + dz(26.0);
-    }
-    let _ = y;
+    });
 }
 
 fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str) {

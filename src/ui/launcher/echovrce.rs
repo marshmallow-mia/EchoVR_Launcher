@@ -806,7 +806,23 @@ fn zoom_keys(ctx: &egui::Context) -> Option<web::Zoom> {
     })
 }
 
+/// Sign out was clicked: asked first, since the game's sign-in goes too.
+const SIGN_OUT_KEY: &str = "vrce-sign-out";
+
+/// Asks before signing out.
+fn ask_sign_out(d: &mut Dashboard) {
+    d.dialogs.confirm_danger(
+        SIGN_OUT_KEY,
+        "Sign out",
+        "Sign out of EchoVRCE here?\n\nEcho VR is signed out too, in every version: it signs in again the next time you sign in here.",
+        "Sign out",
+    );
+}
+
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    if !kit.ghost && d.dialogs.take(SIGN_OUT_KEY).is_some_and(|a| a.is_yes()) {
+        sign_out(d, ctx);
+    }
     let signed_in = d.vrce.account.is_some() && d.vrce.tokens.is_some() && d.vrce.signing.is_none();
     let here = approving_here(d);
     // Approved, cancelled or gone to the browser: the sign-in page closes.
@@ -912,10 +928,10 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         kit,
         "vrce-site-sign-out",
         "Sign out",
-        "Sign out here and on EchoVRCE",
+        "Sign out here and on EchoVRCE (asks first)",
         26.0,
     ) {
-        sign_out(d, ctx);
+        ask_sign_out(d);
         return;
     }
     if link(
@@ -1150,9 +1166,9 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
                 None,
                 "Sign out",
                 true,
-                "Forget this session here and end it on EchoVRCE",
+                "Forget this session here and end it on EchoVRCE (asks first)",
             ) {
-                sign_out(d, ctx);
+                ask_sign_out(d);
             }
         }
         (None, Some(_)) => {
@@ -1209,9 +1225,9 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
                 None,
                 "Sign out",
                 true,
-                "Forget this session here and end it on EchoVRCE",
+                "Forget this session here and end it on EchoVRCE (asks first)",
             ) {
-                sign_out(d, ctx);
+                ask_sign_out(d);
             }
         }
         _ => {
