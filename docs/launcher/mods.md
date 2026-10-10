@@ -220,7 +220,10 @@ with the account above; nEVR tries a sign-in it finds before the config's accoun
 game's EchoVRCE sign-in waits as `.credentials.json.echovrce` meanwhile and is back for the
 next start without the pack. `${` in a value is written as `$${` (nEVR would read it as an
 environment variable). The password is in plain text there, as nEVR reads it: don't reuse a
-real one. Play's line says where a start goes ("EchoCombat on host:7350").
+real one. Play's line says where a start goes ("EchoCombat on host:7350"). A launcher
+plugin can set such a server for every start of the live build, not only with a pack
+([../plugins/pages.md](../plugins/pages.md#the-games-server)); a pack that is on with a
+server of its own keeps that one.
 
 Today a game server under nEVR's `-server -headless` signs in but never begins a match
 (nevr-runtime's `docs/reference/server-mode-multiplayer-hang.md`), so a pack's own server

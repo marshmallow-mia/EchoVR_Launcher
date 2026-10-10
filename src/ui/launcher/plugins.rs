@@ -12,6 +12,7 @@ use crate::core::launcher::plugin_page::{
     self as pp, Block, Button, Card, Method, PluginPage, Request, Step, Tone as TextTone,
 };
 use crate::core::launcher::plugins::{self as core, Installed, PluginCatalog};
+use crate::core::launcher::store::{GameServer, PackServer};
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::kit::Kit;
 use crate::ui::parts::Worker;
@@ -27,6 +28,8 @@ const CARD_GAP: f32 = 30.0;
 const ROW_H: f32 = 68.0;
 const ROW_GAP: f32 = 10.0;
 const REMOVE_KEY: &str = "plugins-remove";
+/// "Play on another server?" (a plugin's `server` step).
+const SERVER_KEY: &str = "plugins-server";
 
 /// The plugins, their catalogue, and each plugin page's state.
 #[derive(Default)]
@@ -47,6 +50,9 @@ pub(super) struct PluginsUi {
     /// Debug builds: the plugin ECHOVR_PAGE named, opened once it is read.
     pub open_when_read: Option<String>,
     remove_asked: Option<String>,
+    /// The server a plugin's `server` step asked to play on (its id, the server), while the
+    /// question is up.
+    server_asked: Option<(String, GameServer)>,
 }
 
 impl PluginsUi {
@@ -160,6 +166,23 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                         d.page = Page::Plugins;
                     }
                 }
+                // The plugin that chose the game's server is gone: EchoVRCE again (nothing
+                // else would show the way back).
+                let gone = d
+                    .state
+                    .game_server
+                    .as_ref()
+                    .is_some_and(|g| !d.plugins.list.iter().any(|p| p.page.id == g.plugin));
+                if gone {
+                    if let Some(g) = d.state.game_server.take() {
+                        tracing::info!(
+                            "plugin {} is gone: Echo VR plays on EchoVRCE again",
+                            g.plugin
+                        );
+                    }
+                    d.save();
+                    d.notify("Echo VR plays on EchoVRCE again");
+                }
             }
             Msg::Catalog(c) => {
                 d.plugins.catalog = Some(c);
@@ -201,6 +224,27 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                 let r = core::remove(&id).map_err(|e| format!("{e:#}"));
                 tx.send(Msg::Done("Plugin removed".into(), r));
             });
+        }
+    }
+    if let Some(ans) = d.dialogs.take(SERVER_KEY) {
+        if let Some((id, server)) = d.plugins.server_asked.take() {
+            let p = d.plugins.list.iter().find(|p| p.page.id == id).cloned();
+            match p {
+                Some(p) if ans.is_yes() => {
+                    tracing::info!(
+                        "plugin {id}: the live build plays on {} (the player said yes)",
+                        server.server.address
+                    );
+                    d.state.game_server = Some(server);
+                    d.save();
+                    d.notify("Echo VR's server changed");
+                    if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
+                        r.waiting = false;
+                    }
+                    advance(d, ctx, &p);
+                }
+                _ => fail(d, &id, "Echo VR's server wasn't changed.".into()),
+            }
         }
     }
     // The shown plugin page's data, when due.
@@ -486,8 +530,84 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                     }
                 }
             }
+            Step::Server {
+                name,
+                address,
+                key,
+                discord_id,
+                password,
+            } => {
+                let server = GameServer {
+                    name: pp::render(&name, &c).trim().to_string(),
+                    server: PackServer {
+                        address: pp::render(&address, &c).trim().to_string(),
+                        server_key: pp::render(&key, &c).trim().to_string(),
+                        discord_id: pp::render(&discord_id, &c).trim().to_string(),
+                        password: pp::render(&password, &c),
+                    },
+                    plugin: id.clone(),
+                };
+                if server.server.address.is_empty() {
+                    // Back to EchoVRCE: nothing to ask.
+                    if let Some(g) = d.state.game_server.take() {
+                        tracing::info!(
+                            "plugin {id}: Echo VR plays on EchoVRCE again (was {})",
+                            g.server.address
+                        );
+                        d.save();
+                        d.notify("Echo VR plays on EchoVRCE again");
+                    }
+                    continue;
+                }
+                if crate::core::launcher::mods::backend_of(&server.server).is_none() {
+                    return fail(
+                        d,
+                        &id,
+                        format!(
+                            "{} isn't a server address: host[:port], or a ws:// or wss:// address.",
+                            server.server.address
+                        ),
+                    );
+                }
+                if d.state.game_server.as_ref() == Some(&server) {
+                    continue;
+                }
+                let message = server_question(&p.page.name, &server);
+                if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
+                    r.waiting = true;
+                }
+                d.plugins.server_asked = Some((id.clone(), server));
+                d.dialogs.options(
+                    SERVER_KEY,
+                    "Play on another server?",
+                    &message,
+                    crate::ui::dialogs::Icon::Warning,
+                    &["Play there", "Cancel"],
+                );
+                return;
+            }
         }
     }
+}
+
+/// Pure: what the player is asked before plugin `plugin` sets the game's server.
+fn server_question(plugin: &str, s: &GameServer) -> String {
+    let address = &s.server.address;
+    let place = if s.name.is_empty() || s.name == *address {
+        address.clone()
+    } else {
+        format!("{} ({address})", s.name)
+    };
+    let account = if s.server.discord_id.is_empty() {
+        String::new()
+    } else {
+        format!(" as {}", s.server.discord_id)
+    };
+    format!(
+        "{plugin} wants Echo VR to play on {place} instead of EchoVRCE. From the next start \
+         the live build signs in{account} and finds matches there. Only say yes to a server \
+         you trust. Back to EchoVRCE: in {plugin}, or remove the plugin."
+    )
 }
 
 /// A request of a running action answered.
@@ -1340,6 +1460,83 @@ fn demo() -> PluginsUi {
     }
     ui.views.insert(id, v);
     ui
+}
+
+/// Snapshots: the Game server plugin's state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SnapServer {
+    /// Filled in, EchoVRCE still.
+    Filled,
+    /// ...asking to play there.
+    Asking,
+    /// ...playing there.
+    Set,
+}
+
+/// Snapshots: the Game server plugin as the second tab in `state`, or not there (`None`).
+pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
+    const ID: &str = "game-server";
+    d.plugins.list.retain(|p| p.page.id != ID);
+    d.plugins.views.remove(ID);
+    d.plugins.server_asked = None;
+    let Some(state) = state else {
+        return;
+    };
+    let (page, _) = core::read_description(include_str!(
+        "../../../docs/plugins/game-server/plugin.json"
+    ));
+    let Some(page) = page else {
+        return;
+    };
+    d.plugins.list.push(Installed {
+        from_catalog: Some(page.version.clone()),
+        page: std::sync::Arc::new(page),
+        dir: std::path::PathBuf::new(),
+        warnings: Vec::new(),
+    });
+    let settings = [
+        ("name", "EchoCombat test"),
+        ("address", "203.0.113.7:7350"),
+        ("key", "defaultkey"),
+        ("discord_id", "900000000000000001"),
+        ("password", "test"),
+    ];
+    d.plugins.views.insert(
+        ID.into(),
+        View {
+            page: json!({}),
+            settings: settings
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            settings_read: true,
+            ..Default::default()
+        },
+    );
+    let server = GameServer {
+        name: "EchoCombat test".into(),
+        server: PackServer {
+            address: "203.0.113.7:7350".into(),
+            server_key: "defaultkey".into(),
+            discord_id: "900000000000000001".into(),
+            password: "test".into(),
+        },
+        plugin: ID.into(),
+    };
+    match state {
+        SnapServer::Filled => {}
+        SnapServer::Asking => {
+            d.dialogs.options(
+                SERVER_KEY,
+                "Play on another server?",
+                &server_question("Game server", &server),
+                crate::ui::dialogs::Icon::Warning,
+                &["Play there", "Cancel"],
+            );
+            d.plugins.server_asked = Some((ID.into(), server));
+        }
+        SnapServer::Set => d.state.game_server = Some(server),
+    }
 }
 
 #[cfg(test)]

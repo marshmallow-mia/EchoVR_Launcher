@@ -1,0 +1,177 @@
+{
+  "schema": 1,
+  "id": "game-server",
+  "name": "Game server",
+  "version": "0.1.0",
+  "author": "marshmallow-mia",
+  "summary": "Play Echo VR on another server than EchoVRCE: its address and key, and your account there. Back to EchoVRCE with one button.",
+  "icon": "plugin",
+  "settings": {
+    "store": {
+      "file": "settings.json",
+      "format": "json"
+    },
+    "sections": [
+      {
+        "title": "Server",
+        "fields": [
+          {
+            "key": "name",
+            "type": "text",
+            "label": "Name"
+          },
+          {
+            "key": "address",
+            "type": "text",
+            "label": "Address"
+          },
+          {
+            "key": "key",
+            "type": "secret",
+            "label": "Server key"
+          },
+          {
+            "key": "discord_id",
+            "type": "text",
+            "label": "Discord ID"
+          },
+          {
+            "key": "password",
+            "type": "secret",
+            "label": "Password"
+          }
+        ]
+      }
+    ]
+  },
+  "actions": {
+    "use": [
+      {
+        "require": "{settings.address}",
+        "otherwise": "Fill in the server's address first."
+      },
+      {
+        "server": {
+          "name": "{settings.name}",
+          "address": "{settings.address}",
+          "key": "{settings.key}",
+          "discord_id": "{settings.discord_id}",
+          "password": "{settings.password}"
+        }
+      }
+    ],
+    "back": [
+      {
+        "server": null
+      }
+    ]
+  },
+  "page": {
+    "columns": [
+      [
+        {
+          "title": "Where Echo VR plays",
+          "blocks": [
+            {
+              "text": "This plugin needs launcher 0.11.11-beta.1 or newer: Settings, Advanced settings, the Beta channel.",
+              "tone": "warn",
+              "when": "!{launcher.server}"
+            },
+            {
+              "text": "On EchoVRCE.",
+              "tone": "good",
+              "when": "!{launcher.server.address}"
+            },
+            {
+              "value": "{launcher.server.name|launcher.server.address}",
+              "label": "On",
+              "when": "{launcher.server.address}"
+            },
+            {
+              "value": "{launcher.server.address}",
+              "label": "Address",
+              "when": "{launcher.server.address}"
+            },
+            {
+              "value": "{launcher.server.discord_id|'(none)'}",
+              "label": "Your Discord ID there",
+              "when": "{launcher.server.address}"
+            },
+            {
+              "text": "{page.error}",
+              "tone": "warn",
+              "when": "{page.error}"
+            },
+            {
+              "button": {
+                "label": "Back to EchoVRCE",
+                "action": "back"
+              },
+              "when": "{launcher.server.address}"
+            }
+          ]
+        },
+        {
+          "title": "Another server",
+          "help": "What the server's host gives you, and your account there.",
+          "blocks": [
+            {
+              "field": "settings.name",
+              "label": "Name",
+              "hint": "For you, e.g. EchoCombat test"
+            },
+            {
+              "field": "settings.address",
+              "label": "Address",
+              "hint": "host:port (7350 when left out), or a ws:// or wss:// address"
+            },
+            {
+              "field": "settings.key",
+              "label": "Server key",
+              "hint": "Unless the address carries it (token=)",
+              "secret": true
+            },
+            {
+              "field": "settings.discord_id",
+              "label": "Discord ID",
+              "hint": "Your account there"
+            },
+            {
+              "field": "settings.password",
+              "label": "Password",
+              "hint": "Your password there, not your Discord one: it's kept in plain text",
+              "secret": true
+            },
+            {
+              "button": {
+                "label": "Play there",
+                "action": "use",
+                "enabled": "{settings.address}",
+                "primary": true
+              }
+            }
+          ]
+        }
+      ],
+      [
+        {
+          "title": "How it works",
+          "blocks": [
+            {
+              "text": "From the next start the live build signs in and finds matches on this server instead of EchoVRCE. Play's line then says Server: and its name.",
+              "tone": "muted"
+            },
+            {
+              "text": "Event builds keep the classic lobbies, and a mod pack with a server of its own (Settings, Launch options) keeps that one while it's on.",
+              "tone": "muted"
+            },
+            {
+              "text": "Your EchoVRCE sign-in waits meanwhile and is back with Back to EchoVRCE. Removing this plugin puts EchoVRCE back too.",
+              "tone": "muted"
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}

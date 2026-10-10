@@ -217,6 +217,10 @@ pub struct LauncherState {
     /// Content packs that play on a server of their own instead of EchoVRCE (by the pack's
     /// id, e.g. "echocombat"): where, and as whom. None set: EchoVRCE, as without the pack.
     pub pack_servers: std::collections::BTreeMap<String, PackServer>,
+    /// The server the live build plays on instead of EchoVRCE, as a launcher plugin set it
+    /// (its `server` step, after the player said yes). A pack's own server comes first.
+    /// None: EchoVRCE.
+    pub game_server: Option<GameServer>,
     /// Event builds can be installed. On by default since 0.11.2 (also for a launcher.json
     /// from before, once: schema 1), and on Linux since they run there through EchoXR
     /// (schema 3, once); off, they are listed as coming soon. `"event_builds": false` in
@@ -254,6 +258,20 @@ pub struct PackServer {
     /// Your account there: a Discord ID and a password.
     pub discord_id: String,
     pub password: String,
+}
+
+/// The server a launcher plugin set for the live build ([`LauncherState::game_server`]):
+/// where and as whom, its name, and the plugin that set it (removing that plugin puts
+/// EchoVRCE back).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct GameServer {
+    /// What the plugin calls it ("EchoCombat test server"); empty: its address.
+    pub name: String,
+    #[serde(flatten)]
+    pub server: PackServer,
+    /// The plugin's id.
+    pub plugin: String,
 }
 
 /// An account on the classic lobbies server. The password sits in the game's own config
@@ -308,6 +326,7 @@ impl Default for LauncherState {
             tray_at_login: false,
             relay_account: None,
             pack_servers: Default::default(),
+            game_server: None,
             launcher_channel: Channel::Main,
             dev_code: None,
         }

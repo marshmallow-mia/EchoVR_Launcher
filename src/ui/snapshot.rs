@@ -79,6 +79,26 @@ pub fn shots() -> Vec<Shot> {
             Page::Install,
             SnapVariant::InstallAskChoose,
         ),
+        (
+            "plugin_game_server",
+            Page::Plugin(1),
+            SnapVariant::PluginGameServer,
+        ),
+        (
+            "plugin_game_server_ask",
+            Page::Plugin(1),
+            SnapVariant::PluginGameServerAsk,
+        ),
+        (
+            "plugin_game_server_set",
+            Page::Plugin(1),
+            SnapVariant::PluginGameServerSet,
+        ),
+        (
+            "play_game_server",
+            Page::Play,
+            SnapVariant::PluginGameServerSet,
+        ),
         ("dialog_error", Page::Play, SnapVariant::DialogError),
         (
             "dialog_install_error",

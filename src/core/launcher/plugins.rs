@@ -170,11 +170,19 @@ pub fn launcher_context(state: &LauncherState) -> Value {
             Some(json!({"id": build, "version": v.id, "name": v.name}))
         })
         .collect();
+    // The server a plugin set (its key and password stay with the launcher).
+    let server = state.game_server.clone().unwrap_or_default();
     json!({
         "relay": {
             "server": if state.relay_server.trim().is_empty() { relay::DEFAULT_SERVER } else { state.relay_server.trim() },
             "name": account.name,
             "password": account.password,
+        },
+        "server": {
+            "address": server.server.address,
+            "name": server.name,
+            "discord_id": server.server.discord_id,
+            "plugin": server.plugin,
         },
         "event_builds": builds,
     })
@@ -486,7 +494,7 @@ mod tests {
             1
         );
     }
-    use crate::core::launcher::store::{InstalledVersion, RelayAccount};
+    use crate::core::launcher::store::{GameServer, InstalledVersion, PackServer, RelayAccount};
 
     const DESC: &str = r#"{"schema": 1, "id": "event-lobbies", "name": "Event lobbies",
         "settings": {"sections": [{"title": "Account", "fields": [{"key": "name", "type": "text", "label": "Name"}]}]},
@@ -594,6 +602,22 @@ mod tests {
             ..Default::default()
         });
         let c = launcher_context(&s);
+        assert_eq!(c["server"]["address"], "");
+        s.game_server = Some(GameServer {
+            name: "Test".into(),
+            server: PackServer {
+                address: "test.example".into(),
+                server_key: "key".into(),
+                discord_id: "42".into(),
+                password: "pw".into(),
+            },
+            plugin: "servers".into(),
+        });
+        let c = launcher_context(&s);
+        assert_eq!(
+            c["server"],
+            json!({"address": "test.example", "name": "Test", "discord_id": "42", "plugin": "servers"})
+        );
         assert_eq!(c["relay"]["name"], "Alice");
         assert_eq!(c["relay"]["server"], relay::DEFAULT_SERVER);
         assert_eq!(

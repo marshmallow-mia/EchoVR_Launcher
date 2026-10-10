@@ -397,7 +397,7 @@ pub fn play_from_steam() -> i32 {
             &v,
             state.own_game_config,
             hands,
-            &state.pack_servers,
+            &crate::core::launcher::mods::Servers::of(&state),
         ) {
             tracing::warn!("--play: mods not prepared: {e:#}");
         }

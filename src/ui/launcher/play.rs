@@ -338,10 +338,10 @@ fn pc_action(d: &mut Dashboard) -> Action {
             a.line.parts.push(state.into());
             a.line.parts.push(v.name.clone());
             // An event build plays on the classic lobbies server; a pack with a server of its
-            // own on that.
+            // own on that, and the live build on a server a plugin set on that.
             if event {
                 a.line.parts.push(d.state.relay_server.clone());
-            } else if let Some(server) = d.pack_server_for(&v.id) {
+            } else if let Some(server) = d.server_for(&v.id) {
                 a.line.parts.push(server);
             }
             a.line.parts.extend(size);
@@ -1455,7 +1455,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             &v,
             d.state.own_game_config,
             hands,
-            &d.state.pack_servers,
+            &crate::core::launcher::mods::Servers::of(&d.state),
         ) {
             d.dialogs.error(
                 "Couldn't prepare the mods",

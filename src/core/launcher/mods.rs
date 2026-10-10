@@ -26,7 +26,7 @@ use super::catalog;
 use super::nevr::{self, PluginLine};
 use super::packs::{self, PackRecord, PackSpec};
 use super::plugin_settings;
-use super::store::{InstalledVersion, PackServer};
+use super::store::{InstalledVersion, LauncherState, PackServer};
 use super::versions::Step;
 use crate::core::{download, paths};
 
@@ -1012,7 +1012,7 @@ pub fn before_start(
     v: &InstalledVersion,
     own_game_config: bool,
     hands: bool,
-    servers: &BTreeMap<String, PackServer>,
+    servers: &Servers,
 ) -> Result<()> {
     let bin = v.bin_dir();
     if !nevr_in(&bin) {
@@ -1077,7 +1077,7 @@ pub fn ensure_required(v: &InstalledVersion, catalog: &ModCatalog) -> Result<()>
 /// choices. With mods off only the required plugins are listed (NvrAssetPatches then
 /// loads only its required patches). A plugin the launcher added whose file no longer
 /// matches the checksum it noted is left out.
-pub fn prepare(v: &InstalledVersion, servers: &BTreeMap<String, PackServer>) -> Result<()> {
+pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     let overlay = Overlay::read(&choices_path(v));
     let catalog = ModCatalog::cached();
     let local = nevr::local_plugins(v);
@@ -1087,15 +1087,17 @@ pub fn prepare(v: &InstalledVersion, servers: &BTreeMap<String, PackServer>) -> 
         None
     };
     // A pack that plays on a server of its own: that server, with its account, for this
-    // start; the game's EchoVRCE sign-in waits meanwhile (nEVR would try it first).
+    // start; else the server a launcher plugin set. The game's EchoVRCE sign-in waits
+    // meanwhile (nEVR would try it first).
     let backend = served
         .as_ref()
-        .and_then(|p| servers.get(&p.id))
-        .and_then(backend_of);
+        .and_then(|p| servers.packs.get(&p.id))
+        .and_then(backend_of)
+        .or_else(|| servers.game.as_ref().and_then(backend_of));
     if backend.is_some() {
         if nevr::login_aside(v)? {
             tracing::info!(
-                "{}: plays on its own server: the EchoVRCE sign-in waits",
+                "{}: plays on another server than EchoVRCE: the EchoVRCE sign-in waits",
                 v.id
             );
         }
@@ -1109,6 +1111,24 @@ pub fn prepare(v: &InstalledVersion, servers: &BTreeMap<String, PackServer>) -> 
 /// The content packs installed in `v` (on or off), as the Mods page lists them.
 pub fn installed_packs(v: &InstalledVersion) -> Vec<PackRecord> {
     Overlay::read(&choices_path(v)).packs()
+}
+
+/// The servers a start may play on instead of EchoVRCE: the content packs' own (Settings,
+/// by the pack's id), and the one a launcher plugin set. A pack that is on plays on its
+/// own first.
+#[derive(Debug, Clone, Default)]
+pub struct Servers {
+    pub packs: BTreeMap<String, PackServer>,
+    pub game: Option<PackServer>,
+}
+
+impl Servers {
+    pub fn of(state: &LauncherState) -> Servers {
+        Servers {
+            packs: state.pack_servers.clone(),
+            game: state.game_server.as_ref().map(|g| g.server.clone()),
+        }
+    }
 }
 
 /// Pure: the server `s` stands for, when it names one (an empty address: EchoVRCE).
@@ -2288,7 +2308,7 @@ mod tests {
         let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
         // The old loader's place: nEVR won't start beside it, so it goes.
         std::fs::write(bin.join("dbgcore.dll"), "MZ EchoLoader 1").unwrap();
-        before_start(&v, false, false, &BTreeMap::new()).unwrap();
+        before_start(&v, false, false, &Servers::default()).unwrap();
         assert!(!bin.join("dbgcore.dll").exists());
         assert!(bin.join("plugins/dbgcore.dll").exists());
         let text = std::fs::read_to_string(&yaml).unwrap();
@@ -2307,7 +2327,7 @@ mod tests {
         std::fs::write(&src, "MZ mine").unwrap();
         add_local(&v, &src).unwrap();
         std::fs::write(bin.join("plugins/Dropped.dll"), "MZ dropped").unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         let text = std::fs::read_to_string(&yaml).unwrap();
         assert!(!text.contains("MyMod") && !text.contains("Dropped"));
         let view = read(&v);
@@ -2320,25 +2340,25 @@ mod tests {
         // With local plugins on in the loader's config they're listed, while their file is
         // the one added; the switch stays when the launcher writes the file again.
         std::fs::write(&yaml, format!("{text}x-local-plugins: true\n")).unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         let text = std::fs::read_to_string(&yaml).unwrap();
         assert!(text.contains("\"MyMod.dll\"") && text.contains("\"Dropped.dll\""));
         assert!(nevr::local_plugins_in(&text) && read(&v).local_plugins);
         std::fs::remove_file(bin.join("plugins/Dropped.dll")).unwrap();
         std::fs::write(bin.join("plugins/MyMod.dll"), "MZ swapped").unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(!std::fs::read_to_string(&yaml).unwrap().contains("MyMod"));
 
         // Mods off: only the required ones, NvrAssetPatches with its required patches.
         set_enabled(&v, false).unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         let text = std::fs::read_to_string(&yaml).unwrap();
         assert!(text.contains("file: \"NvrAssetPatches.dll\"\n    enabled: true"));
         assert!(text.contains("\"required_only\":\"true\""));
         assert!(!text.contains("MyMod"));
         // An older NvrAssetPatches would load every patch: left out with mods off.
         std::fs::write(bin.join("plugins/NvrAssetPatches.dll"), "MZ 1.1.0").unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(!std::fs::read_to_string(&yaml)
             .unwrap()
             .contains("NvrAssetPatches"));
@@ -2351,7 +2371,7 @@ mod tests {
         // Without nEVR, nothing is written.
         std::fs::write(bin.join(SLOT), "MZ stock").unwrap();
         std::fs::remove_file(&yaml).unwrap();
-        before_start(&v, false, false, &BTreeMap::new()).unwrap();
+        before_start(&v, false, false, &Servers::default()).unwrap();
         assert!(!yaml.exists());
     }
 
@@ -2371,7 +2391,7 @@ mod tests {
         assert!(set_args(&v, ASSET_PLUGIN, &env).is_err());
         // ...and one saved before is left out of config.yaml, the plugin and the rest stay.
         edit_overlay(&v, |o| o.set_args(ASSET_PLUGIN, &env)).unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         let text = std::fs::read_to_string(&yaml).unwrap();
         assert!(text.contains("\"NvrAssetPatches.dll\""));
         assert!(text.contains("\"logging\":\"verbose\""));
@@ -2435,13 +2455,13 @@ mod tests {
         assert!(set_plugin_enabled(&v, "NvrXmlHttpFix.dll", false).is_err());
         // It came from disk: listed only with local plugins on.
         assert!(!p.verified);
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
         assert!(!std::fs::read_to_string(&yaml)
             .unwrap()
             .contains("NvrXmlHttpFix.dll"));
         std::fs::write(&yaml, "x-local-plugins: true\n").unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(std::fs::read_to_string(&yaml)
             .unwrap()
             .contains("NvrXmlHttpFix.dll"));
@@ -2553,7 +2573,7 @@ mod tests {
 
         // This nEVR has no early load pass: neither the overlay nor the pack's plugins
         // (they would run on stock game data).
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(!listed("NvrContentOverlay") && !listed("One.dll") && !listed("Two.dll"));
         let view = read(&v);
         assert!(!view.loads_early && view.packs[0].present && view.packs[0].record.enabled);
@@ -2571,7 +2591,7 @@ mod tests {
             "MZ [NEVR.BOOT] plugin(s) marked early;  4.0.1 ",
         )
         .unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         let text = std::fs::read_to_string(&yaml).unwrap();
         assert!(text.contains(
             "file: \"NvrContentOverlay.dll\"\n    enabled: true\n    early: true\n    args: {\"active\":\"test\"}"
@@ -2581,22 +2601,67 @@ mod tests {
 
         // A pack plugin's switch is the pack's: both off, the overlay out too.
         set_plugin_enabled(&v, "One.dll", false).unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(!listed("NvrContentOverlay") && !listed("One.dll") && !listed("Two.dll"));
         assert!(!read(&v).packs[0].record.enabled);
         set_pack_enabled(&v, "test", true).unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(listed("NvrContentOverlay") && listed("Two.dll"));
 
         // Mods off: no pack. A missing content pack: no pack either.
         set_enabled(&v, false).unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(!listed("NvrContentOverlay") && !listed("One.dll"));
         set_enabled(&v, true).unwrap();
         std::fs::remove_file(content_dir(&v, "test").join("content.json")).unwrap();
-        prepare(&v, &BTreeMap::new()).unwrap();
+        prepare(&v, &Servers::default()).unwrap();
         assert!(!listed("NvrContentOverlay") && !listed("One.dll"));
         assert!(!read(&v).packs[0].present);
+    }
+
+    #[test]
+    fn plays_on_a_plugins_server_unless_a_pack_that_is_on_has_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        std::fs::write(
+            v.bin_dir().join(SLOT),
+            "MZ [NEVR.BOOT] plugin(s) marked early;  4.0.1 ",
+        )
+        .unwrap();
+        with_pack(&v);
+        let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
+        let text = || std::fs::read_to_string(&yaml).unwrap();
+        let server = |address: &str| PackServer {
+            address: address.into(),
+            server_key: "k".into(),
+            discord_id: "42".into(),
+            password: "pw".into(),
+        };
+        let login = nevr::local_dir(&v).join(nevr::CREDENTIALS);
+        std::fs::write(&login, "{}").unwrap();
+
+        // The plugin's server, the EchoVRCE sign-in waiting beside it.
+        let mut servers = Servers {
+            packs: BTreeMap::new(),
+            game: Some(server("plugin.example")),
+        };
+        prepare(&v, &servers).unwrap();
+        assert!(text().contains("socket_uri: \"ws://plugin.example:7350/ws?format=evr&token=k\""));
+        assert!(text().contains("discord_id: \"42\""));
+        assert!(!login.exists());
+
+        // The pack that is on plays on its own.
+        servers.packs.insert("test".into(), server("pack.example"));
+        prepare(&v, &servers).unwrap();
+        assert!(text().contains("ws://pack.example:7350") && !text().contains("plugin.example"));
+
+        // Pack off: the plugin's again. Neither: EchoVRCE, and its sign-in is back.
+        set_pack_enabled(&v, "test", false).unwrap();
+        prepare(&v, &servers).unwrap();
+        assert!(text().contains("ws://plugin.example:7350") && !text().contains("pack.example"));
+        prepare(&v, &Servers::default()).unwrap();
+        assert!(!text().contains("services:"));
+        assert!(login.is_file());
     }
 
     #[test]

@@ -70,6 +70,7 @@ Every text in a page is a template. `{path}` is filled from the page's context:
 | `data.<name>` | what data source `<name>` fetched (its JSON). When it failed: `{"error": "…", "failed": "…"}`, `failed` saying why: `unreachable` (no connection, or no answer in time), `missing` (the server doesn't have that address: 404, 405, 501) or `server` (another error answer). The next fetch that works replaces it |
 | `launcher.relay.server`, `.name`, `.password` | the classic lobbies server and account from the launcher's settings |
 | `launcher.event_builds` | the installed event builds: `[{"id": "halloween", "version": "pc-halloween-2018", "name": "Halloween 2018"}]` |
+| `launcher.server.address`, `.name`, `.discord_id`, `.plugin` | the server the live build plays on instead of EchoVRCE, as a plugin's `server` step set it (empty: EchoVRCE), and that plugin's id. Its key and password aren't shown. Launchers before 0.11.11-beta.1 have no `launcher.server` |
 | `item` | inside a list: its row |
 
 Template syntax:
@@ -135,3 +136,22 @@ to why (the page shows it where it likes, e.g. `{"text": "{page.error}", "tone":
 | `{"play": "{page.answer.build}"}` | starts that installed version as PLAY does: an event build's classic lobbies id (`halloween`, `summer`, `winter`, `christmas`, `halloween2017`), a catalogue id or a version's id. Event builds don't start on Linux yet |
 | `{"copy": "{data.current.match.id}"}` | copies the text |
 | `{"refresh": ["matches", "current"]}` | fetches those data sources again now |
+| `{"server": {"address": "…", "key": "…", "discord_id": "…", "password": "…", "name": "…"}}` | the live build plays on that server instead of EchoVRCE from its next start: the launcher asks the player first, and No ends the action. `{"server": null}` (or an empty address) is EchoVRCE again, without asking. See **The game's server** |
+
+### The game's server
+
+What a `server` step sets is the server nEVR connects to: the launcher writes it into
+`config.yaml` before every start of the live build, as it does for a content pack's own
+server ([../launcher/mods.md](../launcher/mods.md#a-packs-own-server): the same fields, the same
+rules for the address). The game's own `_local/config.json` can't do it while nEVR runs:
+nEVR sends every `ws://` and `wss://` address in it through its bridge to its own server.
+
+- **Which server a start uses:** a content pack that is on and has a server of its own uses
+  that one. Otherwise the start uses the server a plugin set, and otherwise EchoVRCE.
+  Event builds keep the classic lobbies.
+- **Asking first:** the launcher shows the plugin's name, the server and the Discord ID,
+  and the player says yes or no. Setting the same server again doesn't ask.
+- **Undoing it:** removing the plugin that set the server makes it EchoVRCE again. While a
+  server is set, Play's line says `Server: <name>`.
+- **The example:** [game-server/plugin.json](game-server/plugin.json), the Game server
+  plugin.

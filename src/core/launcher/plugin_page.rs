@@ -176,6 +176,15 @@ pub enum Step {
     Refresh {
         sources: Vec<String>,
     },
+    /// Sets the server the live build plays on instead of EchoVRCE, and the account there
+    /// (the launcher asks the player first). An empty address: EchoVRCE again.
+    Server {
+        name: String,
+        address: String,
+        key: String,
+        discord_id: String,
+        password: String,
+    },
 }
 
 // ---- parsing ----
@@ -554,6 +563,23 @@ fn parse_step(v: &Value, path: &str, w: &mut Vec<Warning>) -> Option<Step> {
         };
         return Some(Step::Refresh { sources });
     }
+    if let Some(server) = v.get("server") {
+        if !(server.is_object() || server.is_null()) {
+            warn(
+                w,
+                path,
+                "server takes {address, key, discord_id, password, name}, or null for EchoVRCE",
+            );
+            return None;
+        }
+        return Some(Step::Server {
+            name: s(server, "name"),
+            address: s(server, "address"),
+            key: s(server, "key"),
+            discord_id: s(server, "discord_id"),
+            password: s(server, "password"),
+        });
+    }
     warn(w, path, "unknown step");
     None
 }
@@ -819,6 +845,54 @@ mod tests {
         assert!(says("unknown step"), "{w:?}");
         assert!(says("binds to page"), "{w:?}");
         assert!(says("no action \"missing\""), "{w:?}");
+    }
+
+    #[test]
+    fn parses_the_server_step() {
+        let (p, w) = parse(
+            r#"{"id": "s", "name": "S", "page": {"columns": []}, "actions": {
+              "use": [{"server": {"name": "{settings.name}", "address": "{settings.address}",
+                                  "key": "{settings.key}", "discord_id": "{settings.id}",
+                                  "password": "{settings.password}"}}],
+              "back": [{"server": null}],
+              "bad": [{"server": "echovrce"}]}}"#,
+        );
+        let p = p.unwrap();
+        assert_eq!(
+            p.actions["use"],
+            [Step::Server {
+                name: "{settings.name}".into(),
+                address: "{settings.address}".into(),
+                key: "{settings.key}".into(),
+                discord_id: "{settings.id}".into(),
+                password: "{settings.password}".into(),
+            }]
+        );
+        assert!(
+            matches!(&p.actions["back"][..], [Step::Server { address, .. }] if address.is_empty())
+        );
+        assert!(p.actions["bad"].is_empty());
+        assert!(w.iter().any(|x| x.contains("null for EchoVRCE")), "{w:?}");
+    }
+
+    /// The Game server plugin reads without a warning, and says it needs a newer launcher
+    /// only where the launcher tells plugins nothing about the game's server.
+    #[test]
+    fn game_server_plugin() {
+        let (p, w) = parse(include_str!(
+            "../../../docs/plugins/game-server/plugin.json"
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        let p = p.unwrap();
+        assert!(matches!(
+            &p.actions["use"][..],
+            [Step::Require { .. }, Step::Server { .. }]
+        ));
+        let new = serde_json::json!({"launcher": {"server": {"address": "", "name": ""}}});
+        let old = serde_json::json!({"launcher": {"relay": {"server": "x"}}});
+        assert!(!truthy("!{launcher.server}", &new));
+        assert!(truthy("!{launcher.server}", &old));
+        assert!(truthy("!{launcher.server.address}", &new));
     }
 
     #[test]

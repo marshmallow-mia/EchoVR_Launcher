@@ -658,6 +658,11 @@ pub enum SnapVariant {
     /// Settings with EchoCombat installed and on its own server (and that server's card).
     SettingsPackServer,
     PackServerCard,
+    /// The Game server plugin installed (its tab second): filled in, asking to play there,
+    /// and playing there.
+    PluginGameServer,
+    PluginGameServerAsk,
+    PluginGameServerSet,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -1374,6 +1379,16 @@ impl Dashboard {
         self.install_pick = None;
         self.snap_found.clear();
         self.state.versions = demo_state().versions;
+        self.state.game_server = None;
+        plugins::snap_game_server(
+            self,
+            match self.snap_variant {
+                Some(SnapVariant::PluginGameServer) => Some(plugins::SnapServer::Filled),
+                Some(SnapVariant::PluginGameServerAsk) => Some(plugins::SnapServer::Asking),
+                Some(SnapVariant::PluginGameServerSet) => Some(plugins::SnapServer::Set),
+                _ => None,
+            },
+        );
         if matches!(
             self.snap_variant,
             Some(SnapVariant::Fresh | SnapVariant::Installing | SnapVariant::Extracting)
@@ -1747,6 +1762,12 @@ impl Dashboard {
                     i.marker = None;
                 }
             }
+            // Set up with the plugin list above.
+            Some(
+                SnapVariant::PluginGameServer
+                | SnapVariant::PluginGameServerAsk
+                | SnapVariant::PluginGameServerSet,
+            ) => {}
             // The concept's orange "!" on CHECK FOR UPDATES.
             None => {
                 self.update_note
@@ -1900,18 +1921,26 @@ impl Dashboard {
             .unwrap_or_default()
     }
 
-    /// Where a start of version `id` plays when a pack that is on there has a server of
-    /// its own: "EchoCombat on 192.168.1.5:7350".
-    fn pack_server_for(&mut self, id: &str) -> Option<String> {
+    /// Where a start of the live version `id` plays when that isn't EchoVRCE: a pack that
+    /// is on there with a server of its own ("EchoCombat on 192.168.1.5:7350"), else the
+    /// server a launcher plugin set ("Server: EchoCombat test").
+    fn server_for(&mut self, id: &str) -> Option<String> {
         let packs = self.packs();
-        packs
+        let pack = packs
             .iter()
             .filter(|(v, p)| v == id && p.enabled)
             .find_map(|(_, p)| {
                 let s = self.state.pack_servers.get(&p.id)?;
                 let address = s.address.trim();
                 (!address.is_empty()).then(|| format!("{} on {address}", p.name))
-            })
+            });
+        pack.or_else(|| {
+            let g = self.state.game_server.as_ref()?;
+            let address = g.server.address.trim();
+            let name = g.name.trim();
+            (!address.is_empty())
+                .then(|| format!("Server: {}", if name.is_empty() { address } else { name }))
+        })
     }
 
     /// Why version `v`'s files can't be changed now (`None`: they can): Echo VR runs, or
