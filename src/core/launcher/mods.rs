@@ -1114,8 +1114,10 @@ pub fn installed_packs(v: &InstalledVersion) -> Vec<PackRecord> {
 /// Pure: the server `s` stands for, when it names one (an empty address: EchoVRCE).
 pub fn backend_of(s: &PackServer) -> Option<nevr::Backend> {
     let key = s.server_key.trim();
+    let socket_uri = nevr::socket_uri(&s.address, key)?;
     Some(nevr::Backend {
-        socket_uri: nevr::socket_uri(&s.address, key)?,
+        http_uri: nevr::http_uri(&socket_uri).unwrap_or_default(),
+        socket_uri,
         server_key: key.to_string(),
         discord_id: s.discord_id.trim().to_string(),
         password: s.password.clone(),

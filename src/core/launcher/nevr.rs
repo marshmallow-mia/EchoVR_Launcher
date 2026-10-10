@@ -288,6 +288,11 @@ pub fn local_plugins(v: &InstalledVersion) -> bool {
 pub struct Backend {
     /// `ws://host:7350/ws?format=evr&token=<server key>`.
     pub socket_uri: String,
+    /// The same server's HTTP API (`http://host:7350`): nEVR's EchoVRCE sign-in (a device
+    /// code approved on echovrce.com) asks it instead of EchoVRCE, is turned down at once,
+    /// and the game signs in with the account below. Without it, that sign-in would open
+    /// EchoVRCE's page and wait five minutes.
+    pub http_uri: String,
     pub server_key: String,
     pub discord_id: String,
     pub password: String,
@@ -330,6 +335,22 @@ pub fn socket_uri(address: &str, key: &str) -> Option<String> {
     Some(url.to_string())
 }
 
+/// Pure: the HTTP API beside game socket `socket_uri`: the same host and port, `http` for
+/// `ws` and `https` for `wss`.
+pub fn http_uri(socket_uri: &str) -> Option<String> {
+    let url = url::Url::parse(socket_uri).ok()?;
+    let scheme = match url.scheme() {
+        "ws" => "http",
+        "wss" => "https",
+        _ => return None,
+    };
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(port) => format!("{scheme}://{host}:{port}"),
+        None => format!("{scheme}://{host}"),
+    })
+}
+
 /// Pure: the launcher's `config.yaml`: the plugins (none with mods off), the local
 /// plugins switch when it is on, and another server than EchoVRCE when this start plays
 /// on one. Values are written as JSON, which YAML reads as it is.
@@ -346,6 +367,9 @@ pub fn render_config(plugins: &[PluginLine], local: bool, backend: Option<&Backe
             out.push_str(&format!("identity:\n  discord_id: {}\n", v(&b.discord_id)));
         }
         let mut auth = String::new();
+        if !b.http_uri.is_empty() {
+            auth.push_str(&format!("  http_uri: {}\n", v(&b.http_uri)));
+        }
         if !b.password.is_empty() {
             auth.push_str(&format!("  password: {}\n", v(&b.password)));
         }
@@ -894,6 +918,7 @@ mod tests {
     fn writes_another_server() {
         let b = Backend {
             socket_uri: "ws://127.0.0.1:7350/ws?format=evr&token=k".into(),
+            http_uri: "http://127.0.0.1:7350".into(),
             server_key: "k".into(),
             discord_id: "900000000000000001".into(),
             password: "pa${ss".into(),
@@ -902,7 +927,7 @@ mod tests {
         assert!(text.contains(
             "services:\n  socket_uri: \"ws://127.0.0.1:7350/ws?format=evr&token=k\"\n\
              identity:\n  discord_id: \"900000000000000001\"\n\
-             auth:\n  password: \"pa$${ss\"\n  server_key: \"k\"\n"
+             auth:\n  http_uri: \"http://127.0.0.1:7350\"\n  password: \"pa$${ss\"\n  server_key: \"k\"\n"
         ));
         // Without one: EchoVRCE, nothing of the kind.
         assert!(!render_config(&[], false, None).contains("services:"));
@@ -931,6 +956,15 @@ mod tests {
         for bad in ["", "  ", "http://h", "h/ws", "a b"] {
             assert_eq!(s(bad, ""), None, "{bad}");
         }
+        // Its HTTP API, for nEVR's sign-in.
+        assert_eq!(
+            http_uri("ws://127.0.0.1:7350/ws?format=evr&token=k").as_deref(),
+            Some("http://127.0.0.1:7350")
+        );
+        assert_eq!(
+            http_uri("wss://combat.example.org/ws").as_deref(),
+            Some("https://combat.example.org")
+        );
     }
 
     #[test]
