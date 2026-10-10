@@ -10,7 +10,10 @@
 //!   `config.json`; they are read from there, never stored.
 //! * The session is kept in the Windows Credential Manager (on macOS and Linux in a file
 //!   only the user can read) and never logged.
+//! * Sessions run out by EchoVRCE's clock, not the computer's ([`now`]): a computer clock
+//!   that is hours off would make every session look ended.
 
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -113,10 +116,75 @@ pub fn jwt_exp(token: &str) -> Option<i64> {
         .as_i64()
 }
 
-fn now() -> i64 {
+// ---- EchoVRCE's clock ----
+
+/// How far EchoVRCE's clock is ahead of this computer's (seconds; negative: behind), from
+/// the `Date` of its last answer; [`NO_OFFSET`] until it has answered.
+static CLOCK_OFFSET: AtomicI64 = AtomicI64::new(NO_OFFSET);
+const NO_OFFSET: i64 = i64::MIN;
+/// A clock off by less than this counts as right.
+const CLOCK_SLACK: i64 = 120;
+
+/// Now by EchoVRCE's clock (Unix seconds), which its sessions run out by. This computer's
+/// clock until EchoVRCE has answered once.
+pub fn now() -> i64 {
+    local_now() + clock_offset().unwrap_or(0)
+}
+
+/// How far EchoVRCE's clock is ahead of this computer's, once it has answered.
+pub fn clock_offset() -> Option<i64> {
+    Some(CLOCK_OFFSET.load(Ordering::Relaxed)).filter(|&o| o != NO_OFFSET)
+}
+
+/// This computer's clock off by `offset` (as [`clock_offset`]) in words, "4 h 0 min
+/// ahead"; `None` when it is right.
+pub fn clock_off(offset: i64) -> Option<String> {
+    if offset.abs() < CLOCK_SLACK {
+        return None;
+    }
+    let way = if offset < 0 { "ahead" } else { "behind" };
+    let min = (offset.abs() + 30) / 60;
+    Some(match min {
+        m if m >= 60 => format!("{} h {} min {way}", m / 60, m % 60),
+        m => format!("{m} min {way}"),
+    })
+}
+
+fn local_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
+}
+
+/// Takes EchoVRCE's clock from an answer's `Date`; says so in the log when this computer's
+/// is off (and again when that changes).
+fn note_clock(date: Option<&reqwest::header::HeaderValue>) {
+    let Some(server) = date.and_then(|d| d.to_str().ok()).and_then(http_date) else {
+        return;
+    };
+    let offset = server - local_now();
+    let before = CLOCK_OFFSET.swap(offset, Ordering::Relaxed);
+    let was = if before == NO_OFFSET { 0 } else { before };
+    if (offset - was).abs() < CLOCK_SLACK {
+        return;
+    }
+    match clock_off(offset) {
+        Some(off) => tracing::warn!(
+            "this computer's clock is {off} of EchoVRCE's: sessions are timed by EchoVRCE's"
+        ),
+        None => tracing::info!("this computer's clock agrees with EchoVRCE's again"),
+    }
+}
+
+/// Pure: an HTTP `Date` ("Sat, 10 Oct 2026 16:41:29 GMT") in Unix seconds.
+fn http_date(s: &str) -> Option<i64> {
+    let format = time::format_description::parse_borrowed::<1>(
+        "[weekday repr:short], [day] [month repr:short] [year] [hour]:[minute]:[second] GMT",
+    )
+    .ok()?;
+    time::PrimitiveDateTime::parse(s.trim(), &format)
+        .ok()
+        .map(|t| t.assume_utc().unix_timestamp())
 }
 
 // ---- tokens entered by hand ----
@@ -268,6 +336,7 @@ fn call(
             .send()
             .await
             .map_err(|e| anyhow!(Unavailable(format!("EchoVRCE couldn't be reached: {e}"))))?;
+        note_clock(resp.headers().get(reqwest::header::DATE));
         let status = resp.status().as_u16();
         let text = resp.text().await.unwrap_or_default();
         Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
@@ -602,18 +671,45 @@ pub fn check(tokens: &Tokens) -> Result<(Option<Tokens>, Account)> {
     }
 }
 
-/// Ends the session on the server (best effort; the local copy is forgotten anyway).
-pub fn logout(tokens: &Tokens) {
-    let Ok(a) = api() else {
-        return;
-    };
-    let body = json!({ "token": tokens.token, "refresh_token": tokens.refresh_token });
-    let _ = call(
+/// Ends the session on the server (the local copy is forgotten anyway). A token that ran
+/// out is renewed first. EchoVRCE refuses its own refresh tokens there (400): then the
+/// session token alone is ended, and the refresh token runs out by itself.
+pub fn logout(tokens: &Tokens) -> Result<()> {
+    let (mut status, mut body) = logout_with(tokens, true)?;
+    if status == 401 {
+        match tokens.refresh_token.as_deref().map(refresh) {
+            Some(Ok(renewed)) => (status, body) = logout_with(&renewed, true)?,
+            // Nothing left to end.
+            Some(Err(e)) if is_signed_out(&e) => return Ok(()),
+            Some(Err(e)) => return Err(e),
+            None => return Ok(()),
+        }
+    }
+    if status == 400 && tokens.refresh_token.is_some() {
+        (status, body) = logout_with(tokens, false)?;
+    }
+    if !(200..300).contains(&status) {
+        bail!(
+            "EchoVRCE didn't end the session ({status}: {})",
+            message(&body)
+        );
+    }
+    Ok(())
+}
+
+/// `/session/logout` for `tokens` (`with_refresh`: its refresh token too).
+fn logout_with(tokens: &Tokens, with_refresh: bool) -> Result<(u16, Value)> {
+    let a = api()?;
+    let mut body = json!({ "token": tokens.token });
+    if with_refresh {
+        body["refresh_token"] = json!(tokens.refresh_token);
+    }
+    call(
         reqwest::Method::POST,
         &format!("{}/session/logout", a.base),
         Some(&body),
         Some(&format!("Bearer {}", tokens.token)),
-    );
+    )
 }
 
 // ---- where the session is kept ----
@@ -623,8 +719,23 @@ pub mod store {
     //! file in the data folder only the user can read. Not the macOS Keychain: it asks for
     //! access again whenever an unsigned build changes, so at every start of a new build.
 
+    use std::sync::{Mutex, MutexGuard};
+
     use super::Tokens;
     use anyhow::{Context, Result};
+
+    /// Counts the times the session was forgotten: a save for an earlier one (a renewal
+    /// still under way when you signed out) is dropped. Held while the store changes.
+    static ERA: Mutex<u64> = Mutex::new(0);
+
+    fn era_lock() -> MutexGuard<'static, u64> {
+        ERA.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// The session's era now, for a later [`save`].
+    pub fn era() -> u64 {
+        *era_lock()
+    }
 
     #[cfg(windows)]
     const SERVICE: &str = "EchoVR Launcher";
@@ -652,8 +763,13 @@ pub mod store {
         serde_json::from_str(&text).ok()
     }
 
-    /// Keeps `tokens` for the next run.
-    pub fn save(tokens: &Tokens) -> Result<()> {
+    /// Keeps `tokens` for the next run, unless the session was forgotten since `era`.
+    pub fn save(tokens: &Tokens, era: u64) -> Result<()> {
+        let held = era_lock();
+        if *held != era {
+            tracing::info!("echovrce: a session that came after signing out wasn't kept");
+            return Ok(());
+        }
         let json = serde_json::to_string(tokens)?;
         #[cfg(windows)]
         if let Some(e) = entry() {
@@ -668,13 +784,24 @@ pub mod store {
         write_private(&file(), &json)
     }
 
-    /// Forgets the saved session.
+    /// Forgets the saved session (and drops saves still to come for it).
     pub fn forget() {
+        let mut held = era_lock();
+        *held += 1;
         #[cfg(windows)]
         if let Some(e) = entry() {
-            let _ = e.delete_credential();
+            match e.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => {}
+                Err(err) => {
+                    tracing::warn!("echovrce: the credential store kept the session: {err}")
+                }
+            }
         }
-        let _ = std::fs::remove_file(file());
+        match std::fs::remove_file(file()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!("echovrce: {} stayed: {e}", file().display()),
+        }
     }
 
     /// Writes `text` to `path` readable by its owner only, replacing it in one step.
@@ -765,6 +892,22 @@ mod tests {
         };
         assert!(t.fresh(1000 - 301));
         assert!(!t.fresh(1000 - 299));
+    }
+
+    /// EchoVRCE's clock comes from its answers' `Date`, and a clock that is off reads
+    /// as the player would say it.
+    #[test]
+    fn reads_echovrces_clock() {
+        assert_eq!(
+            http_date("Sat, 10 Oct 2026 16:41:29 GMT"),
+            Some(1_791_650_489)
+        );
+        assert_eq!(http_date("Sat, 10 Oct 2026 16:41:29"), None);
+        assert_eq!(http_date("yesterday"), None);
+        // The player's PC: 4 h ahead (EchoVRCE's clock behind it).
+        assert_eq!(clock_off(-14_399).as_deref(), Some("4 h 0 min ahead"));
+        assert_eq!(clock_off(600).as_deref(), Some("10 min behind"));
+        assert_eq!(clock_off(-90), None);
     }
 
     #[test]

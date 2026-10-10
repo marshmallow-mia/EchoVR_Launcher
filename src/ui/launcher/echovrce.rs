@@ -11,7 +11,7 @@
 //! the browser.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{hero, panel, setup, Dashboard, Page};
@@ -27,6 +27,11 @@ use crate::ui::widgets::{Tone, BTN_H};
 
 /// How often the session is checked (and renewed when due).
 const CHECK_EVERY: Duration = Duration::from_secs(600);
+/// The least time between two checks, even when a renewed session looks due already.
+const CHECK_GAP: Duration = Duration::from_secs(60);
+/// A computer clock off by this much is told on the status bar (sessions are timed by
+/// EchoVRCE's clock anyway; the game may not be).
+const CLOCK_TELL_S: i64 = 300;
 /// After the game's sign-in couldn't be given: when to try again.
 const RETRY_GAME_SIGN_IN: Duration = Duration::from_secs(3600);
 /// After EchoVRCE didn't answer: when to try again.
@@ -123,6 +128,8 @@ pub(super) struct Vrce {
     pub linking_site: bool,
     /// A finished link, for the page to open the site with.
     pub site_linked: Option<Result<(String, Tokens), String>>,
+    /// The status bar told that the computer's clock is off.
+    clock_told: bool,
 }
 
 impl Vrce {
@@ -213,6 +220,15 @@ impl Vrce {
                 }
             }
         }
+        if notice.is_none() && !self.clock_told && self.account.is_some() {
+            if let Some(off) = vrce::clock_offset()
+                .filter(|o| o.abs() >= CLOCK_TELL_S)
+                .and_then(vrce::clock_off)
+            {
+                self.clock_told = true;
+                notice = Some(clock_notice(&off));
+            }
+        }
         let due = self.next_check.is_some_and(|t| Instant::now() >= t);
         if due && !self.busy && self.signing.is_none() {
             if let Some(tokens) = self.tokens.clone() {
@@ -228,11 +244,12 @@ impl Vrce {
     /// Renews the session when due and reads the account, on a worker.
     fn check(&mut self, ctx: &egui::Context, tokens: Tokens) {
         self.busy = true;
+        let era = vrce::store::era();
         self.worker.spawn(ctx, move |tx| {
             let r = match vrce::check(&tokens) {
                 Ok((renewed, account)) => {
                     if let Some(t) = &renewed {
-                        if let Err(e) = vrce::store::save(t) {
+                        if let Err(e) = vrce::store::save(t, era) {
                             tracing::warn!("echovrce: saving the renewed session: {e:#}");
                         }
                     }
@@ -292,6 +309,13 @@ impl Vrce {
         Some(format!("{head}{cause} {then}"))
     }
 
+    /// Checks the session (renewing it when due) on the next frame.
+    pub(super) fn check_soon(&mut self) {
+        if self.tokens.is_some() {
+            self.next_check = Some(Instant::now());
+        }
+    }
+
     /// Checks the session now instead of at the next try.
     pub(super) fn retry_now(&mut self, ctx: &egui::Context) {
         if let Some(tokens) = self.tokens.clone().filter(|_| !self.busy) {
@@ -303,6 +327,7 @@ impl Vrce {
     /// cancelled.
     fn wait_for_approval(&self, ctx: &egui::Context, code: &DeviceCode, cancel: Arc<AtomicBool>) {
         let (code, until) = (code.code.clone(), Instant::now() + code.expires_in);
+        let era = vrce::store::era();
         let mut down = false;
         self.worker.spawn(ctx, move |tx| loop {
             std::thread::sleep(POLL_EVERY);
@@ -323,7 +348,7 @@ impl Vrce {
                     }
                 }
                 Ok(Poll::Approved(tokens)) => {
-                    tx.send(Msg::SignedIn(finish_sign_in(tokens)));
+                    tx.send(Msg::SignedIn(finish_sign_in(tokens, era)));
                     return;
                 }
                 // EchoVRCE not answering isn't the code's fault: ask again.
@@ -407,6 +432,7 @@ impl Vrce {
     ) {
         self.busy = true;
         self.failed = None;
+        let era = vrce::store::era();
         self.worker.spawn(ctx, move |tx| {
             let tokens = match (token, refresh) {
                 (Some(token), refresh) => Ok(Tokens {
@@ -422,7 +448,7 @@ impl Vrce {
                 }),
                 (None, None) => Err(Failed::from("There is no token in that.".to_string())),
             };
-            tx.send(Msg::SignedIn(tokens.and_then(finish_sign_in)));
+            tx.send(Msg::SignedIn(tokens.and_then(|t| finish_sign_in(t, era))));
         });
     }
 
@@ -440,18 +466,30 @@ impl Vrce {
         });
     }
 
-    /// Ends the session here and on EchoVRCE.
+    /// Ends the session here and on EchoVRCE. What is still under way for it (a renewal,
+    /// a link for the site) can't bring it back: its answers go to a worker that's gone,
+    /// and the store drops its saves.
     pub(super) fn sign_out(&mut self, ctx: &egui::Context) {
+        tracing::info!("echovrce: signing out");
         self.cancel_sign_in();
+        self.worker = Worker::default();
+        vrce::store::forget();
         let tokens = self.tokens.take();
         self.account = None;
+        self.busy = false;
         self.ended = false;
         self.next_check = None;
+        self.linking_site = false;
+        self.site_linked = None;
         self.worker.spawn(ctx, move |_| {
-            if let Some(t) = tokens {
-                vrce::logout(&t);
+            let Some(t) = tokens else {
+                return;
+            };
+            match vrce::logout(&t) {
+                Ok(()) => tracing::info!("echovrce: the session ended on EchoVRCE too"),
+                // Signed out here all the same: what's left on EchoVRCE runs out.
+                Err(e) => tracing::info!("echovrce: {e:#}"),
             }
-            vrce::store::forget();
         });
     }
 }
@@ -468,6 +506,8 @@ pub(super) struct GameSignIn {
     busy: bool,
     account: Option<String>,
     next: Option<Instant>,
+    /// Counts sign-outs: a sign-in linked across one isn't written (held while one is).
+    era: Arc<Mutex<u64>>,
 }
 
 impl GameSignIn {
@@ -509,8 +549,10 @@ impl GameSignIn {
             .filter(|v| v.publisher_lock.is_none() && v.present())
             .cloned()
             .collect();
+        let era = self.era.clone();
+        let mine = *lock(&era);
         self.worker.spawn(ctx, move |tx| {
-            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let now = vrce::now();
             let mut all_good = true;
             for v in &live {
                 if !crate::core::launcher::mods::nevr_in(&v.bin_dir())
@@ -518,15 +560,29 @@ impl GameSignIn {
                 {
                     continue;
                 }
+                // `Some`: signed out meanwhile, the linked session isn't written.
                 let linked = vrce::link_device(&tokens.token).and_then(|t| {
                     let rt = t
                         .refresh_token
+                        .clone()
                         .ok_or_else(|| anyhow::anyhow!("EchoVRCE gave no refresh token"))?;
                     let login = GameLogin::new(&rt, &account.id, &account.username, now);
-                    nevr::write_login(v, &login)
+                    let held = lock(&era);
+                    if *held != mine {
+                        return Ok(Some(t));
+                    }
+                    nevr::write_login(v, &login).map(|()| None)
                 });
                 match linked {
-                    Ok(()) => tracing::info!("{}: the game has its own EchoVRCE sign-in", v.id),
+                    Ok(None) => tracing::info!("{}: the game has its own EchoVRCE sign-in", v.id),
+                    Ok(Some(t)) => {
+                        tracing::info!(
+                            "{}: signed out while the game's sign-in was linked: not written",
+                            v.id
+                        );
+                        let _ = vrce::logout(&t);
+                        break;
+                    }
                     Err(e) => {
                         all_good = false;
                         tracing::warn!("{}: no EchoVRCE sign-in for the game: {e:#}", v.id)
@@ -546,6 +602,8 @@ impl GameSignIn {
     ) {
         let (account, versions) = (account.to_string(), versions.to_vec());
         self.account = None;
+        // After a write under way: it finishes first, and later ones see the new era.
+        *lock(&self.era) += 1;
         self.worker.spawn(ctx, move |_| {
             for v in &versions {
                 nevr::forget_login(v, &account);
@@ -555,14 +613,29 @@ impl GameSignIn {
 }
 
 /// When to check `tokens` next: every ten minutes, and before the session gets too close
-/// to running out to be renewed.
+/// to running out to be renewed (by EchoVRCE's clock), but not sooner than [`CHECK_GAP`].
 fn next_check(tokens: Option<&Tokens>) -> Instant {
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let now = vrce::now();
     let until_due = tokens
         .and_then(Tokens::expires)
         .map(|exp| (exp - now - vrce::MARGIN.as_secs() as i64).max(0) as u64)
-        .map_or(CHECK_EVERY, |s| Duration::from_secs(s).min(CHECK_EVERY));
+        .map_or(CHECK_EVERY, |s| {
+            Duration::from_secs(s).clamp(CHECK_GAP, CHECK_EVERY)
+        });
     Instant::now() + until_due
+}
+
+fn lock(era: &Mutex<u64>) -> std::sync::MutexGuard<'_, u64> {
+    era.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// What the status bar says about a computer clock that is `off` ("4 h 0 min ahead").
+fn clock_notice(off: &str) -> String {
+    if cfg!(windows) {
+        format!("Your PC's clock is {off}: turn on \"Set time automatically\" in Windows' date and time settings")
+    } else {
+        format!("Your computer's clock is {off}: let the system set the time automatically")
+    }
 }
 
 impl Vrce {
@@ -648,8 +721,9 @@ pub(super) fn sign_in_button(
     }
 }
 
-/// A new session: checked against the account (renewed if it must be), then saved.
-fn finish_sign_in(tokens: Tokens) -> Result<(Tokens, Account), Failed> {
+/// A new session: checked against the account (renewed if it must be), then saved
+/// (unless the session was forgotten since `era`).
+fn finish_sign_in(tokens: Tokens, era: u64) -> Result<(Tokens, Account), Failed> {
     let (renewed, account) = vrce::check(&tokens).map_err(|e| {
         if vrce::is_signed_out(&e) {
             Failed::from("EchoVRCE didn't accept those tokens.".to_string())
@@ -658,7 +732,7 @@ fn finish_sign_in(tokens: Tokens) -> Result<(Tokens, Account), Failed> {
         }
     })?;
     let tokens = renewed.unwrap_or(tokens);
-    vrce::store::save(&tokens)
+    vrce::store::save(&tokens, era)
         .map_err(|e| Failed::from(format!("Couldn't save the session: {e:#}")))?;
     Ok((tokens, account))
 }
@@ -1045,7 +1119,9 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 
 /// The session's end, for the account card: "until 14:32" (local time).
 fn valid_until(tokens: &Tokens) -> Option<String> {
-    let exp = time::OffsetDateTime::from_unix_timestamp(tokens.expires()?).ok()?;
+    // By this computer's clock, as the player reads the time.
+    let exp = tokens.expires()? - vrce::clock_offset().unwrap_or(0);
+    let exp = time::OffsetDateTime::from_unix_timestamp(exp).ok()?;
     let local = crate::core::launcher::feed::local(exp);
     Some(format!("{:02}:{:02}", local.hour(), local.minute()))
 }

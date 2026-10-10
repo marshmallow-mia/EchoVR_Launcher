@@ -1400,6 +1400,17 @@ pub(super) fn ask_delete_cache(d: &mut Dashboard) {
 pub(super) fn ask_upload(d: &mut Dashboard) {
     // Uploads are for players signed in with EchoVRCE (the service checks it).
     if !d.demo && upload_token(d).is_none() {
+        if d.vrce.account.is_some() && d.vrce.tokens.is_some() {
+            // Signed in, with the session due for renewal: renewed first.
+            tracing::info!("logs: the EchoVRCE session is due, renewing it first");
+            d.vrce.check_soon();
+            d.dialogs.info(
+                "Renewing your EchoVRCE sign-in",
+                "Your EchoVRCE session is being renewed: upload your logs again in a moment.",
+            );
+            return;
+        }
+        tracing::info!("logs: not signed in with EchoVRCE, can't upload");
         d.page = super::Page::EchoVrce;
         d.dialogs.info(
             "Sign in with EchoVRCE first",
@@ -1752,6 +1763,7 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
     d.uploading_logs = true;
     d.notify("Uploading your logs…");
     let sources = std::mem::take(&mut d.upload_sources);
+    tracing::info!("logs: uploading {} log(s)", sources.len());
     let versions = d.state.versions.clone();
     d.worker.spawn(ctx, move |tx| {
         let who = logs::Uploader {
@@ -1765,9 +1777,10 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
     });
 }
 
-/// The EchoVRCE session's token while signed in (kept renewed by the EchoVRCE page).
+/// The EchoVRCE session's token while signed in (kept renewed by the EchoVRCE page),
+/// good by EchoVRCE's clock.
 fn upload_token(d: &Dashboard) -> Option<String> {
-    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let now = crate::core::echovrce::now();
     d.vrce.account.as_ref()?;
     d.vrce
         .tokens

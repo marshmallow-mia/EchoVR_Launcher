@@ -2198,12 +2198,18 @@ impl Dashboard {
                 Msg::LogsUploaded(r) => {
                     self.uploading_logs = false;
                     match r {
-                        Ok(code) => settings::logs_sent(self, ctx, &code),
-                        Err(why) => self.dialogs.error(
-                            "Couldn't upload your logs",
-                            &why,
-                            Default::default(),
-                        ),
+                        Ok(code) => {
+                            tracing::info!("logs: uploaded");
+                            settings::logs_sent(self, ctx, &code)
+                        }
+                        Err(why) => {
+                            tracing::warn!("logs: upload failed: {why}");
+                            self.dialogs.error(
+                                "Couldn't upload your logs",
+                                &why,
+                                Default::default(),
+                            )
+                        }
                     }
                 }
                 Msg::QuestNetwork(r) => match r {

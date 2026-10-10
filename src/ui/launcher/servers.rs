@@ -662,7 +662,7 @@ impl Servers {
         let t = self.tickets.first()?;
         let waited = t
             .since
-            .map(|s| (time::OffsetDateTime::now_utc().unix_timestamp() - s).max(0))
+            .map(|s| (crate::core::echovrce::now() - s).max(0))
             .map(|s| format!("   ·   {}:{:02}", s / 60, s % 60))
             .unwrap_or_default();
         let party = match t.players.len() {
@@ -1608,7 +1608,7 @@ fn live_rows(
                 detail.push(format!("{b} – {o}"));
             }
             if let Some(s) = m.started {
-                let mins = (time::OffsetDateTime::now_utc().unix_timestamp() - s).max(0) / 60;
+                let mins = (crate::core::echovrce::now() - s).max(0) / 60;
                 detail.push(format!("{mins} min"));
             }
             let dg = k.label_galley(&detail.join("   ·   "), design::din(15.0), design::SUBTLE, dz(260.0));
@@ -1767,7 +1767,7 @@ fn status(d: &Dashboard, account: Option<&Account>, created: Option<&str>) -> St
     if let Some(t) = d.servers.tickets.first() {
         let waited = t
             .since
-            .map(|s| (time::OffsetDateTime::now_utc().unix_timestamp() - s).max(0))
+            .map(|s| (crate::core::echovrce::now() - s).max(0))
             .map(|s| format!(" · {}:{:02}", s / 60, s % 60))
             .unwrap_or_default();
         let party = match t.players.len() {

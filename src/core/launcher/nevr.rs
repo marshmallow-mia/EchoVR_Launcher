@@ -566,7 +566,10 @@ pub fn forget_login(v: &InstalledVersion, user_id: &str) {
             .and_then(|t| serde_json::from_str::<GameLogin>(&t).ok())
             .is_some_and(|l| l.user_id == user_id);
         if theirs {
-            let _ = std::fs::remove_file(&p);
+            match std::fs::remove_file(&p) {
+                Ok(()) => tracing::info!("{}: signed the game out of EchoVRCE", v.id),
+                Err(e) => tracing::warn!("{}: {} stayed: {e}", v.id, p.display()),
+            }
         }
     }
 }
