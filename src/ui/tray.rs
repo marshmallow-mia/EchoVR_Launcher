@@ -140,8 +140,9 @@ fn run() -> i32 {
     let icon = icon_rgba()
         .map(|(w, h, rgba)| {
             // ARGB32, network byte order.
-            let data = rgba
-                .chunks_exact(4)
+            let (pixels, _) = rgba.as_chunks::<4>();
+            let data = pixels
+                .iter()
                 .flat_map(|p| [p[3], p[0], p[1], p[2]])
                 .collect();
             vec![ksni::Icon {

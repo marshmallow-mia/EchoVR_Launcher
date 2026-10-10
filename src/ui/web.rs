@@ -46,8 +46,9 @@ struct Pending {
     sign_in: bool,
 }
 
-/// What the page asked of the launcher.
+/// What the page asked of the launcher (Linux has no view: nothing asks).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 pub enum Event {
     /// A zoom step, with the browser's keys or Ctrl+wheel.
     Zoom(Zoom),

@@ -208,7 +208,7 @@ pub fn open_window() {
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const RUN_VALUE: &str = "Echo VR Launcher (updates)";
-#[cfg(any(target_os = "linux", test))]
+#[cfg(target_os = "linux")]
 const AUTOSTART_FILE: &str = "echovr-launcher-tray.desktop";
 
 /// Pure: the Linux autostart entry starting `exe` as the tray.
