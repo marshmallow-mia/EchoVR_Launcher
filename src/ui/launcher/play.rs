@@ -315,6 +315,16 @@ fn pc_action(d: &mut Dashboard) -> Action {
     match target {
         Target::Installed(v) => {
             a.job = job;
+            // Echo VR running from this build. Another build running isn't this one: it is
+            // named, and PLAY waits for it.
+            let here = local.runs(&v.id, &v.root);
+            let other = (running && !here).then(|| {
+                d.running_version()
+                    .map_or_else(|| "Another Echo VR build".to_string(), |o| o.name.clone())
+            });
+            let running = running && here;
+            let ours_running = ours_running && local.ours.as_deref() == Some(v.id.as_str());
+            let ours = ours && local.ours.as_deref().is_none_or(|id| id == v.id);
             let size = v.catalog_id.as_ref().and_then(|cid| {
                 let c = d.catalog.as_ref()?;
                 c.pc().find(|e| &e.id == cid)?.size.map(gb)
@@ -344,6 +354,9 @@ fn pc_action(d: &mut Dashboard) -> Action {
             } else if let Some(server) = d.server_for(&v.id) {
                 a.line.parts.push(server);
             }
+            if let Some(o) = &other {
+                a.line.parts.push(format!("{o} is running"));
+            }
             a.line.parts.extend(size);
             a.line.parts.extend(servers_here(local.servers.len()));
             a.line.path = Some(v.root.clone());
@@ -365,6 +378,9 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 if let Some(n) = &d.launch_note {
                     a.line.parts.push(format!("{n}…"));
                 }
+            } else if let Some(o) = &other {
+                (a.main, a.enabled, a.grey) = (Main::Play, false, true);
+                a.tip = format!("{o} is running: close it first to play this one");
             } else if setup::needs_patch(d, &v) {
                 (a.label, a.main) = ("PATCH", Main::Patch(v.id.clone()));
                 a.tip =

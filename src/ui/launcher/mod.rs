@@ -655,6 +655,9 @@ pub enum SnapVariant {
     InstallingAnotherMenu,
     /// Mods while the chosen build is still downloading.
     ModsInstalling,
+    /// Another installed build runs (started outside the launcher) while the live one is
+    /// chosen.
+    OtherBuildRunning,
     /// Settings with EchoCombat installed and on its own server (and that server's card).
     SettingsPackServer,
     PackServerCard,
@@ -671,6 +674,8 @@ enum SnapGame {
     Launching,
     Ours,
     Elsewhere,
+    /// Another build's, started outside the launcher.
+    OtherBuild,
     /// A dedicated server, from another folder.
     Server,
     /// Echo VR runs on the Quest (its API answers over the network).
@@ -1534,6 +1539,7 @@ impl Dashboard {
             }
             Some(SnapVariant::Launching) => self.snap_game = Some(SnapGame::Launching),
             Some(SnapVariant::Running) => self.snap_game = Some(SnapGame::Elsewhere),
+            Some(SnapVariant::OtherBuildRunning) => self.snap_game = Some(SnapGame::OtherBuild),
             Some(SnapVariant::RunningOurs) => self.snap_game = Some(SnapGame::Ours),
             Some(SnapVariant::ServerHere) => self.snap_game = Some(SnapGame::Server),
             Some(SnapVariant::VersionMenu) => {
@@ -1856,6 +1862,16 @@ impl Dashboard {
             Some(SnapGame::Elsewhere) => Local {
                 state: GameState::Running,
                 others: 1,
+                clients: vec![None],
+                ..Local::default()
+            },
+            Some(SnapGame::OtherBuild) => Local {
+                state: GameState::Running,
+                others: 1,
+                clients: vec![Some(
+                    "C:/Program Files/Oculus/Software/Software/ready-at-dawn-echo-arena/bin/win10/echovr.exe"
+                        .into(),
+                )],
                 ..Local::default()
             },
             Some(SnapGame::Server) => Local {
@@ -1946,11 +1962,30 @@ impl Dashboard {
         })
     }
 
-    /// Why version `v`'s files can't be changed now (`None`: they can): Echo VR runs, or
-    /// a server runs from its folder (both hold its files).
+    /// The installed version that runs, when the launcher can tell: the one it started,
+    /// else one a client started elsewhere runs from.
+    fn running_version(&self) -> Option<&InstalledVersion> {
+        let local = self.local();
+        if let Some(id) = &local.ours {
+            return self.state.version(id);
+        }
+        let exes: Vec<&std::path::Path> = local
+            .clients
+            .iter()
+            .flatten()
+            .map(|p| p.as_path())
+            .collect();
+        self.state.versions.iter().find(|v| {
+            exes.iter()
+                .any(|e| crate::core::launcher::game::in_folder(e, &v.root))
+        })
+    }
+
+    /// Why version `v`'s files can't be changed now (`None`: they can): Echo VR runs from
+    /// it (another build running doesn't hold them), or a server runs from its folder.
     fn files_in_use(&self, v: &InstalledVersion) -> Option<&'static str> {
         let local = self.local();
-        if local.state.is_running() {
+        if local.runs(&v.id, &v.root) {
             Some("Close Echo VR first: it holds the game's files")
         } else if local.server_in(&v.root) {
             Some("An Echo VR server runs from this folder and holds its files: stop it first")
@@ -3467,10 +3502,15 @@ impl Dashboard {
         } else if let (true, Some(since)) = (game.is_running(), self.game_since) {
             let mins = since.elapsed().as_secs() / 60;
             ctx.request_repaint_after(std::time::Duration::from_secs(20));
+            // Which build: "Halloween 2018 is running", when the launcher can tell.
+            let label = match self.running_version() {
+                Some(v) => game.label().replacen("Echo VR", &v.name, 1),
+                None => game.label(),
+            };
             if mins == 0 {
-                game.label()
+                label
             } else {
-                format!("{}   ·   {mins} min", game.label())
+                format!("{label}   ·   {mins} min")
             }
         } else if self.ours() && !game.is_running() {
             // PLAY was clicked: as Play's line says, not "not running".

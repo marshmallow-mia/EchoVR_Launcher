@@ -109,11 +109,28 @@ pub struct Local {
     pub ours: Option<String>,
     /// Clients the launcher didn't start.
     pub others: usize,
+    /// Those clients' executables, when known.
+    pub clients: Vec<Option<PathBuf>>,
     /// Dedicated servers: their executables, when known.
     pub servers: Vec<Option<PathBuf>>,
 }
 
 impl Local {
+    /// Whether a client the launcher didn't start runs from the install at `root` (one
+    /// whose executable isn't known might: it counts).
+    pub fn client_in(&self, root: &str) -> bool {
+        self.clients
+            .iter()
+            .any(|exe| exe.as_deref().is_none_or(|e| in_folder(e, root)))
+    }
+
+    /// Whether Echo VR runs from version `id` (installed at `root`): the launcher's game
+    /// of that version, or a client started elsewhere from its folder. Another build
+    /// running isn't this one.
+    pub fn runs(&self, id: &str, root: &str) -> bool {
+        self.ours.as_deref() == Some(id) || self.client_in(root)
+    }
+
     /// Whether a server runs from the install at `root` (one whose executable isn't known
     /// might: it counts).
     pub fn server_in(&self, root: &str) -> bool {
@@ -356,8 +373,12 @@ fn adopt(
     ours.games != before
 }
 
-/// Pure: the clients' count and the servers, given which games are ours.
-fn summarize(games: &[GameProcess], ours: &[Owned]) -> (usize, usize, Vec<Option<PathBuf>>) {
+/// Pure: how many clients are ours, the others' executables, and the servers', given
+/// which games are ours.
+fn summarize(
+    games: &[GameProcess],
+    ours: &[Owned],
+) -> (usize, Vec<Option<PathBuf>>, Vec<Option<PathBuf>>) {
     let mine = |g: &GameProcess| {
         ours.contains(&Owned {
             pid: g.pid,
@@ -368,7 +389,8 @@ fn summarize(games: &[GameProcess], ours: &[Owned]) -> (usize, usize, Vec<Option
     let others = games
         .iter()
         .filter(|g| !mine(g) && g.role == Role::Client)
-        .count();
+        .map(|g| g.exe.clone())
+        .collect();
     let servers = games
         .iter()
         .filter(|g| !mine(g) && g.role == Role::Server)
@@ -628,13 +650,14 @@ impl Monitor {
                 None => (Vec::new(), None),
             }
         };
-        let (ours_n, others, servers) = summarize(&games, &ours_games);
-        let client = ours_n + others > 0;
+        let (ours_n, clients, servers) = summarize(&games, &ours_games);
+        let client = ours_n + clients.len() > 0;
         let api = if client { poll_api() } else { Err(()) };
         Local {
             state: interpret(api, client),
             ours: version.filter(|_| ours_n > 0),
-            others,
+            others: clients.len(),
+            clients,
             servers,
         }
     }
@@ -683,6 +706,38 @@ impl Monitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client from another build's folder is that build's, not this one's; the launcher's
+    /// own game is its version's; a client whose executable isn't known could be any.
+    #[test]
+    fn which_build_runs() {
+        let halloween = "C:/EchoVR/versions/pc-halloween-2018";
+        let elsewhere = Local {
+            state: GameState::Running,
+            others: 1,
+            clients: vec![Some(
+                format!("{halloween}/ready-at-dawn-echo-arena/bin/win10/echovr.exe").into(),
+            )],
+            ..Local::default()
+        };
+        assert!(elsewhere.runs("pc-halloween-2018", halloween));
+        assert!(!elsewhere.runs("pc-latest", "C:/EchoVR/versions/pc-latest"));
+        assert!(!elsewhere.runs("pc-halloween", "C:/EchoVR/versions/pc-halloween"));
+        let ours = Local {
+            state: GameState::Running,
+            ours: Some("pc-halloween-2018".into()),
+            ..Local::default()
+        };
+        assert!(ours.runs("pc-halloween-2018", halloween));
+        assert!(!ours.runs("pc-latest", "C:/EchoVR/versions/pc-latest"));
+        let unknown = Local {
+            state: GameState::Running,
+            others: 1,
+            clients: vec![None],
+            ..Local::default()
+        };
+        assert!(unknown.runs("pc-latest", "C:/EchoVR/versions/pc-latest"));
+    }
 
     #[test]
     fn tells_the_loader_turning_it_down() {
@@ -863,7 +918,7 @@ mod tests {
             }]
         );
         assert_eq!(summarize(&games, &ours.games).0, 1);
-        assert_eq!(summarize(&games, &ours.games).1, 1);
+        assert_eq!(summarize(&games, &ours.games).1.len(), 1);
         assert_eq!(summarize(&games, &ours.games).2.len(), 1);
         // Nothing new, and the game stays ours once its starter is gone.
         assert!(!adopt(&mut ours, &games, &HashMap::new(), &[], 2000));

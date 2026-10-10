@@ -152,6 +152,11 @@ pub fn shots() -> Vec<Shot> {
         ("install_installing", Page::Install, SnapVariant::Installing),
         ("play_launching", Page::Play, SnapVariant::Launching),
         ("play_running", Page::Play, SnapVariant::Running),
+        (
+            "play_other_build_running",
+            Page::Play,
+            SnapVariant::OtherBuildRunning,
+        ),
         ("play_stop", Page::Play, SnapVariant::RunningOurs),
         ("play_server_here", Page::Play, SnapVariant::ServerHere),
         ("play_version_menu", Page::Play, SnapVariant::VersionMenu),
