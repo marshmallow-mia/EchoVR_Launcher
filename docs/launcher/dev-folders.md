@@ -94,7 +94,8 @@ point their game at one under Settings → Launch options → **<Pack> server**
 ([mods.md](mods.md#a-packs-own-server)).
 
 A new version: upload the file under a new name (or overwrite it), change `version` and
-`sha256`, upload the catalogue. The launcher reads your catalogues when it starts and when
-you press **Use code**; your mods catalogue also with every update check (every 15 minutes),
-which then offers the new version as an update. Keep the code to yourself: anyone with it can
+`sha256`, upload the catalogue. The launcher reads your catalogues when it starts, when
+you press **Use code**, with every update check (every 15 minutes) and when the Plugins page's
+**Refresh** is pressed. A new version is then offered as an update, and a plugin your folder
+lists for the first time is announced (status bar, and a desktop notification). Keep the code to yourself: anyone with it can
 download what's in your folder.

@@ -1274,6 +1274,9 @@ impl Dashboard {
         if let Some(c) = check.catalog.clone() {
             self.mods.catalog_done(c);
         }
+        if let Some(c) = check.plugins.clone() {
+            plugins::catalog_done(self, c);
+        }
         for f in &check.findings {
             // From the channel followed when the check began: another one is picked since.
             if check.launcher_channel != self.state.launcher_channel {

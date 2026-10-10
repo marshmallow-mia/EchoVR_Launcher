@@ -1,8 +1,9 @@
 //! What can be updated, and telling the player once: the launcher (its latest GitHub
 //! release), each installed Echo VR that gets updates (its update manifest changed since
 //! the launcher last brought it up to date), and the plugins installed from the mods
-//! catalogue (the catalogue has another version). Nothing is installed here: the launcher
-//! installs on a click. EchoXR and EchoXR Hands come with the launcher (their versions
+//! catalogue (the catalogue has another version), and launcher plugins: an installed one's
+//! update, and a plugin the catalogues list that wasn't listed before (a dev folder's too,
+//! so testers don't miss it). Nothing is installed here: the launcher installs on a click. EchoXR and EchoXR Hands come with the launcher (their versions
 //! are pinned in it), so a launcher update brings theirs.
 //!
 //! The launcher checks at its start and every 15 minutes, and so does the tray
@@ -16,6 +17,7 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use super::launcher::mods::{self, ModCatalog, Source};
+use super::launcher::plugins::{self as launcher_plugins, Installed, PluginCatalog};
 use super::launcher::store::{InstalledVersion, LauncherState};
 use super::launcher::{update_check, versions};
 use super::paths;
@@ -42,6 +44,14 @@ pub enum Finding {
         name: String,
         to: String,
     },
+    /// An installed launcher plugin has another version in the catalogue.
+    LauncherPlugin {
+        id: String,
+        name: String,
+        to: String,
+    },
+    /// A launcher plugin the catalogues didn't list before (`dev`: from the dev folder).
+    NewPlugin { id: String, name: String, dev: bool },
 }
 
 impl Finding {
@@ -56,6 +66,8 @@ impl Finding {
                 to,
                 ..
             } => format!("plugin:{version_id}:{}:{to}", file.to_ascii_lowercase()),
+            Finding::LauncherPlugin { id, to, .. } => format!("launcher-plugin:{id}:{to}"),
+            Finding::NewPlugin { id, .. } => format!("new-plugin:{id}"),
         }
     }
 
@@ -72,6 +84,11 @@ impl Finding {
                 to,
                 ..
             } => format!("{name} {to} is out (in {version_name})"),
+            Finding::LauncherPlugin { name, to, .. } => format!("The {name} plugin {to} is out"),
+            Finding::NewPlugin { name, dev, .. } => format!(
+                "New {}plugin: {name}, on the Plugins page",
+                if *dev { "dev " } else { "" }
+            ),
         }
     }
 }
@@ -86,6 +103,10 @@ pub struct Check {
     pub baselines: Vec<(String, String)>,
     /// The catalogue fetched, for the Mods page's Update buttons.
     pub catalog: Option<ModCatalog>,
+    /// The launcher plugins catalogue fetched (with the dev folder's), for the Plugins page.
+    pub plugins: Option<PluginCatalog>,
+    /// The ids it lists, kept as seen ([`apply_baselines`]).
+    pub plugins_listed: Vec<String>,
     /// The launcher channel its launcher finding is from.
     pub launcher_channel: update_check::Channel,
 }
@@ -140,6 +161,52 @@ pub fn check(state: &LauncherState) -> Check {
                 .extend(plugin_findings(v, &mods::read(v).plugins, &catalog));
         }
         out.catalog = Some(catalog);
+    }
+    let plugins = PluginCatalog::load();
+    if !plugins.builtin {
+        out.findings.extend(launcher_plugin_findings(
+            &launcher_plugins::installed(),
+            &plugins,
+            state.plugins_seen.as_deref(),
+        ));
+        out.plugins_listed = plugins.plugins.iter().map(|p| p.id.clone()).collect();
+        out.plugins = Some(plugins);
+    }
+    out
+}
+
+/// Pure: updates of the launcher plugins `installed` in `catalog`, and the plugins it lists
+/// that aren't installed and aren't in `seen` (none before anything was seen: the first
+/// check only records what there is).
+fn launcher_plugin_findings(
+    installed: &[Installed],
+    catalog: &PluginCatalog,
+    seen: Option<&[String]>,
+) -> Vec<Finding> {
+    let mut out: Vec<Finding> = installed
+        .iter()
+        .filter_map(|p| {
+            let e = launcher_plugins::update_for(p, catalog)?;
+            Some(Finding::LauncherPlugin {
+                id: p.page.id.clone(),
+                name: p.page.name.clone(),
+                to: e.version.clone(),
+            })
+        })
+        .collect();
+    if let Some(seen) = seen {
+        out.extend(
+            catalog
+                .plugins
+                .iter()
+                .filter(|e| e.downloadable() && !seen.contains(&e.id))
+                .filter(|e| !installed.iter().any(|p| p.page.id == e.id))
+                .map(|e| Finding::NewPlugin {
+                    id: e.id.clone(),
+                    name: e.name.clone(),
+                    dev: e.dev,
+                }),
+        );
     }
     out
 }
@@ -203,6 +270,18 @@ fn plugin_findings(
 /// Records what `check` learned in `state` (the baselines); true when it changed.
 pub fn apply_baselines(state: &mut LauncherState, check: &Check) -> bool {
     let mut changed = false;
+    // The launcher plugins listed are seen from now on (also ones a dev code listed, so a
+    // code used again doesn't announce them again).
+    if check.plugins.is_some() {
+        changed |= state.plugins_seen.is_none();
+        let seen = state.plugins_seen.get_or_insert_with(Vec::new);
+        for id in &check.plugins_listed {
+            if !seen.contains(id) {
+                seen.push(id.clone());
+                changed = true;
+            }
+        }
+    }
     for (id, hash) in &check.baselines {
         if let Some(v) = state.versions.iter_mut().find(|v| &v.id == id) {
             if v.manifest_sha256.is_none() {
@@ -271,10 +350,12 @@ pub fn notify_desktop(fresh: &[Finding]) {
 
 /// Pure: a notification's title and text for `fresh` (at least one).
 fn notification_text(fresh: &[Finding]) -> (String, String) {
-    let summary = if fresh.len() == 1 {
-        "Update available".to_string()
-    } else {
-        format!("{} updates available", fresh.len())
+    let new = fresh.iter().all(|f| matches!(f, Finding::NewPlugin { .. }));
+    let summary = match (fresh.len(), new) {
+        (1, true) => "New plugin".to_string(),
+        (n, true) => format!("{n} new plugins"),
+        (1, false) => "Update available".to_string(),
+        (n, false) => format!("{n} updates available"),
     };
     let mut lines: Vec<String> = fresh.iter().take(4).map(Finding::text).collect();
     if fresh.len() > 4 {
@@ -435,5 +516,93 @@ mod tests {
         let (s, b) = notification_text(&many);
         assert_eq!(s, "6 updates available");
         assert!(b.contains("and 2 more"));
+        let new = [Finding::NewPlugin {
+            id: "game-server".into(),
+            name: "Game server".into(),
+            dev: true,
+        }];
+        let (s, b) = notification_text(&new);
+        assert_eq!(s, "New plugin");
+        assert!(b.starts_with("New dev plugin: Game server, on the Plugins page"));
+    }
+
+    fn entry(id: &str, version: &str, url: &str) -> launcher_plugins::PluginEntry {
+        launcher_plugins::PluginEntry {
+            id: id.into(),
+            name: id.to_uppercase(),
+            version: version.into(),
+            url: url.into(),
+            ..Default::default()
+        }
+    }
+
+    fn installed(id: &str, from_catalog: Option<&str>) -> Installed {
+        Installed {
+            page: std::sync::Arc::new(crate::core::launcher::plugin_page::PluginPage {
+                id: id.into(),
+                name: id.to_uppercase(),
+                ..Default::default()
+            }),
+            dir: PathBuf::new(),
+            from_catalog: from_catalog.map(String::from),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// An installed plugin's update, and a plugin listed for the first time; nothing new
+    /// before anything was seen, nor what's installed, seen or not downloadable yet.
+    #[test]
+    fn launcher_plugins_new_and_updated() {
+        let catalog = PluginCatalog {
+            plugins: vec![
+                entry("event-lobbies", "0.1.3", "plugins/e.zip"),
+                entry("game-server", "0.1.0", "files/g.zip"),
+                entry("old", "1.0", "plugins/o.zip"),
+                entry("soon", "", ""),
+            ],
+            builtin: false,
+        };
+        let have = [
+            installed("event-lobbies", Some("0.1.2")),
+            installed("by-hand", None),
+        ];
+        let first = launcher_plugin_findings(&have, &catalog, None);
+        assert_eq!(
+            first,
+            [Finding::LauncherPlugin {
+                id: "event-lobbies".into(),
+                name: "EVENT-LOBBIES".into(),
+                to: "0.1.3".into(),
+            }]
+        );
+        let seen = ["event-lobbies".to_string(), "old".to_string()];
+        let later = launcher_plugin_findings(&have, &catalog, Some(&seen));
+        assert_eq!(later.len(), 2);
+        assert_eq!(later[1].key(), "new-plugin:game-server");
+    }
+
+    /// The first check records what's listed; later ones add to it (a dev code's plugins
+    /// stay seen when the code goes).
+    #[test]
+    fn plugins_seen_baseline() {
+        let mut state = LauncherState::default();
+        let mut check = Check {
+            plugins: Some(PluginCatalog::default()),
+            plugins_listed: vec!["a".into()],
+            ..Check::default()
+        };
+        assert!(apply_baselines(&mut state, &check));
+        assert_eq!(state.plugins_seen.as_deref(), Some(&["a".to_string()][..]));
+        assert!(!apply_baselines(&mut state, &check));
+        check.plugins_listed = vec!["b".into()];
+        assert!(apply_baselines(&mut state, &check));
+        assert_eq!(
+            state.plugins_seen.as_deref(),
+            Some(&["a".to_string(), "b".to_string()][..])
+        );
+        // No catalogue (offline): nothing recorded.
+        let mut fresh = LauncherState::default();
+        assert!(!apply_baselines(&mut fresh, &Check::default()));
+        assert!(fresh.plugins_seen.is_none());
     }
 }

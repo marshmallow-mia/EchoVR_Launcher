@@ -221,6 +221,10 @@ pub struct LauncherState {
     /// (its `server` step, after the player said yes). A pack's own server comes first.
     /// None: EchoVRCE.
     pub game_server: Option<GameServer>,
+    /// The launcher plugins the catalogues listed at the update checks so far (ids): one
+    /// listed later is announced as new. None: none recorded yet (the first check records
+    /// them quietly).
+    pub plugins_seen: Option<Vec<String>>,
     /// Event builds can be installed. On by default since 0.11.2 (also for a launcher.json
     /// from before, once: schema 1), and on Linux since they run there through EchoXR
     /// (schema 3, once); off, they are listed as coming soon. `"event_builds": false` in
@@ -327,6 +331,7 @@ impl Default for LauncherState {
             relay_account: None,
             pack_servers: Default::default(),
             game_server: None,
+            plugins_seen: None,
             launcher_channel: Channel::Main,
             dev_code: None,
         }

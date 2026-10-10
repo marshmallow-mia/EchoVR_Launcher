@@ -47,6 +47,8 @@ pub(super) struct PluginsUi {
     worker: Worker<Msg>,
     /// The plugin being installed, updated or removed.
     busy: Option<String>,
+    /// The catalogue is being read again (Refresh).
+    loading: bool,
     /// Debug builds: the plugin ECHOVR_PAGE named, opened once it is read.
     pub open_when_read: Option<String>,
     remove_asked: Option<String>,
@@ -184,10 +186,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     d.notify("Echo VR plays on EchoVRCE again");
                 }
             }
-            Msg::Catalog(c) => {
-                d.plugins.catalog = Some(c);
-                d.plugins.catalog_at = Some(std::time::Instant::now());
-            }
+            Msg::Catalog(c) => catalog_done(d, c),
             Msg::Fetched {
                 plugin,
                 source,
@@ -253,6 +252,30 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
             fetch_due(d, ctx, &p);
         }
     }
+}
+
+/// The catalogues read (at the start, by Refresh, or with an update check every 15
+/// minutes): the Plugins page offers what they list. Advanced settings' line about the
+/// dev folder is read again too.
+pub(super) fn catalog_done(d: &mut Dashboard, c: PluginCatalog) {
+    d.plugins.catalog = Some(c);
+    d.plugins.catalog_at = Some(std::time::Instant::now());
+    d.plugins.loading = false;
+    if d.dev_status != crate::core::launcher::dev_code::Status::Checking {
+        d.dev_status = crate::core::launcher::dev_code::Status::Off;
+    }
+}
+
+/// Refresh: the installed plugins and the catalogues (with the dev folder's) read again now.
+fn refresh(d: &mut Dashboard, ctx: &egui::Context) {
+    if d.plugins.loading {
+        return;
+    }
+    d.plugins.loading = true;
+    reread(d, ctx);
+    d.plugins
+        .worker
+        .spawn(ctx, |tx| tx.send(Msg::Catalog(PluginCatalog::load())));
 }
 
 fn reread(d: &mut Dashboard, ctx: &egui::Context) {
@@ -1281,6 +1304,29 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
 
 fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
     let (x, top, w, bottom) = hero::card_frame(k, r, "More plugins");
+    // Refresh, in the title's row: the catalogues are also read every 15 minutes.
+    let ly = dz(r.y + 28.0);
+    let link_w = k
+        .spaced_galley("REFRESH", design::din(14.0), design::TEXT, dz(0.5), true)
+        .size()
+        .x;
+    let lx = dz(r.right() - 22.0) - link_w;
+    if d.plugins.loading {
+        let g = k.spaced_galley("REFRESH", design::din(14.0), design::GREY, dz(0.5), false);
+        k.put(lx, ly, g);
+    } else if k
+        .link(
+            "plugins-refresh",
+            lx,
+            ly,
+            "Refresh",
+            14.0,
+            "Look for new plugins and updates now (the launcher also looks every 15 minutes)",
+        )
+        .clicked
+    {
+        refresh(d, ctx);
+    }
     let Some(catalog) = d.plugins.catalog.clone() else {
         k.caps_text(
             x,
