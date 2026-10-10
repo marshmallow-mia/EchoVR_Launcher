@@ -144,6 +144,18 @@ Only verified plugins load: the community update's and the catalogue's. A DLL of
 version's loader config (`x-local-plugins: true` in `_local/config.yaml`); writing a plugin
 and loading it is in [docs/plugins/local-plugins.md](docs/plugins/local-plugins.md).
 
+**Content packs** are mods that bring game data as well as plugins (EchoCombat: new gear and
+scripts). One install, one switch; nothing in the game's own files changes, and they need
+nEVR's early load pass (the Beta channel for now). A pack that changes gameplay plays on
+servers of its own: Settings → Launch options → **EchoCombat server** sets one, and while
+the pack is on the game signs in and finds matches there. See
+[docs/launcher/mods.md](docs/launcher/mods.md#content-packs).
+
+**Dev codes** let mod and plugin makers test their work before it's published: with a code
+in Settings → Advanced settings → **Dev mods and plugins**, the launcher also lists their
+dev folder's mods and plugins (with a Dev tag). How a folder is filled, packs included:
+[docs/launcher/dev-folders.md](docs/launcher/dev-folders.md).
+
 ## Updates
 
 The launcher looks for updates when it starts and every 15 minutes: a newer launcher (its

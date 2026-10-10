@@ -75,6 +75,24 @@ A content pack (a mod with game data, [mods.md](mods.md#content-packs)) has its 
 from the catalogue: upload it with a mods entry of its own when the published catalogue
 doesn't have it yet.
 
+### Publishing a content pack (EchoCombat)
+
+1. Build the zip and its catalogue entry with the url inside your folder. EchoCombat:
+   `python tools/make_release.py --url-base files/` writes `release/EchoCombat-<version>.zip`
+   and `release/echocombat.mods.json` (its README: Publishing to the launcher).
+2. `sftp -P 2999 dev-<name>@168.119.2.94`, then `put release/EchoCombat-<version>.zip files/`
+   and `get mods.json`.
+3. In `mods.json`, replace the pack's entry (same `id`) with the new one, keep the
+   `content-overlay` entry, and `put mods.json`.
+4. **Use code** again in the launcher (or wait for the next update check): a newer
+   `version` shows as UPDATE on the pack's rows; GET installs it the first time.
+
+A pack's plugins only run on a nEVR with the early load pass (the launcher's Beta channel
+for now): on another one the Mods page keeps the pack off and its **Channel…** button opens
+Advanced settings. A pack that changes gameplay also needs its own game servers: players
+point their game at one under Settings → Launch options → **<Pack> server**
+([mods.md](mods.md#a-packs-own-server)).
+
 A new version: upload the file under a new name (or overwrite it), change `version` and
 `sha256`, upload the catalogue. The launcher reads your catalogues when it starts and when
 you press **Use code**; your mods catalogue also with every update check (every 15 minutes),

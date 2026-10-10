@@ -28,9 +28,9 @@ The launcher never edits the community update's files. It writes:
 
 | File | What it holds |
 |---|---|
-| `_local/config.yaml` (the game's `_local`) | nEVR's plugin list, written before every start from the plugins in `bin/win10/plugins` and the launcher's choices; with mods off only the required plugins (NvrAssetPatches with `required_only`) |
+| `_local/config.yaml` (the game's `_local`) | nEVR's plugin list, written before every start from the plugins in `bin/win10/plugins` and the launcher's choices; with mods off only the required plugins (NvrAssetPatches with `required_only`). When a pack that is on has a server of its own, also that server and the account there ([below](#a-packs-own-server)) |
 | `_local/launcher-mods.json` | the choices: "Start without mods" (`enabled`), a plugin on or off and its arguments (`overrides`), the plugins it added (`add`, each with its `sha256`) |
-| `_local/.credentials.json` | the game's own EchoVRCE sign-in (see below) |
+| `_local/.credentials.json` | the game's own EchoVRCE sign-in (see below); `.credentials.json.echovrce` while a start plays on a pack's own server |
 | `bin/win10/asset_patches/manifest.local.json` | every asset patch, or one of them, on or off |
 | `bin/win10/plugins/<file>.dll` | only the plugins it installed (from the catalogue) or added (from disk) |
 
@@ -179,9 +179,52 @@ tables) is a **pack**: one zip, and a `pack` object in place of `file`, `url` an
 - The overlay serves the pack only on stock game files (it checks the manifests' sha256).
   When an older installer changed them (a `.bak` beside a manifest, `.dll.orig` scripts),
   the nEVR card says so: Install, then the version, checks and repairs them.
+- With a nEVR that can't load plugins early, the nEVR card has a **Channel…** button (to
+  Advanced settings: Beta brings that nEVR), and the pack's rows say "Off: needs Beta's
+  nEVR" ("Off: game files changed" when an installer changed them).
 - `pack` entries are never `shipped` or `required`. A different `version` in the
   catalogue puts UPDATE on the pack's plugins, which reinstalls the pack.
 - One pack is served at a time (the first one on).
+
+#### A pack's own server
+
+A pack that changes gameplay works only in matches whose game server runs it too
+(EchoCombat's OVERCHARGE is decided there, VeilNet relays through it), so it plays on
+servers of its own. Settings → Launch options has a **<Pack> server** row for every pack
+installed in a live version; **Server…** sets (`pack_servers` in `launcher.json`, by the
+pack's `id`):
+
+| | |
+|---|---|
+| Address | what the server's host gives out: `host[:port]` (Nakama's 7350 when left out) or a `ws://` / `wss://` address. Empty: EchoVRCE |
+| Server key | the server's socket key, unless the address carries it (`token=`) |
+| Discord ID, password | your account there |
+
+While that pack is the one served, every start writes into `config.yaml`:
+
+```yaml
+services:
+  socket_uri: "ws://host:7350/ws?format=evr&token=<server key>"
+identity:
+  discord_id: "<your Discord ID>"
+auth:
+  http_uri: "http://host:7350"
+  password: "<your password>"
+  server_key: "<server key>"
+```
+
+nEVR then logs in, matchmakes and (as a dedicated server, from the same file) registers
+there. `http_uri` is the same server's HTTP API: nEVR's own sign-in (a device code approved
+on echovrce.com) asks it instead of EchoVRCE, is turned down at once, and the game signs in
+with the account above; nEVR tries a sign-in it finds before the config's account, so the
+game's EchoVRCE sign-in waits as `.credentials.json.echovrce` meanwhile and is back for the
+next start without the pack. `${` in a value is written as `$${` (nEVR would read it as an
+environment variable). The password is in plain text there, as nEVR reads it: don't reuse a
+real one. Play's line says where a start goes ("EchoCombat on host:7350").
+
+Today a game server under nEVR's `-server -headless` signs in but never begins a match
+(nevr-runtime's `docs/reference/server-mode-multiplayer-hang.md`), so a pack's own server
+can't host matches yet; signing in and matchmaking there work.
 
 The page's **Installed mods** card lists only what is installed. **More mods** offers
 the catalogue's entries that are neither required nor shipped and aren't in `plugins/`
