@@ -472,9 +472,10 @@ enum JobKind {
 pub(super) enum Res {
     /// An installed version's folder (its id).
     Version(String),
-    /// The VR setup: Revive, EchoXR, SteamVR's library, Linux's Steam and GE-Proton, and
-    /// EchoRelay's files for event builds.
+    /// The VR setup: Revive, EchoXR, SteamVR's library, Linux's Steam and GE-Proton.
     Vr,
+    /// EchoRelay's files for event builds (EchoLoader and its patch, downloaded once).
+    Relay,
     /// The headset.
     Quest,
     /// The mods' shared download folder.
@@ -3540,8 +3541,13 @@ mod tests {
         assert!(clash(&[Res::Quest], &[Res::Quest]));
         assert!(!clash(&[Res::Quest], &[v("pc-latest"), Res::Vr]));
         assert!(clash(&[v("a"), Res::Mods], &[v("b"), Res::Mods]));
-        // An event build's install sets up EchoRelay's files: VR setup waits.
-        assert!(clash(&[v("pc-event"), Res::Vr], &[Res::Vr]));
+        // An event build's install sets up EchoRelay's files: another event build's setup
+        // waits, the VR setup doesn't.
+        assert!(clash(
+            &[v("pc-event"), Res::Relay],
+            &[Res::Relay, v("pc-event-2")]
+        ));
+        assert!(!clash(&[v("pc-event"), Res::Relay], &[Res::Vr]));
     }
 
     #[test]

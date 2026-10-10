@@ -505,7 +505,7 @@ pub(super) fn event_build(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledV
         ctx,
         JobKind::Revive,
         EVENT_JOB,
-        vec![Res::Vr, Res::Version(v.id.clone())],
+        vec![Res::Relay, Res::Version(v.id.clone())],
         &format!("Setting up {}", v.name),
         "Adding EchoLoader and EchoRelay's patch...",
         move |cancel, on| match relay::set_up(&v, cancel, on) {
@@ -1140,7 +1140,7 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                 let id = installed.as_ref().map_or(e.id.clone(), |v| v.id.clone());
                 let mut res = vec![Res::Version(id)];
                 if e.publisher_lock.is_some() {
-                    res.push(Res::Vr);
+                    res.push(Res::Relay);
                 }
                 d.busy_with(&res)
             }

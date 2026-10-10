@@ -1316,6 +1316,11 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
         // installed has the patch as EchoRelay's own installer puts it in); then it starts.
         if let Target::Installed(v) = d.target() {
             if !relay::in_place(&v) {
+                // EchoRelay's files are being set up for another event build: after it.
+                if let Some(busy) = d.busy_with(&[Res::Relay, Res::Version(v.id.clone())]) {
+                    d.notify(&busy);
+                    return;
+                }
                 setup::event_build(d, ctx, &v);
                 d.play_after_prep = d.jobs.contains_key(setup::EVENT_JOB);
                 return;

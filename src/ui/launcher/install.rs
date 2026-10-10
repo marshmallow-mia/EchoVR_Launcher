@@ -271,7 +271,7 @@ fn chosen(d: &Dashboard) -> Option<VersionEntry> {
 fn busy_for(d: &Dashboard, id: &str, event: bool) -> Option<String> {
     let mut res = vec![Res::Version(id.to_string())];
     if event {
-        res.push(Res::Vr);
+        res.push(Res::Relay);
     }
     d.busy_with(&res)
 }

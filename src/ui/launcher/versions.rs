@@ -26,7 +26,7 @@ pub(super) fn ask_repair(d: &mut Dashboard, id: &str, msg: &str) {
 fn res(id: &str, event: bool) -> Vec<Res> {
     let mut r = vec![Res::Version(id.to_string())];
     if event {
-        r.push(Res::Vr);
+        r.push(Res::Relay);
     }
     r
 }
