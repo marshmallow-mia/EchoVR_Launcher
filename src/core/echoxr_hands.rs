@@ -1,4 +1,4 @@
-//! EchoXR Hands (github.com/EchoTools/EchoXR-Hands, by heisthecat31 and marshmallow-mia):
+//! EchoXR Hands (github.com/EchoTools/EchoXR-Hands, by heisthecat31):
 //! your own fingers on Echo VR's hands, from OpenXR hand tracking. Its package goes into the
 //! game's `bin/win10/EchoXR/Hands`: an OpenXR API layer (`layer/`) that reads your fingers in
 //! the game's own OpenXR session, and the nEVR plugin. The launcher puts the plugin into
@@ -22,7 +22,7 @@ const ZIP: &str = "EchoXR-Hands-v0.4.0-nevr.zip";
 const URL: &str = "https://release.echovr.de/launcher/plugins/EchoXR-Hands-v0.4.0-nevr.zip";
 const SHA256: &str = "5871538e6b2bd8832a13c9acd648bc5faaee4f52665ae1bf97050ba35f0807a6";
 /// Who made it, as the Mods page credits it.
-pub const AUTHORS: &str = "heisthecat31, marshmallow-mia";
+pub const AUTHORS: &str = "heisthecat31";
 /// The plugin, as nEVR loads it from `plugins/`.
 pub const PLUGIN: &str = "EchoXRHands.dll";
 /// Its settings beside it (re-read while the game runs).

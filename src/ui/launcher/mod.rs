@@ -74,7 +74,7 @@ pub const CREDITS: &[Credit] = &[
         what: "Your own fingers on Echo VR's hands, from OpenXR hand tracking.",
         licence: "",
         url: "https://github.com/EchoTools/EchoXR-Hands",
-        credits: "https://github.com/EchoTools/EchoXR-Hands/blob/main/CREDITS.md",
+        credits: "",
     },
     Credit {
         name: "nEVR runtime",
