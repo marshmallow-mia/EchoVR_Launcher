@@ -10,7 +10,7 @@ use egui::text::{LayoutJob, TextWrapping};
 use egui::{Color32, Galley};
 
 use super::hero::{self, Face, InfoLine, JobView, PathClick, Row, Side};
-use super::{install_panel, play, setup, versions, Dashboard, Page};
+use super::{install_panel, play, setup, versions, Dashboard, Page, Res};
 use crate::core::adb::devices::Status;
 use crate::core::launcher::catalog::{Hosted, Platform, VersionEntry};
 use crate::core::launcher::store::InstalledVersion;
@@ -267,28 +267,28 @@ fn chosen(d: &Dashboard) -> Option<VersionEntry> {
         .or_else(|| recommended(d))
 }
 
-fn busy_text(d: &Dashboard) -> Option<String> {
-    d.jobs
-        .values()
-        .next()
-        .map(|j| format!("Busy: {}. Wait until it's done.", j.title))
+/// Why a job on version `id` (an event build: with EchoRelay's files) has to wait.
+fn busy_for(d: &Dashboard, id: &str, event: bool) -> Option<String> {
+    let mut res = vec![Res::Version(id.to_string())];
+    if event {
+        res.push(Res::Vr);
+    }
+    d.busy_with(&res)
 }
 
 fn pc_hero(d: &mut Dashboard) -> Hero {
     // Look for copies already on this PC now, so the Install card can offer one at once.
     let _ = d.found_installs();
     let mut h = Hero::new();
-    let busy = busy_text(d);
+    // A running install keeps the folder it started with: changing it is fine meanwhile.
     h.side = Side::Blue {
         icon: Icon::Folder,
         label: "Change folder",
         ready: false,
     };
     h.side_act = SideAct::ChangeFolder;
-    h.side_enabled = busy.is_none();
-    h.side_tip = busy
-        .clone()
-        .unwrap_or_else(|| "Install into another folder".into());
+    h.side_enabled = true;
+    h.side_tip = "Install into another folder".into();
     let Some(e) = chosen(d) else {
         h.line.parts.push("Loading the version list".into());
         (h.grey, h.tip) = (true, "The version list is still loading".into());
@@ -304,6 +304,11 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
     }
     let installed = d.state.installed_from(&e.id).cloned();
     let job = setup::job_for(d, installed.as_ref().map_or(&e.id, |v| &v.id));
+    let busy = busy_for(
+        d,
+        installed.as_ref().map_or(&e.id, |v| &v.id),
+        e.publisher_lock.is_some(),
+    );
     let present = |v: &InstalledVersion| d.demo || v.present();
     match installed {
         Some(v) if present(&v) => {
@@ -409,7 +414,8 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
     let ready = status == Some(Status::Ready);
     let installed = ready && d.quest_info.as_ref().is_some_and(|i| i.installed);
     let known = ready && d.quest_info.is_some();
-    let busy = d.quest_conn.checking || d.quest_busy || d.any_job();
+    let quest_job = d.busy_with(&[Res::Quest]);
+    let busy = d.quest_conn.checking || d.quest_busy || quest_job.is_some();
     h.chips.push(match (ready, installed) {
         (true, true) => ("Installed", design::QUEST_ON),
         (true, false) => ("Not installed", design::QUEST_OFF),
@@ -419,7 +425,7 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
     h.notes =
         "Installed over USB. The headset holds one version; updates only copy what changed.".into();
     h.line.parts = play::quest_info(d);
-    let busy_tip = busy_text(d).unwrap_or_else(|| "Wait a moment".into());
+    let busy_tip = quest_job.unwrap_or_else(|| "Wait a moment".into());
     if !ready {
         (h.face, h.main) = (Face::Label("CONNECT"), Main::QuestConnect);
         h.enabled = !d.quest_conn.checking && !d.quest_busy;

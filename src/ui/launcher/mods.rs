@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use egui::Color32;
 
 use super::{
-    hero, panel, plugin_form, setup, versions, Dashboard, JobKind, JobResult, Msg, Page,
+    hero, panel, plugin_form, setup, versions, Dashboard, JobKind, JobResult, Msg, Page, Res,
     SnapVariant,
 };
 use crate::core::launcher::catalog::Platform;
@@ -248,6 +248,7 @@ fn run(
         ctx,
         JobKind::Mods,
         &job_id(&v),
+        vec![Res::Version(v.id.clone()), Res::Mods],
         title,
         "Starting...",
         move |cancel, on| match f(&v, cancel, on) {
@@ -263,10 +264,22 @@ fn job_id(v: &InstalledVersion) -> String {
 
 /// Why `v`'s plugin files can't be changed now (`None`: they can).
 fn busy(d: &Dashboard, v: &InstalledVersion) -> Option<&'static str> {
-    if d.jobs.contains_key(&job_id(v)) || d.jobs.contains_key(&v.id) {
-        return Some("Wait for the running job to finish");
+    job_busy(d, v).or_else(|| d.files_in_use(v))
+}
+
+/// Whether a job on `v`, or on the mods' shared downloads, runs.
+fn job_busy(d: &Dashboard, v: &InstalledVersion) -> Option<&'static str> {
+    d.busy_with(&[Res::Version(v.id.clone()), Res::Mods])
+        .map(|_| "Wait for the running job to finish")
+}
+
+/// Why `p`'s settings can't be changed now: settings that all apply while you play
+/// (EchoXR Hands') only wait for a job, not for the game to close.
+fn settings_busy(d: &Dashboard, v: &InstalledVersion, p: &Plugin) -> Option<&'static str> {
+    match &p.settings {
+        Some(sp) if sp.settings.all_live() => job_busy(d, v),
+        _ => busy(d, v),
     }
-    d.files_in_use(v)
 }
 
 /// "Add DLL" was confirmed: pick the file, then copy it in as a job.
@@ -285,30 +298,57 @@ fn add_from_disk(d: &mut Dashboard, ctx: &egui::Context) {
     });
 }
 
-/// A version where mods don't apply: none installed, or an event build.
+/// A version where mods don't apply: none installed (or still installing), or an event
+/// build. An installed live build is offered instead, whatever is chosen.
 fn not_available(d: &mut Dashboard, kit: &mut Kit, v: Option<&InstalledVersion>) {
     let r = LOADER.wider(kit.dx());
-    // An installed live build, when another one is chosen.
-    let live = v.and_then(|_| {
-        d.state
-            .versions
-            .iter()
-            .find(|x| x.publisher_lock.is_none() && x.bin_dir().ends_with("win10"))
-            .cloned()
+    let quest = v.is_none() && d.platform == Platform::Quest;
+    let live = d
+        .state
+        .versions
+        .iter()
+        .find(|x| {
+            x.publisher_lock.is_none() && x.bin_dir().ends_with("win10") && (d.demo || x.present())
+        })
+        .filter(|_| !quest)
+        .cloned();
+    // The version chosen is being installed: how far it is.
+    let installing = match d.target() {
+        Target::Available(e) => Some((e.id, e.name)),
+        Target::Missing(m) => Some((m.id, m.name)),
+        _ => None,
+    }
+    .and_then(|(id, name)| {
+        let j = hero::job_view(d, &id).filter(hero::JobView::installs)?;
+        let how_far = j
+            .fraction
+            .map_or_else(|| j.step(), |f| format!("{:.0}%", f * 100.0));
+        Some((name, how_far))
     });
-    let title = if live.is_some() {
-        "Live build"
-    } else {
-        "No PC version yet"
+    let title = match (&installing, &live) {
+        (Some(_), _) => "Installing",
+        (None, Some(_)) => "Live build",
+        (None, None) => "No PC version yet",
     };
     let (x, y, w, bottom) = hero::card_frame(kit, r, title);
-    let text = match &live {
-        Some(live) => format!(
+    let text = match (&installing, &live) {
+        (Some((name, how_far)), Some(live)) => format!(
+            "{name} is installing ({how_far}): its mods show here once it's in place. Meanwhile, choose {} to play it and see its mods.",
+            live.name
+        ),
+        (Some((name, how_far)), None) => format!(
+            "{name} is installing ({how_far}): its mods show here once it's in place."
+        ),
+        (None, Some(live)) if v.is_some() => format!(
             "Mods are for the live build: choose {} to see its mods here.",
             live.name
         ),
-        None if v.is_none() && d.platform == Platform::Quest => "Mods are for Echo VR on this PC, and PLAY starts the Quest's now. Switch to PCVR (next to PLAY) to see the PC version's mods.".into(),
-        None => "Mods are for Echo VR on this PC: install the live build first, then choose its mods here.".into(),
+        (None, Some(live)) => format!(
+            "Mods are for an installed version: choose {} to see its mods here.",
+            live.name
+        ),
+        (None, None) if quest => "Mods are for Echo VR on this PC, and PLAY starts the Quest's now. Switch to PCVR (next to PLAY) to see the PC version's mods.".into(),
+        (None, None) => "Mods are for Echo VR on this PC: install the live build first, then choose its mods here.".into(),
     };
     kit.caps_text(x, y, w, &text, 16.0, design::BODY, dz(14.0));
     if let Some(live) = live {
@@ -332,7 +372,7 @@ fn not_available(d: &mut Dashboard, kit: &mut Kit, v: Option<&InstalledVersion>)
             d.state.selected = Some(live.id.clone());
             d.save();
         }
-    } else {
+    } else if installing.is_none() {
         let bw = kit
             .button_width("Install", Some(Icon::Download), BTN_H)
             .max(dz(200.0));
@@ -958,7 +998,8 @@ fn plugin_row(
         ) {
             open_sheet(d, &p.file);
         }
-        row_settings(d, k, v, p, &mut a, editable && busy.is_none());
+        let can = editable && settings_busy(d, v, p).is_none();
+        row_settings(d, k, v, p, &mut a, can);
     } else if p.present {
         let open = d
             .mods
@@ -1213,7 +1254,13 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     let linux = cfg!(target_os = "linux") && !d.demo;
     let name = "EchoXR";
     let in_use = d.state.profile.runtime == Runtime::Revive || d.state.profile.through_echoxr();
-    let busy = d.any_job();
+    // PLAY's VR preparation holds it, and with hand tracking on, Remove takes its plugin
+    // out of this version too.
+    let hands_on = d.state.echoxr_hands;
+    let why = d
+        .busy_with(&[Res::Vr])
+        .or_else(|| hands_on.then(|| busy(d, v)).flatten().map(str::to_string));
+    let busy = why.is_some();
     let tip = if linux {
         "Linux plays VR through it: always on"
     } else {
@@ -1222,28 +1269,35 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     let key = |what: &str| format!("mods-vr-{what}-{name}");
     let mut a = Actions::new(x, y, w);
     if !linux {
-        let tip = if busy {
-            "Wait until the job is done"
-        } else {
-            "SteamVR plays through Revive again, Virtual Desktop in its Oculus mode (hand tracking, which needs EchoXR, goes too)"
-        };
+        let tip = why.as_deref().unwrap_or(
+            "SteamVR plays through Revive again, Virtual Desktop in its Oculus mode (hand tracking, which needs EchoXR, goes too)",
+        );
         if a.button(k, &key("remove"), Tone::Dark, None, "Remove", !busy, tip) {
             d.state.profile.steamvr_via = SteamVrVia::Revive;
             d.state.profile.vd_via = VdVia::Meta;
             let hands_off = d.state.echoxr_hands;
+            let mut failed = None;
             if hands_off {
                 d.state.echoxr_hands = false;
                 if let Err(e) = crate::core::echoxr_hands::remove_from(&v.bin_dir()) {
                     tracing::warn!("hand tracking: {e:#}");
+                    failed = Some(format!("{e:#}"));
                 }
                 d.mods.changed();
             }
             d.save();
-            d.notify(if hands_off {
-                "SteamVR plays through Revive now, without hand tracking (it needs EchoXR)"
-            } else {
-                "SteamVR plays through Revive now"
-            });
+            match failed {
+                Some(e) => d.dialogs.error(
+                    "SteamVR plays through Revive now",
+                    &format!("Hand tracking is off, but its plugin couldn't be taken out of the game's folder:\n\n{e}"),
+                    Default::default(),
+                ),
+                None => d.notify(if hands_off {
+                    "SteamVR plays through Revive now, without hand tracking (it needs EchoXR)"
+                } else {
+                    "SteamVR plays through Revive now"
+                }),
+            }
         }
     }
     // No chip: PLAY prepares it whenever it isn't ready, nothing to look at.
@@ -1344,7 +1398,8 @@ fn hands_row(
         ) {
             open_sheet(d, &p.file);
         }
-        row_settings(d, k, v, p, &mut a, busy.is_none());
+        let can = settings_busy(d, v, p).is_none();
+        row_settings(d, k, v, p, &mut a, can);
     }
     // What needs looking at. Not in plugins/ yet, but downloaded: PLAY puts it there.
     let chip = match plugin {
@@ -1849,8 +1904,8 @@ pub(super) fn settings_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
     let needs_loader = s
         .fields()
         .any(|f| f.has_value() && *f.store(&s) == plugin_settings::Store::Args);
-    let why_not =
-        busy(d, &v).or((needs_loader && !editable).then_some("Needs the mod loader (nEVR)"));
+    let why_not = settings_busy(d, &v, &p)
+        .or((needs_loader && !editable).then_some("Needs the mod loader (nEVR)"));
     let enabled = why_not.is_none() && !d.demo;
 
     let (w, h) = (dz(1180.0), dz(900.0));
@@ -2261,6 +2316,7 @@ fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Ex
                 ctx,
                 JobKind::Mods,
                 &job_id(&v),
+                vec![Res::Version(v.id.clone()), Res::Mods],
                 "Installing EchoXR Hands",
                 "Starting...",
                 move |cancel, on| match hands::fetch(cancel, on)
@@ -2342,9 +2398,9 @@ fn entry(
             .button_width(label, Some(Icon::Download), bh)
             .max(dz(110.0));
         right -= bw;
+        let vr_busy = d.busy_with(&[Res::Vr]);
         let why = match e {
-            Extra::EchoXr if d.any_job() => Some("Wait until the job is done"),
-            Extra::EchoXr => None,
+            Extra::EchoXr => vr_busy.as_deref(),
             _ if !editable => Some("Needs the mod loader (nEVR) in this version"),
             _ => busy,
         };

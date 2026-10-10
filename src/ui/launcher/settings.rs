@@ -3,7 +3,7 @@
 //! About) in the right-hand panel.
 
 use super::install::{myriad, text_link};
-use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg};
+use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg, Res};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{Runtime, SteamVrVia, VdVia};
 use crate::core::launcher::update_check::Channel;
@@ -169,7 +169,8 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         // Revive was there before (PLAY never prepared it): the artwork from here.
         let present = cfg!(windows) && !d.demo && !d.revive_missing();
-        if present && d.state.revive_artwork && !d.any_job() && !revive::artwork_installed() {
+        let vr_busy = d.busy_with(&[Res::Vr]);
+        if present && d.state.revive_artwork && vr_busy.is_none() && !revive::artwork_installed() {
             let lx = cx + dz(250.0);
             if kit
                 .link(
@@ -186,18 +187,21 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             }
         }
         // Beside the artwork's, on the same row.
-        let idle = !d.any_job();
+        let tip = vr_busy.as_deref().unwrap_or(
+            "Echo VR in SteamVR's library starts the version PLAY starts, with your launch options. After switching versions, tick this off and on to update it.",
+        );
         if kit.check(
             "steamvr-library",
             &mut d.state.revive_library,
             "Echo VR in SteamVR's library",
             cx + (x + w - cx) * 0.4,
             cy,
-            idle,
-            "Echo VR in SteamVR's library starts the version PLAY starts, with your launch options. After switching versions, tick this off and on to update it.",
+            vr_busy.is_none(),
+            tip,
         ) {
             d.save();
-            // Once SteamVR is set up, the entry follows the box (setup adds it otherwise).
+            // Once SteamVR is set up, the entry follows the box (setup adds it otherwise);
+            // if that fails, the box goes back.
             if cfg!(windows) && !d.revive_missing() {
                 setup::steamvr_library(d, ctx, d.state.revive_library);
             }
@@ -402,7 +406,7 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
             Tone::Dark,
             Some(Icon::Folder),
             "Browse",
-            !d.any_job(),
+            true,
             "Pick the library folder",
         )
         .clicked
@@ -439,11 +443,13 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
     ) + dz(20.0);
     let half = (w - dz(14.0)) / 2.0;
     let empty = size == Some(0);
-    let can = !d.deleting_cache && !d.any_job() && !empty;
-    let tip = if empty {
-        "Nothing to delete"
-    } else {
-        "Delete the cached files (asks first)"
+    // Downloads stage their files in the cache: it waits for every job.
+    let busy = d.busy_any();
+    let can = !d.deleting_cache && busy.is_none() && !empty;
+    let tip = match &busy {
+        Some(b) if !empty => b.as_str(),
+        _ if empty => "Nothing to delete",
+        _ => "Delete the cached files (asks first)",
     };
     if kit
         .button(
@@ -480,6 +486,11 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
         open_dir(d, &paths::data_dir());
     }
     let uy = y + BTN_H + dz(14.0);
+    let why = d.busy_any().or_else(|| {
+        d.game()
+            .is_running()
+            .then(|| "Close Echo VR first: it holds the game's files".to_string())
+    });
     if kit
         .button(
             "uninstall",
@@ -490,8 +501,10 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
             Tone::Danger,
             Some(Icon::Trash),
             "Uninstall…",
-            !d.any_job(),
-            "Remove Echo VR, its mods and VR set-up, and the launcher's data (choose what)",
+            why.is_none(),
+            why.as_deref().unwrap_or(
+                "Remove Echo VR, its mods and VR set-up, and the launcher's data (choose what)",
+            ),
         )
         .clicked
     {
@@ -747,6 +760,7 @@ pub(super) fn uninstall_answers(d: &mut Dashboard, ctx: &egui::Context) {
                 ctx,
                 JobKind::Uninstall,
                 "uninstall",
+                vec![super::Res::All],
                 "Uninstalling",
                 "Starting...",
                 move |_, on| {
@@ -1069,8 +1083,15 @@ fn update_button(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 /// What [`update_status`]'s action does.
 fn update_action(d: &mut Dashboard, ctx: &egui::Context) {
     match &d.launcher_update {
+        // It restarts at the end, which would stop a job still running.
         LauncherUpdate::Available(_) if crate::core::launcher::self_update::supported() => {
-            d.update_launcher(ctx)
+            match d.busy_any() {
+                Some(busy) => d.dialogs.info(
+                    "Wait a moment",
+                    &format!("The launcher restarts at the end of its update.\n\n{busy}"),
+                ),
+                None => d.update_launcher(ctx),
+            }
         }
         LauncherUpdate::Available(r) => platform::open_url(&r.url),
         _ => d.check_launcher_update(ctx),

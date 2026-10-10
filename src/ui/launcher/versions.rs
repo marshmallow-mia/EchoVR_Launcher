@@ -1,7 +1,7 @@
 //! What can be done to versions: install, update, verify, add or remove them, and the
 //! MANAGE menu of an installed one. The Install page (`install.rs`) shows them.
 
-use super::{setup, Dashboard, JobKind, JobResult};
+use super::{setup, Dashboard, JobKind, JobResult, Res};
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::VersionEntry;
 use crate::core::launcher::store::InstalledVersion;
@@ -21,6 +21,16 @@ pub(super) fn ask_repair(d: &mut Dashboard, id: &str, msg: &str) {
         .confirm(REPAIR_KEY, "Verify", msg, DlgIcon::Warning);
 }
 
+/// What a job on version `id` changes: its folder, and EchoRelay's files when it is an
+/// event build (they are set up with it).
+fn res(id: &str, event: bool) -> Vec<Res> {
+    let mut r = vec![Res::Version(id.to_string())];
+    if event {
+        r.push(Res::Vr);
+    }
+    r
+}
+
 pub(super) fn job_err(e: anyhow::Error, title: &str) -> JobResult {
     if crate::core::http::is_cancelled(&e) {
         JobResult::Failed(None)
@@ -35,6 +45,7 @@ pub(super) fn update(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion
         ctx,
         JobKind::Update,
         &id,
+        res(&v.id, v.publisher_lock.is_some()),
         &format!("Updating {}", v.name),
         "Checking for updates...",
         move |cancel, on| match versions::update(&v, cancel, on) {
@@ -61,6 +72,7 @@ pub(super) fn reinstall(
         ctx,
         JobKind::Reinstall,
         &id,
+        res(&v.id, v.publisher_lock.is_some()),
         &format!("Reinstalling {}", v.name),
         "Reading the build's checksums...",
         move |cancel, on| match versions::reinstall(&e, &v, keep_patch, cancel, on) {
@@ -76,6 +88,7 @@ fn verify(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
         ctx,
         JobKind::Verify,
         &id,
+        res(&v.id, false),
         &format!("Verifying {}", v.name),
         "Verifying game files...",
         move |cancel, on| match versions::verify(&v, cancel, on) {
@@ -105,6 +118,7 @@ pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
         ctx,
         JobKind::Install,
         &id,
+        res(&e.id, e.publisher_lock.is_some()),
         &format!("Installing {}", e.name),
         "Preparing download...",
         move |cancel, on| match versions::install(&e, &library, cancel, on) {
@@ -131,6 +145,9 @@ pub(super) fn adopt(
         .iter()
         .find(|v| paths::normalize(&v.root).eq_ignore_ascii_case(&norm))
         .map_or_else(|| d.state.free_id(&e.id), |v| v.id.clone());
+    if d.state.version(&id).is_none() {
+        d.select_back.insert(id.clone(), d.state.selected.clone());
+    }
     d.state.selected = Some(id.clone());
     d.save();
     let job = id.clone();
@@ -138,6 +155,7 @@ pub(super) fn adopt(
         ctx,
         JobKind::Install,
         &job,
+        res(&job, e.publisher_lock.is_some()),
         &format!("Adding {}", e.name),
         "Checking the game files...",
         move |cancel, on| match versions::adopt(&e, &norm, &id, cancel, on) {
@@ -223,12 +241,20 @@ pub(super) fn find_meta(d: &mut Dashboard) {
 
 /// Removes (deletes or forgets) version `id`, with what the launcher made for it: its
 /// desktop shortcuts, SteamVR's library entry when that starts it, and, in a folder it
-/// only forgets, the files the launcher put there.
+/// only forgets, the files the launcher put there. Deleting a downloaded version's folder
+/// (gigabytes) is a job; one whose folder is gone already just leaves the list.
 fn remove(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     use crate::core::uninstall;
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
+    let why = d
+        .busy_with(&res(&v.id, v.publisher_lock.is_some()))
+        .or_else(|| d.files_in_use(&v).map(str::to_string));
+    if let Some(why) = why {
+        d.dialogs.info("Can't remove it now", &why);
+        return;
+    }
     if v.external {
         let failed = uninstall::clean_version(&v);
         if !failed.is_empty() {
@@ -241,11 +267,34 @@ fn remove(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
                 ),
             );
         }
-    } else if let Err(e) = versions::remove(&v, &d.state.library) {
-        d.dialogs
-            .error("Remove Failed", &format!("{e:#}"), Default::default());
+    } else if std::path::Path::new(&v.root)
+        .join(paths::ARENA_DIR)
+        .is_dir()
+    {
+        let library = d.state.library.clone();
+        let job_v = v.clone();
+        d.start_job(
+            ctx,
+            JobKind::Remove,
+            &v.id,
+            res(&v.id, v.publisher_lock.is_some()),
+            &format!("Removing {}", v.name),
+            "Deleting the game files...",
+            move |_, _| match versions::remove(&job_v, &library) {
+                Ok(()) => JobResult::Removed(job_v.id.clone()),
+                Err(e) => job_err(e, "Remove Failed"),
+            },
+        );
         return;
     }
+    forget(d, ctx, &v);
+}
+
+/// Takes version `v` out of the library once its files are gone (or left, for a folder
+/// it only knew): its shortcuts, SteamVR's library entry, the selection.
+pub(super) fn forget(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion) {
+    use crate::core::uninstall;
+    let id = v.id.as_str();
     // The live build's shortcuts ("Echo VR") only when no other live build is left.
     let another_live = d
         .state
@@ -253,7 +302,7 @@ fn remove(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
         .iter()
         .any(|x| x.id != id && x.publisher_lock.is_none());
     if v.publisher_lock.is_some() || !another_live {
-        for name in uninstall::shortcut_names(&v) {
+        for name in uninstall::shortcut_names(v) {
             if let Err(e) = platform::remove_shortcut(&name) {
                 tracing::warn!("shortcut {name}: {e:#}");
             }
@@ -311,29 +360,40 @@ pub(super) fn manage_menu(
         Remove,
     }
     let event = v.publisher_lock.is_some();
+    // Why a row is off: the folder is gone, a job on this version runs, the game holds
+    // its files.
+    let missing = (!ok).then_some("This version's folder is gone: install it again, or remove it");
+    let busy = d.busy_with(&res(&v.id, event));
+    let in_use = d.files_in_use(v);
+    let changes = missing.or(busy.as_deref()).or(in_use);
     let mut menu = Vec::new();
     // Event builds get no updates (REINSTALL checks their files).
     if versions::has_updates(v) {
         menu.push((
-            MenuItem::row("Update", "Download any changed game files"),
+            MenuItem::row("Update", "Download any changed game files").unless(changes),
             Some(Act::Update),
         ));
         menu.push((
             MenuItem::row(
                 "Verify files",
                 "Check every game file against the update manifest",
-            ),
+            )
+            .unless(missing.or(busy.as_deref())),
             Some(Act::Verify),
         ));
     }
-    menu.push((MenuItem::row("Open folder", ""), Some(Act::Open)));
+    menu.push((
+        MenuItem::row("Open folder", "").unless(missing),
+        Some(Act::Open),
+    ));
     // Shortcuts start the game directly, which only works on Windows for now.
     if cfg!(windows) || d.demo {
         menu.push((
             MenuItem::row(
                 "Desktop shortcut",
                 "A shortcut that starts this version directly",
-            ),
+            )
+            .unless(missing),
             Some(Act::Shortcut),
         ));
     }
@@ -350,7 +410,8 @@ pub(super) fn manage_menu(
         ));
     } else if v.patched {
         menu.push((
-            MenuItem::row("Remove licence patch", "Put the original pnsovr.dll back"),
+            MenuItem::row("Remove licence patch", "Put the original pnsovr.dll back")
+                .unless(changes),
             Some(Act::Unpatch),
         ));
     } else {
@@ -358,20 +419,22 @@ pub(super) fn manage_menu(
             MenuItem::row(
                 "Licence patch…",
                 "Your personal patch, through Discord or from a link",
-            ),
+            )
+            .unless(changes),
             Some(Act::Patch),
         ));
     }
     menu.push((MenuItem::Divider, None));
+    let remove_tip = if v.external {
+        "Remove from the launcher; the folder stays on disk"
+    } else if !ok {
+        "Take it off the list (its folder is gone already)"
+    } else {
+        "Delete this version from disk"
+    };
     menu.push((
-        MenuItem::row(
-            if v.external { "Forget" } else { "Remove" },
-            if v.external {
-                "Remove from the launcher; the folder stays on disk"
-            } else {
-                "Delete this version from disk"
-            },
-        ),
+        MenuItem::row(if v.external { "Forget" } else { "Remove" }, remove_tip)
+            .unless(busy.as_deref().or(in_use)),
         Some(Act::Remove),
     ));
     let (items, acts): (Vec<MenuItem>, Vec<Option<Act>>) = menu.into_iter().unzip();
@@ -387,13 +450,13 @@ pub(super) fn manage_menu(
             "Update, verify, patch, open or remove",
         )
         .and_then(|i| acts.into_iter().nth(i).flatten());
-    let busy = d.any_job();
+    // Rows that can't be used now are off (their tip says why): a pick is always allowed.
     match picked {
-        Some(Act::Update) if ok && !busy => update(d, ctx, v.clone()),
-        Some(Act::Verify) if ok && !busy => verify(d, ctx, v.clone()),
-        Some(Act::Shortcut) if ok => setup::shortcut(d, &v.id),
-        Some(Act::Patch) if ok && !busy => d.overlay = Some(setup::licence(&v.id)),
-        Some(Act::Unpatch) if ok && !busy => setup::unpatch(d, ctx, &v.id),
+        Some(Act::Update) => update(d, ctx, v.clone()),
+        Some(Act::Verify) => verify(d, ctx, v.clone()),
+        Some(Act::Shortcut) => setup::shortcut(d, &v.id),
+        Some(Act::Patch) => d.overlay = Some(setup::licence(&v.id)),
+        Some(Act::Unpatch) => setup::unpatch(d, ctx, &v.id),
         Some(Act::Account) => d.overlay = Some(setup::relay_account(d, false)),
         Some(Act::Open) => {
             if let Err(e) = platform::open_folder(&v.bin_dir()) {
@@ -413,20 +476,19 @@ pub(super) fn manage_menu(
                 );
                 d.dialogs
                     .confirm_danger(REMOVE_KEY, "Forget", &msg, "Forget");
+            } else if !ok {
+                let msg = format!(
+                    "Take {} off the list?\n\nIts game files are gone from {} already.",
+                    v.name, v.root
+                );
+                d.dialogs
+                    .confirm_danger(REMOVE_KEY, "Remove", &msg, "Remove");
             } else {
                 let msg = format!("Delete {}?\n\nThis removes {} from disk.", v.name, v.root);
                 d.dialogs
                     .confirm_danger(REMOVE_KEY, "Remove", &msg, "Delete");
             }
         }
-        Some(_) if busy => d.dialogs.info(
-            "Busy",
-            "Another job is running. Wait until it's done, then try again.",
-        ),
-        Some(_) => d.dialogs.info(
-            "Game files missing",
-            "This version's folder is gone. Install it again, or forget it.",
-        ),
         None => {}
     }
 }

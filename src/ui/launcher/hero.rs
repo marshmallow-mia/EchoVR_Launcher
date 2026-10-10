@@ -121,6 +121,8 @@ pub(super) struct JobView {
     pub label: String,
     pub fraction: Option<f32>,
     pub cancelling: bool,
+    /// CANCEL can stop it.
+    pub cancellable: bool,
 }
 
 pub(super) fn job_view(d: &Dashboard, id: &str) -> Option<JobView> {
@@ -132,6 +134,7 @@ pub(super) fn job_view(d: &Dashboard, id: &str) -> Option<JobView> {
         label: j.label.clone(),
         fraction: j.fraction,
         cancelling: j.cancel.load(std::sync::atomic::Ordering::Relaxed),
+        cancellable: j.cancellable,
     })
 }
 
@@ -259,7 +262,7 @@ pub(super) fn info_line(d: &mut Dashboard, kit: &mut Kit, key: &str, line: &Info
         PathClick::Open => (format!("{p}\nClick to open this folder"), true),
         PathClick::ChooseLibrary => (
             format!("Echo VR will be installed into {p}\nClick to choose another folder"),
-            !d.any_job(),
+            true,
         ),
         PathClick::Nothing => (p.clone(), false),
     };
@@ -427,11 +430,11 @@ pub(super) fn job_row(kit: &mut Kit, key: &str, extra: f32, job: &JobView) -> bo
 
     // CANCEL on the blue button.
     let shape = design::shifted(UPDATE_SHAPE, extra, 0.0);
-    let can = !job.cancelling;
-    let tip = if can {
-        format!("Stop {}", job.title.to_lowercase())
-    } else {
-        "Stopping…".to_string()
+    let can = !job.cancelling && job.cancellable;
+    let tip = match (job.cancellable, job.cancelling) {
+        (false, _) => "This can't be stopped halfway: it's done in a moment".to_string(),
+        (true, false) => format!("Stop: {}", job.title),
+        (true, true) => "Stopping…".to_string(),
     };
     let (resp, t, pressed) = kit.hot_shape(
         &format!("{key}-side"),
@@ -440,7 +443,11 @@ pub(super) fn job_row(kit: &mut Kit, key: &str, extra: f32, job: &JobView) -> bo
         can,
         &tip,
     );
-    let label = if can { "Cancel" } else { "Stopping…" };
+    let label = if job.cancelling {
+        "Stopping…"
+    } else {
+        "Cancel"
+    };
     blue_face(kit, extra, can && !pressed, false, t, Icon::Close, label);
     resp.clicked
 }

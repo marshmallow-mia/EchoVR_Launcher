@@ -8,7 +8,7 @@
 use egui::Color32;
 
 use super::hero::{self, Face, InfoLine, JobView, PathClick, Row, Side};
-use super::{now, panel, setup, versions, Dashboard, Msg, Page, QueuedUpdate};
+use super::{now, panel, setup, versions, Dashboard, Msg, Page, QueuedUpdate, Res};
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Platform, VersionEntry};
@@ -184,6 +184,8 @@ struct Action {
     update: Update,
     update_enabled: bool,
     update_tip: String,
+    /// The job CHECK FOR UPDATES waits for ("Busy: …"), when that is why it's off.
+    update_busy: Option<String>,
     /// The last update failed: the button shows its orange "!".
     update_alert: bool,
     /// An update is out: the button says so.
@@ -203,8 +205,17 @@ impl Action {
             update: Update::Nothing,
             update_enabled: false,
             update_tip: "Download any changed game files".into(),
+            update_busy: None,
             update_alert: false,
             update_ready: false,
+        }
+    }
+
+    /// PLAY does something on `res`: off, saying why, while a job there runs.
+    fn wait_for(&mut self, d: &Dashboard, res: &[Res]) {
+        match d.busy_with(res) {
+            Some(busy) => (self.enabled, self.tip) = (false, busy),
+            None => self.enabled = true,
         }
     }
 
@@ -235,18 +246,10 @@ pub(super) fn gb(bytes: u64) -> String {
     }
 }
 
-/// Why PLAY and CHECK FOR UPDATES can't be used right now, in their tooltips.
+/// Why CHECK FOR UPDATES can't be used right now, in its tooltip (PLAY's own tip says
+/// why PLAY is off).
 fn explain_disabled(d: &Dashboard, a: &mut Action) {
-    let busy = d
-        .jobs
-        .values()
-        .next()
-        .map(|j| format!("Busy: {}. Wait until it's done.", j.title));
-    if !a.enabled && !matches!(a.main, Main::Nothing) {
-        if let Some(b) = &busy {
-            a.tip = b.clone();
-        }
-    }
+    let busy = a.update_busy.clone();
     if !a.update_enabled {
         a.update_tip = match (&busy, &a.update) {
             (Some(b), _) => b.clone(),
@@ -357,22 +360,22 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 }
             } else if setup::needs_patch(d, &v) {
                 (a.label, a.main) = ("PATCH", Main::Patch(v.id.clone()));
-                a.enabled = !d.any_job();
                 a.tip =
                     "New players need a personal licence patch: get yours through Discord".into();
+                a.wait_for(d, &[Res::Version(v.id.clone()), Res::Licence]);
             } else if needs_steamvr && echoxr {
                 a.main = Main::PrepareEchoXr;
-                a.enabled = !d.any_job();
                 a.tip = if vd {
                     "Start Echo VR through Virtual Desktop: EchoXR's OpenXR runtime goes into the game's folder first"
                 } else {
                     "Start Echo VR on SteamVR: EchoXR's OpenXR runtime goes into the game's folder first"
                 }
                 .into();
+                a.wait_for(d, &[Res::Vr, Res::Version(v.id.clone())]);
             } else if needs_steamvr {
                 a.main = Main::PrepareRevive;
-                a.enabled = !d.any_job();
                 a.tip = "Start Echo VR on SteamVR: Revive, which runs it there, is installed first (asks for administrator rights)".into();
+                a.wait_for(d, &[Res::Vr]);
             } else if cfg!(target_os = "linux")
                 && v.publisher_lock.is_some()
                 && d.state.profile.runtime == Runtime::Flat
@@ -382,8 +385,8 @@ fn pc_action(d: &mut Dashboard) -> Action {
                     "Event builds always start in VR: choose SteamVR or WiVRn in Settings".into();
             } else if cfg!(target_os = "linux") && !setup::pc_play_supported(d) {
                 a.main = Main::PrepareLinux;
-                a.enabled = !d.any_job();
                 a.tip = "Start Echo VR: GE-Proton and EchoXR's OpenXR runtime are downloaded or updated first (about 0.5 GB the first time), and Echo VR is added to Steam once".into();
+                a.wait_for(d, &[Res::Vr]);
             } else if !setup::pc_play_supported(d) {
                 (a.main, a.enabled, a.grey) = (Main::Play, false, true);
                 a.tip = "Echo VR for PC doesn't run on macOS: play it on Windows, or on your Quest"
@@ -399,8 +402,17 @@ fn pc_action(d: &mut Dashboard) -> Action {
             let game = updates && d.updates.game(&v.id);
             let plugins = d.updates.plugins_for(&v.id);
             let launcher = d.launcher_ready();
-            a.update_enabled =
-                (updates || plugins > 0 || launcher) && in_use.is_none() && !ours && !d.any_job();
+            // Only the launcher's update (it restarts) waits for every job; the game's and
+            // its mods' for the jobs on this version.
+            a.update_busy = if updates || plugins > 0 {
+                d.busy_with(&[Res::Version(v.id.clone()), Res::Mods])
+            } else {
+                d.busy_any()
+            };
+            a.update_enabled = (updates || plugins > 0 || launcher)
+                && in_use.is_none()
+                && !ours
+                && a.update_busy.is_none();
             if ours && !running {
                 a.update_tip = "Echo VR is starting".into();
             }
@@ -428,8 +440,13 @@ fn pc_action(d: &mut Dashboard) -> Action {
                     "The game files are gone. Click to install Echo VR again or add its new folder"
                         .into();
             }
+            // Being installed again: its progress and CANCEL in the buttons.
+            a.job = job.filter(JobView::installs);
         }
-        Target::Available(_) | Target::None => a.not_installed("Not installed", job.as_ref()),
+        Target::Available(_) | Target::None => {
+            a.not_installed("Not installed", job.as_ref());
+            a.job = job.filter(JobView::installs);
+        }
     }
     a
 }
@@ -440,7 +457,8 @@ fn quest_action(d: &mut Dashboard) -> Action {
     let ready = d.quest_conn.status == Some(Status::Ready);
     let installed = ready && d.quest_info.as_ref().is_some_and(|i| i.installed);
     let known = ready && d.quest_info.is_some();
-    let busy = d.quest_conn.checking || d.quest_busy || d.any_job();
+    let quest_busy = d.busy_with(&[Res::Quest]);
+    let busy = d.quest_conn.checking || d.quest_busy || quest_busy.is_some();
     let job = hero::job_view(d, setup::QUEST_JOB);
     let mut a = Action::new();
     a.line.parts = quest_info(d);
@@ -489,6 +507,7 @@ fn quest_action(d: &mut Dashboard) -> Action {
     }
     a.update = Update::Quest;
     a.update_enabled = installed && !busy;
+    a.update_busy = quest_busy;
     a.update_tip = "Copy the latest game files to your Quest".into();
     // A launcher update comes along (after the Quest's).
     a.update_ready = d.launcher_ready();
@@ -567,6 +586,7 @@ pub(super) fn job_state(job: &JobView) -> String {
         JobKind::Unpatch => "Removing the patch".into(),
         JobKind::Licence => "Licence patch".into(),
         JobKind::Uninstall => "Uninstalling".into(),
+        JobKind::Remove => "Removing".into(),
         JobKind::Revive | JobKind::QuestUpdate | JobKind::Mods | JobKind::LauncherUpdate => {
             job.title.clone()
         }
@@ -798,7 +818,8 @@ pub(super) fn lobby_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
 
 /// VERSION, right of the switch: the version PLAY starts, and a menu to switch to
 /// another. Installed versions come first, then the catalogue's others: picking one of
-/// those greys PLAY, which then opens the Install page on it.
+/// those greys PLAY, which then opens the Install page on it. Jobs don't lock it: while
+/// one version downloads, another can be played (each row says what runs on it).
 fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
     let installed = d.state.versions.clone();
     let available: Vec<VersionEntry> = d
@@ -820,15 +841,10 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
         Target::None => (None, "Choose a version".to_string()),
     };
     let running = d.game().is_running() || d.ours();
-    let busy = d
-        .jobs
-        .values()
-        .next()
-        .map(|j| format!("Busy: {}. Wait until it's done.", j.title));
-    let (enabled, tip) = match (running, busy) {
-        (true, _) => (false, "Close Echo VR to switch versions".to_string()),
-        (false, Some(b)) => (false, b),
-        (false, None) => (true, "The version PLAY starts: click to switch".to_string()),
+    let (enabled, tip) = if running {
+        (false, "Close Echo VR to switch versions".to_string())
+    } else {
+        (true, "The version PLAY starts: click to switch".to_string())
     };
 
     let caption = kit.spaced_galley(
@@ -902,7 +918,9 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
         .iter()
         .map(|v| {
             let present = d.demo || v.present();
-            let (detail, detail_color) = if !present {
+            let (detail, detail_color) = if let Some(j) = hero::job_view(d, &v.id) {
+                (job_detail(&j), design::BLUE)
+            } else if !present {
                 ("Files missing".to_string(), design::DANGER)
             } else if v.external {
                 ("Existing folder".to_string(), design::GREY)
@@ -911,7 +929,13 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
                     let c = d.catalog.as_ref()?;
                     c.pc().find(|e| &e.id == cid)?.size.map(gb)
                 });
-                (size.unwrap_or_default(), design::GREY)
+                // An update is out for it (the rail's badge counts every version's).
+                let ready = d.updates.game(&v.id) || d.updates.plugins_for(&v.id) > 0;
+                match (ready, size) {
+                    (true, Some(s)) => (format!("Update ready  ·  {s}"), design::QUEST_ON),
+                    (true, None) => ("Update ready".into(), design::QUEST_ON),
+                    (false, s) => (s.unwrap_or_default(), design::GREY),
+                }
             };
             MenuItem::Pick {
                 label: v.name.clone(),
@@ -922,15 +946,27 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
             }
         })
         .collect();
-    items.extend(available.iter().map(|e| MenuItem::Pick {
-        label: e.name.clone(),
-        detail: match e.size {
-            Some(s) => format!("Not installed  ·  {}", gb(s)),
-            None => "Not installed".into(),
-        },
-        detail_color: design::GREY,
-        checked: checked(&e.id),
-        tip: "Not installed yet: PLAY takes you to the Install page".into(),
+    items.extend(available.iter().map(|e| {
+        let job = hero::job_view(d, &e.id);
+        MenuItem::Pick {
+            label: e.name.clone(),
+            detail: match (&job, e.size) {
+                (Some(j), _) => job_detail(j),
+                (None, Some(s)) => format!("Not installed  ·  {}", gb(s)),
+                (None, None) => "Not installed".into(),
+            },
+            detail_color: if job.is_some() {
+                design::BLUE
+            } else {
+                design::GREY
+            },
+            checked: checked(&e.id),
+            tip: if job.is_some() {
+                "Installing: PLAY starts it once it's in place".into()
+            } else {
+                "Not installed yet: PLAY takes you to the Install page".into()
+            },
+        }
     }));
     items.push(MenuItem::Divider);
     items.push(MenuItem::row(
@@ -950,6 +986,14 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
         }
         Some(_) => d.page = Page::Install,
         None => {}
+    }
+}
+
+/// A version's job in the picker's menu: "Installing  ·  42%".
+fn job_detail(j: &JobView) -> String {
+    match j.fraction {
+        Some(f) => format!("{}  ·  {:.0}%", job_state(j), f * 100.0),
+        None => job_state(j),
     }
 }
 
@@ -1573,6 +1617,7 @@ fn allow_and_repair(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
         ctx,
         super::JobKind::Update,
         id,
+        vec![super::Res::Version(id.to_string())],
         &format!("Allowing {} in Windows Security", v.name),
         "Asking for administrator rights...",
         move |cancel, on| {

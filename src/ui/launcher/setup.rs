@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use super::hero::{self, JobView};
 use super::versions::job_err;
-use super::{Dashboard, JobKind, JobResult, Msg, H, W};
+use super::{Dashboard, JobKind, JobResult, Msg, Res, H, W};
 use crate::core::error::UiError;
 use crate::core::launcher::catalog::VersionEntry;
 use crate::core::launcher::launch;
@@ -30,7 +30,7 @@ pub(super) const ECHOXR_JOB: &str = "echoxr";
 /// EchoRelay's patch).
 pub(super) const EVENT_JOB: &str = "event-build";
 /// Putting Echo VR into SteamVR's library (or taking it out) on its own.
-const LIBRARY_JOB: &str = "steamvr-library";
+pub(super) const LIBRARY_JOB: &str = "steamvr-library";
 pub(super) const CONSENT_KEY: &str = "admin-consent";
 pub(super) const JOIN_KEY: &str = "join-server";
 pub(super) const QUEST_JOB: &str = "quest";
@@ -213,6 +213,9 @@ fn confirm_install(d: &mut Dashboard, ctx: &egui::Context, ask: InstallAsk) {
             let id = installed.as_ref().map_or(e.id.clone(), |v| v.id.clone());
             let patched = installed.as_ref().is_some_and(|v| v.patched);
             d.state.profile.runtime = ask.runtime;
+            if installed.is_none() {
+                d.select_back.insert(id.clone(), d.state.selected.clone());
+            }
             d.state.selected = Some(id.clone());
             d.save();
             match installed {
@@ -255,6 +258,7 @@ fn fetch_licence(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: Sourc
         ctx,
         JobKind::Licence,
         LICENCE_JOB,
+        vec![Res::Licence],
         "Getting your licence patch",
         first,
         move |cancel, on| {
@@ -362,6 +366,7 @@ pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: So
         ctx,
         JobKind::Patch,
         id,
+        vec![Res::Version(id.to_string())],
         &format!("Patching {}", v.name),
         first,
         move |cancel, on| {
@@ -404,6 +409,7 @@ pub(super) fn unpatch(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
         ctx,
         JobKind::Unpatch,
         id,
+        vec![Res::Version(id.to_string())],
         &format!("Removing the patch from {}", v.name),
         "Restoring the original pnsovr.dll...",
         move |_, _| match elevation::remove_patch(&v.bin_dir(), &mut consent) {
@@ -442,6 +448,7 @@ pub(super) fn revive_artwork(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::Revive,
         LIBRARY_JOB,
+        vec![Res::Vr],
         "Installing the game artwork",
         "Downloading the artwork...",
         move |_, _| match elevation::install_artwork(&mut consent) {
@@ -457,6 +464,8 @@ pub(super) fn steamvr_library(d: &mut Dashboard, ctx: &egui::Context, add: bool)
         d.notify("Install Echo VR first: the SteamVR library entry starts it");
         return;
     }
+    // What Settings' box should say if this fails: the way it was.
+    d.library_wanted = Some(add);
     let mut consent = consent_asker(d.worker.tx(ctx));
     let title = if add {
         "Adding Echo VR to SteamVR"
@@ -467,6 +476,7 @@ pub(super) fn steamvr_library(d: &mut Dashboard, ctx: &egui::Context, add: bool)
         ctx,
         JobKind::Revive,
         LIBRARY_JOB,
+        vec![Res::Vr],
         title,
         "Updating the SteamVR library...",
         move |_, _| {
@@ -491,6 +501,7 @@ pub(super) fn event_build(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledV
         ctx,
         JobKind::Revive,
         EVENT_JOB,
+        vec![Res::Vr, Res::Version(v.id.clone())],
         &format!("Setting up {}", v.name),
         "Adding EchoLoader and EchoRelay's patch...",
         move |cancel, on| match relay::set_up(&v, cancel, on) {
@@ -505,9 +516,9 @@ pub(super) fn event_build(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledV
 /// library's).
 pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
     let mut consent = consent_asker(d.worker.tx(ctx));
-    let bin = match d.target() {
-        Target::Installed(v) => Some(v.bin_dir()),
-        _ => None,
+    let (bin, res) = match d.target() {
+        Target::Installed(v) => (Some(v.bin_dir()), vec![Res::Vr, Res::Version(v.id.clone())]),
+        _ => (None, vec![Res::Vr]),
     };
     let (title, failed) = if d.state.profile.runtime == Runtime::VirtualDesktop {
         (
@@ -521,6 +532,7 @@ pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::Revive,
         ECHOXR_JOB,
+        res,
         title,
         "Downloading EchoXR...",
         move |cancel, on| {
@@ -551,6 +563,7 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::Revive,
         REVIVE_JOB,
+        vec![Res::Vr],
         "Preparing SteamVR (Revive)",
         "Downloading Revive...",
         move |cancel, on| {
@@ -766,6 +779,7 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::Revive,
         LINUX_JOB,
+        vec![Res::Vr],
         "Preparing Echo VR for Linux",
         "Preparing...",
         move |cancel, on| {
@@ -822,6 +836,7 @@ pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, source: ApkS
         ctx,
         JobKind::QuestInstall,
         QUEST_JOB,
+        vec![Res::Quest],
         "Installing Echo VR on your Quest",
         first,
         move |cancel, on| match quest_core::install(&source, fallback.as_deref(), cancel, on) {
@@ -837,6 +852,7 @@ pub(super) fn quest_update(d: &mut Dashboard, ctx: &egui::Context) {
         ctx,
         JobKind::QuestUpdate,
         QUEST_JOB,
+        vec![Res::Quest],
         "Updating Echo VR on your Quest",
         "Checking your Quest...",
         move |cancel, on| match quest_core::update(cancel, on) {
@@ -1100,16 +1116,34 @@ fn card_buttons(
 /// Before an install: your licence (with the patch's options for new players), how you
 /// play and where it goes (PC). Prefilled with your last answers.
 fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
-    let busy = d.any_job();
     let offered = runtimes(d);
     let library = d.state.library.clone();
-    // Already there (its files gone, or another build on the headset): a reinstall.
-    let reinstall = match &d.overlay {
+    // Already there (its files gone, or another build on the headset): a reinstall, in
+    // the version's own folder.
+    let installed = match &d.overlay {
         Some(Overlay::Install(ask)) => match &ask.target {
-            InstallFor::Pc(e) => d.state.installed_from(&e.id).is_some(),
-            InstallFor::Quest => d.quest_info.as_ref().is_some_and(|i| i.installed),
+            InstallFor::Pc(e) => d.state.installed_from(&e.id).cloned(),
+            InstallFor::Quest => None,
         },
-        _ => false,
+        _ => None,
+    };
+    let reinstall = installed.is_some()
+        || matches!(&d.overlay, Some(Overlay::Install(ask)) if matches!(ask.target, InstallFor::Quest))
+            && d.quest_info.as_ref().is_some_and(|i| i.installed);
+    // Only a job on this build (or the headset) holds it up.
+    let busy = match &d.overlay {
+        Some(Overlay::Install(ask)) => match &ask.target {
+            InstallFor::Pc(e) => {
+                let id = installed.as_ref().map_or(e.id.clone(), |v| v.id.clone());
+                let mut res = vec![Res::Version(id)];
+                if e.publisher_lock.is_some() {
+                    res.push(Res::Vr);
+                }
+                d.busy_with(&res)
+            }
+            InstallFor::Quest => d.busy_with(&[Res::Quest]),
+        },
+        _ => None,
     };
     let verb = if reinstall { "Reinstall" } else { "Install" };
     // A copy found on this PC meanwhile (the search runs in the background) is offered
@@ -1136,7 +1170,10 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     let (title, root) = match &ask.target {
         InstallFor::Pc(e) => (
             format!("{verb} {}", e.name),
-            Some(crate::core::launcher::versions::root_for(&library, &e.id)),
+            Some(installed.as_ref().map_or_else(
+                || crate::core::launcher::versions::root_for(&library, &e.id),
+                |v| v.root.clone(),
+            )),
         ),
         InstallFor::Quest => (format!("{verb} Echo VR on your Quest"), None),
     };
@@ -1239,10 +1276,12 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         y += runtime_h + dz(24.0);
         let (caption, path) = match &ask.copy {
             Some(copy) if use_copy => ("Echo VR is in", copy.as_str()),
+            _ if reinstall => ("Its folder", root.as_str()),
             _ => ("Install location", root.as_str()),
         };
         let cap = k.caption(x, y, caption);
-        if !use_copy {
+        // A reinstall stays in the version's folder: nothing to change.
+        if !use_copy && !reinstall {
             let change_tip = "Install into another folder (your library)";
             change = k
                 .link(
@@ -1314,7 +1353,7 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         }
         (_, None, _) => "Answer the licence question first",
         (false, Some(true), _) if reinstall => {
-            "Download Echo VR again and install it over this copy"
+            "Check every game file against the server's checksums and fetch only the broken ones again"
         }
         (false, Some(true), _) => "Download and install Echo VR",
         (false, Some(false), false) => {
@@ -1327,6 +1366,12 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         (true, Some(false), false) => "Authorize with Discord, then install your patched build",
         (true, Some(false), true) => "Download your patched build and install it",
     };
+    // Off: what it waits for, or what's missing.
+    let tip = match (&busy, ready) {
+        (Some(b), _) => b.as_str(),
+        (None, false) if ask.owner.is_some() => "Paste your patch link first",
+        _ => tip,
+    };
     let (go, cancel) = card_buttons(
         k,
         ctx,
@@ -1334,7 +1379,7 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         x + cw,
         bottom - BTN_H,
         if use_copy { "Use this copy" } else { verb },
-        ready && !busy,
+        ready && busy.is_none(),
         tip,
     );
     let ask = ask.clone();
@@ -1425,11 +1470,17 @@ fn owner_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
 /// The licence patch for an installed version (PATCH, MANAGE, the first PLAY's answer):
 /// what it is, Authorize with Discord, or (ticked) a patch link you already have.
 fn licence_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
-    let busy = d.any_job();
-    let name = match &d.overlay {
-        Some(Overlay::Licence { id, .. }) => d.state.version(id).map(|v| v.name.clone()),
+    let version = match &d.overlay {
+        Some(Overlay::Licence { id, .. }) => d.state.version(id).cloned(),
         _ => None,
     };
+    let name = version.as_ref().map(|v| v.name.clone());
+    // What holds the patch up, said on the button (the card stays open with the link):
+    // a job on this version or a patch on its way, or the game holding its files.
+    let busy = version.as_ref().and_then(|v| {
+        d.busy_with(&[Res::Version(v.id.clone()), Res::Licence])
+            .or_else(|| d.files_in_use(v).map(str::to_string))
+    });
     let Some(Overlay::Licence { id, url, link }) = &mut d.overlay else {
         return;
     };
@@ -1451,6 +1502,11 @@ fn licence_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             "Opens Discord in your browser: authorize there, and the patch comes by itself",
         )
     };
+    let tip = match (&busy, ready) {
+        (Some(b), _) => b.as_str(),
+        (None, false) => "Paste your patch link first",
+        _ => tip,
+    };
     let (go, cancel) = card_buttons(
         k,
         ctx,
@@ -1458,7 +1514,7 @@ fn licence_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         x + cw,
         bottom - BTN_H,
         label,
-        ready && !busy,
+        ready && busy.is_none(),
         tip,
     );
     let (id, from) = (id.clone(), link.then(|| url.trim().to_string()));

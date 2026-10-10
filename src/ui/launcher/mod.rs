@@ -209,6 +209,8 @@ enum JobResult {
     HandsInstalled,
     /// Parts of the launcher's things were uninstalled.
     Uninstalled(crate::core::uninstall::Outcome),
+    /// Version (its id)'s folder is deleted: it leaves the library.
+    Removed(String),
     /// The launcher's new version is in place: start it (the executable) and end this one.
     LauncherUpdated(PathBuf),
 }
@@ -458,12 +460,47 @@ enum JobKind {
     Mods,
     /// Taking what the launcher put on this PC off it again.
     Uninstall,
+    /// Deleting an installed version's folder.
+    Remove,
     /// Updating the launcher itself.
     LauncherUpdate,
 }
 
+/// What a job changes: an action waits only for the jobs on the same thing, so a game
+/// download doesn't hold up playing or modding another version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Res {
+    /// An installed version's folder (its id).
+    Version(String),
+    /// The VR setup: Revive, EchoXR, SteamVR's library, Linux's Steam and GE-Proton, and
+    /// EchoRelay's files for event builds.
+    Vr,
+    /// The headset.
+    Quest,
+    /// The mods' shared download folder.
+    Mods,
+    /// A new player's licence patch on its way.
+    Licence,
+    /// Everything: the launcher's own update (it restarts at the end) and the uninstall.
+    All,
+}
+
+/// Whether jobs on `a` and on `b` would get in each other's way.
+fn clash(a: &[Res], b: &[Res]) -> bool {
+    a.contains(&Res::All) || b.contains(&Res::All) || a.iter().any(|r| b.contains(r))
+}
+
+/// Why something waits for `job`, as a disabled control's tip.
+fn busy_tip(job: &Job) -> String {
+    format!("Busy: {}. Wait until it's done.", job.title)
+}
+
 struct Job {
     kind: JobKind,
+    /// What it changes.
+    res: Vec<Res>,
+    /// CANCEL can stop it (an administrator step or a deletion can't be).
+    cancellable: bool,
     /// What runs, for the status bar ("Installing Echo VR (PC, latest)").
     title: String,
     /// The latest progress line.
@@ -611,6 +648,12 @@ pub enum SnapVariant {
     ModsSettings,
     /// Mods: a made-up plugin's settings with every kind of control, advanced shown.
     ModsSettingsAll,
+    /// Another build downloads while the installed one stays chosen (its menu open: the
+    /// `…Menu` one).
+    InstallingAnother,
+    InstallingAnotherMenu,
+    /// Mods while the chosen build is still downloading.
+    ModsInstalling,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -704,6 +747,12 @@ pub struct Dashboard {
     linux_outcome_at: Option<std::time::Instant>,
     /// The job whose "continue in your browser" dialog is up (Discord's authorization).
     browser_job: Option<String>,
+    /// SteamVR's library entry being added (`true`) or taken out: Settings' box goes back
+    /// if that fails.
+    library_wanted: Option<bool>,
+    /// Versions being installed for the first time (they were selected when it started),
+    /// with what was selected before: back to it if the install fails or is cancelled.
+    select_back: HashMap<String, Option<String>>,
     /// echovrce.com inside the window, on the EchoVRCE page.
     web: crate::ui::web::WebPane,
     /// The game service's servers, party, friends and history (the Servers page).
@@ -1090,6 +1139,7 @@ impl Dashboard {
             ctx,
             JobKind::LauncherUpdate,
             LAUNCHER_JOB,
+            vec![Res::All],
             &format!("Updating the launcher to {v}"),
             "Downloading...",
             move |cancel, on| match crate::core::launcher::self_update::install(&v, cancel, on) {
@@ -1125,8 +1175,19 @@ impl Dashboard {
     /// Starts the next queued update once no job runs (a step with nothing to do is
     /// skipped).
     fn run_update_queue(&mut self, ctx: &egui::Context) {
-        while !self.any_job() && !self.update_queue.is_empty() {
-            match self.update_queue.remove(0) {
+        while let Some(next) = self.update_queue.first().cloned() {
+            // A version's mods wait for the jobs on it; the launcher (it restarts) for all.
+            let waits = match &next {
+                QueuedUpdate::Plugins(id) => self
+                    .blocker(&[Res::Version(id.clone()), Res::Mods])
+                    .is_some(),
+                QueuedUpdate::Launcher => self.any_job(),
+            };
+            if waits {
+                break;
+            }
+            self.update_queue.remove(0);
+            match next {
                 QueuedUpdate::Plugins(id) => mods::update_all(self, ctx, &id),
                 QueuedUpdate::Launcher if self.launcher_ready() => self.update_launcher(ctx),
                 QueuedUpdate::Launcher => {}
@@ -1309,6 +1370,8 @@ impl Dashboard {
                     "pc-latest".into(),
                     Job {
                         kind: JobKind::Install,
+                        res: vec![Res::Version("pc-latest".into())],
+                        cancellable: true,
                         title: "Installing Echo VR (PC, latest)".into(),
                         label: label.into(),
                         fraction,
@@ -1435,6 +1498,32 @@ impl Dashboard {
             Some(SnapVariant::VersionMenu) => {
                 let id = crate::ui::widgets::menu_id(play::VERSION_MENU);
                 ctx.data_mut(|d| d.insert_temp(id, true));
+            }
+            Some(
+                v @ (SnapVariant::InstallingAnother
+                | SnapVariant::InstallingAnotherMenu
+                | SnapVariant::ModsInstalling),
+            ) => {
+                self.jobs.insert(
+                    "pc-34.4".into(),
+                    Job {
+                        kind: JobKind::Install,
+                        res: vec![Res::Version("pc-34.4".into())],
+                        cancellable: true,
+                        title: "Installing Echo VR 34.4 (PC)".into(),
+                        label: "Downloading... 42.0%".into(),
+                        fraction: Some(0.42),
+                        cancel: Arc::new(AtomicBool::new(false)),
+                    },
+                );
+                match v {
+                    SnapVariant::InstallingAnotherMenu => {
+                        let id = crate::ui::widgets::menu_id(play::VERSION_MENU);
+                        ctx.data_mut(|d| d.insert_temp(id, true));
+                    }
+                    SnapVariant::ModsInstalling => self.state.selected = Some("pc-34.4".into()),
+                    _ => {}
+                }
             }
             Some(SnapVariant::SettingsSteamVr) => self.state.profile.runtime = Runtime::Revive,
             Some(SnapVariant::SettingsVirtualDesktop) => {
@@ -1586,6 +1675,8 @@ impl Dashboard {
                     setup::LICENCE_JOB.into(),
                     Job {
                         kind: JobKind::Licence,
+                        res: vec![Res::Licence],
+                        cancellable: true,
                         title: "Getting your licence patch".into(),
                         label: "Discord authorization opened in your browser.".into(),
                         fraction: None,
@@ -1859,8 +1950,9 @@ impl Dashboard {
                         self.browser_job = None;
                         self.dialogs.dismiss(BROWSER_KEY);
                     }
-                    let kind = self.jobs.remove(&id).map(|j| j.kind);
-                    self.job_done(ctx, &id, kind, r);
+                    let job = self.jobs.remove(&id);
+                    let kind = job.as_ref().map(|j| j.kind);
+                    self.job_done(ctx, &id, kind, job.map(|j| j.title), r);
                 }
                 Msg::QuestInfo(r) => {
                     self.quest_busy = false;
@@ -2147,7 +2239,14 @@ impl Dashboard {
         self.notice = Some((text.to_string(), std::time::Instant::now()));
     }
 
-    fn job_done(&mut self, ctx: &egui::Context, id: &str, kind: Option<JobKind>, r: JobResult) {
+    fn job_done(
+        &mut self,
+        ctx: &egui::Context,
+        id: &str,
+        kind: Option<JobKind>,
+        title: Option<String>,
+        r: JobResult,
+    ) {
         let cancelled = matches!(r, JobResult::Failed(None));
         match &r {
             JobResult::Failed(None) => tracing::info!("job {id}: cancelled"),
@@ -2169,6 +2268,17 @@ impl Dashboard {
         }
         let install_failed = matches!(kind, Some(JobKind::Install | JobKind::Reinstall))
             && matches!(r, JobResult::Failed(_));
+        // A first install that didn't make it: the selection goes back to what it was, not
+        // to a version that isn't there.
+        if let Some(before) = self.select_back.remove(id) {
+            let gone = self.state.version(id).is_none();
+            if install_failed && gone && self.state.selected.as_deref() == Some(id) {
+                self.state.selected = before
+                    .filter(|b| self.state.version(b).is_some())
+                    .or_else(|| self.state.versions.first().map(|v| v.id.clone()));
+                self.save();
+            }
+        }
         if install_failed && self.pending_patch.as_ref().is_some_and(|p| p.version == id) {
             self.pending_patch = None;
             self.cancel_job(setup::LICENCE_JOB);
@@ -2176,6 +2286,12 @@ impl Dashboard {
         if id == setup::QUEST_JOB {
             // Read the headset again once the job is over.
             self.quest_info = None;
+        }
+        if id == setup::LIBRARY_JOB {
+            if let (Some(want), JobResult::Failed(_)) = (self.library_wanted.take(), &r) {
+                self.state.revive_library = !want;
+                self.save();
+            }
         }
         // PLAY prepared VR first: the game starts once that's done (not after a failure).
         let play_after = [
@@ -2202,6 +2318,8 @@ impl Dashboard {
                 if self.state.selected.is_none() {
                     self.state.selected = Some(v.id.clone());
                 }
+                // Another version was chosen meanwhile (played while this one downloaded).
+                let elsewhere = self.state.selected.as_deref() != Some(v.id.as_str());
                 let installed = v.id.clone();
                 self.state.upsert(v);
                 self.save();
@@ -2209,6 +2327,9 @@ impl Dashboard {
                 // A new player's patch goes in now, if it is already here.
                 setup::apply_pending(self, ctx);
                 match update_failed {
+                    None if elsewhere => self.notify(&format!(
+                        "{name} is installed: choose it next to PLAY to play it"
+                    )),
                     None => self.notify(&format!("{name} is installed. Have fun!")),
                     Some(why) => {
                         self.update_note
@@ -2314,6 +2435,12 @@ impl Dashboard {
                 }
             }
             JobResult::Uninstalled(o) => settings::uninstalled(self, o),
+            JobResult::Removed(id) => {
+                if let Some(v) = self.state.version(&id).cloned() {
+                    versions::forget(self, ctx, &v);
+                    self.notify(&format!("{} is removed", v.name));
+                }
+            }
             JobResult::ModsChanged(notice) => {
                 self.mods.changed();
                 self.notify(&notice);
@@ -2412,7 +2539,11 @@ impl Dashboard {
                 crate::ui::dialogs::Icon::Warning,
                 &["Reinstall Echo VR", "Cancel"],
             ),
-            JobResult::Failed(None) => {}
+            JobResult::Failed(None) => {
+                if let Some(t) = title {
+                    self.notify(&format!("Cancelled: {t}"));
+                }
+            }
             JobResult::Failed(Some(e)) => {
                 if kind == Some(JobKind::Update) {
                     self.update_note
@@ -2431,12 +2562,14 @@ impl Dashboard {
         self.run_update_queue(ctx);
     }
 
+    /// Starts job `id` on a worker, changing `res` (see [`Res`]).
     #[allow(clippy::too_many_arguments)]
     fn start_job(
         &mut self,
         ctx: &egui::Context,
         kind: JobKind,
         id: &str,
+        res: Vec<Res>,
         title: &str,
         label: &str,
         f: impl FnOnce(&AtomicBool, &mut dyn FnMut(Step)) -> JobResult + Send + 'static,
@@ -2447,6 +2580,11 @@ impl Dashboard {
             id.to_string(),
             Job {
                 kind,
+                res,
+                cancellable: !matches!(
+                    kind,
+                    JobKind::Unpatch | JobKind::Uninstall | JobKind::Remove
+                ) && id != setup::LIBRARY_JOB,
                 title: title.to_string(),
                 label: label.to_string(),
                 fraction: None,
@@ -2470,6 +2608,33 @@ impl Dashboard {
 
     fn any_job(&self) -> bool {
         !self.jobs.is_empty()
+    }
+
+    /// The running jobs, the one to name first: real work before a licence patch waiting
+    /// for its version, then by title (the map's order changes).
+    fn jobs_in_order(&self) -> Vec<&Job> {
+        let mut jobs: Vec<&Job> = self.jobs.values().collect();
+        jobs.sort_by(|a, b| {
+            (a.kind == JobKind::Licence, &a.title).cmp(&(b.kind == JobKind::Licence, &b.title))
+        });
+        jobs
+    }
+
+    /// The running job an action on `res` has to wait for (`None`: it can go ahead).
+    fn blocker(&self, res: &[Res]) -> Option<&Job> {
+        self.jobs_in_order()
+            .into_iter()
+            .find(|j| clash(&j.res, res))
+    }
+
+    /// Why an action on `res` can't be done now: the job it waits for.
+    pub(super) fn busy_with(&self, res: &[Res]) -> Option<String> {
+        self.blocker(res).map(busy_tip)
+    }
+
+    /// "Busy: …" for whatever runs (an action that waits for every job).
+    fn busy_any(&self) -> Option<String> {
+        self.busy_with(&[Res::All])
     }
 
     /// Draws the launcher.
@@ -2905,10 +3070,16 @@ impl Dashboard {
 
     /// The PCVR side's state, for the status bar's chip.
     fn pc_chip(&mut self) -> (&'static str, egui::Color32) {
-        if self
-            .jobs
-            .values()
-            .any(|j| matches!(j.kind, JobKind::Install | JobKind::Reinstall))
+        // The version PLAY starts being installed (another one's download is the status
+        // line's to say).
+        let target = match self.target() {
+            Target::Installed(v) | Target::Missing(v) => Some(v.id),
+            Target::Available(e) => Some(e.id),
+            Target::None => None,
+        };
+        if target
+            .and_then(|id| self.jobs.get(&id))
+            .is_some_and(|j| matches!(j.kind, JobKind::Install | JobKind::Reinstall))
         {
             return ("PCVR: installing", design::BLUE);
         }
@@ -3115,16 +3286,19 @@ impl Dashboard {
             });
         let status = if let Some(text) = &notice {
             text.clone()
-        } else if let Some(j) = self
-            .jobs
-            .values()
-            .find(|j| j.kind != JobKind::Licence)
-            .or_else(|| self.jobs.values().next())
+        } else if let Some((j, more)) = self
+            .jobs_in_order()
+            .split_first()
+            .map(|(j, rest)| (*j, rest.len()))
         {
-            // The install before the patch it waits for.
-            match j.fraction {
+            // The install before the patch it waits for; the others as a count.
+            let line = match j.fraction {
                 Some(f) => format!("{}   ·   {:.0}%", j.title, f * 100.0),
-                None => format!("{}   ·   {}", j.title, j.label),
+                None => format!("{}   ·   {}", j.title, j.label.replace("...", "…")),
+            };
+            match more {
+                0 => line,
+                n => format!("{line}   ·   +{n} more"),
             }
         } else if let Some(q) = &quest_game {
             match q {
@@ -3140,6 +3314,12 @@ impl Dashboard {
                 game.label()
             } else {
                 format!("{}   ·   {mins} min", game.label())
+            }
+        } else if self.ours() && !game.is_running() {
+            // PLAY was clicked: as Play's line says, not "not running".
+            match &self.launch_note {
+                Some(n) => format!("{n}…"),
+                None => "Starting Echo VR…".into(),
             }
         } else {
             game.label()
@@ -3297,4 +3477,43 @@ fn demo_catalog() -> Catalog {
         ..Default::default()
     });
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clash, Res};
+
+    fn v(id: &str) -> Res {
+        Res::Version(id.into())
+    }
+
+    #[test]
+    fn a_download_holds_only_its_version() {
+        let install_beta = [v("pc-beta")];
+        // The live build can be updated, patched and modded meanwhile.
+        assert!(!clash(&install_beta, &[v("pc-latest")]));
+        assert!(!clash(&install_beta, &[v("pc-latest"), Res::Licence]));
+        assert!(!clash(&install_beta, &[v("pc-latest"), Res::Mods]));
+        // ...but not the version being installed.
+        assert!(clash(&install_beta, &[v("pc-beta"), Res::Mods]));
+    }
+
+    #[test]
+    fn shared_things_wait_for_each_other() {
+        // VR setup, the headset, the mods' downloads.
+        assert!(clash(&[Res::Vr], &[Res::Vr, v("pc-latest")]));
+        assert!(!clash(&[Res::Vr], &[v("pc-latest")]));
+        assert!(clash(&[Res::Quest], &[Res::Quest]));
+        assert!(!clash(&[Res::Quest], &[v("pc-latest"), Res::Vr]));
+        assert!(clash(&[v("a"), Res::Mods], &[v("b"), Res::Mods]));
+        // An event build's install sets up EchoRelay's files: VR setup waits.
+        assert!(clash(&[v("pc-event"), Res::Vr], &[Res::Vr]));
+    }
+
+    #[test]
+    fn the_launcher_update_and_uninstall_wait_for_everything() {
+        assert!(clash(&[Res::All], &[Res::Quest]));
+        assert!(clash(&[v("pc-beta")], &[Res::All]));
+        assert!(clash(&[Res::Licence], &[Res::All]));
+    }
 }

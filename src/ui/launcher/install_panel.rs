@@ -83,7 +83,7 @@ fn location(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
             Tone::Dark,
             Some(Icon::Folder),
             "Browse",
-            !d.any_job(),
+            true,
             "Pick the library folder",
         )
         .clicked
@@ -253,12 +253,17 @@ fn actions(
 
 /// A job's progress bar and a ✕ that cancels it, `w` wide and `h` high in all.
 fn job_bar(d: &mut Dashboard, k: &mut Kit, job: &JobView, x: f32, y: f32, w: f32, h: f32) {
+    // One that can't be stopped gets no ✕.
+    if !job.cancellable {
+        k.progress_bar(x, y, w, h, job.fraction, &job.step());
+        return;
+    }
     let bw = w - h - 6.0;
     k.progress_bar(x, y, bw, h, job.fraction, &job.step());
     let tip = if job.cancelling {
         "Stopping…".to_string()
     } else {
-        format!("Stop {}", job.title.to_lowercase())
+        format!("Stop: {}", job.title)
     };
     if k.button(
         &format!("cancel-{}", job.id),
@@ -434,7 +439,7 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 Tone::Dark,
                 Some(Icon::Folder),
                 "Save logs",
-                !d.quest_busy && !d.any_job(),
+                !d.quest_busy && d.busy_with(&[super::Res::Quest]).is_none(),
                 "Copy Echo VR's logs from the headset into a folder on this PC, and open it",
             )
             .clicked

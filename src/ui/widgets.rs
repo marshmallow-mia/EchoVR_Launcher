@@ -56,9 +56,11 @@ impl Tone {
 
 /// One entry of a dropdown menu.
 pub enum MenuItem {
+    /// An action; off, it is grey and its tip says why.
     Row {
         label: String,
         tip: String,
+        enabled: bool,
     },
     /// A choice: its label, a note on the right, and a check on the current one.
     Pick {
@@ -76,6 +78,19 @@ impl MenuItem {
         MenuItem::Row {
             label: label.into(),
             tip: tip.into(),
+            enabled: true,
+        }
+    }
+
+    /// The row, off when there is a reason (`why`, its tip then).
+    pub fn unless(self, why: Option<&str>) -> MenuItem {
+        match (self, why) {
+            (MenuItem::Row { label, .. }, Some(why)) => MenuItem::Row {
+                label,
+                tip: why.into(),
+                enabled: false,
+            },
+            (item, _) => item,
         }
     }
 
@@ -788,15 +803,29 @@ impl Kit<'_> {
                                 Stroke::new(1.0, Color32::from_white_alpha(40)),
                             );
                         }
-                        MenuItem::Row { label, tip } => {
-                            let mut resp = ui.interact(rr, open_id.with(i), Sense::click());
+                        MenuItem::Row {
+                            label,
+                            tip,
+                            enabled,
+                        } => {
+                            let sense = if *enabled {
+                                Sense::click()
+                            } else {
+                                Sense::hover()
+                            };
+                            let mut resp = ui.interact(rr, open_id.with(i), sense);
                             if !tip.is_empty() {
                                 resp = resp.on_hover_text(tip);
                             }
-                            if resp.hovered() {
+                            if resp.hovered() && *enabled {
                                 ui.painter().rect_filled(rr, R, design::BLUE);
                                 ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
                             }
+                            let color = if *enabled {
+                                design::TEXT
+                            } else {
+                                Color32::from_gray(120)
+                            };
                             let g = ui.ctx().fonts_mut(|f| {
                                 let mut job = LayoutJob::default();
                                 job.append(
@@ -804,7 +833,7 @@ impl Kit<'_> {
                                     0.0,
                                     egui::TextFormat {
                                         font_id: design::din(18.0),
-                                        color: design::TEXT,
+                                        color,
                                         extra_letter_spacing: SPACING,
                                         ..Default::default()
                                     },
@@ -814,9 +843,8 @@ impl Kit<'_> {
                                 f.layout_job(job)
                             });
                             let gy = rr.center().y - g.size().y / 2.0;
-                            ui.painter()
-                                .galley(pos2(rr.min.x + 12.0, gy), g, design::TEXT);
-                            if resp.clicked() {
+                            ui.painter().galley(pos2(rr.min.x + 12.0, gy), g, color);
+                            if resp.clicked() && *enabled {
                                 picked = Some(i);
                             }
                         }

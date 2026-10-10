@@ -135,6 +135,22 @@ pub fn shots() -> Vec<Shot> {
         ("play_stop", Page::Play, SnapVariant::RunningOurs),
         ("play_server_here", Page::Play, SnapVariant::ServerHere),
         ("play_version_menu", Page::Play, SnapVariant::VersionMenu),
+        (
+            "play_installing_another",
+            Page::Play,
+            SnapVariant::InstallingAnother,
+        ),
+        (
+            "play_installing_another_menu",
+            Page::Play,
+            SnapVariant::InstallingAnotherMenu,
+        ),
+        (
+            "install_installing_another",
+            Page::Install,
+            SnapVariant::InstallingAnother,
+        ),
+        ("mods_installing", Page::Mods, SnapVariant::ModsInstalling),
         ("play_quest_running", Page::Play, SnapVariant::QuestRunning),
         (
             "echovrce_signed_in",
