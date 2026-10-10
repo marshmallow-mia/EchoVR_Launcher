@@ -795,14 +795,42 @@ fn plugin_files(v: &InstalledVersion) -> Vec<String> {
         .collect()
 }
 
+/// What the DLL in `bin`'s slot is, and whether its nEVR has the early load pass. The
+/// Mods page reads its version every few seconds: the DLL is read and hashed again only
+/// when its size or time changed.
+pub fn slot_facts(bin: &Path) -> (Loader, bool) {
+    type Seen = (u64, std::time::SystemTime, Loader, bool);
+    static SEEN: std::sync::Mutex<BTreeMap<PathBuf, Seen>> = std::sync::Mutex::new(BTreeMap::new());
+    let path = bin.join(SLOT);
+    let stamp = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| Some((m.len(), m.modified().ok()?)));
+    if let Some((len, time)) = stamp {
+        let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((l, t, loader, early)) = seen.get(&path) {
+            if (*l, *t) == (len, time) {
+                return (loader.clone(), *early);
+            }
+        }
+    }
+    let slot = std::fs::read(&path).ok();
+    let sha = slot
+        .as_ref()
+        .and_then(|b| download::sha256_reader(&mut b.as_slice()).ok());
+    let loader = classify(slot.as_deref(), sha.as_deref());
+    let early = slot.as_deref().is_some_and(packs::loads_early);
+    if let Some((len, time)) = stamp {
+        SEEN.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path, (len, time, loader.clone(), early));
+    }
+    (loader, early)
+}
+
 /// Reads `v`'s mods (file I/O: on a worker).
 pub fn read(v: &InstalledVersion) -> ModView {
     let bin = v.bin_dir();
-    let slot = std::fs::read(bin.join(SLOT)).ok();
-    let slot_sha = slot
-        .as_ref()
-        .and_then(|b| download::sha256_reader(&mut b.as_slice()).ok());
-    let loader = classify(slot.as_deref(), slot_sha.as_deref());
+    let (loader, _) = slot_facts(&bin);
     let overlay = Overlay::read(&choices_path(v));
     let catalog = ModCatalog::cached();
     let status = nevr::log_dir().and_then(|d| Status::read(&d));

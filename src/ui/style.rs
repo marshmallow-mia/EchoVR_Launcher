@@ -53,6 +53,8 @@ pub enum Icon {
     Trash,
     /// A calendar page: events.
     Calendar,
+    /// A plug: a launcher plugin's tab, when it names no icon of its own.
+    Plug,
 }
 
 /// What a control reports back.
@@ -235,6 +237,20 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
             ] {
                 p.circle_filled(pt(x, y), s * 0.045, c);
             }
+        }
+        Icon::Plug => {
+            line(vec![pt(0.38, 0.1), pt(0.38, 0.3)]);
+            line(vec![pt(0.62, 0.1), pt(0.62, 0.3)]);
+            line(vec![
+                pt(0.22, 0.3),
+                pt(0.78, 0.3),
+                pt(0.78, 0.52),
+                pt(0.62, 0.7),
+                pt(0.38, 0.7),
+                pt(0.22, 0.52),
+                pt(0.22, 0.3),
+            ]);
+            line(vec![pt(0.5, 0.7), pt(0.5, 0.92)]);
         }
         Icon::Folder => {
             line(vec![

@@ -203,7 +203,7 @@ pub fn loads_early(slot: &[u8]) -> bool {
 
 /// Whether the nEVR in `bin`'s slot has the early load pass.
 pub fn nevr_loads_early(bin: &Path) -> bool {
-    std::fs::read(bin.join(super::mods::SLOT)).is_ok_and(|b| loads_early(&b))
+    super::mods::slot_facts(bin).1
 }
 
 /// The game's folder for the one whose `bin/win10` is `bin`.

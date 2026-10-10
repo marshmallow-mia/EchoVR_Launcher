@@ -49,6 +49,8 @@ const ACTION_GAP: f32 = 12.0;
 const ENTRY_GAP: f32 = 26.0;
 /// How often the selected version's mods are read again while the page is open.
 const READ_EVERY: Duration = Duration::from_secs(3);
+/// How often the published catalogue is looked for again while the built-in one shows.
+const CATALOG_RETRY: Duration = Duration::from_secs(5 * 60);
 
 const ADD_KEY: &str = "mods-add-dll";
 const REMOVE_KEY: &str = "mods-remove";
@@ -63,6 +65,8 @@ pub(super) struct Mods {
     gen: u64,
     catalog: Option<ModCatalog>,
     catalog_loading: bool,
+    /// When the catalogue was read (the built-in one is replaced when it can be).
+    catalog_at: Option<Instant>,
     list_scroll: f32,
     catalog_scroll: f32,
     /// The plugin whose options are open, with its arguments as typed.
@@ -72,6 +76,8 @@ pub(super) struct Mods {
 }
 
 struct Editing {
+    /// The version whose plugin it is: another one chosen closes it.
+    version: String,
     file: String,
     rows: Vec<(String, String)>,
     /// The plugin's default arguments: a row that differs gets a reset.
@@ -79,9 +85,10 @@ struct Editing {
 }
 
 impl Editing {
-    /// `p`'s arguments as they are, to edit.
-    fn of(p: &Plugin) -> Editing {
+    /// `p`'s arguments (version `v`'s) as they are, to edit.
+    fn of(v: &InstalledVersion, p: &Plugin) -> Editing {
         Editing {
+            version: v.id.clone(),
             file: p.file.clone(),
             rows: p.arg_strings().into_iter().collect(),
             defaults: p.default_strings(),
@@ -106,6 +113,7 @@ impl Mods {
     pub(super) fn catalog_done(&mut self, c: ModCatalog) {
         self.catalog_loading = false;
         self.catalog = Some(c);
+        self.catalog_at = Some(Instant::now());
     }
 
     /// Something changed the files: read them again.
@@ -152,6 +160,11 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if !kit.ghost && !d.demo {
         refresh(d, ctx, &v);
     }
+    // Options typed for another version's plugin (the choice changed): they'd be saved
+    // into this one's.
+    if d.mods.editing.as_ref().is_some_and(|e| e.version != v.id) {
+        d.mods.editing = None;
+    }
     let view = d
         .mods
         .view
@@ -196,7 +209,12 @@ fn refresh(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion) {
         });
         ctx.request_repaint_after(READ_EVERY);
     }
-    if d.mods.catalog.is_none() && !d.mods.catalog_loading {
+    // The built-in list (offline at the start): the published one is looked for again.
+    let retry = d.mods.catalog.as_ref().is_some_and(|c| c.builtin)
+        && d.mods
+            .catalog_at
+            .is_some_and(|t| t.elapsed() >= CATALOG_RETRY);
+    if (d.mods.catalog.is_none() || retry) && !d.mods.catalog_loading {
         d.mods.catalog_loading = true;
         d.worker
             .spawn(ctx, |tx| tx.send(Msg::ModCatalog(ModCatalog::load())));
@@ -293,7 +311,7 @@ fn add_from_disk(d: &mut Dashboard, ctx: &egui::Context) {
     else {
         return;
     };
-    run(d, ctx, &v, "Adding a plugin", move |v, _, _| {
+    run(d, ctx, &v, "Adding a mod", move |v, _, _| {
         mods::add_local(v, &src).map(|f| format!("{f} is added: it loads at the next start"))
     });
 }
@@ -501,6 +519,34 @@ fn loader_card(
         }
         right -= dz(14.0);
     }
+    // A content pack kept off for this nEVR: the way to the one it needs.
+    let pack_waits = view.packs.iter().any(|p| p.record.enabled)
+        && matches!(view.loader, Loader::Nevr { .. })
+        && !view.loads_early
+        && !view.repacked
+        && !view.stray_dbgcore;
+    if pack_waits {
+        let label = "Channel…";
+        let bw = kit.button_width(label, None, BTN_H).max(dz(150.0));
+        right -= bw;
+        if kit
+            .button(
+                "mods-channel",
+                right,
+                by,
+                bw,
+                BTN_H,
+                Tone::Blue,
+                None,
+                label,
+                true,
+                "Advanced settings: the Beta channel brings the nEVR that loads plugins early (then update this version)",
+            )
+            .clicked
+        {
+            d.overlay = Some(setup::Overlay::Advanced);
+        }
+    }
 }
 
 /// "4.0.0" of "4.0.0+182.e418eaa" (or of "4.0.0-182-ge418eaa-dirty").
@@ -603,7 +649,7 @@ fn plugins_card(
         (false, ..) => "Needs the mod loader (nEVR)",
         (true, Some(why), _) => why,
         (true, None, false) => "Local plugins are off: x-local-plugins: true in this version's _local/config.yaml turns them on (see docs/plugins/local-plugins.md)",
-        (true, None, true) => "Add a plugin DLL from your computer",
+        (true, None, true) => "Add a mod's DLL from your computer",
     };
     if kit
         .button(
@@ -622,8 +668,8 @@ fn plugins_card(
     {
         d.dialogs.confirm(
             ADD_KEY,
-            "Add a plugin",
-            "A plugin is a program that runs inside Echo VR with the same rights as the game and you: add only DLLs from people you trust.\n\nIt is copied into the game's plugins folder and loads at the next start.",
+            "Add a mod",
+            "A mod's DLL is a program that runs inside Echo VR with the same rights as the game and you: add only DLLs from people you trust.\n\nIt is copied into the game's plugins folder and loads at the next start.",
             DlgIcon::Warning,
         );
     }
@@ -632,18 +678,24 @@ fn plugins_card(
     };
     let rows = rows(view, d.mods.editing.as_ref(), vr_installed(d));
     if rows.is_empty() {
-        kit.caps_text(
-            x,
-            y,
-            w,
-            "No mods here. The community update brings the asset patches and EchoRelay's patch; More mods has more, and Add DLL takes one from your computer.",
-            15.5,
-            design::BODY,
-            0.0,
-        );
+        // Add DLL works only with local plugins on (_local/config.yaml).
+        let text = if view.local_plugins {
+            "No mods here. The community update brings the asset patches; More mods has more, and Add DLL takes one from your computer."
+        } else {
+            "No mods here. The community update brings the asset patches, and More mods has more. Add DLL (one from your computer) needs local plugins on: see docs/plugins/local-plugins.md."
+        };
+        kit.caps_text(x, y, w, text, 15.5, design::BODY, 0.0);
         return;
     }
     let locked = !editable || !view.enabled;
+    // Why the switches are off, for their tips.
+    let locked_why = if !editable {
+        Some("Needs the mod loader (nEVR) in this version")
+    } else if !view.enabled {
+        Some("Mods are off: untick Start without mods first")
+    } else {
+        None
+    };
     let current = matches!(view.loader, Loader::Nevr { .. });
     let names = names(d.mods.catalog.as_ref());
     // Each plugin (with its options and asset patches) in a tile of its own.
@@ -693,14 +745,25 @@ fn plugins_card(
                             current,
                             busy,
                             held: !p.verified && !view.local_plugins,
+                            pack_off: (p.pack.is_some() && p.enabled)
+                                .then_some(if view.repacked {
+                                    Some("Off: game files changed")
+                                } else if !view.loads_early {
+                                    Some("Off: needs Beta's nEVR")
+                                } else {
+                                    None
+                                })
+                                .flatten(),
                         };
                         plugin_row(d, k, v, p, &look, x, ry, w)
                     }
                     Row::Vr(VrPart::EchoXr, _) => echoxr_row(d, k, v, x, ry, w),
                     Row::Vr(VrPart::Hands, p) => hands_row(d, k, v, *p, x, ry, w),
-                    Row::Assets(on) => assets_row(d, k, v, *on, x, ry, editable && !locked),
+                    Row::Assets(on) => assets_row(d, k, v, *on, x, ry, locked_why),
                     Row::Asset(a, all_on) => {
-                        asset_row(d, k, v, a, x, ry, editable && !locked && *all_on)
+                        let why = locked_why
+                            .or((!*all_on).then_some("Turn on All optional asset patches first"));
+                        asset_row(d, k, v, a, x, ry, why)
                     }
                     Row::Options(n) => options_rows(d, k, ctx, v, x, ry, w, *n),
                 }
@@ -813,6 +876,8 @@ struct Look {
     busy: Option<&'static str>,
     /// Not verified, and local plugins are off: it isn't loaded.
     held: bool,
+    /// Its content pack stays off (why, as a chip).
+    pack_off: Option<&'static str>,
 }
 
 /// Why a plugin that isn't verified doesn't load, and how to change that.
@@ -959,7 +1024,7 @@ fn plugin_row(
         }
     }
     if p.removable() {
-        let tip = busy.unwrap_or("Delete this plugin from the game's folder");
+        let tip = busy.unwrap_or("Delete this mod from the game's folder");
         if a.button(
             k,
             &key("remove"),
@@ -979,7 +1044,7 @@ fn plugin_row(
                     ),
                 ),
                 None => (
-                    "Remove plugin",
+                    "Remove mod",
                     format!("Delete {} ({}) from {}?", look.name, p.file, v.name),
                 ),
             };
@@ -994,7 +1059,7 @@ fn plugin_row(
             None,
             "Settings",
             true,
-            "What can be set for this plugin",
+            "What can be set for this mod",
         ) {
             open_sheet(d, &p.file);
         }
@@ -1013,12 +1078,14 @@ fn plugin_row(
             "Needs the mod loader (nEVR)"
         };
         if a.button(k, &key("options"), tone, None, "Arguments", editable, tip) {
-            d.mods.editing = if open { None } else { Some(Editing::of(p)) };
+            d.mods.editing = if open { None } else { Some(Editing::of(v, p)) };
         }
     }
     // What needs looking at: only nEVR says what it loaded.
     if look.held {
         a.chip(k, "Not loaded", design::QUEST_WARN);
+    } else if let Some(why) = look.pack_off {
+        a.chip(k, why, design::QUEST_WARN);
     } else if let Some((chip, color)) = state(p).filter(|_| look.current) {
         a.chip(k, chip, color);
     }
@@ -1460,14 +1527,11 @@ fn assets_row(
     on: bool,
     x: f32,
     y: f32,
-    can: bool,
+    why_not: Option<&'static str>,
 ) {
     let mut on_now = on;
-    let tip = if can {
-        "Every optional asset patch on or off (the required ones stay on)"
-    } else {
-        "Turn NvrAssetPatches on first"
-    };
+    let can = why_not.is_none();
+    let tip = why_not.unwrap_or("Every optional asset patch on or off (the required ones stay on)");
     if k.check(
         "mods-assets",
         &mut on_now,
@@ -1493,17 +1557,16 @@ fn asset_row(
     a: &AssetPatch,
     x: f32,
     y: f32,
-    can: bool,
+    why_not: Option<&'static str>,
 ) {
     let mut on = a.enabled;
     let label = a.label.replace('_', " ");
     let key = format!("mods-asset-{}", a.label);
+    let can = why_not.is_none();
     let tip = if a.required {
         "The game needs it: always on"
-    } else if can {
-        "Takes effect at the next start"
     } else {
-        ""
+        why_not.unwrap_or("Takes effect at the next start")
     };
     let lx = x + dz(INDENT * 2.0);
     let switched = k.check(
@@ -1709,7 +1772,7 @@ fn options_rows(
                         }
                     },
                 );
-                d.notify("Saved: the plugin gets its arguments at the next start");
+                d.notify("Saved: the mod gets its arguments at the next start");
             } else {
                 d.mods.editing = None;
             }
@@ -1738,7 +1801,7 @@ fn options_rows(
         Some(Icon::Refresh),
         label,
         typed != defaults,
-        "Every argument back to the plugin's defaults",
+        "Every argument back to the mod's defaults",
     )
     .clicked
     {
@@ -1754,7 +1817,7 @@ fn options_rows(
                 }
             },
         );
-        d.notify("Reset: the plugin gets its default arguments at the next start");
+        d.notify("Reset: the mod gets its default arguments at the next start");
     }
 }
 
@@ -2186,12 +2249,34 @@ fn catalogue_card(
     } else {
         "From release.echovr.de. Every download is checked against its checksum, and again before every start."
     };
+    // Offline at the start: Retry beside the note.
+    let retry_w = if catalog.builtin {
+        kit.link_width("Retry", 13.5) + dz(12.0)
+    } else {
+        0.0
+    };
+    let note_w = w - retry_w;
     let note_h = {
-        let gs = kit.caps_block(note, 13.5, design::GREY, w);
+        let gs = kit.caps_block(note, 13.5, design::GREY, note_w);
         gs.iter().map(|g| g.size().y).sum::<f32>()
     };
     let list_h = bottom - y - note_h - dz(16.0);
-    kit.caps_text(x, bottom - note_h, w, note, 13.5, design::GREY, 0.0);
+    kit.caps_text(x, bottom - note_h, note_w, note, 13.5, design::GREY, 0.0);
+    if catalog.builtin
+        && kit
+            .link(
+                "mods-catalog-retry",
+                x + w - retry_w + dz(12.0),
+                bottom - note_h,
+                "Retry",
+                13.5,
+                "Look for the published list again",
+            )
+            .clicked
+    {
+        d.mods.catalog_at = None;
+        d.mods.catalog = None;
+    }
     let vr = (cfg!(any(windows, target_os = "linux")) || d.demo).then(|| vr_installed(d));
     let extras = extras(view, &catalog, vr);
     if extras.is_empty() {
@@ -2278,7 +2363,7 @@ pub(super) fn update_all(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     }
     let title = match entries.as_slice() {
         [one] => format!("Updating {}", one.name),
-        more => format!("Updating {} plugins", more.len()),
+        more => format!("Updating {} mods", more.len()),
     };
     run(d, ctx, &v, &title, move |v, cancel, on| {
         for e in &entries {
@@ -2290,7 +2375,7 @@ pub(super) fn update_all(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
                 one.name, one.version
             ),
             more => format!(
-                "{} plugins are updated: they load at the next start",
+                "{} mods are updated: they load at the next start",
                 more.len()
             ),
         })
@@ -2768,6 +2853,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         catalog.mods.extend(made_up_catalog());
     }
     let editing = (variant == Some(SnapVariant::ModsOptions)).then(|| Editing {
+        version: "pc-latest".into(),
         defaults: BTreeMap::from([("logging".into(), "normal".into())]),
         file: "NvrAssetPatches.dll".into(),
         rows: vec![

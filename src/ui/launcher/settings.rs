@@ -521,7 +521,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         "desktop-notifications",
         &mut d.state.desktop_notifications,
         "Update notifications",
-        "A desktop notification when the launcher, Echo VR or a plugin has an update (the launcher looks every 15 minutes).",
+        "A desktop notification when the launcher, Echo VR or a mod has an update (the launcher looks every 15 minutes).",
         x,
         y,
         w,

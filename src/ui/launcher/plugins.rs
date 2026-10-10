@@ -34,6 +34,8 @@ pub(super) struct PluginsUi {
     /// The installed plugins, by name (their tabs, in this order).
     pub list: Vec<Installed>,
     catalog: Option<PluginCatalog>,
+    /// When the catalogue was read (the built-in one is replaced when it can be).
+    catalog_at: Option<std::time::Instant>,
     started: bool,
     views: HashMap<String, View>,
     worker: Worker<Msg>,
@@ -126,6 +128,18 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
             .worker
             .spawn(ctx, |tx| tx.send(Msg::Catalog(PluginCatalog::load())));
     }
+    // The built-in list (offline at the start): the published one is looked for again
+    // every five minutes.
+    let retry = d.plugins.catalog.as_ref().is_some_and(|c| c.builtin)
+        && d.plugins
+            .catalog_at
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(5 * 60));
+    if retry {
+        d.plugins.catalog_at = None;
+        d.plugins
+            .worker
+            .spawn(ctx, |tx| tx.send(Msg::Catalog(PluginCatalog::load())));
+    }
     for m in d.plugins.worker.drain() {
         match m {
             Msg::Read(list) => {
@@ -144,7 +158,10 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     }
                 }
             }
-            Msg::Catalog(c) => d.plugins.catalog = Some(c),
+            Msg::Catalog(c) => {
+                d.plugins.catalog = Some(c);
+                d.plugins.catalog_at = Some(std::time::Instant::now());
+            }
             Msg::Fetched {
                 plugin,
                 source,
@@ -523,7 +540,8 @@ pub(super) fn rail_icon(p: &PluginPage) -> Icon {
     match p.icon.as_str() {
         "calendar" => Icon::Calendar,
         "globe" => Icon::Globe,
-        _ => Icon::Mods,
+        // Not the Mods page's: plugins are the launcher's, mods Echo VR's.
+        _ => Icon::Plug,
     }
 }
 
