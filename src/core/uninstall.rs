@@ -92,7 +92,7 @@ pub struct Outcome {
 }
 
 /// Takes out of `v`'s folder what the launcher put there: EchoXR (its files and its copy of
-/// the game), EchoXR Hands' plugin, the plugins it added, its mod choices, the
+/// the game), EchoXR Hands' plugin, the plugins and content packs it added, its mod choices, the
 /// `config.yaml` it writes and the game's sign-in; a game config it set aside comes back.
 /// Meta's Platform DLLs stay (the game's own install may have them too). Returns what
 /// couldn't be removed.
@@ -104,6 +104,8 @@ pub fn clean_version(v: &InstalledVersion) -> Vec<String> {
         bin.join("plugins").join(echoxr_hands::PLUGIN),
     ];
     files.extend(super::launcher::mods::launcher_files(v));
+    // The content packs it installed (read before its choices file, which names them, goes).
+    let dirs = super::launcher::mods::launcher_dirs(v);
     files.extend(super::launcher::nevr::logins(v));
     // The Platform SDK beside the game, when it is EchoXR's stand-in or Meta's an older
     // launcher put there (never one of the player's own).
@@ -120,10 +122,11 @@ pub fn clean_version(v: &InstalledVersion) -> Vec<String> {
             failed.push(format!("{}: {e}", f.display()));
         }
     }
-    let dir = bin.join(echoxr::DIR);
-    if dir.is_dir() {
-        if let Err(e) = std::fs::remove_dir_all(&dir) {
-            failed.push(format!("{}: {e}", dir.display()));
+    for dir in dirs.iter().chain(std::iter::once(&bin.join(echoxr::DIR))) {
+        if dir.is_dir() {
+            if let Err(e) = std::fs::remove_dir_all(dir) {
+                failed.push(format!("{}: {e}", dir.display()));
+            }
         }
     }
     if let Err(e) = super::launcher::nevr::restore_game_config(v) {

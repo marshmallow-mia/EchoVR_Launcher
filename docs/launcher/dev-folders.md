@@ -69,6 +69,12 @@ an absolute URL inside it; anything else is left out. Every download is checked 
 }
 ```
 
+A content pack (a mod with game data, [mods.md](mods.md#content-packs)) has its zip's
+`url` and `sha256` in `pack`, relative to your folder the same way
+(`"pack": {"url": "files/MyPack-0.1.0.zip", ...}`). The pack needs `NvrContentOverlay.dll`
+from the catalogue: upload it with a mods entry of its own when the published catalogue
+doesn't have it yet.
+
 A new version: upload the file under a new name (or overwrite it), change `version` and
 `sha256`, upload the catalogue. The launcher reads your catalogues when it starts and when
 you press **Use code**; your mods catalogue also with every update check (every 15 minutes),

@@ -173,15 +173,22 @@ fn plugin_findings(
     plugins: &[mods::Plugin],
     catalog: &ModCatalog,
 ) -> Vec<Finding> {
+    let mut packs = std::collections::HashSet::new();
     plugins
         .iter()
         .filter_map(|p| {
             let Source::Catalog { version, .. } = &p.source else {
                 return None;
             };
-            let m = catalog
-                .entry_for(&p.file)
-                .filter(|m| m.downloadable() && m.version != *version)?;
+            // A pack's plugins update with it: one finding for the pack.
+            let m = match &p.pack {
+                Some(_) => catalog.pack_for(&p.file),
+                None => catalog.entry_for(&p.file),
+            }
+            .filter(|m| m.downloadable() && m.version != *version)?;
+            if m.pack.is_some() && !packs.insert(m.id.clone()) {
+                return None;
+            }
             Some(Finding::Plugin {
                 version_id: v.id.clone(),
                 version_name: v.name.clone(),
@@ -297,6 +304,7 @@ mod tests {
             present: true,
             status: None,
             settings: None,
+            pack: None,
         }
     }
 

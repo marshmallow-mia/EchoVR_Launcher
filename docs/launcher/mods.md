@@ -147,6 +147,42 @@ it's in there, see [dev folders](dev-folders.md).
 
 An entry that breaks a rule is left out; the rest of the list is still used.
 
+### Content packs
+
+A mod that brings game data as well as plugins (EchoCombat: new gear, scripts, larger
+tables) is a **pack**: one zip, and a `pack` object in place of `file`, `url` and
+`sha256`:
+
+```json
+{ "id": "echocombat", "name": "EchoCombat", "version": "1.0.0", "summary": "…",
+  "author": "…", "capabilities": ["alters-gameplay", "network", "hooks-engine"],
+  "pack": { "url": "packs/EchoCombat-1.0.0.zip", "sha256": "…", "size": 13784020,
+            "content": "echocombat",
+            "plugins": ["DroneFix.dll", "PowerBoost.dll", "VeilNet.dll"] } }
+```
+
+- The zip holds `plugins/` (the listed plugins and their settings files: `.ini`, `.cfg`,
+  `.txt`, `.json`) and `content/<content>/` (its content pack: the manifests, the
+  packages they add, script DLLs and `content.json`). Files at its top (a README) are left
+  out; anything else refuses the pack.
+- Install puts the plugins and settings files into `plugins/` and the content pack into
+  `bin/win10/content/<content>/`, each plugin noted with its checksum, all on. Before that
+  it installs the catalogue's `NvrContentOverlay.dll` when the version doesn't have it.
+- The page treats the pack as one mod: its plugins' rows say "part of <name>", and on, off
+  or Remove on any of them is the pack's. Remove takes its plugins, settings files and
+  content pack out (the overlay plugin stays).
+- `config.yaml` lists the overlay with `early: true` and `args: {"active": "<content>"}`,
+  and the pack's plugins, only when everything is in place: the pack on, mods on, its
+  files there, and a nEVR in the slot that loads plugins early (the launcher looks for its
+  early load pass in `BugSplat64.dll`). Otherwise none of it: a pack's plugins without
+  its game data would run on stock data. The nEVR card says why a pack stays off.
+- The overlay serves the pack only on stock game files (it checks the manifests' sha256).
+  When an older installer changed them (a `.bak` beside a manifest, `.dll.orig` scripts),
+  the nEVR card says so: Install, then the version, checks and repairs them.
+- `pack` entries are never `shipped` or `required`. A different `version` in the
+  catalogue puts UPDATE on the pack's plugins, which reinstalls the pack.
+- One pack is served at a time (the first one on).
+
 The page's **Installed mods** card lists only what is installed. **More mods** offers
 the catalogue's entries that are neither required nor shipped and aren't in `plugins/`
 (GET; "Coming soon" without a `url`), plus the VR parts not in use: EchoXR Hands, and on

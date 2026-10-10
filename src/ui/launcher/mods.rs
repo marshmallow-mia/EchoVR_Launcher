@@ -213,9 +213,17 @@ fn answers(d: &mut Dashboard, ctx: &egui::Context) {
     if let Some(a) = d.dialogs.take(REMOVE_KEY) {
         let file = d.mods.removing.take();
         if let (Some(file), true, Some(v)) = (file, a.is_yes(), version(d)) {
-            let title = format!("Removing {file}");
+            // A pack's plugin takes the pack out: it's named instead.
+            let what = d
+                .mods
+                .view
+                .as_ref()
+                .and_then(|(_, view, _)| view.plugins.iter().find(|p| p.file == file))
+                .and_then(|p| p.pack.clone())
+                .unwrap_or_else(|| file.clone());
+            let title = format!("Removing {what}");
             run(d, ctx, &v, &title, move |v, _, _| {
-                mods::remove(v, &file).map(|()| format!("{file} is removed"))
+                mods::remove(v, &file).map(|()| format!("{what} is removed"))
             });
         }
     }
@@ -463,8 +471,21 @@ fn short_version(v: &str) -> &str {
 /// What the loader card says under its title.
 fn loader_text(view: &ModView) -> String {
     let last = view.status.as_ref().map(last_start);
+    let pack = view
+        .packs
+        .iter()
+        .find(|p| p.record.enabled)
+        .map(|p| p.record.name.as_str());
     match &view.loader {
         Loader::Nevr { .. } if view.stray_dbgcore => "There is a dbgcore.dll beside the game (the old loader's place): nEVR won't start with it, so PLAY takes it out first.".into(),
+        Loader::Nevr { .. } if pack.is_some() && view.repacked => format!(
+            "An older installer changed this version's game files (EchoCombat's install.bat, as a rule). {} needs them as they shipped, so it stays off: Install, then this version, checks and repairs them.",
+            pack.unwrap_or_default()
+        ),
+        Loader::Nevr { .. } if pack.is_some() && !view.loads_early => format!(
+            "{} needs a nEVR that loads plugins before the game reads its data (the Beta channel's, for now), so it stays off with this one.",
+            pack.unwrap_or_default()
+        ),
         Loader::Nevr { .. } if view.shadowed.is_some() => format!(
             "nEVR reads {} instead of the launcher's config.yaml, so the choices here don't apply: delete it to have them back.",
             view.shadowed.as_deref().map(|p| p.display().to_string()).unwrap_or_default()
@@ -850,7 +871,8 @@ fn detail(p: &Plugin) -> String {
         return format!("{}  ·  {e}", p.file);
     }
     let version = (!p.version.is_empty()).then(|| format!("v{}", p.version));
-    [version, Some(p.file.clone())]
+    let pack = p.pack.as_ref().map(|n| format!("part of {n}"));
+    [version, Some(p.file.clone()), pack]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -908,12 +930,20 @@ fn plugin_row(
             tip,
         ) {
             d.mods.removing = Some(p.file.clone());
-            d.dialogs.confirm_danger(
-                REMOVE_KEY,
-                "Remove plugin",
-                &format!("Delete {} ({}) from {}?", look.name, p.file, v.name),
-                "Remove",
-            );
+            let (title, text) = match &p.pack {
+                Some(pack) => (
+                    "Remove mod",
+                    format!(
+                        "Delete {pack} from {}? Its plugins and its game data go with it.",
+                        v.name
+                    ),
+                ),
+                None => (
+                    "Remove plugin",
+                    format!("Delete {} ({}) from {}?", look.name, p.file, v.name),
+                ),
+            };
+            d.dialogs.confirm_danger(REMOVE_KEY, title, &text, "Remove");
         }
     }
     if p.present && p.settings.is_some() {
@@ -2054,9 +2084,12 @@ fn extras<'a>(
     }
     let here = |m: &ModEntry| {
         view.is_some_and(|view| {
-            view.plugins
-                .iter()
-                .any(|p| p.present && p.file.eq_ignore_ascii_case(&m.file))
+            view.packs.iter().any(|p| p.record.id == m.id)
+                || (!m.file.is_empty()
+                    && view
+                        .plugins
+                        .iter()
+                        .any(|p| p.present && p.file.eq_ignore_ascii_case(&m.file)))
         })
     };
     out.extend(
@@ -2179,6 +2212,7 @@ pub(super) fn update_all(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
                 ..
             } if version_id == id => catalog
                 .entry_for(file)
+                .or_else(|| catalog.pack_for(file))
                 .filter(|m| m.downloadable() && m.version == *to)
                 .cloned(),
             _ => None,
@@ -2458,6 +2492,7 @@ fn made_up_plugins() -> Vec<Plugin> {
         present: true,
         status: Some(st),
         settings: None,
+        pack: None,
     };
     vec![
         plugin(
@@ -2541,6 +2576,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         present: true,
         status: st,
         settings: None,
+        pack: None,
     };
     let bare = variant == Some(SnapVariant::ModsNoLoader);
     let long = variant == Some(SnapVariant::ModsLongText);
@@ -2650,6 +2686,9 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         shadowed: None,
         game_config: long.then(|| "_local/config.json".into()),
         stray_dbgcore: false,
+        packs: Vec::new(),
+        loads_early: true,
+        repacked: false,
         assets_enabled: true,
         asset_patches: [
             "netgun_combustion",
@@ -2738,6 +2777,7 @@ mod tests {
             present: true,
             status: None,
             settings: None,
+            pack: None,
         };
         let rows = [
             Row::Vr(VrPart::EchoXr, None),
@@ -2775,6 +2815,7 @@ mod tests {
             present: true,
             status: None,
             settings: None,
+            pack: None,
         };
         // Not started yet: nothing to say.
         assert_eq!(state(&p), None);

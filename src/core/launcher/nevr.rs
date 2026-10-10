@@ -244,6 +244,9 @@ pub struct PluginLine {
     pub file: String,
     pub enabled: bool,
     pub args: Map<String, Value>,
+    /// Loaded in nEVR's early pass, before the game reads its data (a content pack's
+    /// overlay; see [`super::packs`]).
+    pub early: bool,
 }
 
 /// Pure: whether nEVR reads `text` as an environment variable: a `${` with a `}` after it
@@ -297,6 +300,9 @@ pub fn render_config(plugins: &[PluginLine], local: bool) -> String {
         out.push_str(&format!("  - name: {}\n", q(name)));
         out.push_str(&format!("    file: {}\n", q(&p.file)));
         out.push_str(&format!("    enabled: {}\n", p.enabled));
+        if p.early {
+            out.push_str("    early: true\n");
+        }
         if !p.args.is_empty() {
             out.push_str(&format!("    args: {}\n", Value::Object(p.args.clone())));
         }
@@ -730,11 +736,13 @@ mod tests {
         let text = render_config(
             &[
                 PluginLine {
+                    early: false,
                     file: "NvrAssetPatches.dll".into(),
                     enabled: true,
                     args,
                 },
                 PluginLine {
+                    early: false,
                     file: "Other.dll".into(),
                     enabled: false,
                     args: Map::new(),

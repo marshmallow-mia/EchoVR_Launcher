@@ -24,6 +24,7 @@ use serde_json::{Map, Value};
 
 use super::catalog;
 use super::nevr::{self, PluginLine};
+use super::packs::{self, PackRecord, PackSpec};
 use super::plugin_settings;
 use super::store::InstalledVersion;
 use super::versions::Step;
@@ -325,6 +326,52 @@ impl Overlay {
         before != list.len()
     }
 
+    /// The packs the launcher installed ([`super::packs`]).
+    pub fn packs(&self) -> Vec<PackRecord> {
+        self.0
+            .get("packs")
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Notes pack `rec` (in place of the one with its id).
+    pub fn set_pack(&mut self, rec: &PackRecord) {
+        let mut list = self.packs();
+        match list.iter_mut().find(|p| p.id == rec.id) {
+            Some(p) => *p = rec.clone(),
+            None => list.push(rec.clone()),
+        }
+        self.0.insert(
+            "packs".into(),
+            serde_json::to_value(list).unwrap_or_default(),
+        );
+    }
+
+    /// Takes pack `id` out of the notes: it, when it was there.
+    pub fn remove_pack(&mut self, id: &str) -> Option<PackRecord> {
+        let mut list = self.packs();
+        let rec = list.remove(list.iter().position(|p| p.id == id)?);
+        if list.is_empty() {
+            self.0.remove("packs");
+        } else {
+            self.0.insert(
+                "packs".into(),
+                serde_json::to_value(list).unwrap_or_default(),
+            );
+        }
+        Some(rec)
+    }
+
+    /// The pack `file` is a plugin of.
+    pub fn pack_of(&self, file: &str) -> Option<PackRecord> {
+        self.packs().into_iter().find(|p| p.has_plugin(file))
+    }
+
     /// Drops what only repeats `shipped` (the update's plugins, on) or a default:
     /// an override equal to the shipped entry, mods on. What is left are real choices,
     /// so a later change to the shipped config isn't masked by a stale copy of it.
@@ -621,6 +668,9 @@ pub struct Plugin {
     pub status: Option<PluginStatus>,
     /// Its settings, from a description, with their values (none: just its arguments).
     pub settings: Option<plugin_settings::PluginSettings>,
+    /// The name of the pack it is part of ([`super::packs`]): it is on, off and removed
+    /// with the pack.
+    pub pack: Option<String>,
 }
 
 impl Plugin {
@@ -678,6 +728,21 @@ pub struct ModView {
     pub asset_patches: Vec<AssetPatch>,
     /// Unverified plugins load ([`LOCAL_PLUGINS_KEY`] in the loader's config).
     pub local_plugins: bool,
+    /// The packs the launcher installed ([`super::packs`]).
+    pub packs: Vec<PackView>,
+    /// The nEVR in the slot loads plugins early: content packs work.
+    pub loads_early: bool,
+    /// Something repacked the game data (an old installer): content packs need the stock
+    /// files.
+    pub repacked: bool,
+}
+
+/// An installed pack, as the Mods page shows it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PackView {
+    pub record: PackRecord,
+    /// Its plugins and its content pack are all there.
+    pub present: bool,
 }
 
 /// The folder its plugins are in.
@@ -698,15 +763,28 @@ fn choices_path(v: &InstalledVersion) -> PathBuf {
 /// plugins it added (that are still its own), its choices file, and the `config.yaml` it
 /// writes for nEVR.
 pub fn launcher_files(v: &InstalledVersion) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Overlay::read(&choices_path(v))
+    let overlay = Overlay::read(&choices_path(v));
+    let mut out: Vec<PathBuf> = overlay
         .added()
         .iter()
         .filter(|a| a.launcher.is_some())
         .map(|a| plugins_dir(v).join(&a.file))
         .collect();
+    for pack in overlay.packs() {
+        out.extend(pack.settings.iter().map(|s| plugins_dir(v).join(s)));
+    }
     out.push(choices_path(v));
     out.push(nevr::local_dir(v).join(nevr::CONFIG));
     out
+}
+
+/// The folders the launcher put into `v` for mods: its packs' content packs.
+pub fn launcher_dirs(v: &InstalledVersion) -> Vec<PathBuf> {
+    Overlay::read(&choices_path(v))
+        .packs()
+        .iter()
+        .map(|p| content_dir(v, &p.content))
+        .collect()
 }
 
 /// The plugin files in `v`'s plugins folder.
@@ -747,7 +825,29 @@ pub fn read(v: &InstalledVersion) -> ModView {
         assets_enabled,
         asset_patches,
         local_plugins: nevr::local_plugins(v),
+        packs: overlay
+            .packs()
+            .into_iter()
+            .map(|record| PackView {
+                present: pack_present(v, &record),
+                record,
+            })
+            .collect(),
+        loads_early: packs::nevr_loads_early(&bin),
+        repacked: packs::repacked(&bin),
     }
+}
+
+/// Whether pack `rec`'s plugins and content pack are all in `v`.
+fn pack_present(v: &InstalledVersion, rec: &PackRecord) -> bool {
+    let dir = plugins_dir(v);
+    rec.plugins.iter().all(|p| dir.join(p).is_file())
+        && content_dir(v, &rec.content).join("content.json").is_file()
+}
+
+/// Where content pack `content` goes in `v`.
+fn content_dir(v: &InstalledVersion, content: &str) -> PathBuf {
+    v.bin_dir().join(packs::CONTENT).join(content)
 }
 
 /// The DLL file names in `dir`, sorted.
@@ -793,6 +893,7 @@ pub fn plugins(
     catalog: &ModCatalog,
 ) -> Vec<Plugin> {
     let has = |f: &str| files.iter().any(|x| x.eq_ignore_ascii_case(f));
+    let packs = overlay.packs();
     overlay
         .apply(shipped(overlay, files, catalog))
         .into_iter()
@@ -828,6 +929,10 @@ pub fn plugins(
             e.required |= known.is_some_and(|m| m.required);
             let mut p = plugin(e, source, defaults, has, status);
             p.verified = verified;
+            p.pack = packs
+                .iter()
+                .find(|r| r.has_plugin(&p.file))
+                .map(|r| r.name.clone());
             p
         })
         .collect()
@@ -865,6 +970,7 @@ fn plugin(
         defaults,
         status: st,
         settings: None,
+        pack: None,
         file: e.file,
     }
 }
@@ -953,9 +1059,29 @@ fn config_lines(
 ) -> Vec<PluginLine> {
     let mods_on = overlay.enabled();
     let added = overlay.added();
+    let all_packs = overlay.packs();
+    let served = if mods_on {
+        served_pack(v, overlay)
+    } else {
+        None
+    };
     let mut lines = Vec::new();
     for p in plugins(overlay, &plugin_files(v), None, catalog) {
         if !p.present || !(mods_on || p.required) {
+            continue;
+        }
+        // The overlay is listed for the pack it serves, and the pack's plugins with it;
+        // without a pack served neither (a pack's plugins without its game data would
+        // run on stock data).
+        let overlay_plugin = p.file.eq_ignore_ascii_case(packs::OVERLAY_PLUGIN);
+        if overlay_plugin && served.is_none() {
+            continue;
+        }
+        if all_packs
+            .iter()
+            .find(|r| r.has_plugin(&p.file))
+            .is_some_and(|r| served.as_ref().is_none_or(|s| s.id != r.id))
+        {
             continue;
         }
         if !p.verified && !local {
@@ -993,13 +1119,47 @@ fn config_lines(
             }
             args.insert("required_only".into(), Value::String("true".into()));
         }
+        let mut enabled = p.enabled;
+        if let Some(pack) = served.as_ref().filter(|_| overlay_plugin) {
+            args.insert("active".into(), Value::String(pack.content.clone()));
+            enabled = true;
+        }
         lines.push(PluginLine {
             file: p.file,
-            enabled: p.enabled,
+            enabled,
             args,
+            early: overlay_plugin,
         });
     }
     lines
+}
+
+/// The pack nEVR serves at this start: the first one on, when its files are all there,
+/// the overlay plugin is there and nEVR loads plugins early. Otherwise none, logged.
+fn served_pack(v: &InstalledVersion, overlay: &Overlay) -> Option<PackRecord> {
+    let pack = overlay.packs().into_iter().find(|p| p.enabled)?;
+    let bin = v.bin_dir();
+    if !pack_present(v, &pack) {
+        tracing::warn!("{}: its files aren't all there: left out", pack.name);
+        return None;
+    }
+    if !plugins_dir(v).join(packs::OVERLAY_PLUGIN).is_file() {
+        tracing::warn!(
+            "{}: {} isn't there to serve it: left out",
+            pack.name,
+            packs::OVERLAY_PLUGIN
+        );
+        return None;
+    }
+    if !packs::nevr_loads_early(&bin) {
+        tracing::warn!(
+            "{}: this nEVR can't load {} before the game reads its data: left out",
+            pack.name,
+            packs::OVERLAY_PLUGIN
+        );
+        return None;
+    }
+    Some(pack)
 }
 
 /// Whether the NvrAssetPatches build at `path` takes `required_only` (1.2.0 on).
@@ -1012,8 +1172,12 @@ pub fn set_enabled(v: &InstalledVersion, on: bool) -> Result<()> {
     edit_overlay(v, |o| o.set_enabled(on))
 }
 
-/// `file` on or off (a required plugin can't go off).
+/// `file` on or off (a required plugin can't go off). A pack's plugin turns its whole
+/// pack on or off.
 pub fn set_plugin_enabled(v: &InstalledVersion, file: &str, on: bool) -> Result<()> {
+    if let Some(pack) = Overlay::read(&choices_path(v)).pack_of(file) {
+        return set_pack_enabled(v, &pack.id, on);
+    }
     if !on
         && ModCatalog::cached()
             .entry_for(file)
@@ -1022,6 +1186,19 @@ pub fn set_plugin_enabled(v: &InstalledVersion, file: &str, on: bool) -> Result<
         bail!("{file} is needed by the game: it can't be turned off.");
     }
     edit_overlay(v, |o| o.set_plugin_enabled(file, on))
+}
+
+/// Pack `id` on or off: its plugins and its content pack together.
+pub fn set_pack_enabled(v: &InstalledVersion, id: &str, on: bool) -> Result<()> {
+    edit_overlay(v, |o| {
+        if let Some(mut pack) = o.packs().into_iter().find(|p| p.id == id) {
+            for p in &pack.plugins {
+                o.set_plugin_enabled(p, on);
+            }
+            pack.enabled = on;
+            o.set_pack(&pack);
+        }
+    })
 }
 
 /// Puts `file`'s arguments back to its defaults: the catalogue's, none for a DLL added
@@ -1164,6 +1341,9 @@ pub fn install(
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
 ) -> Result<()> {
+    if let Some(spec) = &e.pack {
+        return install_pack(v, e, spec, cancel, on);
+    }
     let Some(sha) = e.sha256.as_deref().filter(|_| e.downloadable()) else {
         bail!(
             "{} can't be downloaded: it comes with the community update.",
@@ -1204,6 +1384,173 @@ pub fn install(
     })
 }
 
+/// Installs pack `e` into `v` ([`super::packs`]): the overlay plugin first (from the
+/// catalogue, when `v` doesn't have its version), then the zip, checked against its
+/// checksum and unpacked (only what a pack may bring): its plugins and settings files
+/// into the plugins folder, its content pack into `bin/win10/content/`, all on, each
+/// plugin with its checksum. An older version of the pack is replaced.
+fn install_pack(
+    v: &InstalledVersion,
+    e: &ModEntry,
+    spec: &PackSpec,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<()> {
+    let Some(overlay_mod) = ModCatalog::cached()
+        .entry_for(packs::OVERLAY_PLUGIN)
+        .filter(|m| m.downloadable())
+        .cloned()
+    else {
+        bail!(
+            "{} needs {}, which the mods catalogue doesn't have.",
+            e.name,
+            packs::OVERLAY_PLUGIN
+        );
+    };
+    let have = overlay_mod.sha256.as_deref().is_some_and(|sha| {
+        download::sha256_matches(&plugins_dir(v).join(packs::OVERLAY_PLUGIN), sha)
+    });
+    if !have {
+        install(v, &overlay_mod, cancel, on)?;
+    }
+    let previous = Overlay::read(&choices_path(v))
+        .packs()
+        .into_iter()
+        .find(|p| p.id == e.id);
+    for p in &spec.plugins {
+        if !previous.as_ref().is_some_and(|r| r.has_plugin(p)) {
+            check_free(v, p)?;
+        }
+    }
+    on(Step::Status(format!("Downloading {}...", e.name)));
+    let dir = paths::downloads_dir().join("mods");
+    let zip = download::fetch_pinned(
+        &spec.url,
+        &dir,
+        &format!("{}-{}.zip", e.id, e.version),
+        &spec.sha256,
+        cancel,
+        &mut |p| {
+            if let download::Progress::Percent(p) = p {
+                on(Step::Percent(p));
+            }
+        },
+    )?;
+    on(Step::Status(format!("Installing {}...", e.name)));
+    let staging = dir.join(format!(".{}-pack", e.id));
+    let result = std::fs::File::open(&zip)
+        .context("open the pack")
+        .and_then(|f| packs::unpack(std::io::BufReader::new(f), spec, &staging))
+        .and_then(|u| {
+            if let Some(prev) = &previous {
+                remove_pack_files(v, prev)?;
+            }
+            for f in u.plugins.iter().chain(&u.settings) {
+                place(v, &staging.join(PLUGINS).join(f), f)?;
+            }
+            copy_dir(&u.content, &content_dir(v, &spec.content))?;
+            let mut pins = Vec::new();
+            for p in &u.plugins {
+                pins.push((p.clone(), download::sha256_file(&plugins_dir(v).join(p))?));
+            }
+            edit_overlay(v, |o| {
+                for (p, sha) in &pins {
+                    o.add(&Entry {
+                        file: p.clone(),
+                        enabled: true,
+                        sha256: Some(sha.clone()),
+                        launcher: Some(Added {
+                            catalog_id: Some(e.id.clone()),
+                            version: e.version.clone(),
+                            local: false,
+                        }),
+                        ..Default::default()
+                    });
+                }
+                o.set_pack(&PackRecord {
+                    id: e.id.clone(),
+                    name: e.name.clone(),
+                    version: e.version.clone(),
+                    content: spec.content.clone(),
+                    plugins: u.plugins.clone(),
+                    settings: u.settings.clone(),
+                    enabled: true,
+                });
+            })
+        });
+    let _ = std::fs::remove_dir_all(&staging);
+    let _ = std::fs::remove_file(&zip);
+    result
+}
+
+/// `from`'s files into `to`, in place of what `to` held.
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    if to.exists() {
+        std::fs::remove_dir_all(to).map_err(|e| locked_or(e, to))?;
+    }
+    std::fs::create_dir_all(to).with_context(|| format!("create {}", to.display()))?;
+    for entry in std::fs::read_dir(from).with_context(|| format!("read {}", from.display()))? {
+        let entry = entry?;
+        let dest = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), &dest)
+                .with_context(|| format!("write {}", dest.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// A file or folder that couldn't be changed: Echo VR holding it, as a rule.
+fn locked_or(e: std::io::Error, path: &Path) -> anyhow::Error {
+    if crate::core::pc_update::is_locked(&e) {
+        anyhow::anyhow!(
+            "Couldn't change {}: Echo VR uses it. Close Echo VR and try again.",
+            path.display()
+        )
+    } else {
+        anyhow::Error::from(e).context(format!("change {}", path.display()))
+    }
+}
+
+/// Deletes pack `rec`'s files from `v`: its plugins, settings files and content pack.
+fn remove_pack_files(v: &InstalledVersion, rec: &PackRecord) -> Result<()> {
+    for f in rec.plugins.iter().chain(&rec.settings) {
+        let path = plugins_dir(v).join(f);
+        match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(locked_or(e, &path)),
+            _ => {}
+        }
+    }
+    let dir = content_dir(v, &rec.content);
+    match std::fs::remove_dir_all(&dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(locked_or(e, &dir)),
+        _ => {}
+    }
+    // The content folder goes with the last pack (only when it is empty).
+    let _ = std::fs::remove_dir(v.bin_dir().join(packs::CONTENT));
+    Ok(())
+}
+
+/// Takes pack `id` out of `v`: its files and its entries.
+pub fn remove_pack(v: &InstalledVersion, id: &str) -> Result<()> {
+    let Some(pack) = Overlay::read(&choices_path(v))
+        .packs()
+        .into_iter()
+        .find(|p| p.id == id)
+    else {
+        bail!("{id} isn't installed in {}.", v.name);
+    };
+    remove_pack_files(v, &pack)?;
+    edit_overlay(v, |o| {
+        for p in &pack.plugins {
+            o.remove_added(p);
+        }
+        o.remove_pack(id);
+    })
+}
+
 /// Adds the DLL at `src` to `v` (copied into its plugins folder, on, with its checksum).
 /// Returns the file name.
 pub fn add_local(v: &InstalledVersion, src: &Path) -> Result<String> {
@@ -1239,8 +1586,11 @@ pub fn add_local(v: &InstalledVersion, src: &Path) -> Result<String> {
 }
 
 /// Takes plugin `file` out of `v`: its entry, and its file (only one the launcher put
-/// there).
+/// there). A pack's plugin takes its whole pack out.
 pub fn remove(v: &InstalledVersion, file: &str) -> Result<()> {
+    if let Some(pack) = Overlay::read(&choices_path(v)).pack_of(file) {
+        return remove_pack(v, &pack.id);
+    }
     let view = read(v);
     let Some(p) = view
         .plugins
@@ -1298,6 +1648,9 @@ pub struct ModEntry {
     pub required: bool,
     /// What can be set, and how (see [`super::plugin_settings`]).
     pub settings: Option<Value>,
+    /// A content pack (plugins and game data in one zip: [`super::packs`]); `file`,
+    /// `url` and `sha256` are then empty.
+    pub pack: Option<PackSpec>,
     /// From the dev folder of the dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
@@ -1305,17 +1658,22 @@ pub struct ModEntry {
 
 impl ModEntry {
     pub fn downloadable(&self) -> bool {
-        !self.shipped && !self.url.is_empty()
+        !self.shipped && (!self.url.is_empty() || self.pack.is_some())
     }
 
     fn validate(&self) -> Result<()> {
         if !catalog::is_safe_id(&self.id) {
             bail!("invalid mod id {:?}", self.id);
         }
-        if !is_plugin_file(&self.file) || self.file.eq_ignore_ascii_case(SLOT) {
+        if let Some(pack) = &self.pack {
+            if self.shipped || self.required || !self.file.is_empty() {
+                bail!("{} is a pack: no file, never shipped or required", self.id);
+            }
+            pack.validate(&self.id)?;
+        } else if !is_plugin_file(&self.file) || self.file.eq_ignore_ascii_case(SLOT) {
             bail!("invalid plugin file for {}: {:?}", self.id, self.file);
         }
-        if !self.shipped {
+        if !self.shipped && self.pack.is_none() {
             if self.url.is_empty() || !catalog::is_safe_url(&self.url) {
                 bail!("untrusted download for {}: {}", self.id, self.url);
             }
@@ -1382,9 +1740,17 @@ impl ModCatalog {
             let entry = serde_json::from_value::<ModEntry>(value)
                 .map_err(anyhow::Error::from)
                 .and_then(|mut m| {
-                    m.url = super::dev_code::resolve(code, &m.url).ok_or_else(|| {
-                        anyhow::anyhow!("{} doesn't download from its dev folder", m.id)
-                    })?;
+                    let outside =
+                        || anyhow::anyhow!("{} doesn't download from its dev folder", m.id);
+                    match &mut m.pack {
+                        Some(pack) => {
+                            pack.url =
+                                super::dev_code::resolve(code, &pack.url).ok_or_else(outside)?
+                        }
+                        None => {
+                            m.url = super::dev_code::resolve(code, &m.url).ok_or_else(outside)?
+                        }
+                    }
                     m.shipped = false;
                     m.dev = true;
                     m.validate().map(|()| m)
@@ -1405,9 +1771,9 @@ impl ModCatalog {
     /// way to it; the dev entries come first.
     pub fn with_dev(mut self, dev: ModCatalog) -> ModCatalog {
         self.mods.retain(|m| {
-            !dev.mods
-                .iter()
-                .any(|d| d.id == m.id || d.file.eq_ignore_ascii_case(&m.file))
+            !dev.mods.iter().any(|d| {
+                d.id == m.id || (!d.file.is_empty() && d.file.eq_ignore_ascii_case(&m.file))
+            })
         });
         let mut mods = dev.mods;
         mods.append(&mut self.mods);
@@ -1478,7 +1844,19 @@ impl ModCatalog {
 
     /// The entry of plugin file `file`.
     pub fn entry_for(&self, file: &str) -> Option<&ModEntry> {
-        self.mods.iter().find(|m| m.file.eq_ignore_ascii_case(file))
+        self.mods
+            .iter()
+            .find(|m| !m.file.is_empty() && m.file.eq_ignore_ascii_case(file))
+    }
+
+    /// The pack that has plugin `file` (only for a plugin a pack installed: the same file
+    /// put there by hand stays a local plugin).
+    pub fn pack_for(&self, file: &str) -> Option<&ModEntry> {
+        self.mods.iter().find(|m| {
+            m.pack
+                .as_ref()
+                .is_some_and(|p| p.plugins.iter().any(|f| f.eq_ignore_ascii_case(file)))
+        })
     }
 }
 
@@ -1526,6 +1904,23 @@ mod tests {
         );
         assert_eq!(both.mods.iter().filter(|m| m.id == "gpu-rating").count(), 1);
         assert!(both.mods.iter().any(|m| m.id == "asset-patches" && !m.dev));
+        // A pack downloads its zip from the dev folder too, and doesn't push out the
+        // published mods (it has no file to match them by).
+        let packs = format!(
+            r#"{{"mods": [
+                {{"id": "pack", "name": "Pack", "pack": {{"url": "files/Pack.zip", "sha256": "{sha}",
+                  "content": "pack", "plugins": ["One.dll"]}}}},
+                {{"id": "pack-out", "name": "Out", "pack": {{"url": "../Pack.zip", "sha256": "{sha}",
+                  "content": "out", "plugins": []}}}}
+            ]}}"#
+        );
+        let d = ModCatalog::parse_dev(&packs, CODE).unwrap();
+        assert_eq!(d.mods.len(), 1);
+        assert_eq!(
+            d.mods[0].pack.as_ref().unwrap().url,
+            format!("https://release.echovr.de/launcher/dev/{CODE}/files/Pack.zip")
+        );
+        assert_eq!(ModCatalog::builtin().with_dev(d).mods.len(), published + 1);
     }
 
     #[test]
@@ -2005,6 +2400,169 @@ mod tests {
         let ids: Vec<_> = c.mods.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["good", "shipped"]);
         assert!(c.mods[0].downloadable() && !c.mods[1].downloadable());
+    }
+
+    #[test]
+    fn catalogue_takes_packs_with_a_valid_pack() {
+        let sha = "ab".repeat(32);
+        let pack = |extra: &str| {
+            format!(
+                r#""pack":{{"url":"packs/T-1.zip","sha256":"{sha}","content":"t","plugins":["One.dll"]}}{extra}"#
+            )
+        };
+        let c = ModCatalog::parse(&format!(
+            r#"{{"mods":[
+              {{"id":"t","name":"T","version":"1.0.0",{}}},
+              {{"id":"with-file","file":"One.dll",{}}},
+              {{"id":"shipped",{}}},
+              {{"id":"bad-url","pack":{{"url":"https://evil.example/t.zip","sha256":"{sha}","content":"t","plugins":[]}}}},
+              {{"id":"bad-plugin","pack":{{"url":"packs/t.zip","sha256":"{sha}","content":"t","plugins":["BugSplat64.dll"]}}}}]}}"#,
+            pack(""),
+            pack(""),
+            pack(r#","shipped":true"#)
+        ))
+        .unwrap();
+        let ids: Vec<_> = c.mods.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["t"]);
+        assert!(c.mods[0].downloadable());
+        // Found by its plugin, not as a plugin file of its own.
+        assert!(c.entry_for("One.dll").is_none());
+        assert_eq!(c.pack_for("one.dll").map(|m| m.id.as_str()), Some("t"));
+    }
+
+    /// `v` with pack "test" (One.dll and Two.dll, One.ini, content/test) as the launcher
+    /// installs it, and the overlay plugin.
+    fn with_pack(v: &InstalledVersion) {
+        let plugins = plugins_dir(v);
+        for (f, body) in [
+            (packs::OVERLAY_PLUGIN, "MZ overlay"),
+            ("One.dll", "MZ one"),
+            ("Two.dll", "MZ two"),
+            ("One.ini", "[one]"),
+        ] {
+            std::fs::write(plugins.join(f), body).unwrap();
+        }
+        let content = content_dir(v, "test");
+        std::fs::create_dir_all(&content).unwrap();
+        std::fs::write(content.join("content.json"), "{}").unwrap();
+        let entry = |file: &str, id: &str| Entry {
+            file: file.into(),
+            enabled: true,
+            sha256: download::sha256_file(&plugins.join(file)).ok(),
+            launcher: Some(Added {
+                catalog_id: Some(id.into()),
+                version: "1.0.0".into(),
+                local: false,
+            }),
+            ..Default::default()
+        };
+        edit_overlay(v, |o| {
+            o.add(&entry(packs::OVERLAY_PLUGIN, "content-overlay"));
+            o.add(&entry("One.dll", "test"));
+            o.add(&entry("Two.dll", "test"));
+            o.set_pack(&PackRecord {
+                id: "test".into(),
+                name: "Test".into(),
+                version: "1.0.0".into(),
+                content: "test".into(),
+                plugins: vec!["One.dll".into(), "Two.dll".into()],
+                settings: vec!["One.ini".into()],
+                enabled: true,
+            });
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn serves_a_pack_only_when_nevr_can_load_its_overlay_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        let bin = v.bin_dir();
+        let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
+        with_pack(&v);
+        let listed = |name: &str| std::fs::read_to_string(&yaml).unwrap().contains(name);
+
+        // This nEVR has no early load pass: neither the overlay nor the pack's plugins
+        // (they would run on stock game data).
+        prepare(&v).unwrap();
+        assert!(!listed("NvrContentOverlay") && !listed("One.dll") && !listed("Two.dll"));
+        let view = read(&v);
+        assert!(!view.loads_early && view.packs[0].present && view.packs[0].record.enabled);
+        assert!(
+            view.plugins
+                .iter()
+                .filter(|p| p.pack.as_deref() == Some("Test"))
+                .count()
+                == 2
+        );
+
+        // One that has it: the overlay early, serving the pack, and the pack's plugins.
+        std::fs::write(
+            bin.join(SLOT),
+            "MZ [NEVR.BOOT] plugin(s) marked early;  4.0.1 ",
+        )
+        .unwrap();
+        prepare(&v).unwrap();
+        let text = std::fs::read_to_string(&yaml).unwrap();
+        assert!(text.contains(
+            "file: \"NvrContentOverlay.dll\"\n    enabled: true\n    early: true\n    args: {\"active\":\"test\"}"
+        ));
+        assert!(listed("\"One.dll\"") && listed("\"Two.dll\""));
+        assert!(!text.contains("One.ini"));
+
+        // A pack plugin's switch is the pack's: both off, the overlay out too.
+        set_plugin_enabled(&v, "One.dll", false).unwrap();
+        prepare(&v).unwrap();
+        assert!(!listed("NvrContentOverlay") && !listed("One.dll") && !listed("Two.dll"));
+        assert!(!read(&v).packs[0].record.enabled);
+        set_pack_enabled(&v, "test", true).unwrap();
+        prepare(&v).unwrap();
+        assert!(listed("NvrContentOverlay") && listed("Two.dll"));
+
+        // Mods off: no pack. A missing content pack: no pack either.
+        set_enabled(&v, false).unwrap();
+        prepare(&v).unwrap();
+        assert!(!listed("NvrContentOverlay") && !listed("One.dll"));
+        set_enabled(&v, true).unwrap();
+        std::fs::remove_file(content_dir(&v, "test").join("content.json")).unwrap();
+        prepare(&v).unwrap();
+        assert!(!listed("NvrContentOverlay") && !listed("One.dll"));
+        assert!(!read(&v).packs[0].present);
+    }
+
+    #[test]
+    fn removes_a_pack_as_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        with_pack(&v);
+        assert!(launcher_dirs(&v).contains(&content_dir(&v, "test")));
+        assert!(launcher_files(&v).contains(&plugins_dir(&v).join("One.ini")));
+        // Remove on one of its plugins takes the whole pack out; the overlay stays.
+        remove(&v, "Two.dll").unwrap();
+        let plugins = plugins_dir(&v);
+        for f in ["One.dll", "Two.dll", "One.ini"] {
+            assert!(!plugins.join(f).exists(), "{f} left behind");
+        }
+        assert!(!content_dir(&v, "test").exists());
+        assert!(!v.bin_dir().join(packs::CONTENT).exists());
+        assert!(plugins.join(packs::OVERLAY_PLUGIN).exists());
+        let view = read(&v);
+        assert!(view.packs.is_empty());
+        assert!(!view
+            .plugins
+            .iter()
+            .any(|p| p.file == "One.dll" || p.file == "Two.dll"));
+    }
+
+    #[test]
+    fn sees_game_files_an_old_installer_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        assert!(!read(&v).repacked);
+        let scripts = v.bin_dir().join("scripts");
+        std::fs::create_dir_all(&scripts).unwrap();
+        std::fs::write(scripts.join("190ed14fe6c74dd3.dll.orig"), "MZ").unwrap();
+        assert!(read(&v).repacked);
     }
 
     #[test]

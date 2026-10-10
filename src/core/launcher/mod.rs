@@ -10,6 +10,7 @@ pub mod launch;
 pub mod login_watch;
 pub mod mods;
 pub mod nevr;
+pub mod packs;
 pub mod patch;
 pub mod plugin_page;
 pub mod plugin_settings;
