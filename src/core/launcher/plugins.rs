@@ -188,7 +188,7 @@ pub fn launcher_context(state: &LauncherState) -> Value {
         },
         "event_builds": builds,
         // What this launcher can do for a plugin, so one can say when it needs a newer one.
-        "features": {"server": true, "echorelay": true},
+        "features": {"server": true, "echorelay": true, "host": true},
     })
 }
 

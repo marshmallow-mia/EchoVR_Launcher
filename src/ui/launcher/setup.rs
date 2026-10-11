@@ -15,9 +15,7 @@ use crate::core::launcher::launch;
 use crate::core::launcher::patch::{self, FetchError, Source};
 use crate::core::launcher::quest::{self as quest_core, ApkSource, JobError, UpdateOutcome};
 use crate::core::launcher::relay;
-use crate::core::launcher::store::{
-    InstalledVersion, PackServer, RelayAccount, Runtime, SteamVrVia, Target,
-};
+use crate::core::launcher::store::{InstalledVersion, PackServer, RelayAccount, Runtime, Target};
 use crate::core::launcher::versions::Step;
 use crate::core::{download, echoxr, elevation, oauth, paths, platform, revive};
 use crate::ui::design::{self, dz};
@@ -646,76 +644,72 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
     );
 }
 
-/// A desktop shortcut to version `id` (through Revive when that is the launch mode).
+/// A desktop shortcut to version `id`: the launcher with `--play`, which starts it as PLAY
+/// does (the route, launch options and mods from Settings at each start), without the
+/// window.
 pub(super) fn shortcut(d: &mut Dashboard, id: &str) {
     let Some(v) = d.state.version(id).cloned() else {
         return;
     };
-    let exe = v.exe_path();
-    let revive = match (d.state.profile.runtime, d.state.profile.steamvr_via) {
-        (Runtime::Revive, SteamVrVia::Revive) if !d.demo => revive::find_revive_dir(),
-        _ => None,
-    };
-    // The launch options from Settings go into the shortcut too. An event build's is
-    // named after it, as the relay's own installer names them.
-    let args = launch_args(d, &v);
-    let name = match &v.publisher_lock {
-        Some(_) => format!("Echo VR {}", v.name),
-        None => "Echo VR".to_string(),
-    };
-    let echoxr = d.state.profile.through_echoxr();
-    // EchoXR's own arguments (Virtual Desktop's OpenXR runtime) before the game's.
-    let xr_args = {
-        let mut a = d.state.profile.echoxr_args();
-        if v.publisher_lock.is_none() {
-            a.extend(launch::game_args(&d.state.profile, None));
-        }
-        launch::join_args(&a)
-    };
-    // Virtual Desktop's Oculus mode: its streamer starts the game, then the game's options.
-    let vd_streamer = (d.state.profile.runtime == Runtime::VirtualDesktop && !echoxr && !d.demo)
-        .then(launch::vd_streamer)
-        .flatten();
-    let result = match (d.state.profile.runtime, revive) {
-        // EchoXR.exe beside the game starts it on SteamVR (or Virtual Desktop's runtime),
-        // with the game's icon.
-        _ if echoxr => platform::create_shortcut(
-            &name,
-            &v.bin_dir().join(echoxr::LAUNCHER),
-            (!xr_args.is_empty()).then_some(xr_args.as_str()),
-            Some(&v.bin_dir()),
-            Some(&exe),
-        ),
-        (Runtime::Revive, Some(dir)) => {
-            revive::create_injector_shortcut(&format!("{name} (Revive)"), &dir, &exe, &args)
-        }
-        // The streamer takes only the game: given anything more, it starts nothing.
-        _ if vd_streamer.is_some() => platform::create_shortcut(
-            &name,
-            vd_streamer.as_deref().unwrap_or(&exe),
-            Some(launch::join_args(&[exe.to_string_lossy().into_owned()]).as_str()),
-            Some(&v.bin_dir()),
-            Some(&exe),
-        ),
-        _ => platform::create_shortcut(
-            &name,
-            &exe,
-            (!args.is_empty()).then_some(args.as_str()),
-            Some(&v.bin_dir()),
-            Some(&exe),
-        ),
-    };
-    match result {
-        Ok(()) if vd_streamer.is_some() && !args.is_empty() => d.notify(
-            "Desktop shortcut ready, without launch options: VD's Oculus mode can't pass them",
-        ),
-        Ok(()) => d.notify("The desktop shortcut is ready"),
+    match launcher_shortcut(&v) {
+        Ok(()) => d.notify("The desktop shortcut is ready: it starts this version as PLAY does"),
         Err(e) => d.dialogs.error(
             "Couldn't create shortcut",
             &format!("{e:#}"),
             Default::default(),
         ),
     }
+}
+
+/// Writes `v`'s desktop shortcut (see [`shortcut`]), and takes out the one through Revive
+/// that launchers before made beside it.
+fn launcher_shortcut(v: &InstalledVersion) -> anyhow::Result<()> {
+    use crate::core::launcher::headless;
+    let launcher = crate::core::linux::launcher_exe()
+        .ok_or_else(|| anyhow::anyhow!("the launcher's own path is unknown"))?;
+    let names = crate::core::uninstall::shortcut_names(v);
+    let args = launch::join_args(&[
+        headless::FLAG.to_string(),
+        headless::VERSION_FLAG.to_string(),
+        v.id.clone(),
+    ]);
+    // The plain name is the last (the one through Revive first).
+    let name = names.last().cloned().unwrap_or_else(|| "Echo VR".into());
+    platform::create_shortcut(
+        &name,
+        &launcher,
+        Some(&args),
+        launcher.parent(),
+        Some(&v.exe_path()),
+    )?;
+    for old in names.iter().filter(|n| **n != name) {
+        let _ = platform::remove_shortcut(old);
+    }
+    Ok(())
+}
+
+/// Once (Windows): the desktop shortcuts launchers before made, which started the game
+/// directly with the launch options of the day, start it through the launcher now.
+pub(super) fn shortcuts_through_launcher(d: &mut Dashboard) {
+    if !cfg!(windows) || d.demo || d.state.shortcuts_through_launcher {
+        return;
+    }
+    let desktop = dirs::desktop_dir();
+    for v in d.state.versions.clone() {
+        let made = crate::core::uninstall::shortcut_names(&v).iter().any(|n| {
+            desktop
+                .as_ref()
+                .is_some_and(|dir| dir.join(format!("{n}.lnk")).is_file())
+        });
+        if made {
+            match launcher_shortcut(&v) {
+                Ok(()) => tracing::info!("{}: its desktop shortcut starts the launcher now", v.id),
+                Err(e) => tracing::warn!("{}: desktop shortcut: {e:#}", v.id),
+            }
+        }
+    }
+    d.state.shortcuts_through_launcher = true;
+    d.save();
 }
 
 /// Version `v` needs the licence patch before PLAY: you're a new player, it isn't patched,
@@ -779,23 +773,152 @@ pub(super) fn linux_ready(d: &Dashboard) -> bool {
 pub(super) const LINUX_JOB: &str = "linux-setup";
 
 /// Whether preparing Linux would add Echo VR to Steam (and restart Steam for it): its
-/// shortcut isn't in Steam, or not with this launcher.
+/// shortcut isn't in Steam, or not with this launcher; or the Flatpak Steam may not hand
+/// its start to the launcher yet.
 pub(super) fn linux_needs_shortcut() -> bool {
     use crate::core::linux::{self, steam};
-    let (Some(root), Some(exe)) = (steam::root(), linux::launcher_exe()) else {
+    let Some(root) = steam::root() else {
         return true;
     };
-    let shortcut = steam::Shortcut {
-        exe,
-        launch_options: linux::PLAY_FLAG.into(),
-        icon: None,
+    let Some(shortcut) = linux::steam_shortcut(&root) else {
+        return true;
     };
     steam::installed_shortcut(&root, &shortcut).is_none()
+        || (steam::is_flatpak(&root) && !steam::flatpak_can_spawn())
+}
+
+pub(super) const WINDOWS_STEAM_JOB: &str = "windows-steam";
+
+/// Windows: the shortcut Steam's library gets for Echo VR: the launcher with `--play`
+/// (in SteamVR's library too, with SteamVR installed).
+fn windows_steam_shortcut(
+    steam_root: &std::path::Path,
+) -> Option<crate::core::linux::steam::Shortcut> {
+    let exe = std::env::current_exe().ok()?;
+    let steamvr = crate::core::linux::steam::libraries(steam_root)
+        .iter()
+        .any(|l| l.join("steamapps/common/SteamVR").is_dir());
+    Some(crate::core::linux::steam::Shortcut {
+        exe,
+        launch_options: crate::core::launcher::headless::FLAG.into(),
+        icon: None,
+        openvr: steamvr,
+    })
+}
+
+/// Windows: puts Echo VR into Steam's library (`add`) or takes it out, closing Steam
+/// meanwhile (it rewrites the file from memory while it runs) and starting it again.
+pub(super) fn windows_steam(d: &mut Dashboard, ctx: &egui::Context, add: bool) {
+    use crate::core::linux::steam;
+    let Some(root) = steam::root() else {
+        d.dialogs.error(
+            "Steam not found",
+            "Install Steam and sign in once, then try again.",
+            Default::default(),
+        );
+        return;
+    };
+    d.start_job(
+        ctx,
+        JobKind::Revive,
+        WINDOWS_STEAM_JOB,
+        vec![Res::Vr],
+        if add {
+            "Adding Echo VR to Steam"
+        } else {
+            "Taking Echo VR out of Steam"
+        },
+        "Steam restarts...",
+        move |_cancel, on| {
+            let Some(shortcut) = windows_steam_shortcut(&root) else {
+                return job_err(
+                    anyhow::anyhow!("the launcher's own path is unknown"),
+                    "Steam",
+                );
+            };
+            if add {
+                if let Some(appid) = steam::installed_shortcut(&root, &shortcut) {
+                    return JobResult::WindowsSteam(Some(appid));
+                }
+            } else if !steam::has_shortcut(&root) {
+                return JobResult::WindowsSteam(None);
+            }
+            on(Step::Status("Steam restarts...".into()));
+            let was_running = steam::running(&root);
+            let changed = steam::shutdown(&root).and_then(|()| {
+                if add {
+                    steam::install_shortcut(&root, &shortcut).map(Some)
+                } else {
+                    steam::remove_shortcut(&root).map(|_| None)
+                }
+            });
+            if was_running || add {
+                let _ = steam::start(&root);
+            }
+            match changed {
+                Ok(appid) => JobResult::WindowsSteam(appid),
+                Err(e) => job_err(e, "Steam"),
+            }
+        },
+    );
+}
+
+/// Windows, at the start: Echo VR's entry in Steam starts this launcher still (it was
+/// moved: the box goes off, ticking it again updates it).
+pub(super) fn windows_steam_current(d: &mut Dashboard) {
+    use crate::core::linux::steam;
+    if !cfg!(windows) || d.demo || d.state.windows_appid.is_none() {
+        return;
+    }
+    let current = steam::root().is_some_and(|root| {
+        windows_steam_shortcut(&root)
+            .is_some_and(|s| steam::installed_shortcut(&root, &s).is_some())
+    });
+    if !current {
+        tracing::info!(
+            "Echo VR's Steam entry doesn't start this launcher: Settings can add it again"
+        );
+        d.state.windows_appid = None;
+        d.notify("Echo VR's entry in Steam starts another copy of the launcher: tick it again in Settings");
+    }
+}
+
+/// Linux: Echo VR in WiVRn's app list as Settings has it (WiVRn installed), pointing at
+/// this launcher (also after it moved). At the start and when the box flips.
+pub(super) fn wivrn_list(d: &mut Dashboard) {
+    use crate::core::linux::{echoxr, wivrn};
+    if !cfg!(target_os = "linux") || d.demo {
+        return;
+    }
+    if d.state.wivrn_list && echoxr::installed().contains(&echoxr::Xr::Wivrn) {
+        if let Err(e) = wivrn::list() {
+            tracing::warn!("WiVRn's list: {e:#}");
+        }
+    } else if wivrn::listed() {
+        wivrn::unlist();
+    }
+}
+
+/// What PLAY asks before [`linux_setup`] adds Echo VR to Steam: with the Flatpak Steam, also
+/// for the permission its shortcut needs.
+pub(super) fn linux_setup_question() -> String {
+    use crate::core::linux::steam;
+    let mut text = String::from(
+        "On Linux, Echo VR starts through Steam: it is added to your Steam library once, and Steam closes and restarts for that.",
+    );
+    if steam::root().is_some_and(|r| steam::is_flatpak(&r)) && !steam::flatpak_can_spawn() {
+        text.push_str(
+            "\n\nYour Steam is the Flatpak. Its Echo VR has to start the launcher outside Steam's sandbox, so Steam also gets permission to start programs on this PC (org.freedesktop.Flatpak). That loosens Steam's sandbox; the launcher's uninstall takes it back.",
+        );
+    }
+    text.push_str("\n\nThen Echo VR starts.");
+    text
 }
 
 /// Prepares Echo VR for Linux: a private GE-Proton, EchoXR's OpenXR runtime and Meta's
 /// Platform SDK loader, then (closing Steam meanwhile) the shortcut in Steam that starts it,
-/// unless it is there already.
+/// unless it is there already. The Flatpak Steam's shortcut runs a script that hands the
+/// start to the launcher outside its sandbox, which Steam needs permission for.
 pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
     use crate::core::linux::{self, echoxr, steam};
     let Some(root) = steam::root() else {
@@ -817,29 +940,39 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
             if let Err(e) = echoxr::setup(&root, cancel, on) {
                 return job_err(e, "Linux Setup Failed");
             }
-            let Some(exe) = linux::launcher_exe() else {
+            if let Err(e) = linux::refresh_play_script(&root) {
+                return job_err(e, "Linux Setup Failed");
+            }
+            let Some(shortcut) = linux::steam_shortcut(&root) else {
                 return job_err(
                     anyhow::anyhow!("the launcher's own path is unknown"),
                     "Linux Setup Failed",
                 );
             };
-            let shortcut = steam::Shortcut {
-                exe,
-                launch_options: linux::PLAY_FLAG.into(),
-                icon: None,
-            };
+            // The Flatpak Steam gets its permission while it is closed: it applies from its
+            // next start.
+            let allow = steam::is_flatpak(&root) && !steam::flatpak_can_spawn();
             // In Steam already (an update of GE-Proton or EchoXR): Steam stays as it is.
-            if let Some(appid) = steam::installed_shortcut(&root, &shortcut) {
-                return JobResult::LinuxReady(appid);
+            if !allow {
+                if let Some(appid) = steam::installed_shortcut(&root, &shortcut) {
+                    return JobResult::LinuxReady {
+                        appid,
+                        flatpak_override: false,
+                    };
+                }
             }
             on(Step::Status(
                 "Adding Echo VR to Steam (Steam restarts)...".into(),
             ));
             let r = steam::shutdown(&root)
+                .and_then(|()| if allow { steam::allow_spawn() } else { Ok(()) })
                 .and_then(|()| steam::install_shortcut(&root, &shortcut))
                 .and_then(|appid| steam::start(&root).map(|()| appid));
             match r {
-                Ok(appid) => JobResult::LinuxReady(appid),
+                Ok(appid) => JobResult::LinuxReady {
+                    appid,
+                    flatpak_override: allow,
+                },
                 Err(e) => job_err(e, "Linux Setup Failed"),
             }
         },
@@ -933,6 +1066,11 @@ pub(super) fn runtime_note(r: Runtime) -> &'static str {
             "Quest over Virtual Desktop: its Oculus mode, SteamVR or VD's own OpenXR."
         }
         // On Linux every headset plays through EchoXR on its OpenXR runtime.
+        Runtime::Revive
+            if cfg!(target_os = "linux") && crate::core::linux::echoxr::steamvr_in_flatpak() =>
+        {
+            crate::core::linux::echoxr::STEAMVR_IN_FLATPAK
+        }
         Runtime::Revive if cfg!(target_os = "linux") => {
             "Any SteamVR headset, through EchoXR. PLAY starts SteamVR."
         }

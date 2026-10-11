@@ -208,6 +208,16 @@ pub struct LauncherState {
     pub vrce_site_account: Option<String>,
     /// Linux: the Steam shortcut that starts Echo VR (its appid), once set up.
     pub linux_appid: Option<u32>,
+    /// Linux: the launcher let the Flatpak Steam start programs outside its sandbox (its
+    /// shortcut hands the start to the launcher), so the uninstall takes that back.
+    pub steam_flatpak_override: bool,
+    /// Windows: Echo VR's entry in Steam's library (its appid), once added (Settings).
+    pub windows_appid: Option<u32>,
+    /// Linux: Echo VR in WiVRn's app list (with WiVRn installed).
+    pub wivrn_list: bool,
+    /// The desktop shortcuts made before start the game through the launcher (`--play`)
+    /// now: they were rewritten once.
+    pub shortcuts_through_launcher: bool,
     /// spark:// links were turned off in Settings: don't register for them at start.
     pub spark_links_off: bool,
     /// The classic lobbies (EchoRelay) server the event builds play on, `host:port`.
@@ -352,6 +362,10 @@ impl Default for LauncherState {
             quest_adb_network: false,
             vrce_site_account: None,
             linux_appid: None,
+            steam_flatpak_override: false,
+            windows_appid: None,
+            shortcuts_through_launcher: false,
+            wivrn_list: true,
             spark_links_off: false,
             relay_server: super::relay::DEFAULT_SERVER.into(),
             event_builds: EVENT_BUILDS_DEFAULT,

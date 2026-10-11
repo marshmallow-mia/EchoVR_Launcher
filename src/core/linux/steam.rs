@@ -14,17 +14,263 @@ use super::vdf::{self, Bin, Text};
 pub const SHORTCUT_NAME: &str = "Echo VR";
 /// SteamID64 of the first account: account IDs (the `userdata` folders) count from here.
 const STEAM_ID64_BASE: u64 = 76_561_197_960_265_728;
+/// Flathub's Steam. Its files are under `~/.var/app/<id>`, which its sandbox sees at that
+/// same path; it runs in a pid namespace of its own.
+pub const FLATPAK_ID: &str = "com.valvesoftware.Steam";
 
-/// Where Steam is: the usual install, its `~/.steam` link, or the Flatpak's.
+/// The Flatpak's own folder, `~/.var/app/com.valvesoftware.Steam`.
+pub fn flatpak_home() -> Option<PathBuf> {
+    dirs::home_dir().map(|h| h.join(".var/app").join(FLATPAK_ID))
+}
+
+/// Whether `root` is the Flatpak's Steam.
+pub fn is_flatpak(root: &Path) -> bool {
+    root.components().any(|c| c.as_os_str() == FLATPAK_ID)
+}
+
+/// Where Steam is (Windows): the folder its registry key names.
+#[cfg(windows)]
+pub fn root() -> Option<PathBuf> {
+    use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+    let path: String = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Valve\Steam")
+        .ok()?
+        .get_value("SteamPath")
+        .ok()?;
+    let root = PathBuf::from(path.replace('/', "\\"));
+    root.join("config").is_dir().then_some(root)
+}
+
+/// Where Steam is: the usual install (or its `~/.steam` link) or the Flatpak's. With both
+/// on this PC, the one running, else the one signed in to last (see [`choose`]).
+#[cfg(not(windows))]
 pub fn root() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    [
+    let has_config = |p: &PathBuf| p.join("config").is_dir();
+    // `~/.steam/steam` first: Steam keeps it pointing at its install (Debian's is elsewhere).
+    let native = [home.join(".steam/steam"), home.join(".local/share/Steam")]
+        .into_iter()
+        .find(has_config)
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .filter(|p| !is_flatpak(p));
+    // Only an installed Flatpak counts (a removed one leaves its data behind); never through
+    // its `.steam/steam` link, which names a path as the sandbox sees it.
+    let flatpak = flatpak_installed(&home)
+        .then(|| {
+            let app = home.join(".var/app").join(FLATPAK_ID);
+            [app.join(".local/share/Steam"), app.join("data/Steam")]
+                .into_iter()
+                .find(has_config)
+        })
+        .flatten();
+    match (native, flatpak) {
+        (Some(native), Some(flatpak)) => {
+            let found = |root: PathBuf, flatpak: bool| Found {
+                running: client_running(&root),
+                used: std::fs::metadata(root.join("config/loginusers.vdf"))
+                    .and_then(|m| m.modified())
+                    .ok(),
+                program: flatpak || super::on_path("steam"),
+                root,
+            };
+            Some(choose(found(native, false), found(flatpak, true)))
+        }
+        (native, flatpak) => native.or(flatpak),
+    }
+}
+
+/// What the Flatpak Steam's shortcut runs: a script in the Flatpak's own folder (which its
+/// sandbox sees) that hands the start to the launcher outside the sandbox. The launcher
+/// itself, its files and Proton are out of the sandbox's sight.
+pub fn play_script() -> Option<PathBuf> {
+    flatpak_home().map(|h| h.join(".local/share/EchoVR_Launcher/steam-play.sh"))
+}
+
+/// Pure: [`play_script`]'s text, for the launcher at `launcher`.
+pub fn play_script_text(launcher: &Path) -> String {
+    let quoted = format!("'{}'", launcher.to_string_lossy().replace('\'', r"'\''"));
+    format!(
+        "#!/bin/sh\n\
+         # Echo VR Launcher: Steam's \"Echo VR\" starts the game through the launcher, outside\n\
+         # Steam's sandbox (org.freedesktop.Flatpak, which the launcher asked for), in the\n\
+         # home folder Steam runs in (the sandbox's $HOME is the same path as outside).\n\
+         exec flatpak-spawn --host --env=HOME=\"$HOME\" {quoted} --play \"$@\"\n"
+    )
+}
+
+/// Writes [`play_script`] for the launcher at `launcher` (again when it moved). Returns
+/// where it is.
+pub fn write_play_script(launcher: &Path) -> Result<PathBuf> {
+    let path = play_script().context("no home folder")?;
+    let text = play_script_text(launcher);
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(&path, text).with_context(|| format!("write {}", path.display()))?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("make {} executable", path.display()))?;
+    }
+    Ok(path)
+}
+
+/// The D-Bus name a Flatpak needs for `flatpak-spawn --host`.
+const SPAWN_NAME: &str = "org.freedesktop.Flatpak";
+
+/// Whether the Flatpak Steam may start programs outside its sandbox (`flatpak-spawn
+/// --host`), as its shortcut's script does.
+pub fn flatpak_can_spawn() -> bool {
+    std::process::Command::new("flatpak")
+        .args(["info", "--show-permissions", FLATPAK_ID])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| talks_to_spawn(&String::from_utf8_lossy(&o.stdout)))
+}
+
+/// Pure: whether `flatpak info --show-permissions` lets the app talk to [`SPAWN_NAME`].
+fn talks_to_spawn(permissions: &str) -> bool {
+    let mut session_bus = false;
+    for line in permissions.lines().map(str::trim) {
+        if line.starts_with('[') {
+            session_bus = line == "[Session Bus Policy]";
+        } else if session_bus {
+            if let Some(policy) = line
+                .strip_prefix(SPAWN_NAME)
+                .and_then(|l| l.strip_prefix('='))
+            {
+                return matches!(policy, "talk" | "own");
+            }
+        }
+    }
+    false
+}
+
+/// Lets the Flatpak Steam start programs outside its sandbox (this user's override; Steam
+/// started afterwards has it). The player said yes first: it loosens Steam's sandbox.
+pub fn allow_spawn() -> Result<()> {
+    flatpak_override(&format!("--talk-name={SPAWN_NAME}"))
+}
+
+/// Takes [`allow_spawn`]'s permission back.
+pub fn disallow_spawn() -> Result<()> {
+    flatpak_override(&format!("--no-talk-name={SPAWN_NAME}"))
+}
+
+fn flatpak_override(arg: &str) -> Result<()> {
+    let status = std::process::Command::new("flatpak")
+        .args(["override", "--user", arg, FLATPAK_ID])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .context("Couldn't run flatpak")?;
+    if !status.success() {
+        bail!("flatpak override {arg} failed ({status})");
+    }
+    Ok(())
+}
+
+/// Every Steam install's root this PC may have (whether it's the player's or not): the
+/// native one's and the Flatpak's places. For finding SteamVR, wherever it is.
+pub fn all_roots() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let app = home.join(".var/app").join(FLATPAK_ID);
+    let mut roots: Vec<PathBuf> = root().into_iter().collect();
+    for r in [
         home.join(".steam/steam"),
         home.join(".local/share/Steam"),
-        home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"),
+        app.join(".local/share/Steam"),
+        app.join("data/Steam"),
+    ] {
+        if !roots.contains(&r) {
+            roots.push(r);
+        }
+    }
+    roots
+}
+
+/// The Steam libraries of the install at `root` (`steamapps/libraryfolders.vdf`), its own
+/// first: where its games (SteamVR among them) may be.
+pub fn libraries(root: &Path) -> Vec<PathBuf> {
+    let listed = std::fs::read_to_string(root.join("steamapps/libraryfolders.vdf"))
+        .ok()
+        .and_then(|t| vdf::parse_text(&t).ok())
+        .map(|t| library_paths(&t))
+        .unwrap_or_default();
+    let mut all = vec![root.to_path_buf()];
+    for p in listed {
+        if !all.contains(&p) {
+            all.push(p);
+        }
+    }
+    all
+}
+
+/// Pure: the `path`s `libraryfolders.vdf` lists.
+fn library_paths(t: &Text) -> Vec<PathBuf> {
+    let Some(Text::Map(folders)) = t.get("libraryfolders") else {
+        return Vec::new();
+    };
+    folders
+        .iter()
+        .filter_map(|(_, f)| f.get("path").and_then(Text::as_str))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// Whether Flathub's Steam is installed, for this user or system-wide.
+#[cfg_attr(windows, allow(dead_code))]
+fn flatpak_installed(home: &Path) -> bool {
+    [
+        home.join(".local/share/flatpak/app").join(FLATPAK_ID),
+        Path::new("/var/lib/flatpak/app").join(FLATPAK_ID),
     ]
-    .into_iter()
-    .find(|p| p.join("config").is_dir())
+    .iter()
+    .any(|p| p.is_dir())
+}
+
+/// A Steam install found, for [`choose`].
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(windows, allow(dead_code))]
+struct Found {
+    root: PathBuf,
+    /// Its client runs now.
+    running: bool,
+    /// When an account last signed in there (`config/loginusers.vdf`).
+    used: Option<std::time::SystemTime>,
+    /// Its program is here to run (`steam` on `PATH`; the Flatpak's always is).
+    program: bool,
+}
+
+/// Pure: which of the native and the Flatpak Steam is the player's. The one running; else
+/// the Flatpak when the native one's program is gone (its files left behind); else the one
+/// signed in to last; else the native one.
+#[cfg_attr(windows, allow(dead_code))]
+fn choose(native: Found, flatpak: Found) -> PathBuf {
+    if native.running != flatpak.running {
+        return if native.running {
+            native.root
+        } else {
+            flatpak.root
+        };
+    }
+    if !native.program {
+        return flatpak.root;
+    }
+    match (native.used, flatpak.used) {
+        (Some(n), Some(f)) if f > n => flatpak.root,
+        (None, Some(_)) => flatpak.root,
+        _ => native.root,
+    }
 }
 
 /// The `userdata` folder of the account that signed in last (`loginusers.vdf`), else of
@@ -88,6 +334,9 @@ pub struct Shortcut {
     /// Its arguments.
     pub launch_options: String,
     pub icon: Option<PathBuf>,
+    /// In SteamVR's library (Steam's "Include in VR Library"). Without SteamVR, Steam would
+    /// ask for a headset at every start.
+    pub openvr: bool,
 }
 
 fn quoted(p: &Path) -> String {
@@ -119,7 +368,7 @@ pub fn with_shortcut(mut pairs: Vec<(String, Bin)>, s: &Shortcut) -> (Vec<(Strin
         ("IsHidden".into(), Bin::Int(0)),
         ("AllowDesktopConfig".into(), Bin::Int(1)),
         ("AllowOverlay".into(), Bin::Int(1)),
-        ("OpenVR".into(), Bin::Int(1)),
+        ("OpenVR".into(), Bin::Int(u32::from(s.openvr))),
         ("Devkit".into(), Bin::Int(0)),
         ("DevkitGameID".into(), Bin::Str(String::new())),
         ("DevkitOverrideAppID".into(), Bin::Int(0)),
@@ -196,6 +445,15 @@ pub fn without_shortcut(mut pairs: Vec<(String, Bin)>) -> (Vec<(String, Bin)>, b
     (pairs, found)
 }
 
+/// Whether the current Steam user has the launcher's shortcut (by its name), whichever
+/// launcher it runs.
+pub fn has_shortcut(root: &Path) -> bool {
+    user_dir(root)
+        .and_then(|u| std::fs::read(u.join("config/shortcuts.vdf")).ok())
+        .and_then(|b| vdf::parse_bin(&b).ok())
+        .is_some_and(|pairs| without_shortcut(pairs).1)
+}
+
 /// Takes the launcher's shortcut out of the current Steam user's games. Steam must be
 /// closed. False when it wasn't there.
 pub fn remove_shortcut(root: &Path) -> Result<bool> {
@@ -248,21 +506,71 @@ pub fn install_shortcut(root: &Path, s: &Shortcut) -> Result<u32> {
     Ok(appid)
 }
 
-/// Whether Steam's client is running.
-pub fn running() -> bool {
+/// Steam's processes (its client and web helpers) of the install at `root`: the native
+/// one's, or those in the Flatpak's sandbox. Each with its pids, the host's first (see
+/// [`ns_pids`]).
+fn processes(root: &Path) -> Vec<(String, Vec<u32>)> {
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let flatpak = is_flatpak(root);
     let mut sys = System::new();
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     sys.processes()
-        .values()
-        .any(|p| matches!(p.name().to_str(), Some("steam") | Some("steamwebhelper")))
+        .iter()
+        .filter_map(|(pid, p)| {
+            let name = p.name().to_str()?;
+            let name = name.strip_suffix(".exe").unwrap_or(name);
+            if !matches!(name, "steam" | "steamwebhelper") {
+                return None;
+            }
+            let pid = pid.as_u32();
+            (in_flatpak(pid) == flatpak).then(|| {
+                let status = std::fs::read_to_string(format!("/proc/{pid}/status"));
+                let pids = status.map(|s| ns_pids(&s)).unwrap_or_default();
+                (
+                    name.to_string(),
+                    if pids.is_empty() { vec![pid] } else { pids },
+                )
+            })
+        })
+        .collect()
 }
 
-/// The command that talks to Steam: `steam`, or the Flatpak's.
+/// Whether host process `pid` runs in the Flatpak Steam's sandbox (whose root has its
+/// `.flatpak-info`).
+fn in_flatpak(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info")).is_ok_and(|info| {
+        info.lines()
+            .any(|l| l.trim() == format!("name={FLATPAK_ID}"))
+    })
+}
+
+/// Pure: a process's pids from its `/proc/<pid>/status` (`NSpid:`), from the host's pid
+/// namespace to its innermost one: one for a process on the host, two in a Flatpak.
+fn ns_pids(status: &str) -> Vec<u32> {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("NSpid:"))
+        .map(|pids| {
+            pids.split_whitespace()
+                .filter_map(|p| p.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether Steam's client (at `root`) is running.
+pub fn running(root: &Path) -> bool {
+    !processes(root).is_empty()
+}
+
+/// The command that talks to Steam: `steam`, or the Flatpak's (Windows: its `steam.exe`).
 fn steam_command(root: &Path) -> std::process::Command {
-    if root.to_string_lossy().contains("com.valvesoftware.Steam") {
+    if cfg!(windows) {
+        return crate::core::process::command(root.join("steam.exe"));
+    }
+    if is_flatpak(root) {
         let mut c = std::process::Command::new("flatpak");
-        c.args(["run", "com.valvesoftware.Steam"]);
+        c.args(["run", FLATPAK_ID]);
         c
     } else {
         std::process::Command::new("steam")
@@ -277,39 +585,70 @@ pub fn vr_running() -> bool {
         .any(|p| crate::core::launcher::game::program_running(p))
 }
 
-/// Where Steam notes the pid of its running client.
+/// Where Steam notes the pid of its running client. The Flatpak's notes the pid as its
+/// sandbox sees it.
+#[cfg(not(windows))]
 fn pid_file(root: &Path) -> Option<std::path::PathBuf> {
-    if root.to_string_lossy().contains("com.valvesoftware.Steam") {
-        return dirs::home_dir()
-            .map(|h| h.join(".var/app/com.valvesoftware.Steam/.steam/steam.pid"));
+    if is_flatpak(root) {
+        return flatpak_home().map(|h| h.join(".steam/steam.pid"));
     }
     dirs::home_dir().map(|h| h.join(".steam/steam.pid"))
 }
 
-/// Pure: Steam is up when the client its pid file names runs and its web helper (the
-/// window, which Steam starts last) does too.
-fn ready(pid_text: Option<&str>, alive: impl Fn(u32) -> bool, webhelper: bool) -> bool {
-    pid_text
-        .and_then(|t| t.trim().parse::<u32>().ok())
-        .is_some_and(|pid| pid > 0 && alive(pid))
-        && webhelper
+/// The pid Steam noted for its running client: in its pid file (the Flatpak's as its
+/// sandbox sees it), on Windows in its registry key.
+fn noted_pid(root: &Path) -> Option<u32> {
+    #[cfg(windows)]
+    {
+        let _ = root;
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+        let pid: u32 = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey(r"Software\Valve\Steam\ActiveProcess")
+            .ok()?
+            .get_value("pid")
+            .ok()?;
+        Some(pid)
+    }
+    #[cfg(not(windows))]
+    {
+        let text = std::fs::read_to_string(pid_file(root)?).ok()?;
+        text.trim().parse().ok()
+    }
+}
+
+/// Pure: Steam is up when the client it noted runs (`alive`, by the pid as Steam sees it)
+/// and its web helper (the window, which Steam starts last) does too.
+fn ready(noted: Option<u32>, alive: impl Fn(u32) -> bool, webhelper: bool) -> bool {
+    noted.is_some_and(|pid| pid > 0 && alive(pid)) && webhelper
+}
+
+/// Pure: whether a `steam` process with these pids (the host's first) is the client a pid
+/// file names: by its innermost pid, which is the host's for the native Steam and the
+/// sandbox's for the Flatpak's.
+fn is_client(pids: &[u32], noted: u32) -> bool {
+    pids.last() == Some(&noted)
+}
+
+/// Whether the client of the Steam at `root` runs (the pid it noted is a running `steam`).
+#[cfg_attr(windows, allow(dead_code))]
+fn client_running(root: &Path) -> bool {
+    noted_pid(root).is_some_and(|noted| {
+        processes(root)
+            .iter()
+            .any(|(name, pids)| name == "steam" && is_client(pids, noted))
+    })
 }
 
 /// Whether Steam is up now (see [`ready`]).
 pub fn is_ready(root: &Path) -> bool {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-    let pid_text = pid_file(root).and_then(|f| std::fs::read_to_string(f).ok());
-    let alive = |pid: u32| {
-        sys.process(Pid::from_u32(pid))
-            .is_some_and(|p| p.name().to_str() == Some("steam"))
+    let processes = processes(root);
+    let alive = |noted: u32| {
+        processes
+            .iter()
+            .any(|(name, pids)| name == "steam" && is_client(pids, noted))
     };
-    let webhelper = sys
-        .processes()
-        .values()
-        .any(|p| p.name().to_str() == Some("steamwebhelper"));
-    ready(pid_text.as_deref(), alive, webhelper)
+    let webhelper = processes.iter().any(|(name, _)| name == "steamwebhelper");
+    ready(noted_pid(root), alive, webhelper)
 }
 
 /// Waits (up to `limit`) until Steam is up, so a `steam://` link goes to that client
@@ -330,7 +669,7 @@ pub fn wait_ready(root: &Path, limit: Duration) -> bool {
 
 /// Closes Steam and waits (up to a minute) until it is gone. Not under SteamVR.
 pub fn shutdown(root: &Path) -> Result<()> {
-    if !running() {
+    if !running(root) {
         return Ok(());
     }
     if vr_running() {
@@ -345,7 +684,7 @@ pub fn shutdown(root: &Path) -> Result<()> {
         .context("Couldn't ask Steam to close")?;
     for _ in 0..120 {
         std::thread::sleep(Duration::from_millis(500));
-        if !running() {
+        if !running(root) {
             // Give it a moment to finish writing its files.
             std::thread::sleep(Duration::from_secs(1));
             return Ok(());
@@ -383,7 +722,7 @@ pub fn run_when_up(
     use std::sync::atomic::Ordering;
     let cancelled = || cancel.load(Ordering::Relaxed);
     let mut started = false;
-    if !running() {
+    if !running(root) {
         on("Starting Steam");
         steam_command(root)
             .arg("-silent")
@@ -442,12 +781,128 @@ mod tests {
     #[test]
     fn steam_is_up_with_its_client_and_web_helper() {
         let alive = |pid: u32| pid == 42;
-        assert!(ready(Some("42\n"), alive, true));
-        assert!(!ready(Some("42"), alive, false));
-        assert!(!ready(Some("7"), alive, true));
-        assert!(!ready(Some(""), alive, true));
+        assert!(ready(Some(42), alive, true));
+        assert!(!ready(Some(42), alive, false));
+        assert!(!ready(Some(7), alive, true));
         assert!(!ready(None, alive, true));
-        assert!(!ready(Some("0"), |_| true, true));
+        assert!(!ready(Some(0), |_| true, true));
+    }
+
+    #[test]
+    fn knows_a_client_by_the_pid_it_noted() {
+        // As read on a PC with Flatpak Steam: the host's pid, then the sandbox's.
+        let flatpak = ns_pids("Name:\tsteam\nNSpid:\t1254266\t1239\nNSgid:\t1254266\t1239\n");
+        assert_eq!(flatpak, vec![1_254_266, 1239]);
+        assert!(is_client(&flatpak, 1239));
+        assert!(!is_client(&flatpak, 1_254_266));
+        let native = ns_pids("Name:\tsteam\nNSpid:\t3790601\n");
+        assert!(is_client(&native, 3_790_601));
+        assert!(ns_pids("Name:\tsteam\n").is_empty());
+        assert!(!is_client(&[], 1));
+    }
+
+    #[test]
+    fn lists_the_steam_libraries() {
+        let t = vdf::parse_text(
+            "\"libraryfolders\"\n{\n\t\"0\"\n\t{\n\t\t\"path\"\t\t\"/home/u/.local/share/Steam\"\n\t\t\"apps\"\n\t\t{\n\t\t\t\"250820\"\t\t\"5000\"\n\t\t}\n\t}\n\t\"1\"\n\t{\n\t\t\"path\"\t\t\"/mnt/games/SteamLibrary\"\n\t}\n}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            library_paths(&t),
+            vec![
+                PathBuf::from("/home/u/.local/share/Steam"),
+                PathBuf::from("/mnt/games/SteamLibrary")
+            ]
+        );
+        assert!(library_paths(&vdf::parse_text("\"x\" {}").unwrap()).is_empty());
+    }
+
+    #[test]
+    fn the_flatpak_hands_the_start_to_the_launcher() {
+        let text = play_script_text(Path::new("/home/u/Apps/Echo VR's Launcher.AppImage"));
+        assert!(text.starts_with("#!/bin/sh\n"));
+        assert!(text.ends_with(
+            "exec flatpak-spawn --host --env=HOME=\"$HOME\" '/home/u/Apps/Echo VR'\\''s Launcher.AppImage' --play \"$@\"\n"
+        ));
+    }
+
+    #[test]
+    fn reads_whether_the_flatpak_may_spawn() {
+        // As `flatpak info --show-permissions com.valvesoftware.Steam` prints it.
+        let stock = "[Context]\nshared=ipc;network;\n\n[Session Bus Policy]\ncom.steampowered.*=own\norg.freedesktop.Notifications=talk\n\n[System Bus Policy]\norg.freedesktop.UPower=talk\n";
+        assert!(!talks_to_spawn(stock));
+        let allowed = stock.replace(
+            "org.freedesktop.Notifications=talk",
+            "org.freedesktop.Flatpak=talk\norg.freedesktop.Notifications=talk",
+        );
+        assert!(talks_to_spawn(&allowed));
+        assert!(!talks_to_spawn(
+            &allowed.replace("Flatpak=talk", "Flatpak=none")
+        ));
+        // Only the session bus counts.
+        assert!(!talks_to_spawn(
+            "[System Bus Policy]\norg.freedesktop.Flatpak=talk\n"
+        ));
+    }
+
+    #[test]
+    fn picks_the_players_steam() {
+        let t = |s: u64| Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(s));
+        let native = Found {
+            root: PathBuf::from("/home/u/.local/share/Steam"),
+            running: false,
+            used: t(100),
+            program: true,
+        };
+        let flatpak = Found {
+            root: PathBuf::from("/home/u/.var/app/com.valvesoftware.Steam/.local/share/Steam"),
+            running: false,
+            used: t(50),
+            program: true,
+        };
+        let pick = |n: &Found, f: &Found| is_flatpak(&choose(n.clone(), f.clone()));
+        // Signed in to last, by default.
+        assert!(!pick(&native, &flatpak));
+        assert!(pick(
+            &native,
+            &Found {
+                used: t(200),
+                ..flatpak.clone()
+            }
+        ));
+        // The one running wins.
+        assert!(pick(
+            &native,
+            &Found {
+                running: true,
+                ..flatpak.clone()
+            }
+        ));
+        assert!(!pick(
+            &Found {
+                running: true,
+                ..native.clone()
+            },
+            &Found {
+                used: t(200),
+                ..flatpak.clone()
+            }
+        ));
+        // A native install whose program is gone: its files are only left behind.
+        assert!(pick(
+            &Found {
+                program: false,
+                ..native.clone()
+            },
+            &flatpak
+        ));
+        assert!(pick(
+            &Found {
+                used: None,
+                ..native.clone()
+            },
+            &flatpak
+        ));
     }
 
     fn shortcut() -> Shortcut {
@@ -457,6 +912,7 @@ mod tests {
             ),
             launch_options: "PROTON_LOG=1 %command% -windowed".into(),
             icon: None,
+            openvr: true,
         }
     }
 

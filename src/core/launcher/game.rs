@@ -194,7 +194,8 @@ pub fn classify(cmd: &[String], server_module: bool) -> Role {
 }
 
 /// The game's executable: what the OS says, else the program on its command line (under
-/// Proton a `Z:\` path, the host's file system).
+/// Proton a Windows path: `Z:\` is the host's file system, another drive one of the
+/// launcher's prefix's, such as the home folder).
 fn game_path(exe: Option<&Path>, cmd: &[String]) -> Option<PathBuf> {
     if let Some(e) = exe.filter(|e| game_name(&e.to_string_lossy())) {
         return Some(e.to_path_buf());
@@ -203,8 +204,13 @@ fn game_path(exe: Option<&Path>, cmd: &[String]) -> Option<PathBuf> {
     let unix = arg
         .strip_prefix("Z:")
         .or_else(|| arg.strip_prefix("z:"))
-        .map(|rest| rest.replace('\\', "/"));
-    Some(PathBuf::from(unix.unwrap_or_else(|| arg.clone())))
+        .map(|rest| PathBuf::from(rest.replace('\\', "/")))
+        .or_else(|| {
+            cfg!(target_os = "linux")
+                .then(|| crate::core::linux::echoxr::host_path(arg))
+                .flatten()
+        });
+    Some(unix.unwrap_or_else(|| PathBuf::from(arg)))
 }
 
 /// Whether the game server plugin is loaded in process `pid`.
@@ -428,6 +434,12 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// Echo VR's processes running now (clients and servers), from a scan of its own: for
+/// what runs without the monitor (the tray, `--play`).
+pub fn running_now() -> Vec<GameProcess> {
+    Scanner::new().scan().0
 }
 
 /// The scan the monitor thread keeps (one `System`, refreshed each time).

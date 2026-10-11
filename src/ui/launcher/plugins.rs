@@ -559,6 +559,66 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                     }
                 }
             }
+            Step::Host {
+                fields,
+                mods,
+                version,
+                save,
+            } => {
+                let field = |k: &str| fields.get(k).map(|t| pp::render(t, &c)).unwrap_or_default();
+                let host = crate::core::launcher::host::Host {
+                    folder: field("folder").trim().to_string(),
+                    socket_uri: field("socket_uri"),
+                    serverdb_uri: field("serverdb_uri"),
+                    http_uri: field("http_uri"),
+                    http_key: field("http_key"),
+                    server_key: field("server_key"),
+                    discord_id: field("discord_id"),
+                    password: field("password"),
+                    regions: field("regions"),
+                    guilds: field("guilds"),
+                    port: field("port"),
+                    mods,
+                };
+                let name = pp::render(&version, &c);
+                let v = if name.trim().is_empty() {
+                    match d.state.target(None, |v| v.present()) {
+                        crate::core::launcher::store::Target::Installed(v)
+                            if v.publisher_lock.is_none() =>
+                        {
+                            Some(v)
+                        }
+                        _ => d
+                            .state
+                            .versions
+                            .iter()
+                            .find(|v| v.publisher_lock.is_none() && v.present())
+                            .cloned(),
+                    }
+                } else {
+                    core::version_for(&d.state, name.trim())
+                        .and_then(|vid| d.state.version(&vid).cloned())
+                };
+                let Some(v) = v else {
+                    return fail(
+                        d,
+                        &id,
+                        "Install the live build first: a game server runs from it.".into(),
+                    );
+                };
+                match crate::core::launcher::host::write(&v, &host) {
+                    Ok(written) => {
+                        tracing::info!(
+                            "plugin {id}: a game server's setup in {}",
+                            written.dir.display()
+                        );
+                        if !save.is_empty() {
+                            set_bound(d, p, &save, written.to_value());
+                        }
+                    }
+                    Err(e) => return fail(d, &id, format!("{e:#}")),
+                }
+            }
             Step::Server {
                 kind,
                 name,

@@ -36,13 +36,14 @@ fn main() {
         }
     }
 
-    // Linux: Steam's shortcut runs the launcher to start the game (see core::linux), with
+    // Echo VR started from elsewhere (Steam's library, WiVRn's list, a desktop shortcut):
+    // the launcher starts it without its window (see core::launcher::headless), with
     // --play, or without it once Steam has dropped the shortcut's launch options.
-    if args.get(1).map(String::as_str) == Some(core::linux::PLAY_FLAG)
+    if args.get(1).map(String::as_str) == Some(core::launcher::headless::FLAG)
         || (args.len() == 1 && core::linux::started_for_shortcut())
     {
         core::log::init("play.log");
-        std::process::exit(core::linux::play_from_steam());
+        std::process::exit(core::launcher::headless::play(&args));
     }
 
     core::log::init("EchoVR_Launcher.log");

@@ -1155,6 +1155,7 @@ dependencies = [
  "image",
  "keyring",
  "ksni",
+ "libc",
  "mslnk",
  "notify-rust",
  "open",

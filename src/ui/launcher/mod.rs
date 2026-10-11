@@ -7,6 +7,7 @@ mod friends;
 mod hero;
 mod install;
 mod install_panel;
+mod keeper;
 mod mods;
 mod now;
 mod panel;
@@ -193,10 +194,16 @@ enum JobResult {
     ArtworkInstalled,
     /// Echo VR was put into SteamVR's library (`true`) or taken out.
     LibraryEntry(bool),
-    /// Linux: set up, with the Steam shortcut's appid.
-    LinuxReady(u32),
+    /// Linux: set up, with the Steam shortcut's appid, and whether the Flatpak Steam was
+    /// let start programs outside its sandbox for it now.
+    LinuxReady {
+        appid: u32,
+        flatpak_override: bool,
+    },
     /// SteamVR through EchoXR is set up (Windows).
     EchoXrReady,
+    /// Windows: Echo VR is in Steam's library (its appid) or out of it.
+    WindowsSteam(Option<u32>),
     /// An event build is set up for the classic lobbies (EchoLoader, EchoRelay's patch).
     EventBuildReady,
     /// The live build is set up for the EchoRelay server a plugin chose.
@@ -759,6 +766,8 @@ pub struct Dashboard {
     vrce: echovrce::Vrce,
     /// The game's own EchoVRCE sign-in (nEVR).
     game_sign_in: echovrce::GameSignIn,
+    /// Keeps the versions' folders ready to play, however Echo VR is started.
+    ready: keeper::Keeper,
     /// Linux: GE-Proton and EchoXR are in place (checked at start).
     linux_set_up: bool,
     /// PLAY started a preparation (Revive, EchoXR, Linux): it starts the game when that's done.
@@ -901,6 +910,19 @@ impl Dashboard {
             .map(|c| crate::core::launcher::dev_code::display(&c))
             .unwrap_or_default();
         self.linux_set_up = cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up();
+        setup::shortcuts_through_launcher(self);
+        setup::windows_steam_current(self);
+        setup::wivrn_list(self);
+        // A Steam shortcut that doesn't start this launcher any more (it moved, another
+        // Steam, or the Flatpak Steam's that couldn't reach it): PLAY adds it again.
+        if self.linux_set_up
+            && !self.demo
+            && self.state.linux_appid.is_some()
+            && setup::linux_needs_shortcut()
+        {
+            tracing::info!("Linux: Echo VR's Steam shortcut isn't current: PLAY adds it again");
+            self.state.linux_appid = None;
+        }
         if cfg!(target_os = "linux")
             && !self.demo
             && setup::linux_runtime(&mut self.state.profile.runtime)
@@ -1933,6 +1955,32 @@ impl Dashboard {
     }
 
     /// The launcher started the game that runs (or is starting).
+    /// Has the keeper make a version's folder ready when its choices changed: not while
+    /// its game (or a server from it) runs, a job has its folder or the mods, or a start is
+    /// on its way.
+    fn keep_ready(&mut self, ctx: &egui::Context) {
+        if self.demo {
+            return;
+        }
+        let local = self.local();
+        let starting = self.launched.is_some();
+        let skip: Vec<String> = self
+            .state
+            .versions
+            .iter()
+            .filter(|v| {
+                starting
+                    || local.runs(&v.id, &v.root)
+                    || local.server_in(&v.root)
+                    || self
+                        .busy_with(&[Res::Version(v.id.clone()), Res::Mods])
+                        .is_some()
+            })
+            .map(|v| v.id.clone())
+            .collect();
+        self.ready.tick(ctx, &self.state, |v| skip.contains(&v.id));
+    }
+
     fn ours(&self) -> bool {
         self.child.is_some()
             || self.launched.is_some()
@@ -2391,6 +2439,7 @@ impl Dashboard {
         let session = self.vrce.session();
         self.game_sign_in
             .tick(ctx, session.clone(), &self.state.versions, self.demo);
+        self.keep_ready(ctx);
         let shown = match self.page {
             Page::Servers => servers::Shown::Servers,
             Page::Play => servers::Shown::Play,
@@ -2529,7 +2578,7 @@ impl Dashboard {
                 r,
                 JobResult::ReviveReady(_)
                     | JobResult::EchoXrReady
-                    | JobResult::LinuxReady(_)
+                    | JobResult::LinuxReady { .. }
                     | JobResult::EventBuildReady
                     | JobResult::LiveRelayReady
             );
@@ -2739,13 +2788,26 @@ impl Dashboard {
                     });
                 }
             }
-            JobResult::LinuxReady(appid) => {
+            JobResult::LinuxReady {
+                appid,
+                flatpak_override,
+            } => {
                 self.state.linux_appid = Some(appid);
+                self.state.steam_flatpak_override |= flatpak_override;
                 self.linux_set_up = true;
                 self.save();
                 if !play_after {
                     self.notify("Echo VR is ready on Linux: PLAY starts it through Steam");
                 }
+            }
+            JobResult::WindowsSteam(appid) => {
+                self.state.windows_appid = appid;
+                self.save();
+                self.notify(if appid.is_some() {
+                    "Echo VR is in Steam's library: it starts through the launcher from there"
+                } else {
+                    "Echo VR is out of Steam's library"
+                });
             }
             JobResult::ArtworkInstalled => {
                 self.notify("Echo VR's artwork is installed (restart SteamVR to see it)")

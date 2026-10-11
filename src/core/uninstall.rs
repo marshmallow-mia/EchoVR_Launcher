@@ -42,7 +42,7 @@ impl Part {
             out.extend([Part::LinuxSetup, Part::SteamShortcut]);
         }
         if cfg!(windows) {
-            out.push(Part::SteamVrLibrary);
+            out.extend([Part::SteamShortcut, Part::SteamVrLibrary]);
         }
         out.extend([
             Part::DesktopShortcuts,
@@ -257,7 +257,7 @@ pub fn run(
                     Ok(())
                 }
             }
-            Part::SteamShortcut => remove_steam_shortcut(),
+            Part::SteamShortcut => remove_steam_shortcut(state.steam_flatpak_override),
             Part::SteamVrLibrary => {
                 if super::revive::find_revive_dir().is_some() {
                     super::elevation::set_library_entry(None, "", consent)
@@ -266,6 +266,10 @@ pub fn run(
                 }
             }
             Part::DesktopShortcuts => {
+                // WiVRn's list is one of the desktop's entries.
+                if cfg!(target_os = "linux") {
+                    super::linux::wivrn::unlist();
+                }
                 let mut names: Vec<String> =
                     state.versions.iter().flat_map(shortcut_names).collect();
                 names.dedup();
@@ -368,14 +372,29 @@ fn remove_site_data(notes: &mut Vec<String>) {
     let _ = notes;
 }
 
-fn remove_steam_shortcut() -> Result<()> {
+/// Takes Echo VR out of Steam's library. With the Flatpak Steam also its script, and the
+/// permission the launcher gave it for that (`flatpak_override`).
+fn remove_steam_shortcut(flatpak_override: bool) -> Result<()> {
     use super::linux::steam;
+    if let Some(script) = steam::play_script() {
+        let _ = std::fs::remove_file(script);
+    }
     let Some(root) = steam::root() else {
         return Ok(());
     };
-    let was_running = steam::running();
+    // Not in Steam: Steam stays as it is.
+    if !steam::has_shortcut(&root) {
+        if flatpak_override && steam::is_flatpak(&root) {
+            return steam::disallow_spawn();
+        }
+        return Ok(());
+    }
+    let was_running = steam::running(&root);
     steam::shutdown(&root)?;
-    let r = steam::remove_shortcut(&root).map(|_| ());
+    let mut r = steam::remove_shortcut(&root).map(|_| ());
+    if flatpak_override && steam::is_flatpak(&root) {
+        r = r.and(steam::disallow_spawn());
+    }
     if was_running {
         let _ = steam::start(&root);
     }

@@ -28,6 +28,7 @@ const TILE_H: f32 = 170.0;
 const PANEL_W: f32 = 492.0;
 
 const CACHE_KEY: &str = "settings-delete-cache";
+const STEAM_KEY: &str = "settings-add-to-steam";
 const UPLOAD_TEXT: &str = "This sends the logs checked above to the developer, marshmallow-mia, and selected Echo VR Lounge moderators, to help with a problem. Only they can see them, and they're deleted after 30 days. Your EchoVRCE account's ID, its Discord ID and this PC's Echo VR account (OVR-ORG) go with them, so they know whose logs they are.\n\n\
 They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, your Echo VR account name and the matches you joined, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
 To have them deleted, message marshmallow-mia on Discord or email echo@mia-hentschel.de.";
@@ -39,13 +40,16 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     game(d, kit, ctx);
     // Side by side, sharing the extra width; taller in a taller window.
     let (half, dy) = (kit.dx() / 2.0, kit.dy());
-    launch_options(d, kit, LOWER[0].wider(half).taller(dy));
+    launch_options(d, kit, ctx, LOWER[0].wider(half).taller(dy));
     storage(d, kit, LOWER[1].moved(half).wider(half).taller(dy));
     panel::at_right(kit, |k| launcher(d, k, ctx));
 }
 
 /// The answers to this page's dialogs.
 fn answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if d.dialogs.take(STEAM_KEY).is_some_and(|a| a.is_yes()) {
+        setup::windows_steam(d, ctx, true);
+    }
     if d.dialogs.take(CACHE_KEY).is_some_and(|a| a.is_yes()) {
         d.deleting_cache = true;
         let roots = d.cache_roots();
@@ -246,7 +250,7 @@ fn vd_route(via: VdVia) -> (&'static str, &'static str) {
 }
 
 /// LAUNCH OPTIONS: what Echo VR is started with (desktop shortcuts too).
-fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
+fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) {
     let (x, mut y, w, _) = hero::card_frame(kit, r, "Launch options");
     // With the classic lobbies' server too, the card is full: the notes go into the
     // checks' tooltips.
@@ -302,6 +306,7 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
     );
     changed |= flipped;
     y += h;
+    y += start_points(d, kit, ctx, x, y, w, compact);
     kit.caption(x, y, "Extra arguments");
     y += dz(30.0);
     changed |= kit.field(
@@ -345,6 +350,88 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
     for (id, name) in packs {
         y = pack_server(d, kit, x, y + dz(22.0), w, &id, &name);
     }
+}
+
+/// Where Echo VR also starts from, through the launcher (`--play`): Steam's library on
+/// Windows (Linux adds it at PLAY), WiVRn's app list on Linux. Returns the height taken.
+#[allow(clippy::too_many_arguments)]
+fn start_points(
+    d: &mut Dashboard,
+    kit: &mut Kit,
+    ctx: &egui::Context,
+    x: f32,
+    y: f32,
+    w: f32,
+    compact: bool,
+) -> f32 {
+    let say = |note: &'static str, tip: &str| -> (&'static str, String) {
+        if compact {
+            ("", format!("{note} {tip}"))
+        } else {
+            (note, tip.to_string())
+        }
+    };
+    let mut h = 0.0;
+    if (cfg!(windows) && crate::core::linux::steam::root().is_some()) || d.demo {
+        let busy = d.busy_with(&[Res::Vr]);
+        let (note, tip) = say(
+            "Starts Echo VR from Steam (and SteamVR's library) as PLAY does.",
+            busy.as_deref()
+                .unwrap_or("Steam closes and restarts once for this"),
+        );
+        let mut on = d.state.windows_appid.is_some();
+        let (flipped, used) = option(
+            kit,
+            "opt-steam",
+            &mut on,
+            "Echo VR in Steam's library",
+            note,
+            x,
+            y,
+            w,
+            busy.is_none(),
+            &tip,
+        );
+        if flipped && !d.demo {
+            if on {
+                d.dialogs.confirm(
+                    STEAM_KEY,
+                    "Add Echo VR to Steam",
+                    "Echo VR goes into your Steam library (and SteamVR's): it starts through the launcher from there, as PLAY does. Steam closes and restarts for that, once.",
+                    DlgIcon::Info,
+                );
+            } else {
+                setup::windows_steam(d, ctx, false);
+            }
+        }
+        h += used;
+    }
+    let wivrn = cfg!(target_os = "linux")
+        && crate::core::linux::echoxr::installed().contains(&crate::core::linux::echoxr::Xr::Wivrn);
+    if wivrn {
+        let (note, tip) = say(
+            "Pick Echo VR in WiVRn's headset app: it starts on WiVRn as PLAY does.",
+            "A desktop entry WiVRn lists (kept out of the desktop's menus)",
+        );
+        let (flipped, used) = option(
+            kit,
+            "opt-wivrn",
+            &mut d.state.wivrn_list,
+            "Echo VR in WiVRn's app list",
+            note,
+            x,
+            y + h,
+            w,
+            true,
+            &tip,
+        );
+        if flipped {
+            d.save();
+            setup::wivrn_list(d);
+        }
+        h += used;
+    }
+    h
 }
 
 /// A content pack that can play on a server of its own (EchoCombat): which one it plays

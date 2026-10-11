@@ -5,19 +5,22 @@
 pub mod echoxr;
 pub mod steam;
 pub mod vdf;
+pub mod wivrn;
 
 use std::path::{Path, PathBuf};
 
 use crate::core::launcher::launch;
-use crate::core::launcher::store::{LauncherState, Runtime, Target};
+use crate::core::launcher::store::{LauncherState, Runtime};
 
 /// What Steam's shortcut runs the launcher with.
-pub const PLAY_FLAG: &str = "--play";
+pub const PLAY_FLAG: &str = crate::core::launcher::headless::FLAG;
 
-/// Cancels a start PLAY made: ends the launcher Steam ran with `--play` (not this one)
-/// and what runs in the game's Wine prefix. Steam then sees the shortcut end.
+/// Cancels a start PLAY made, or ends its game: asks the launcher Steam ran with `--play`
+/// (not this one) to end, which it does after its clean-up (the silent microphone, the
+/// graphics re-rate), and ends what runs in the game's Wine prefix. Steam then sees the
+/// shortcut end.
 pub fn cancel_start() {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, Signal, System, UpdateKind};
     let me = std::process::id();
     let mut sys = System::new();
     sys.refresh_processes_specifics(
@@ -28,7 +31,11 @@ pub fn cancel_start() {
     for (pid, p) in sys.processes() {
         let play = p.cmd().iter().any(|a| a.to_str() == Some(PLAY_FLAG));
         let ours = p.name().to_string_lossy().starts_with("EchoVR_Launche");
-        if play && ours && pid.as_u32() != me && p.kill() {
+        if play
+            && ours
+            && pid.as_u32() != me
+            && p.kill_with(Signal::Term).unwrap_or_else(|| p.kill())
+        {
             tracing::info!("cancelled the start (pid {pid})");
         }
     }
@@ -122,6 +129,66 @@ pub struct Playing {
     pub reaper: Option<u32>,
 }
 
+/// Has what `--play` starts stay under it: Wine's processes leave their parent as they
+/// start, and without this the game would end up under init, out of the launcher's sight
+/// (its STOP, "is it ours"). Steam's `reaper` does the same when Steam runs `--play` itself;
+/// started any other way (the Flatpak Steam's hand-off, WiVRn's list, a desktop entry),
+/// nothing else does.
+#[cfg(target_os = "linux")]
+fn keep_orphans() {
+    // SAFETY: prctl(PR_SET_CHILD_SUBREAPER) only sets a flag on this process.
+    if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) } != 0 {
+        tracing::warn!(
+            "--play: couldn't become the game's subreaper: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn keep_orphans() {}
+
+/// Set when `--play` is asked to end (SIGTERM, SIGINT, SIGHUP): Steam's Stop, which the
+/// Flatpak Steam's hand-off passes on.
+static ASKED_TO_END: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "linux")]
+extern "C" fn asked_to_end(_: libc::c_int) {
+    ASKED_TO_END.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Has Steam's Stop end the game too, not just `--play`: the game runs under `--play`
+/// (see [`keep_orphans`]), out of reach of what Steam ends.
+#[cfg(target_os = "linux")]
+fn end_with_steam() {
+    let handler = asked_to_end as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        unsafe { libc::signal(signal, handler) };
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn end_with_steam() {}
+
+/// Runs the game's command to its end. Asked to end meanwhile, `--play` ends what runs in
+/// the game's prefix (Proton, EchoXR, the game) first.
+fn run_to_end(c: &mut std::process::Command) -> std::io::Result<std::process::ExitStatus> {
+    let mut child = c.spawn()?;
+    let mut ended = false;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if !ended && ASKED_TO_END.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("--play: asked to end (Steam's Stop): ending Echo VR");
+            echoxr::kill_prefix();
+            ended = true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}
+
 /// `--play`'s parent when it is Steam's per-launch `reaper`.
 #[cfg(not(unix))]
 fn steam_reaper() -> Option<u32> {
@@ -141,12 +208,22 @@ fn playing_file() -> PathBuf {
     echoxr::root().join("playing.json")
 }
 
-/// What `--play` runs right now, if anything (Linux only).
+/// What `--play` runs right now, if anything.
 pub fn playing() -> Option<Playing> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
     serde_json::from_str(&std::fs::read_to_string(playing_file()).ok()?).ok()
+}
+
+/// `--play` notes what it runs (`None`: nothing any more).
+pub fn set_playing(playing: Option<&Playing>) {
+    match playing.and_then(|p| serde_json::to_vec(p).ok()) {
+        Some(json) => {
+            let _ = std::fs::create_dir_all(echoxr::root());
+            let _ = std::fs::write(playing_file(), json);
+        }
+        None => {
+            let _ = std::fs::remove_file(playing_file());
+        }
+    }
 }
 
 /// What went wrong at `--play`'s last start, for the launcher's window to say once.
@@ -160,11 +237,14 @@ fn outcome_file() -> PathBuf {
     echoxr::root().join("last-start.json")
 }
 
-/// What went wrong at the last start, once (Linux only): it is gone after this.
+/// Leaves what went wrong at this start for the launcher's window.
+pub fn write_outcome(outcome: &Outcome) -> std::io::Result<()> {
+    std::fs::create_dir_all(echoxr::root())?;
+    std::fs::write(outcome_file(), serde_json::to_vec(outcome)?)
+}
+
+/// What went wrong at the last start, once: it is gone after this.
 pub fn take_outcome() -> Option<Outcome> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
     let file = outcome_file();
     let text = std::fs::read_to_string(&file).ok()?;
     let _ = std::fs::remove_file(&file);
@@ -240,7 +320,7 @@ fn compositor_lost_gpu(log: &str) -> bool {
 }
 
 /// The lobby left for this start, and whether to watch it.
-fn take_next_lobby() -> Option<(String, bool)> {
+pub fn take_next_lobby() -> Option<(String, bool)> {
     let f = next_lobby_file();
     let text = std::fs::read_to_string(&f).ok();
     let _ = std::fs::remove_file(f);
@@ -260,14 +340,52 @@ pub fn launcher_exe() -> Option<PathBuf> {
         .or_else(|| std::env::current_exe().ok())
 }
 
+/// The shortcut Echo VR gets in the library of the Steam at `steam_root`. The native Steam
+/// runs the launcher with `--play`. The Flatpak's can't see the launcher from its sandbox:
+/// it runs [`steam::play_script`], which hands the start to the launcher outside (see
+/// [`steam::write_play_script`]). In SteamVR's library only with SteamVR installed.
+pub fn steam_shortcut(steam_root: &Path) -> Option<steam::Shortcut> {
+    let openvr = echoxr::installed().contains(&echoxr::Xr::SteamVr);
+    if steam::is_flatpak(steam_root) {
+        return Some(steam::Shortcut {
+            exe: steam::play_script()?,
+            launch_options: String::new(),
+            icon: None,
+            openvr,
+        });
+    }
+    Some(steam::Shortcut {
+        exe: launcher_exe()?,
+        launch_options: PLAY_FLAG.into(),
+        icon: None,
+        openvr,
+    })
+}
+
+/// The Flatpak Steam's script, pointing at this launcher (also after it moved). Nothing
+/// for the native Steam.
+pub fn refresh_play_script(steam_root: &Path) -> anyhow::Result<()> {
+    if steam::is_flatpak(steam_root) {
+        use anyhow::Context;
+        let exe = launcher_exe().context("the launcher's own path is unknown")?;
+        steam::write_play_script(&exe)?;
+    }
+    Ok(())
+}
+
 /// Whether Steam started this launcher for its Echo VR shortcut (Steam's `SteamGameId`
 /// is the shortcut's game id): PLAY's start, even when Steam has lost the shortcut's
 /// `--play`, as it does when it saves its own copy of the shortcuts at a start.
 pub fn started_for_shortcut() -> bool {
-    if !cfg!(target_os = "linux") {
-        return false;
-    }
-    let Some(appid) = LauncherState::load().linux_appid else {
+    let state = LauncherState::load();
+    let appid = if cfg!(windows) {
+        state.windows_appid
+    } else if cfg!(target_os = "linux") {
+        state.linux_appid
+    } else {
+        None
+    };
+    let Some(appid) = appid else {
         return false;
     };
     let ids: Vec<String> = ["SteamGameId", "SteamOverlayGameId", "SteamAppId"]
@@ -346,12 +464,15 @@ fn has_microphone(list: &str) -> bool {
         .any(|name| !name.is_empty() && !name.ends_with(".monitor"))
 }
 
-/// `--play`: starts the version PLAY would start, with the launch options, through Proton
-/// and EchoXR, and waits for the game to end. Returns the exit code.
-pub fn play_from_steam() -> i32 {
+/// `--play`: starts the version PLAY would start (or the one `ask` names), with the launch
+/// options (on the route `ask` names, else the profile's), through Proton and EchoXR, and
+/// waits for the game to end. Returns the exit code.
+pub fn play_from_steam(ask: &crate::core::launcher::headless::Ask) -> i32 {
+    keep_orphans();
+    end_with_steam();
     let state = LauncherState::load();
-    let Target::Installed(v) = state.target(None, |v| v.present()) else {
-        tracing::error!("--play: no installed version to start");
+    let Some(v) = ask.version(&state) else {
+        tracing::error!("--play: no installed version to start ({:?})", ask.version);
         return 2;
     };
     let Some(steam_root) = steam::root() else {
@@ -360,6 +481,9 @@ pub fn play_from_steam() -> i32 {
     };
     let lobby = take_next_lobby();
     let mut profile = state.profile.clone();
+    if let Some(r) = ask.runtime {
+        profile.runtime = r;
+    }
     if matches!(profile.runtime, Runtime::MetaLink | Runtime::VirtualDesktop) {
         // Linux's "VR" before there was a choice: SteamVR (the window asks again).
         profile.runtime = Runtime::Revive;
@@ -375,57 +499,41 @@ pub fn play_from_steam() -> i32 {
         launch::game_args(&profile, lobby.as_ref().map(|(l, _)| l.as_str()))
     };
     let event = v.publisher_lock.is_some();
-    // An event build: in VR always (it can't sign in on the monitor), with EchoLoader and
-    // EchoRelay's patch in its folder (PLAY in the launcher's window set it up already; a
-    // start from Steam alone may come first).
-    if event {
-        if profile.runtime == crate::core::launcher::store::Runtime::Flat {
-            tracing::error!("--play: event builds always start in VR");
-            return 2;
-        }
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-        if let Err(e) = crate::core::launcher::relay::set_up(&v, &cancel, &mut |_| {}) {
-            tracing::error!("--play: {} not set up for the classic lobbies: {e:#}", v.id);
-            return 2;
-        }
+    // An event build: in VR always (it can't sign in on the monitor).
+    if event && profile.runtime == Runtime::Flat {
+        tracing::error!("--play: event builds always start in VR");
+        return 2;
     }
-    // Started from Steam without the launcher's window too: nEVR's plugin list (the live
-    // build's; EchoXR Hands only with it).
+    // The folder as this start needs it (the launcher's window keeps it so; started from
+    // Steam alone, this may be the first time): an event build's classic lobbies, the live
+    // build's EchoRelay server or its mods and server (nEVR), EchoXR.
     let hands = !event && profile.hands(state.echoxr_hands);
-    // The live build on an EchoRelay server a plugin chose: as the event builds, without
-    // nEVR (EchoLoader and EchoRelay's patch in its place).
-    let echorelay = crate::core::launcher::mods::echorelay_for(&state, &v);
-    if let Some((server, account)) = &echorelay {
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-        let set_up = crate::core::launcher::relay::set_up_live(&v, &cancel, &mut |_| {})
-            .and_then(|()| crate::core::launcher::relay::write_live_config(&v, server, account));
-        if let Err(e) = set_up {
-            tracing::error!("--play: {} not set up for EchoRelay: {e:#}", v.id);
-            return 2;
-        }
-        // The mods that are on, beside the patch: without them it plays all the same.
-        if let Err(e) = crate::core::launcher::mods::before_echorelay_start(&v, hands) {
-            tracing::warn!("--play: mods not set up for EchoRelay: {e:#}");
-        }
-    }
-    if !event && echorelay.is_none() {
-        if let Err(e) = crate::core::launcher::mods::before_start(
-            &v,
-            state.own_game_config,
-            hands,
-            &crate::core::launcher::mods::Servers::of(&state),
-        ) {
-            tracing::warn!("--play: mods not prepared: {e:#}");
+    let this_start = LauncherState {
+        profile: profile.clone(),
+        ..state.clone()
+    };
+    if let Err(f) = crate::core::launcher::ready::prepare(&this_start, &v) {
+        use crate::core::launcher::ready::Part;
+        match f.step {
+            // Without these the game can't reach its server.
+            Part::ClassicLobby | Part::EchoRelay => {
+                tracing::error!("--play: {}: {f}", v.id);
+                return 2;
+            }
+            // It plays all the same (EchoXR is set up again below).
+            Part::Mods | Part::EchoRelayMods | Part::EchoXr => {
+                tracing::warn!("--play: {}: {f}", v.id)
+            }
         }
     }
+    // The game's EchoVRCE sign-in, renewed when due (the window does that while it's open).
+    crate::core::launcher::game_sign_in::renew_stored(&state.versions);
     let playing = Playing {
         pid: std::process::id(),
         version: v.id.clone(),
         reaper: steam_reaper(),
     };
-    if let Ok(json) = serde_json::to_vec(&playing) {
-        let _ = std::fs::write(playing_file(), json);
-    }
+    set_playing(Some(&playing));
     let flat = profile.runtime == crate::core::launcher::store::Runtime::Flat;
     // Flat with nEVR: -windowed (no headset, in a window) instead of -noovr, so the game
     // signs in as your account rather than as a demo player. Spectating stays -noovr
@@ -444,6 +552,15 @@ pub fn play_from_steam() -> i32 {
         echoxr::Start::Flat
     };
     tracing::info!("--play: {} {start:?}", v.id);
+    if start == echoxr::Start::Vr(echoxr::Xr::SteamVr) && echoxr::steamvr_in_flatpak() {
+        tracing::error!("--play: {}", echoxr::STEAMVR_IN_FLATPAK);
+        let _ = write_outcome(&Outcome {
+            title: "SteamVR in the Flatpak Steam".into(),
+            message: echoxr::STEAMVR_IN_FLATPAK.into(),
+        });
+        set_playing(None);
+        return 2;
+    }
     // Echo VR crashes at its start without any microphone: a silent one for this run.
     let mic = Microphone::ensure();
     let _ = std::fs::remove_file(outcome_file());
@@ -475,7 +592,7 @@ pub fn play_from_steam() -> i32 {
                     c.stdout(out).stderr(err);
                 }
             }
-            Ok(c.status()?)
+            Ok(run_to_end(&mut c)?)
         });
     drop(mic);
     if let Some(r) = rerate {
@@ -483,7 +600,7 @@ pub fn play_from_steam() -> i32 {
             tracing::warn!("--play: graphics re-rate: {e:#}");
         }
     }
-    let _ = std::fs::remove_file(playing_file());
+    set_playing(None);
     match result {
         Ok(status) => {
             let code = status.code().unwrap_or(0);
@@ -511,8 +628,8 @@ pub fn play_from_steam() -> i32 {
                     },
                 });
             }
-            if let Some(json) = outcome.and_then(|o| serde_json::to_vec(&o).ok()) {
-                let _ = std::fs::write(outcome_file(), json);
+            if let Some(o) = outcome {
+                let _ = write_outcome(&o);
             }
             code
         }

@@ -189,7 +189,33 @@ pub enum Step {
         display_name: String,
         password: String,
     },
+    /// Writes a game server's own setup into the live build (`_local/<folder>/`, see
+    /// `launcher::host`); where it went and how to start the server go to `save`.
+    Host {
+        /// Each field a template.
+        fields: std::collections::BTreeMap<String, String>,
+        /// The Mods page's plugins go into its list too.
+        mods: bool,
+        /// The version (an id or catalogue id); empty: the live build PLAY would start.
+        version: String,
+        save: String,
+    },
 }
+
+/// The fields a `host` step takes (all templates).
+pub const HOST_FIELDS: [&str; 11] = [
+    "folder",
+    "socket_uri",
+    "serverdb_uri",
+    "http_uri",
+    "http_key",
+    "server_key",
+    "discord_id",
+    "password",
+    "regions",
+    "guilds",
+    "port",
+];
 
 // ---- parsing ----
 
@@ -595,6 +621,31 @@ fn parse_step(v: &Value, path: &str, w: &mut Vec<Warning>) -> Option<Step> {
             password: s(server, "password"),
         });
     }
+    if let Some(host) = v.get("host") {
+        let Some(obj) = host.as_object() else {
+            warn(w, path, "host takes {folder, discord_id, password, …}");
+            return None;
+        };
+        let save = s(host, "save");
+        if !save.is_empty() && !save.starts_with("page.") {
+            warn(w, path, "host saves what it wrote to page.<key>");
+            return None;
+        }
+        let fields = HOST_FIELDS
+            .iter()
+            .filter_map(|k| {
+                obj.get(*k)
+                    .and_then(Value::as_str)
+                    .map(|t| (k.to_string(), t.to_string()))
+            })
+            .collect();
+        return Some(Step::Host {
+            fields,
+            mods: obj.get("mods").and_then(Value::as_bool).unwrap_or(true),
+            version: s(host, "version"),
+            save,
+        });
+    }
     warn(w, path, "unknown step");
     None
 }
@@ -926,6 +977,28 @@ mod tests {
             render("{settings.relay_name|launcher.relay.name}", &new),
             "N"
         );
+    }
+
+    /// The Server host plugin reads without a warning; its host step has every field.
+    #[test]
+    fn server_host_plugin() {
+        let (p, w) = parse(include_str!(
+            "../../../docs/plugins/server-host/plugin.json"
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        let p = p.unwrap();
+        let Some(Step::Host {
+            fields, mods, save, ..
+        }) = p.actions["write"].last()
+        else {
+            panic!("the write action ends with its host step");
+        };
+        assert!(*mods);
+        assert_eq!(save, "page.host");
+        assert_eq!(fields.len(), HOST_FIELDS.len());
+        let ctx = serde_json::json!({"settings": {"folder": "", "regions": "eu"}});
+        assert_eq!(render(&fields["folder"], &ctx), "server");
+        assert_eq!(render(&fields["regions"], &ctx), "eu");
     }
 
     #[test]

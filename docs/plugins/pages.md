@@ -76,7 +76,7 @@ Every text in a page is a template. `{path}` is filled from the page's context:
 | `launcher.relay.server`, `.name`, `.password` | the classic lobbies server and account from the launcher's settings |
 | `launcher.event_builds` | the installed event builds: `[{"id": "halloween", "version": "pc-halloween-2018", "name": "Halloween 2018"}]` |
 | `launcher.server.address`, `.name`, `.kind`, `.discord_id`, `.display_name`, `.plugin` | the server the live build plays on instead of EchoVRCE, as a plugin's `server` step set it (empty: EchoVRCE; `kind`: `nakama` or `echorelay`), and that plugin's id. Its key and password aren't shown. Launchers before 0.11.11-beta.1 have no `launcher.server` |
-| `launcher.features.server`, `.echorelay` | `true` when this launcher has the `server` step, and its EchoRelay kind (0.11.12 on): a plugin can say when it needs a newer launcher |
+| `launcher.features.server`, `.echorelay`, `.host` | `true` when this launcher has the `server` step, its EchoRelay kind (0.11.12 on) and the `host` step (0.11.15 on): a plugin can say when it needs a newer launcher |
 | `item` | inside a list: its row |
 
 Template syntax:
@@ -144,6 +144,7 @@ to why (the page shows it where it likes, e.g. `{"text": "{page.error}", "tone":
 | `{"refresh": ["matches", "current"]}` | fetches those data sources again now |
 | `{"server": {"kind": "nakama", "address": "…", "key": "…", "discord_id": "…", "password": "…", "name": "…"}}` | the live build plays on that Nakama server instead of EchoVRCE from its next start: the launcher asks the player first, and No ends the action. `{"server": null}` (or an empty address) is EchoVRCE again, without asking. See **The game's server** |
 | `{"server": {"kind": "echorelay", "address": "host:port", "display_name": "…", "password": "…"}}` | the same for an EchoRelay server, as that name and password |
+| `{"host": {"folder": "server", "discord_id": "…", "password": "…", "regions": "…", "guilds": "…", "port": "6792", "socket_uri": "…", "serverdb_uri": "…", "http_uri": "…", "http_key": "…", "server_key": "…", "mods": true, "save": "page.host"}}` | writes a game server's own setup into the live build. What it wrote goes to `save`. See **A game server's setup** |
 
 ### The game's server
 
@@ -171,3 +172,39 @@ nEVR sends every `ws://` and `wss://` address in it through its bridge to its ow
   server is set, Play's line says `Server: <name>`.
 - **The example:** [game-server/plugin.json](game-server/plugin.json), the Game server
   plugin.
+
+### A game server's setup
+
+A `host` step writes a server's own setup into the live build, in `_local/<folder>/`
+(`folder`: letters, digits, `-` and `_`; `server` if empty):
+
+- **`config.yaml`:** the server account (`discord_id`, `password`), the services it signs
+  in and registers with (`socket_uri`, `serverdb_uri`, `http_uri`, `http_key`, `server_key`),
+  its `regions` and `guilds` (each comma-separated), and with `mods` (the default) the
+  plugins the Mods page has on, a content pack's included.
+- **`config.json`:** the file the game's `-config-path` names. Its folder is where nEVR
+  finds that `config.yaml`.
+- **A start script:** `start-server.cmd` on Windows, `start-server.sh` on Linux. It runs
+  `echovr.exe -server -headless -noovr -port <port> -config-path …`. nEVR ends a server
+  after each match, and the script starts it again:
+  - **On Windows** the server has a console window of its own. To stop it, close that
+    window, then press S in the script's.
+  - **On Linux** the script runs the server through the launcher's Proton, in a Wine
+    prefix of its own (`linux/servers/<folder>` in the launcher's data), so the player's
+    game can run beside it. Ctrl+C stops it.
+
+`save` gets `folder`, `config` (the `config.json`), `script` and `command` (how to run the
+script). The step ends the action when:
+- the version is an event build, or has no nEVR in its slot (on an EchoRelay server, for
+  example);
+- the account is missing, or the port isn't digits;
+- on Linux, the game was never set up there (PLAY does it).
+
+The launcher writes that folder only in this step: PLAY and its keeper keep to the game's
+own `_local/config.yaml`, and a `config.yaml` that isn't the launcher's own is never written
+over. A server signs in only as its own account, with nEVR 4.1.0 on: it keeps its sign-in
+beside its own `config.yaml`, never the player's. A guild it hosts for has to give that
+account its server host role, or it registers for no guild. Content packs on a server need
+nEVR 4.1.0 or newer.
+
+The example: [server-host/plugin.json](server-host/plugin.json), the Server host plugin.

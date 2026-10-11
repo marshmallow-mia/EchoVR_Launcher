@@ -17,7 +17,7 @@ use crate::core::launcher::login_watch::LoginWatch;
 use crate::core::launcher::store::{
     InstalledVersion, LaunchProfile, Runtime, SteamVrVia, Target, VdVia,
 };
-use crate::core::launcher::{launch, quest, relay};
+use crate::core::launcher::{launch, quest, ready, relay};
 use crate::core::revive;
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::{Answer, Icon as DlgIcon};
@@ -671,7 +671,7 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
                 d.dialogs.confirm(
                     PREPARE_LINUX,
                     "Add Echo VR to Steam",
-                    "On Linux, Echo VR starts through Steam: it is added to your Steam library once, and Steam closes and restarts for that.\n\nThen Echo VR starts.",
+                    &setup::linux_setup_question(),
                     crate::ui::dialogs::Icon::Info,
                 )
             }
@@ -1307,7 +1307,7 @@ pub(super) fn join(d: &mut Dashboard, ctx: &egui::Context, lobby: Join) {
             d.dialogs.confirm(
                 PREPARE_LINUX,
                 "Add Echo VR to Steam",
-                "On Linux, Echo VR starts through Steam: it is added to your Steam library once, and Steam closes and restarts for that.\n\nThen Echo VR starts.",
+                &setup::linux_setup_question(),
                 crate::ui::dialogs::Icon::Info,
             )
         }
@@ -1421,11 +1421,12 @@ fn stop(d: &mut Dashboard) {
     if let Some(m) = &d.monitor {
         m.stop_ours();
     }
+    // Linux: the launcher Steam ran with --play, and what runs in the game's prefix (Proton
+    // and its helpers would keep Steam's start going after the game).
+    if cfg!(target_os = "linux") && (starting || crate::core::linux::playing().is_some()) {
+        std::thread::spawn(crate::core::linux::cancel_start);
+    }
     if starting {
-        if cfg!(target_os = "linux") {
-            // What Steam already started: the launcher it ran with --play, and Proton.
-            std::thread::spawn(crate::core::linux::cancel_start);
-        }
         d.launched = None;
         d.launch_note = None;
         d.notify("Start cancelled");
@@ -1468,65 +1469,61 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
             return;
         }
     }
-    // An event build: pointed at the classic lobbies server as your account each time,
-    // so a changed account or server applies.
-    if v.publisher_lock.is_some() {
-        let Some(account) = d.state.relay_account.clone() else {
-            return;
-        };
-        if let Err(e) = relay::write_config(&v, &d.state.relay_server, &account) {
-            d.dialogs.error(
-                "Couldn't set up the classic lobby",
-                &format!("{e:#}"),
-                Default::default(),
-            );
-            return;
-        }
+    // An event build plays as your classic lobbies account (asked for before PLAY gets here).
+    if v.publisher_lock.is_some() && d.state.relay_account.is_none() {
+        return;
     }
-    // The live build on an EchoRelay server: pointed at it as the account there each time.
-    let echorelay = crate::core::launcher::mods::echorelay_for(&d.state, &v);
-    if let Some((server, account)) = &echorelay {
-        if let Err(e) = relay::write_live_config(&v, server, account) {
+    // The folder as a start needs it: mods and the server (nEVR's config.yaml), EchoRelay's
+    // or the classic lobbies' files, EchoXR. The keeper writes it whenever it changes; once
+    // more now. Where EchoXR needs administrator rights (the Meta library's), PLAY's
+    // preparation does it.
+    if let Err(f) = ready::prepare(&d.state, &v) {
+        if f.step == ready::Part::EchoXr && revive::needs_elevation(&f.error) {
+            d.notify(
+                "EchoXR needs administrator rights for this folder: PLAY again once it's set up",
+            );
+            setup::echoxr_windows(d, ctx);
+        } else {
             d.dialogs.error(
-                "Couldn't set up EchoRelay",
-                &format!("{e:#}"),
+                f.step.title(),
+                &format!("{:#}", f.error),
                 Default::default(),
             );
-            return;
         }
-        // The mods the Mods page has on, for EchoLoader beside EchoRelay's patch.
-        let hands = d.state.profile.hands(d.state.echoxr_hands);
-        if let Err(e) = crate::core::launcher::mods::before_echorelay_start(&v, hands) {
-            d.dialogs.error(
-                "Couldn't set up the mods for EchoRelay",
-                &format!("{e:#}"),
-                Default::default(),
-            );
-            return;
-        }
+        return;
     }
-    // The live build with nEVR: its plugins list (config.yaml) as the Mods page has it.
-    if v.publisher_lock.is_none() && echorelay.is_none() {
-        let hands = d.state.profile.hands(d.state.echoxr_hands);
-        if let Err(e) = crate::core::launcher::mods::before_start(
-            &v,
-            d.state.own_game_config,
-            hands,
-            &crate::core::launcher::mods::Servers::of(&d.state),
-        ) {
-            d.dialogs.error(
-                "Couldn't prepare the mods",
-                &format!("{e:#}"),
-                Default::default(),
-            );
-            return;
-        }
-    }
+    d.ready.applied(&d.state, &v);
     // Linux: through Steam's shortcut, which runs the launcher with --play.
     if cfg!(target_os = "linux") {
         let Some((root, appid)) = crate::core::linux::steam::root().zip(d.state.linux_appid) else {
+            d.dialogs.error(
+                "Steam not found",
+                "Echo VR runs through Steam on Linux: install Steam, sign in once, and press PLAY again.",
+                Default::default(),
+            );
             return;
         };
+        let spectate = lobby.as_ref().is_some_and(|j| j.spectate);
+        if d.state.profile.runtime == Runtime::Revive
+            && !spectate
+            && crate::core::linux::echoxr::steamvr_in_flatpak()
+        {
+            d.dialogs.error(
+                "SteamVR in the Flatpak Steam",
+                crate::core::linux::echoxr::STEAMVR_IN_FLATPAK,
+                Default::default(),
+            );
+            return;
+        }
+        // The Flatpak Steam's shortcut hands the start to this launcher, wherever it is now.
+        if let Err(e) = crate::core::linux::refresh_play_script(&root) {
+            d.dialogs.error(
+                "Couldn't start Echo VR",
+                &format!("{e:#}"),
+                Default::default(),
+            );
+            return;
+        }
         crate::core::linux::set_next_lobby(lobby.as_ref().map(|j| (j.lobby.as_str(), j.spectate)));
         // Steam may have to start first: on the worker, STOP can cancel it meanwhile.
         let cancel = Arc::new(AtomicBool::new(false));
@@ -1552,25 +1549,6 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
         (Runtime::Revive, SteamVrVia::Revive) => revive::find_revive_dir(),
         _ => None,
     };
-    // Through EchoXR (SteamVR, or Virtual Desktop's SteamVR or OpenXR): EchoXR into the
-    // game's folder and its copy of the game current. Where that needs administrator rights
-    // (the Meta library's), PLAY's preparation does it.
-    if cfg!(windows) && d.state.profile.through_echoxr() {
-        let bin = v.bin_dir();
-        if let Err(e) = crate::core::echoxr::prepare(&bin) {
-            if revive::needs_elevation(&e) {
-                d.notify("EchoXR needs administrator rights for this folder: PLAY again once it's set up");
-                setup::echoxr_windows(d, ctx);
-            } else {
-                d.dialogs.error(
-                    "Couldn't set up EchoXR",
-                    &format!("{e:#}"),
-                    Default::default(),
-                );
-            }
-            return;
-        }
-    }
     // Watching: on the monitor, as the spectator stream.
     let mut profile = d.state.profile.clone();
     if lobby.as_ref().is_some_and(|j| j.spectate) {

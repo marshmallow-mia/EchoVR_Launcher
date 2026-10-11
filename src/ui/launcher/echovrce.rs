@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 
 use super::{hero, panel, setup, Dashboard, Page};
 use crate::core::echovrce::{self as vrce, Account, DeviceCode, Poll, Tokens};
-use crate::core::launcher::nevr::{self, GameLogin};
+use crate::core::launcher::game_sign_in;
+use crate::core::launcher::nevr;
 use crate::core::launcher::store::InstalledVersion;
 use crate::ui::design::{self, dz, Dr};
 use crate::ui::kit::Kit;
@@ -142,8 +143,11 @@ impl Vrce {
         if !self.loaded {
             self.loaded = true;
             self.busy = true;
-            self.worker
-                .spawn(ctx, |tx| tx.send(Msg::Loaded(vrce::store::load())));
+            self.worker.spawn(ctx, |tx| {
+                // A tray or `--play` renewing it: the session it keeps, not the one before.
+                game_sign_in::wait_for_renewal(Duration::from_secs(15));
+                tx.send(Msg::Loaded(vrce::store::load()))
+            });
         }
         let mut notice = None;
         for m in self.worker.drain() {
@@ -552,43 +556,12 @@ impl GameSignIn {
         let era = self.era.clone();
         let mine = *lock(&era);
         self.worker.spawn(ctx, move |tx| {
-            let now = vrce::now();
-            let mut all_good = true;
-            for v in &live {
-                if !crate::core::launcher::mods::nevr_in(&v.bin_dir())
-                    || nevr::read_login(v).is_some_and(|l| l.good_for(&account.id, now))
-                {
-                    continue;
-                }
-                // `Some`: signed out meanwhile, the linked session isn't written.
-                let linked = vrce::link_device(&tokens.token).and_then(|t| {
-                    let rt = t
-                        .refresh_token
-                        .clone()
-                        .ok_or_else(|| anyhow::anyhow!("EchoVRCE gave no refresh token"))?;
-                    let login = GameLogin::new(&rt, &account.id, &account.username, now);
-                    let held = lock(&era);
-                    if *held != mine {
-                        return Ok(Some(t));
-                    }
-                    nevr::write_login(v, &login).map(|()| None)
-                });
-                match linked {
-                    Ok(None) => tracing::info!("{}: the game has its own EchoVRCE sign-in", v.id),
-                    Ok(Some(t)) => {
-                        tracing::info!(
-                            "{}: signed out while the game's sign-in was linked: not written",
-                            v.id
-                        );
-                        let _ = vrce::logout(&t);
-                        break;
-                    }
-                    Err(e) => {
-                        all_good = false;
-                        tracing::warn!("{}: no EchoVRCE sign-in for the game: {e:#}", v.id)
-                    }
-                }
-            }
+            // Held while a sign-in is written: a sign-out waits for it, and one before
+            // stops the rest.
+            let all_good = game_sign_in::renew(&tokens, &account, &live, || {
+                let held = lock(&era);
+                (*held == mine).then_some(held)
+            });
             tx.send(all_good);
         });
     }

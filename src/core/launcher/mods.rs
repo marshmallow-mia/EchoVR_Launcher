@@ -724,7 +724,8 @@ pub struct ModView {
     pub plugins: Vec<Plugin>,
     /// The last start, if nEVR ever started.
     pub status: Option<Status>,
-    /// A `config.yaml` nEVR reads instead of the launcher's.
+    /// A `config.yaml` nEVR reads instead of the launcher's: one nearer the exe, or the
+    /// launcher's own place holding someone's own (a game server's).
     pub shadowed: Option<PathBuf>,
     /// The game's own `_local/config.json` nEVR loads (none: its built-in one).
     pub game_config: Option<PathBuf>,
@@ -763,7 +764,8 @@ pub fn log_dir(bin: &Path) -> PathBuf {
     bin.join(PLUGIN_LOGS)
 }
 
-fn choices_path(v: &InstalledVersion) -> PathBuf {
+/// Where `v`'s Mods page choices are (`_local/launcher-mods.json`).
+pub fn choices_path(v: &InstalledVersion) -> PathBuf {
     nevr::local_dir(v).join(CHOICES)
 }
 
@@ -856,7 +858,7 @@ pub fn read(v: &InstalledVersion) -> ModView {
         plugins,
         loader,
         status,
-        shadowed: nevr::shadowing_config(v),
+        shadowed: nevr::shadowing_config(v).or_else(|| nevr::own_config(v)),
         game_config: nevr::game_config_in_use(v),
         stray_dbgcore: nevr::stray_dbgcore(&bin),
         assets_enabled,
@@ -1091,6 +1093,11 @@ pub fn ensure_required(v: &InstalledVersion, catalog: &ModCatalog) -> Result<()>
 /// loads only its required patches). A plugin the launcher added whose file no longer
 /// matches the checksum it noted is left out.
 pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
+    // Someone's own config.yaml (a game server's): it decides the server and the sign-in.
+    if let Some(own) = nevr::own_config(v) {
+        tracing::info!("{}: {} is your own: left as it is", v.id, own.display());
+        return Ok(());
+    }
     let overlay = Overlay::read(&choices_path(v));
     let catalog = ModCatalog::cached();
     let local = nevr::local_plugins(v);
@@ -1119,6 +1126,21 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     }
     let lines = config_lines(v, &overlay, &catalog, local, served.as_ref());
     nevr::write_config(v, &lines, local, backend.as_ref())
+}
+
+/// The plugins a game server in `v` loads, as the Mods page has them on for a start (a
+/// content pack's overlay early, with nEVR's early pass), and whether local plugins may
+/// load: the list [`prepare`] gives nEVR, for a server's own `config.yaml`.
+pub fn server_plugins(v: &InstalledVersion) -> (Vec<PluginLine>, bool) {
+    let overlay = Overlay::read(&choices_path(v));
+    let served = if overlay.enabled() {
+        served_pack(v, &overlay, false)
+    } else {
+        None
+    };
+    let local = nevr::local_plugins(v);
+    let lines = config_lines(v, &overlay, &ModCatalog::cached(), local, served.as_ref());
+    (lines, local)
 }
 
 /// Before starting the live build `v` on an EchoRelay server, where EchoLoader stands in

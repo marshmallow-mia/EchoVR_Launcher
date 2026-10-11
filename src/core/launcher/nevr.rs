@@ -143,6 +143,34 @@ pub fn logins(v: &InstalledVersion) -> Vec<PathBuf> {
         .collect()
 }
 
+/// How every `config.yaml` the launcher writes starts (and has since its first release).
+const WRITTEN_BY: &str = "# Written by the Echo VR launcher";
+
+/// Pure: whether `text` is a `config.yaml` the launcher may write over: its own, or one
+/// that sets nothing but the local plugins' switch (as its docs say to add). Anything
+/// else is someone's own, such as a game server's.
+fn written_by_launcher(text: &str) -> bool {
+    let text = text.trim_start_matches('\u{feff}');
+    if text.starts_with(WRITTEN_BY) {
+        return true;
+    }
+    text.lines()
+        .filter(|l| !l.starts_with([' ', '\t', '#', '-']) && !l.trim().is_empty())
+        .filter_map(|l| l.split_once(':').map(|(k, _)| k.trim()))
+        .all(|k| k == super::mods::LOCAL_PLUGINS_KEY)
+}
+
+/// `v`'s `config.yaml` when it is someone's own (a game server's, written by hand): the
+/// launcher leaves it, and the sign-in beside it, as they are; its mods and server choices
+/// then don't reach the game.
+pub fn own_config(v: &InstalledVersion) -> Option<PathBuf> {
+    let path = local_dir(v).join(CONFIG);
+    std::fs::read_to_string(&path)
+        .ok()
+        .filter(|text| !written_by_launcher(text))
+        .map(|_| path)
+}
+
 /// A `config.yaml` nEVR reads instead of the launcher's (one nearer the exe), if any.
 pub fn shadowing_config(v: &InstalledVersion) -> Option<PathBuf> {
     let ours = local_dir(v).join(CONFIG);
@@ -386,12 +414,20 @@ pub fn render_config(plugins: &[PluginLine], local: bool, backend: Option<&Backe
 
 /// Pure: the plugins part of [`render_config`].
 fn render_plugins(plugins: &[PluginLine], local: bool) -> String {
-    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
     let mut out = String::from(
         "# Written by the Echo VR launcher before every start, from its Mods page.\n\
          # Changes here are replaced: change mods in the launcher. Kept: the line below,\n\
          # x-local-plugins: true, which lets plugins load that aren't verified.\n",
     );
+    out.push_str(&render_plugin_list(plugins, local));
+    out
+}
+
+/// Pure: a `config.yaml`'s `plugins:` list (and the local plugins' key), as the launcher
+/// writes it.
+pub fn render_plugin_list(plugins: &[PluginLine], local: bool) -> String {
+    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
+    let mut out = String::new();
     if local {
         out.push_str(&format!("{}: true\n", super::mods::LOCAL_PLUGINS_KEY));
     }
@@ -423,8 +459,12 @@ pub fn write_config(
     backend: Option<&Backend>,
 ) -> Result<()> {
     let dir = local_dir(v);
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let path = dir.join(CONFIG);
+    if let Some(own) = own_config(v) {
+        tracing::info!("{}: {} is your own: left as it is", v.id, own.display());
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let text = render_config(plugins, local, backend);
     if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
         return Ok(());
@@ -1198,6 +1238,31 @@ mod tests {
         assert!(game_config_in_use(&v).is_none());
         assert_eq!(restore_game_config(&v).unwrap(), GameConfigStep::Restored);
         assert_eq!(game_config_in_use(&v), Some(near.join(GAME_CONFIG)));
+    }
+
+    #[test]
+    fn leaves_someone_elses_config_alone() {
+        assert!(written_by_launcher(&render_config(&[], false, None)));
+        assert!(written_by_launcher("x-local-plugins: true\n"));
+        assert!(written_by_launcher(""));
+        assert!(!written_by_launcher(
+            "services:\n  socket_uri: \"ws://h/spr\"\nplugins:\n  - name: \"A\"\n"
+        ));
+        assert!(!written_by_launcher(
+            "# my server\nauth:\n  password: \"p\"\n"
+        ));
+
+        let dir = tempfile::tempdir().unwrap();
+        let v = version_at(dir.path());
+        let own = local_dir(&v).join(CONFIG);
+        std::fs::create_dir_all(local_dir(&v)).unwrap();
+        std::fs::write(&own, "identity:\n  discord_id: \"1\"\n").unwrap();
+        assert_eq!(own_config(&v), Some(own.clone()));
+        write_config(&v, &[], false, None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&own).unwrap(),
+            "identity:\n  discord_id: \"1\"\n"
+        );
     }
 
     #[test]

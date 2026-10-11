@@ -585,7 +585,7 @@ fn loader_text(view: &ModView) -> String {
             pack.unwrap_or_default()
         ),
         Loader::Nevr { .. } if view.shadowed.is_some() => format!(
-            "nEVR reads {} instead of the launcher's config.yaml, so the choices here don't apply: delete it to have them back.",
+            "nEVR reads your own {} (a game server's?), which the launcher leaves as it is, so the choices here don't apply: rename or delete it to have them back.",
             view.shadowed.as_deref().map(|p| p.display().to_string()).unwrap_or_default()
         ),
         Loader::Nevr { .. } if !view.enabled => {

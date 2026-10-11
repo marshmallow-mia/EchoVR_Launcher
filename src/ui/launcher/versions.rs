@@ -386,12 +386,12 @@ pub(super) fn manage_menu(
         MenuItem::row("Open folder", "").unless(missing),
         Some(Act::Open),
     ));
-    // Shortcuts start the game directly, which only works on Windows for now.
+    // Shortcuts start the launcher with --play (Windows for now; Linux starts through Steam).
     if cfg!(windows) || d.demo {
         menu.push((
             MenuItem::row(
                 "Desktop shortcut",
-                "A shortcut that starts this version directly",
+                "A shortcut that starts this version as PLAY does",
             )
             .unless(missing),
             Some(Act::Shortcut),

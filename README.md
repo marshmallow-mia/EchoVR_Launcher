@@ -44,6 +44,25 @@ library folder, and Wine prefixes on Linux) and offers **Use the copy on this PC
 **Choose echovr.exe** for one somewhere else. That copy is checked against the build's
 checksums and added instead of downloading it again.
 
+## Starting Echo VR from elsewhere
+
+PLAY isn't the only way in. Whenever a setting that a start needs changes, the launcher
+writes it into each installed build's folder while its window or its tray runs: the mods,
+the server (EchoVRCE, an EchoRelay server, the classic lobbies) and EchoXR. So Echo VR
+plays the same however it's started:
+
+| Start | How |
+|---|---|
+| **Steam** | Settings → **Echo VR in Steam's library** (on Linux PLAY adds it): the entry, in SteamVR's library too, starts through the launcher as PLAY does. |
+| **WiVRn** (Linux) | Settings → **Echo VR in WiVRn's app list**: pick Echo VR in WiVRn's headset app and it starts on WiVRn. |
+| **Desktop shortcut** (Windows) | A version's **Desktop shortcut** starts that version through the launcher. |
+| **echovr.exe**, **EchoXR.exe** | Play with what's in the folder: the mods, the server and EchoXR. What only a start does is missing: the launch options, Revive, starting SteamVR or WiVRn, renewing the game's EchoVRCE sign-in, and on Linux Proton and the silent microphone. |
+
+The entries run `EchoVR_Launcher --play`. That's Echo VR without the launcher's window,
+started the way PLAY starts it. `--runtime wivrn` is for WiVRn's list, and
+`--version <id>` is for a version's shortcut. The window opens only when a start needs it,
+for example when Revive or EchoXR has to be set up, or an event build needs its account.
+
 ## Event builds
 
 The event builds (Halloween 2017, Christmas 2017, Halloween 2018, Christmas 2018, Summer
@@ -125,6 +144,13 @@ before is rated again once (your other game settings stay).
 SteamVR 2.17.9 and 2.17.10 lose the graphics card on NVIDIA under Linux (Valve's bug): the
 launcher says so when it happens, and SteamVR's "previous" branch (Properties, Betas) plays.
 
+**Flatpak Steam** (`com.valvesoftware.Steam`) works too. The game runs outside Steam's
+sandbox, so its Echo VR entry hands the start to the launcher on your PC
+(`flatpak-spawn --host`). Before adding the entry, the launcher asks to give Steam the
+permission for that (`org.freedesktop.Flatpak`); its uninstall takes the permission back.
+Flat and WiVRn play this way. SteamVR from the Flatpak Steam can't reach a game outside its
+sandbox, so use WiVRn there, or Steam from your distribution's packages.
+
 ## Mods
 
 The **Mods** page shows the selected PC version's mod loader
@@ -135,6 +161,8 @@ arguments, start without mods, and install mods from the catalogue on release.ec
 DLL of your own. **Installed mods** lists only what is installed; **More mods** offers the
 rest (the catalogue's optional plugins, EchoXR Hands and, on Windows, EchoXR) with **Get**. The launcher keeps its choices in its own files and writes nEVR's
 `_local/config.yaml` from them before every start, so updates and Verify never undo them.
+A `config.yaml` of your own (a game server's, written by hand) is left as it is, and so is
+the sign-in beside it: the launcher only writes over its own.
 Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask in the
 browser. See
 [docs/launcher/mods.md](docs/launcher/mods.md).
@@ -146,7 +174,7 @@ and loading it is in [docs/plugins/local-plugins.md](docs/plugins/local-plugins.
 
 **Content packs** are mods that bring game data as well as plugins (EchoCombat: new gear and
 scripts). One install, one switch; nothing in the game's own files changes, and they need
-nEVR's early load pass (the Beta channel for now). A pack that changes gameplay plays on
+nEVR's early load pass (nEVR 4.1.0 or newer). A pack that changes gameplay plays on
 servers of its own: Settings → Launch options → **EchoCombat server** sets one, and while
 the pack is on the game signs in and finds matches there. See
 [docs/launcher/mods.md](docs/launcher/mods.md#content-packs).

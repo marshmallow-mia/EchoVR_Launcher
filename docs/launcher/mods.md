@@ -74,6 +74,13 @@ service hosts and `publisher_lock`, every host on echovrce.com. One pointing at 
 server, or with anything else in it, stays and nEVR uses it. "Use my own config.json" on the
 Mods page turns the moving off and puts a file moved aside back.
 
+**A `config.yaml` of your own** stays as it is. The launcher writes `_local/config.yaml` only
+when it's its own, which starts with `# Written by the Echo VR launcher`, or when it sets
+nothing but `x-local-plugins`. One written by hand, a game server's for example, is left
+alone, and so is the sign-in beside it. The Mods page's choices and the server then don't
+reach the game, and the log says so. A game server of your own gets a setup in a folder of
+its own: see [the plugins' `host` step](../plugins/pages.md#a-game-servers-setup).
+
 nEVR looks for `_local/config.yaml` beside the exe, then one and two folders up (the
 game's own `_local`); the first found wins, so the page warns when one nearer the exe
 shadows the launcher's. nEVR refuses to start with a `dbgcore.dll` beside the exe (the old

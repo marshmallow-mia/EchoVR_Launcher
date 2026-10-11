@@ -91,8 +91,9 @@ With EchoXR:
 - **PLAY** runs `bin/win10/EchoXR.exe` with the launch options.
 - **Event builds** run this way too (EchoXR 0.5.0 on): `EchoXR.exe` goes into their
   `bin\win7` and patches the build its exe is, found by its PE timestamp.
-- **Not supported:** the SteamVR library entry and artwork belong to Revive and aren't
-  used.
+- **Steam's library:** Settings → **Echo VR in Steam's library** adds an entry, in
+  SteamVR's library too, that starts through the launcher (`--play`). It runs EchoXR as
+  PLAY does. Revive's own library entry and artwork aren't used.
 
 ### Linux
 
@@ -109,6 +110,21 @@ GE-Proton runs `EchoXR.exe` (`proton waitforexitandrun`) with:
   (started through `steam://run/250820` when it isn't, waiting up to a minute) or WiVRn's
   `wivrn/comp_ipc` socket (`wivrn-server`, or the Flatpak's, started when it isn't).
   Without a VR service EchoXR gives up after 20 s (exit code 5) instead of hanging.
+
+Where a start comes from:
+
+- **Flatpak Steam:** its Echo VR entry runs the launcher's hand-off script through
+  `flatpak-spawn --host`, so Proton, EchoXR and the game run on the host, outside Steam's
+  sandbox. WiVRn plays from there. SteamVR from the Flatpak Steam doesn't, because its
+  runtime stays inside the sandbox: `wineopenxr` finds none (tested 2026-10-11 with
+  SteamVR's null driver). PLAY says so.
+- **WiVRn's app list:** Settings → **Echo VR in WiVRn's app list** writes
+  `~/.local/share/applications/de.echovr.launcher.wivrn.desktop` (`NoDisplay`,
+  `X-WiVRn-VR`). The entry runs `EchoVR_Launcher --play --runtime wivrn`, so picking it in
+  WiVRn's headset app starts Echo on WiVRn through the launcher's Proton, without Steam.
+  Tested 2026-10-11 with a Quest 3 and WiVRn 26.9: the tile shows with the launcher's
+  icon, and its command, run the way `wivrn-server` runs it, reaches Echo's main menu in
+  the headset.
 
 Tested with a Quest 3 (2026-10-05, GE-Proton11-3, NVIDIA RTX 2080 Ti):
 

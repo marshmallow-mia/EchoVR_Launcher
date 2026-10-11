@@ -12,6 +12,7 @@
 use std::time::{Duration, Instant};
 
 use crate::core::launcher::store::LauncherState;
+use crate::core::launcher::{game_sign_in, ready};
 use crate::core::{tray, updates};
 
 const TITLE: &str = "Echo VR Launcher";
@@ -43,6 +44,7 @@ fn status_text(found: &[updates::Finding]) -> String {
 fn checker(status: impl Fn(String) + Send + 'static) {
     std::thread::spawn(move || {
         let mut last: Option<Instant> = None;
+        let mut keeper = Keeper::default();
         loop {
             let asked = tray::take_check();
             let due = last.is_none_or(|t| t.elapsed() >= updates::INTERVAL);
@@ -58,11 +60,43 @@ fn checker(status: impl Fn(String) + Send + 'static) {
                     updates::notify_desktop(&fresh);
                 }
                 status(status_text(&check.findings));
+                // Echo VR started from anywhere meanwhile: signed in, its folder ready.
+                game_sign_in::renew_stored(&state.versions);
+                keeper.keep(&state);
                 last = Some(Instant::now());
             }
             std::thread::sleep(Duration::from_secs(2));
         }
     });
+}
+
+/// Keeps the versions' folders ready while no window is open (the window's keeper does
+/// while it is): whatever changed since, the tray's last look, or its start. Not while
+/// Echo VR runs.
+#[derive(Default)]
+struct Keeper {
+    applied: std::collections::HashMap<String, u64>,
+}
+
+impl Keeper {
+    fn keep(&mut self, state: &LauncherState) {
+        if !crate::core::launcher::game::running_now().is_empty() {
+            return;
+        }
+        for v in state.versions.iter().filter(|v| v.present()) {
+            let fingerprint = ready::fingerprint(state, v);
+            if self.applied.get(&v.id) == Some(&fingerprint) {
+                continue;
+            }
+            match ready::prepare(state, v) {
+                Ok(()) => {
+                    tracing::info!("tray: {} ready to play, however it's started", v.id);
+                    self.applied.insert(v.id.clone(), fingerprint);
+                }
+                Err(e) => tracing::warn!("tray: {} not ready to play: {e}", v.id),
+            }
+        }
+    }
 }
 
 /// The launcher's icon as RGBA (width, height, pixels).

@@ -100,26 +100,6 @@ pub fn injector_arguments(exe: &str, game_args: &str) -> String {
     format!("\"{exe}\" -nosymbollookup{args} /app {APP_ID}")
 }
 
-/// Creates the desktop shortcut `name` launching Echo VR through the Revive injector, with
-/// the launch options (`game_args`, joined as a command line).
-pub fn create_injector_shortcut(
-    name: &str,
-    revive_dir: &str,
-    exe: &Path,
-    game_args: &str,
-) -> Result<()> {
-    let injector = Path::new(revive_dir).join(REVIVE_INJECTOR);
-    let exe_abs = std::path::absolute(exe).unwrap_or_else(|_| exe.to_path_buf());
-    let exe_str = exe_abs.to_string_lossy().replace('/', "\\");
-    super::platform::create_shortcut(
-        name,
-        &injector,
-        Some(&injector_arguments(&exe_str, game_args)),
-        Some(Path::new(revive_dir)),
-        Some(&injector),
-    )
-}
-
 /// Where Echo's store artwork goes: inside the Meta app's install (from the registry,
 /// which only administrators can change), else its default folder.
 pub fn store_assets_dir() -> PathBuf {

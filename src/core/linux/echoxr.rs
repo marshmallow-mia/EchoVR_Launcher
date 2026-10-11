@@ -92,18 +92,12 @@ impl Xr {
     pub fn manifest(self) -> Option<PathBuf> {
         let home = dirs::home_dir().unwrap_or_default();
         let candidates: Vec<PathBuf> = match self {
-            Xr::SteamVr => {
-                let mut roots: Vec<PathBuf> = super::steam::root().into_iter().collect();
-                roots.extend([
-                    home.join(".local/share/Steam"),
-                    home.join(".steam/steam"),
-                    home.join(".var/app/com.valvesoftware.Steam/data/Steam"),
-                ]);
-                roots
-                    .into_iter()
-                    .map(|r| r.join("steamapps/common/SteamVR/steamxr_linux64.json"))
-                    .collect()
-            }
+            // In any Steam install's libraries, the player's Steam first.
+            Xr::SteamVr => super::steam::all_roots()
+                .iter()
+                .flat_map(|r| super::steam::libraries(r))
+                .map(|l| l.join("steamapps/common/SteamVR/steamxr_linux64.json"))
+                .collect(),
             Xr::Wivrn => {
                 let flatpak = "app/io.github.wivrn.wivrn/current/active/files/share";
                 let mut shares: Vec<PathBuf> = std::env::var("XDG_DATA_DIRS")
@@ -204,6 +198,30 @@ pub fn installed() -> Vec<Xr> {
         .collect();
     *seen = Some((Instant::now(), xr.clone()));
     xr
+}
+
+/// What PLAY and Settings say when the SteamVR Echo VR would play on is the Flatpak Steam's.
+pub const STEAMVR_IN_FLATPAK: &str = "SteamVR from the Flatpak Steam can't run Echo VR: its sandbox keeps SteamVR out of the game's reach, which runs outside it. Play with WiVRn, or install Steam (and SteamVR) from your distribution's packages.";
+
+/// Whether the SteamVR Echo VR would play on is the Flatpak Steam's, which a game outside
+/// its sandbox can't reach (wineopenxr finds no runtime: tested 2026-10-11 with SteamVR's
+/// null driver). Looked up at most every 10 seconds (Settings asks every frame).
+pub fn steamvr_in_flatpak() -> bool {
+    static SEEN: std::sync::Mutex<Option<(Instant, bool)>> = std::sync::Mutex::new(None);
+    if std::env::var_os("XR_RUNTIME_JSON").is_some() {
+        return false;
+    }
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, flatpak)) = *seen {
+        if at.elapsed() < Duration::from_secs(10) {
+            return flatpak;
+        }
+    }
+    let flatpak = Xr::SteamVr
+        .manifest()
+        .is_some_and(|m| super::steam::is_flatpak(&m));
+    *seen = Some((Instant::now(), flatpak));
+    flatpak
 }
 
 /// The OpenXR runtime the game is to use: `XR_RUNTIME_JSON` when set (by hand), else the
@@ -324,7 +342,7 @@ pub fn setup(steam_root: &Path, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -
 /// Ends everything running in the game's Wine prefix (a start STOP cancels: Proton, the
 /// game, EchoXR), without waiting.
 pub fn kill_prefix() {
-    let wineserver = proton_dir().join("files/bin/wineserver");
+    let wineserver = wineserver();
     if !wineserver.is_file() || !prefix().is_dir() {
         return;
     }
@@ -365,6 +383,48 @@ pub fn wine_path(drives: &[(char, PathBuf)], unix: &Path) -> String {
         .unwrap_or(('z', unix.strip_prefix("/").unwrap_or(unix).to_path_buf()));
     let rest = rest.to_string_lossy().replace('/', "\\");
     format!("{}:\\{rest}", letter.to_ascii_uppercase())
+}
+
+/// Pure: the host path of the Windows path `wine` (say `X:\games\echovr.exe`) by the
+/// prefix's drives; `None` for a drive the prefix doesn't have.
+pub fn host_path_in(drives: &[(char, PathBuf)], wine: &str) -> Option<PathBuf> {
+    let mut chars = wine.chars();
+    let letter = chars.next()?.to_ascii_lowercase();
+    if chars.next()? != ':' {
+        return None;
+    }
+    let rest = chars
+        .as_str()
+        .trim_start_matches(['\\', '/'])
+        .replace('\\', "/");
+    let (_, root) = drives.iter().find(|(l, _)| *l == letter)?;
+    Some(if rest.is_empty() {
+        root.clone()
+    } else {
+        root.join(rest)
+    })
+}
+
+/// The host path of a Windows path in the launcher's prefix (see [`host_path_in`]).
+pub fn host_path(wine: &str) -> Option<PathBuf> {
+    host_path_in(&drives(), wine)
+}
+
+/// The launcher's GE-Proton's `proton` script.
+pub fn proton_script() -> PathBuf {
+    proton_dir().join("proton")
+}
+
+/// The launcher's GE-Proton's `wineserver`.
+pub fn wineserver() -> PathBuf {
+    proton_dir().join("files/bin/wineserver")
+}
+
+/// A game server's own Proton data (its prefix is `pfx`), one per server setup `folder`:
+/// Proton starts a game only once everything else in its prefix has ended, so a server in
+/// the game's prefix would hold PLAY back; and stopping one server ends only that one.
+pub fn server_compat_data(folder: &str) -> PathBuf {
+    root().join("servers").join(folder)
 }
 
 /// The prefix's drives (`dosdevices`), as Wine has them.
@@ -490,6 +550,19 @@ mod tests {
         assert_eq!(wine_path(&drives, bin), r"X:\.local\share\E\bin\win10");
         assert_eq!(wine_path(&drives, Path::new("/opt/echo")), r"Z:\opt\echo");
         assert_eq!(wine_path(&[], Path::new("/opt/echo")), r"Z:\opt\echo");
+        // And back, as the game's command line has it.
+        assert_eq!(
+            host_path_in(&drives, r"X:\.local\share\E\bin\win10\echovr.exe"),
+            Some(PathBuf::from(
+                "/home/mia/.local/share/E/bin/win10/echovr.exe"
+            ))
+        );
+        assert_eq!(
+            host_path_in(&drives, "x:\\"),
+            Some(PathBuf::from("/home/mia"))
+        );
+        assert_eq!(host_path_in(&drives, r"Q:\echovr.exe"), None);
+        assert_eq!(host_path_in(&drives, "echovr.exe"), None);
     }
 
     #[test]
