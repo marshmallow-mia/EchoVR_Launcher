@@ -155,9 +155,11 @@ nEVR sends every `ws://` and `wss://` address in it through its bridge to its ow
 
 - **On an EchoRelay server** the live build starts the way the event builds do: EchoLoader 2
   in nEVR's place (nEVR waits beside it as `BugSplat64.nevr.dll`), EchoRelay's patch as its
-  plugin in `plugins-echorelay/` (nEVR's mods in `plugins/` stay out), and a `_local/config.json`
-  naming the server and the account (a player's own kept as `config.json.before-echorelay`).
-  The first PLAY sets that up (EchoRelay's game files, EchoLoader). A start on EchoVRCE or a
+  plugin in `plugins-echorelay/`, and a `_local/config.json` naming the server and the account
+  (a player's own kept as `config.json.before-echorelay`). The first PLAY sets that up
+  (EchoRelay's game files, EchoLoader). Every start copies the mods that are on (what nEVR
+  would load, content packs included) beside the patch, their arguments in a marked
+  `echoloader.local.json`; `plugins/` itself stays nEVR's. A start on EchoVRCE or a
   Nakama server, Back to EchoVRCE, or removing the plugin puts it all back. JOIN on an
   EchoVRCE match says why it can't while the live build plays on EchoRelay.
 - **Which server a start uses:** a content pack that is on and has a server of its own uses

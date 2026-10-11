@@ -14,6 +14,7 @@ use std::sync::atomic::AtomicBool;
 
 use anyhow::{bail, Context, Result};
 
+use super::nevr::PluginLine;
 use super::store::{InstalledVersion, RelayAccount};
 use super::versions::Step;
 use crate::core::{download, echoxr, http, paths};
@@ -303,8 +304,9 @@ pub fn valid_account(account: &RelayAccount) -> bool {
 
 /// The live build's lock on an EchoRelay server.
 const LIVE_LOCK: &str = "rad15_live";
-/// Where EchoLoader finds the live build's plugins on EchoRelay: a folder of its own, so
-/// nEVR's mods in `plugins/` stay out (they're nEVR's).
+/// Where EchoLoader finds the live build's plugins on EchoRelay: a folder of its own, with
+/// EchoRelay's patch and copies of the mods that are on ([`sync_live_mods`]), so `plugins/`
+/// stays nEVR's.
 const LIVE_PLUGINS: &str = "plugins-echorelay";
 /// nEVR, beside its slot while EchoLoader is in it.
 pub const NEVR_ASIDE: &str = "BugSplat64.nevr.dll";
@@ -316,6 +318,9 @@ const MARK_KEY: &str = "x-echovr-launcher";
 const MARK: &str = "echorelay";
 /// A player's own `config.json`, kept while the launcher's EchoRelay one is in its place.
 const CONFIG_ASIDE: &str = "config.json.before-echorelay";
+/// EchoLoader's local settings, beside `echoloader.json` (which stays as [`live_in_place`]
+/// knows it): the args of the mods it loads on EchoRelay, marked as the launcher's.
+const LOADER_LOCAL: &str = "echoloader.local.json";
 
 /// Whether the live build `v` is set up for EchoRelay: EchoLoader in nEVR's place (nEVR
 /// beside it), EchoRelay's patch in its plugins folder, the loader's settings for it.
@@ -380,6 +385,78 @@ fn install_live(bin: &Path, loader: &[u8], patch: &[u8]) -> Result<()> {
     write_atomic(&slot, loader)
 }
 
+/// Puts the mods `lines` (what nEVR would load, `mods::echorelay_plugins`) beside
+/// EchoRelay's patch for EchoLoader: each enabled plugin with its files of the same name
+/// (a plugin's `.ini`), and the plugins' settings files, which may have names of their
+/// own ([`plugin_settings::is_store_file`](super::plugin_settings::is_store_file)), copied
+/// from `plugins/`; what an earlier start put there and isn't there now out again; their
+/// args in `echoloader.local.json`, marked as the launcher's. Without it EchoLoader loads
+/// only the patch, and a content pack's overlay isn't there to serve the pack.
+pub fn sync_live_mods(v: &InstalledVersion, lines: &[PluginLine]) -> Result<()> {
+    let bin = v.bin_dir();
+    let from = super::mods::plugins_dir(v);
+    let dir = bin.join(LIVE_PLUGINS);
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let stem = |name: &str| {
+        Path::new(name)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    let wanted: Vec<&PluginLine> = lines.iter().filter(|l| l.enabled).collect();
+    let stems: Vec<String> = wanted.iter().map(|l| stem(&l.file)).collect();
+    let files = |d: &Path| -> Vec<(String, PathBuf)> {
+        std::fs::read_dir(d)
+            .map(|it| {
+                it.flatten()
+                    .filter(|e| e.path().is_file())
+                    .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let copies: Vec<(String, PathBuf)> = files(&from)
+        .into_iter()
+        .filter(|(name, _)| {
+            stems.contains(&stem(name)) || super::plugin_settings::is_store_file(name)
+        })
+        .collect();
+    for (name, path) in files(&dir) {
+        if !name.eq_ignore_ascii_case(PATCH_PLUGIN) && !copies.iter().any(|(n, _)| *n == name) {
+            std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+        }
+    }
+    for (name, path) in &copies {
+        let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
+        let dst = dir.join(name);
+        if std::fs::read(&dst).ok().as_deref() != Some(bytes.as_slice()) {
+            write_atomic(&dst, &bytes)?;
+        }
+    }
+    let local = bin.join(LOADER_LOCAL);
+    if local.exists() && !ours(&local) {
+        tracing::warn!("{} isn't the launcher's: left as it is", local.display());
+        return Ok(());
+    }
+    let mut overrides = serde_json::Map::new();
+    for l in wanted.iter().filter(|l| !l.args.is_empty()) {
+        let mut o = serde_json::Map::new();
+        o.insert("args".into(), serde_json::Value::Object(l.args.clone()));
+        overrides.insert(l.file.clone(), serde_json::Value::Object(o));
+    }
+    if overrides.is_empty() {
+        if local.exists() {
+            std::fs::remove_file(&local).with_context(|| format!("remove {}", local.display()))?;
+        }
+        return Ok(());
+    }
+    let mut root = serde_json::Map::new();
+    root.insert(MARK_KEY.into(), MARK.into());
+    root.insert("overrides".into(), serde_json::Value::Object(overrides));
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(root))?;
+    write_atomic(&local, text.as_bytes())
+}
+
 /// Points the live build `v` at EchoRelay `server` as `account`: its `_local/config.json`
 /// (a player's own kept aside meanwhile).
 pub fn write_live_config(v: &InstalledVersion, server: &str, account: &RelayAccount) -> Result<()> {
@@ -403,7 +480,8 @@ fn live_config_json(server: &str, account: &RelayAccount) -> String {
     serde_json::to_string_pretty(&c).unwrap_or_default()
 }
 
-/// Whether the `config.json` at `path` is the one the launcher wrote for EchoRelay.
+/// Whether the JSON file at `path` (`config.json`, `echoloader.local.json`) is the one the
+/// launcher wrote for EchoRelay.
 fn ours(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .ok()
@@ -439,6 +517,10 @@ pub fn leave_live(v: &InstalledVersion) -> Result<bool> {
             .context("Couldn't remove EchoRelay's patch. Please close Echo VR and try again.")?;
         changed = true;
     }
+    if ours(&bin.join(LOADER_LOCAL)) {
+        std::fs::remove_file(bin.join(LOADER_LOCAL))?;
+        changed = true;
+    }
     let config = local.join("config.json");
     if ours(&config) {
         std::fs::remove_file(&config)?;
@@ -455,6 +537,108 @@ pub fn leave_live(v: &InstalledVersion) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// On EchoRelay the mods nEVR would load go beside the patch, their args in
+    /// EchoLoader's local settings; back to EchoVRCE they go with the patch.
+    #[test]
+    fn the_mods_go_beside_the_patch_on_echorelay() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = InstalledVersion {
+            id: "pc-latest".into(),
+            root: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let bin = v.bin_dir();
+        let plugins = crate::core::launcher::mods::plugins_dir(&v);
+        std::fs::create_dir_all(&plugins).unwrap();
+        for f in [
+            "PowerBoost.dll",
+            "PowerBoost.ini",
+            "NvrContentOverlay.dll",
+            "Off.dll",
+            "Off.pdb",
+            "combat-settings.cfg",
+        ] {
+            std::fs::write(plugins.join(f), f).unwrap();
+        }
+        install_live(&bin, b"loader", b"patch").unwrap();
+        let live = bin.join(LIVE_PLUGINS);
+        std::fs::write(live.join("Stale.dll"), b"old").unwrap();
+        let mut args = serde_json::Map::new();
+        args.insert("active".into(), "echocombat".into());
+        let line = |file: &str, enabled: bool, args: serde_json::Map<String, serde_json::Value>| {
+            PluginLine {
+                file: file.into(),
+                enabled,
+                args,
+                early: false,
+            }
+        };
+        let lines = vec![
+            line("PowerBoost.dll", true, Default::default()),
+            line("NvrContentOverlay.dll", true, args),
+            line("Off.dll", false, Default::default()),
+        ];
+        sync_live_mods(&v, &lines).unwrap();
+        for f in [
+            "PowerBoost.dll",
+            "PowerBoost.ini",
+            "NvrContentOverlay.dll",
+            "combat-settings.cfg",
+            PATCH_PLUGIN,
+        ] {
+            assert!(live.join(f).is_file(), "{f} beside the patch");
+        }
+        assert!(!live.join("Off.dll").exists() && !live.join("Off.pdb").exists());
+        assert!(!live.join("Stale.dll").exists());
+        let local: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(bin.join(LOADER_LOCAL)).unwrap())
+                .unwrap();
+        assert_eq!(
+            local["overrides"]["NvrContentOverlay.dll"]["args"]["active"],
+            "echocombat"
+        );
+        assert!(local["overrides"].get("PowerBoost.dll").is_none());
+        // The next start with only PowerBoost on: the pack's overlay and its args go.
+        sync_live_mods(&v, &lines[..1]).unwrap();
+        assert!(
+            live.join("PowerBoost.ini").is_file() && live.join("combat-settings.cfg").is_file()
+        );
+        assert!(!live.join("NvrContentOverlay.dll").exists());
+        assert!(!bin.join(LOADER_LOCAL).exists());
+        assert!(leave_live(&v).unwrap());
+        assert!(!bin.join(LOADER_LOCAL).exists());
+        assert!(!live.exists());
+    }
+
+    /// A player's own echoloader.local.json is left alone.
+    #[test]
+    fn a_players_own_loader_settings_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = InstalledVersion {
+            id: "pc-latest".into(),
+            root: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let bin = v.bin_dir();
+        std::fs::create_dir_all(crate::core::launcher::mods::plugins_dir(&v)).unwrap();
+        std::fs::write(bin.join(LOADER_LOCAL), "{\"overrides\": {}}").unwrap();
+        let mut args = serde_json::Map::new();
+        args.insert("active".into(), "echocombat".into());
+        let lines = vec![PluginLine {
+            file: "NvrContentOverlay.dll".into(),
+            enabled: true,
+            args,
+            early: true,
+        }];
+        sync_live_mods(&v, &lines).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bin.join(LOADER_LOCAL)).unwrap(),
+            "{\"overrides\": {}}"
+        );
+        leave_live(&v).unwrap();
+        assert!(bin.join(LOADER_LOCAL).exists());
+    }
 
     /// The live build to EchoRelay and back: EchoLoader in nEVR's place with the patch in a
     /// folder of its own and the marked config (a player's own kept), then all as it was.

@@ -684,9 +684,9 @@ fn server_question(plugin: &str, s: &GameServer) -> String {
         return format!(
             "{plugin} wants Echo VR to play on {place}, an EchoRelay server, instead of \
              EchoVRCE. From the next start the live build signs in there as {}. On EchoRelay \
-             it starts with EchoLoader in nEVR's place: nEVR's mods, and EchoVRCE's friends \
-             and parties, are off there. Only say yes to a server you trust. Back to EchoVRCE: \
-             in {plugin}, or remove the plugin.",
+             it starts with EchoLoader in nEVR's place, with the mods that are on; EchoVRCE's \
+             friends and parties are off there. Only say yes to a server you trust. Back to \
+             EchoVRCE: in {plugin}, or remove the plugin.",
             s.display_name
         );
     }

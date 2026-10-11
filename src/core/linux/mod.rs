@@ -403,6 +403,10 @@ pub fn play_from_steam() -> i32 {
             tracing::error!("--play: {} not set up for EchoRelay: {e:#}", v.id);
             return 2;
         }
+        // The mods that are on, beside the patch: without them it plays all the same.
+        if let Err(e) = crate::core::launcher::mods::before_echorelay_start(&v, hands) {
+            tracing::warn!("--play: mods not set up for EchoRelay: {e:#}");
+        }
     }
     if !event && echorelay.is_none() {
         if let Err(e) = crate::core::launcher::mods::before_start(

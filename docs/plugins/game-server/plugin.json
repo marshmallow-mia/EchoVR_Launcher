@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "game-server",
   "name": "Game server",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "marshmallow-mia",
   "summary": "Play Echo VR on another server than EchoVRCE: a community EchoRelay server (just its address and a name), or a Nakama server. Back to EchoVRCE with one button.",
   "icon": "plugin",
@@ -165,7 +165,7 @@
               "tone": "muted"
             },
             {
-              "text": "On EchoRelay, Echo VR starts the way the event builds do: nEVR's mods and EchoVRCE's friends and parties are off there. Matches need a game server for the live build on that EchoRelay.",
+              "text": "On EchoRelay, Echo VR starts the way the event builds do, with the mods that are on: EchoVRCE's friends and parties are off there. Matches need a game server for the live build on that EchoRelay.",
               "tone": "muted"
             },
             {

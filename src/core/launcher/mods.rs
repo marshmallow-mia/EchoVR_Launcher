@@ -56,14 +56,18 @@ pub enum Loader {
     None,
     /// nEVR runtime, at this version (empty when it doesn't say).
     Nevr { version: String },
+    /// The launcher's EchoLoader, in nEVR's place while the live build plays on an
+    /// EchoRelay server (`relay::set_up_live`).
+    EchoRelay,
     /// A DLL the launcher doesn't know.
     Unknown,
 }
 
 impl Loader {
-    /// Whether the launcher can change the mods (nEVR is there).
+    /// Whether the launcher can change the mods: nEVR is there, or EchoLoader on an
+    /// EchoRelay server (its next start takes the mods that are on along).
     pub fn editable(&self) -> bool {
-        matches!(self, Loader::Nevr { .. })
+        matches!(self, Loader::Nevr { .. } | Loader::EchoRelay)
     }
 }
 
@@ -76,6 +80,9 @@ pub fn classify(slot: Option<&[u8]>, slot_sha: Option<&str>) -> Loader {
         return Loader::Nevr {
             version: nevr::version_in(bytes).unwrap_or_default(),
         };
+    }
+    if slot_sha.is_some_and(|s| s.eq_ignore_ascii_case(super::relay::LOADER_SHA256)) {
+        return Loader::EchoRelay;
     }
     if slot_sha.is_some_and(|s| s.eq_ignore_ascii_case(STOCK_SLOT_SHA256)) {
         Loader::None
@@ -730,7 +737,8 @@ pub struct ModView {
     pub local_plugins: bool,
     /// The packs the launcher installed ([`super::packs`]).
     pub packs: Vec<PackView>,
-    /// The nEVR in the slot loads plugins early: content packs work.
+    /// The loader in the slot loads plugins early (EchoLoader always does, nEVR from its
+    /// early load pass on): content packs work.
     pub loads_early: bool,
     /// Something repacked the game data (an old installer): content packs need the stock
     /// files.
@@ -842,6 +850,7 @@ pub fn read(v: &InstalledVersion) -> ModView {
     for p in plugins.iter_mut().filter(|p| p.present) {
         p.settings = plugin_settings::read(&dir, p, catalog.entry_for(&p.file));
     }
+    let loads_early = loader == Loader::EchoRelay || packs::nevr_loads_early(&bin);
     ModView {
         enabled: overlay.enabled(),
         plugins,
@@ -861,7 +870,7 @@ pub fn read(v: &InstalledVersion) -> ModView {
                 record,
             })
             .collect(),
-        loads_early: packs::nevr_loads_early(&bin),
+        loads_early,
         repacked: packs::repacked(&bin),
     }
 }
@@ -1086,7 +1095,7 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     let catalog = ModCatalog::cached();
     let local = nevr::local_plugins(v);
     let served = if overlay.enabled() {
-        served_pack(v, &overlay)
+        served_pack(v, &overlay, false)
     } else {
         None
     };
@@ -1110,6 +1119,37 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     }
     let lines = config_lines(v, &overlay, &catalog, local, served.as_ref());
     nevr::write_config(v, &lines, local, backend.as_ref())
+}
+
+/// Before starting the live build `v` on an EchoRelay server, where EchoLoader stands in
+/// for nEVR: EchoXR Hands' plugin in `plugins/` or out of it (as [`before_start`] does),
+/// then the mods that are on beside EchoRelay's patch.
+pub fn before_echorelay_start(v: &InstalledVersion, hands: bool) -> Result<()> {
+    if let Err(e) = crate::core::echoxr_hands::apply(&v.bin_dir(), hands) {
+        tracing::warn!("hand tracking: {e:#}");
+    }
+    super::relay::sync_live_mods(v, &echorelay_plugins(v))
+}
+
+/// The plugins the live build `v` loads on an EchoRelay server, where EchoLoader stands
+/// in for nEVR (`relay::sync_live_mods`): the list [`prepare`] gives nEVR. EchoLoader loads
+/// every plugin before the game's code runs, so a content pack is served whatever nEVR
+/// the version has.
+fn echorelay_plugins(v: &InstalledVersion) -> Vec<PluginLine> {
+    let overlay = Overlay::read(&choices_path(v));
+    let served = if overlay.enabled() {
+        served_pack(v, &overlay, true)
+    } else {
+        None
+    };
+    let catalog = ModCatalog::cached();
+    config_lines(
+        v,
+        &overlay,
+        &catalog,
+        nevr::local_plugins(v),
+        served.as_ref(),
+    )
 }
 
 /// The content packs installed in `v` (on or off), as the Mods page lists them.
@@ -1252,9 +1292,10 @@ fn config_lines(
     lines
 }
 
-/// The pack nEVR serves at this start: the first one on, when its files are all there,
-/// the overlay plugin is there and nEVR loads plugins early. Otherwise none, logged.
-fn served_pack(v: &InstalledVersion, overlay: &Overlay) -> Option<PackRecord> {
+/// The pack served at this start: the first one on, when its files are all there, the
+/// overlay plugin is there and its loader loads plugins early (EchoLoader, `echoloader`,
+/// always does; nEVR from its early load pass on). Otherwise none, logged.
+fn served_pack(v: &InstalledVersion, overlay: &Overlay, echoloader: bool) -> Option<PackRecord> {
     let pack = overlay.packs().into_iter().find(|p| p.enabled)?;
     let bin = v.bin_dir();
     if !pack_present(v, &pack) {
@@ -1269,7 +1310,7 @@ fn served_pack(v: &InstalledVersion, overlay: &Overlay) -> Option<PackRecord> {
         );
         return None;
     }
-    if !packs::nevr_loads_early(&bin) {
+    if !echoloader && !packs::nevr_loads_early(&bin) {
         tracing::warn!(
             "{}: this nEVR can't load {} before the game reads its data: left out",
             pack.name,
@@ -2074,7 +2115,15 @@ mod tests {
         assert!(classify(Some(nevr), None).editable());
         assert_eq!(classify(Some(b"MZ"), Some(STOCK_SLOT_SHA256)), Loader::None);
         assert_eq!(classify(None, None), Loader::None);
-        // EchoLoader 2 (the event builds' loader, not the live build's), or anything else.
+        // The launcher's EchoLoader, in nEVR's place on an EchoRelay server: its mods
+        // still change here.
+        let echoloader = classify(
+            Some(b"MZ ECHOLOADER_ID:2.0.0:open"),
+            Some(&super::super::relay::LOADER_SHA256.to_uppercase()),
+        );
+        assert_eq!(echoloader, Loader::EchoRelay);
+        assert!(echoloader.editable());
+        // Another EchoLoader build, or anything else.
         assert_eq!(
             classify(Some(b"MZ ECHOLOADER_ID:2.0.0:open"), Some("00")),
             Loader::Unknown
