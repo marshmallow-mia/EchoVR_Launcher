@@ -7,8 +7,9 @@
 //! are pinned in it), so a launcher update brings theirs.
 //!
 //! The launcher checks at its start and every 15 minutes, and so does the tray
-//! (`ui::tray`) while the launcher is closed. Each finding is announced on the desktop
-//! once: the ones announced are kept in `updates-notified.json`.
+//! (`ui::tray`) while the launcher is closed; in between, the open launcher reads the mods
+//! and plugins catalogues every 30 seconds ([`check_catalogs`]). Each finding is announced
+//! on the desktop once: the ones announced are kept in `updates-notified.json`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,9 @@ use super::paths;
 
 /// How often the launcher and the tray look.
 pub const INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// How often the open launcher reads the mods and plugins catalogues (a dev folder's too)
+/// in between: what they add or update shows within half a minute.
+pub const CATALOG_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Something that can be updated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +75,12 @@ impl Finding {
         }
     }
 
+    /// Whether the catalogues tell it (a plugin's update, a new plugin), rather than the
+    /// launcher's release or a game's manifest.
+    pub fn is_catalogs(&self) -> bool {
+        catalog_key(&self.key())
+    }
+
     /// One line for a notice or a notification.
     pub fn text(&self) -> String {
         match self {
@@ -93,10 +103,20 @@ impl Finding {
     }
 }
 
+/// Pure: whether `key` ([`Finding::key`]) is a catalogue finding's.
+fn catalog_key(key: &str) -> bool {
+    ["plugin:", "launcher-plugin:", "new-plugin:"]
+        .iter()
+        .any(|k| key.starts_with(k))
+}
+
 /// What a check found, and what it learned on the way.
 #[derive(Debug, Clone, Default)]
 pub struct Check {
     pub findings: Vec<Finding>,
+    /// Only the catalogues were read ([`check_catalogs`]): the launcher's and the games'
+    /// findings are the last full check's.
+    pub catalogs_only: bool,
     /// Versions without a recorded manifest yet: the manifest they start from (version id,
     /// hash). Recorded silently: they were brought up to date just before (or before this
     /// launcher kept track).
@@ -154,6 +174,24 @@ pub fn check(state: &LauncherState) -> Check {
             Err(e) => tracing::info!("updates: {}'s manifest: {e:#}", v.id),
         }
     }
+    catalogs(state, &mut out);
+    out
+}
+
+/// Reads only the mods and plugins catalogues (network; a second or two): what the open
+/// launcher looks at every [`CATALOG_INTERVAL`] between full checks.
+pub fn check_catalogs(state: &LauncherState) -> Check {
+    let mut out = Check {
+        launcher_channel: state.launcher_channel,
+        catalogs_only: true,
+        ..Check::default()
+    };
+    catalogs(state, &mut out);
+    out
+}
+
+/// The catalogues' part of a check: their plugin updates and the plugins they list.
+fn catalogs(state: &LauncherState, out: &mut Check) {
     let catalog = ModCatalog::load();
     if !catalog.builtin {
         for v in state.versions.iter().filter(|v| v.present()) {
@@ -172,7 +210,6 @@ pub fn check(state: &LauncherState) -> Check {
         out.plugins_listed = plugins.plugins.iter().map(|p| p.id.clone()).collect();
         out.plugins = Some(plugins);
     }
-    out
 }
 
 /// Pure: updates of the launcher plugins `installed` in `catalog`, and the plugins it lists
@@ -308,18 +345,19 @@ fn notified_file() -> PathBuf {
     paths::data_dir().join("updates-notified.json")
 }
 
-/// The findings of `findings` not announced yet; records them as announced. The record
-/// keeps only what is still found, so it doesn't grow.
-pub fn not_yet_announced(findings: &[Finding]) -> Vec<Finding> {
-    not_yet_announced_in(&notified_file(), findings)
+/// The findings of `check` not announced yet; records them as announced. The record
+/// keeps only what is still found, so it doesn't grow (after a catalogues-only check, the
+/// launcher's and the games' stay as the last full check left them).
+pub fn not_yet_announced(check: &Check) -> Vec<Finding> {
+    not_yet_announced_in(&notified_file(), &check.findings, check.catalogs_only)
 }
 
-fn not_yet_announced_in(file: &Path, findings: &[Finding]) -> Vec<Finding> {
+fn not_yet_announced_in(file: &Path, findings: &[Finding], catalogs_only: bool) -> Vec<Finding> {
     let before: BTreeSet<String> = std::fs::read_to_string(file)
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
-    let (fresh, now) = split_new(&before, findings);
+    let (fresh, now) = split_new(&before, findings, catalogs_only);
     if let Some(dir) = file.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -329,14 +367,23 @@ fn not_yet_announced_in(file: &Path, findings: &[Finding]) -> Vec<Finding> {
     fresh
 }
 
-/// Pure: the findings not in `before`, and the keys to keep (every finding's).
-fn split_new(before: &BTreeSet<String>, findings: &[Finding]) -> (Vec<Finding>, BTreeSet<String>) {
+/// Pure: the findings not in `before`, and the keys to keep: every finding's, and with
+/// `catalogs_only` the ones of `before` such a check doesn't look at.
+fn split_new(
+    before: &BTreeSet<String>,
+    findings: &[Finding],
+    catalogs_only: bool,
+) -> (Vec<Finding>, BTreeSet<String>) {
     let fresh = findings
         .iter()
         .filter(|f| !before.contains(&f.key()))
         .cloned()
         .collect();
-    (fresh, findings.iter().map(Finding::key).collect())
+    let mut keep: BTreeSet<String> = findings.iter().map(Finding::key).collect();
+    if catalogs_only {
+        keep.extend(before.iter().filter(|k| !catalog_key(k)).cloned());
+    }
+    (fresh, keep)
 }
 
 /// The desktop notification for `fresh` findings (one for all of them).
@@ -478,22 +525,54 @@ mod tests {
             hash: "ab".into(),
         };
         assert_eq!(
-            not_yet_announced_in(&file, std::slice::from_ref(&launcher)),
+            not_yet_announced_in(&file, std::slice::from_ref(&launcher), false),
             vec![launcher.clone()]
         );
         assert_eq!(
-            not_yet_announced_in(&file, std::slice::from_ref(&launcher)),
+            not_yet_announced_in(&file, std::slice::from_ref(&launcher), false),
             vec![]
         );
         assert_eq!(
-            not_yet_announced_in(&file, &[launcher.clone(), game.clone()]),
+            not_yet_announced_in(&file, &[launcher.clone(), game.clone()], false),
             vec![game.clone()]
         );
         // Gone (installed) and found again later: a new update, announced again.
-        assert_eq!(not_yet_announced_in(&file, &[]), vec![]);
+        assert_eq!(not_yet_announced_in(&file, &[], false), vec![]);
         assert_eq!(
-            not_yet_announced_in(&file, std::slice::from_ref(&game)),
+            not_yet_announced_in(&file, std::slice::from_ref(&game), false),
             vec![game]
+        );
+    }
+
+    /// The catalogues every 30 seconds in between: their findings come and go with them,
+    /// the launcher's and the games' stay announced.
+    #[test]
+    fn a_catalogues_check_keeps_the_rest_announced() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notified.json");
+        let launcher = Finding::Launcher {
+            version: "0.11.14".into(),
+            url: String::new(),
+        };
+        let plugin = Finding::NewPlugin {
+            id: "game-server".into(),
+            name: "Game server".into(),
+            dev: true,
+        };
+        assert!(!launcher.is_catalogs() && plugin.is_catalogs());
+        assert_eq!(
+            not_yet_announced_in(&file, std::slice::from_ref(&launcher), false),
+            vec![launcher.clone()]
+        );
+        assert_eq!(
+            not_yet_announced_in(&file, std::slice::from_ref(&plugin), true),
+            vec![plugin.clone()]
+        );
+        assert_eq!(not_yet_announced_in(&file, &[], true), vec![]);
+        // The next full check: the launcher's update was announced already.
+        assert_eq!(
+            not_yet_announced_in(&file, std::slice::from_ref(&launcher), false),
+            vec![]
         );
     }
 

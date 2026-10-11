@@ -161,7 +161,9 @@ dev folder's mods and plugins (with a Dev tag). How a folder is filled, packs in
 The launcher looks for updates when it starts and every 15 minutes: a newer launcher (its
 GitHub releases), an update of each installed Echo VR that gets updates (its update
 manifest changed since the launcher last brought it up to date), and a new version of a
-plugin installed from the catalogue. Nothing installs by itself: a dot on the rail (Play,
+plugin installed from the catalogue. The mods and plugins catalogues (a dev folder's too)
+it reads every 30 seconds while it is open, and **Refresh** on the Mods and Plugins pages
+reads them right away. Nothing installs by itself: a dot on the rail (Play,
 Mods, Settings) and the status bar say what is out, PLAY's side button becomes **Update
 ready**, and the Mods page has **Update** on the plugin; the launcher's own update is **Update now** in
 Settings (Windows and Linux: it downloads the release, checks it, replaces its files, or

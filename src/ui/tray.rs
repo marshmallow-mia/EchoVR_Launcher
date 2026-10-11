@@ -53,7 +53,7 @@ fn checker(status: impl Fn(String) + Send + 'static) {
                     std::process::exit(0);
                 }
                 let check = updates::check(&state);
-                let fresh = updates::not_yet_announced(&check.findings);
+                let fresh = updates::not_yet_announced(&check);
                 if state.desktop_notifications {
                     updates::notify_desktop(&fresh);
                 }

@@ -24,8 +24,8 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
   `sha256`, like a mod: `id`, `name`, `summary`, `author`, `version`, `url`, `sha256`, `homepage`.
   - A different `version` puts **Update** on the plugin.
   - An update keeps the plugin's settings files.
-  - **When the catalogue is read:** at the start, with every update check (every 15 minutes, also
-    from the tray while the launcher is closed) and with **Refresh** on the Plugins page.
+  - **When the catalogue is read:** at the start, every 30 seconds while the launcher is open
+    (every 15 minutes from the tray while it is closed) and with **Refresh** on the Plugins page.
   - **What gets announced** (status bar and desktop, once each): an installed plugin's update, and a
     plugin the catalogue (or the dev folder's) lists for the first time. The first check after
     0.11.11-beta.2 only records what is listed.

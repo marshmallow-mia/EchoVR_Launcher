@@ -288,6 +288,9 @@ struct UpdatesFound {
     /// When the last check was done.
     checked: Option<std::time::Instant>,
     checking: bool,
+    /// When the catalogues were last read (by a full check too).
+    catalogs_checked: Option<std::time::Instant>,
+    catalogs_checking: bool,
     /// What the status bar has said this run (each finding once).
     shown: std::collections::BTreeSet<String>,
 }
@@ -296,6 +299,7 @@ impl UpdatesFound {
     /// Look again right away (something was installed or updated).
     fn check_soon(&mut self) {
         self.checked = None;
+        self.catalogs_checked = None;
     }
 
     /// An update of installed version `id` is ready.
@@ -1262,7 +1266,32 @@ impl Dashboard {
         let state = self.state.clone();
         self.worker.spawn(ctx, move |tx| {
             let check = crate::core::updates::check(&state);
-            let fresh = crate::core::updates::not_yet_announced(&check.findings);
+            let fresh = crate::core::updates::not_yet_announced(&check);
+            if state.desktop_notifications {
+                crate::core::updates::notify_desktop(&fresh);
+            }
+            tx.send(Msg::Updates(check));
+        });
+    }
+
+    /// In between, every 30 seconds while the window is open: the mods and plugins
+    /// catalogues (a dev folder's too), so what they add or update shows soon.
+    fn check_catalogs(&mut self, ctx: &egui::Context) {
+        use crate::core::updates::CATALOG_INTERVAL;
+        if self.demo || self.updates.checking || self.updates.catalogs_checking {
+            return;
+        }
+        if let Some(t) = self.updates.catalogs_checked {
+            if t.elapsed() < CATALOG_INTERVAL {
+                ctx.request_repaint_after(CATALOG_INTERVAL - t.elapsed());
+                return;
+            }
+        }
+        self.updates.catalogs_checking = true;
+        let state = self.state.clone();
+        self.worker.spawn(ctx, move |tx| {
+            let check = crate::core::updates::check_catalogs(&state);
+            let fresh = crate::core::updates::not_yet_announced(&check);
             if state.desktop_notifications {
                 crate::core::updates::notify_desktop(&fresh);
             }
@@ -1273,8 +1302,14 @@ impl Dashboard {
     /// An update check is done: what it learned is kept, what it found shown.
     fn updates_done(&mut self, check: crate::core::updates::Check) {
         use crate::core::updates::Finding;
-        self.updates.checking = false;
-        self.updates.checked = Some(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        if check.catalogs_only {
+            self.updates.catalogs_checking = false;
+        } else {
+            self.updates.checking = false;
+            self.updates.checked = Some(now);
+        }
+        self.updates.catalogs_checked = Some(now);
         if crate::core::updates::apply_baselines(&mut self.state, &check) {
             self.save();
         }
@@ -1308,7 +1343,13 @@ impl Dashboard {
             [one] => self.notify(&one.text()),
             more => self.notify(&format!("{} updates available", more.len())),
         }
-        self.updates.findings = check.findings;
+        if check.catalogs_only {
+            // The launcher's and the games' stay as the last full check found them.
+            self.updates.findings.retain(|f| !f.is_catalogs());
+            self.updates.findings.extend(check.findings);
+        } else {
+            self.updates.findings = check.findings;
+        }
     }
 
     /// Starts the measurements the pages asked for that are due.
@@ -2364,6 +2405,7 @@ impl Dashboard {
         play::watch_login(self, ctx);
         self.take_link(ctx);
         self.check_updates(ctx);
+        self.check_catalogs(ctx);
         // Read the headset's version once it is connected.
         // A reinstall asks the install's questions again.
         if self

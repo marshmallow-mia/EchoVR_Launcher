@@ -221,6 +221,17 @@ fn refresh(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion) {
     }
 }
 
+/// Refresh: the installed mods and the catalogue (with the dev folder's) read again now.
+fn refresh_catalog(d: &mut Dashboard, ctx: &egui::Context) {
+    if d.mods.catalog_loading {
+        return;
+    }
+    d.mods.catalog_loading = true;
+    d.mods.changed();
+    d.worker
+        .spawn(ctx, |tx| tx.send(Msg::ModCatalog(ModCatalog::load())));
+}
+
 /// The answers to this page's dialogs.
 fn answers(d: &mut Dashboard, ctx: &egui::Context) {
     if let Some(a) = d.dialogs.take(ADD_KEY) {
@@ -2233,6 +2244,29 @@ fn catalogue_card(
     r: Dr,
 ) {
     let (x, y, w, bottom) = hero::card_frame(kit, r, "More mods");
+    // Refresh, in the title's row: the catalogue is also read every 30 seconds.
+    let ly = dz(r.y + 28.0);
+    let link_w = kit
+        .spaced_galley("REFRESH", design::din(14.0), design::TEXT, dz(0.5), true)
+        .size()
+        .x;
+    let lx = dz(r.right() - 22.0) - link_w;
+    if d.mods.catalog_loading {
+        let g = kit.spaced_galley("REFRESH", design::din(14.0), design::GREY, dz(0.5), false);
+        kit.put(lx, ly, g);
+    } else if kit
+        .link(
+            "mods-refresh",
+            lx,
+            ly,
+            "Refresh",
+            14.0,
+            "Look for new mods and updates now (the launcher also looks every 30 seconds)",
+        )
+        .clicked
+    {
+        refresh_catalog(d, ctx);
+    }
     let Some(catalog) = d.mods.catalog.clone() else {
         kit.caps_text(
             x,
