@@ -1,44 +1,94 @@
-# Builds the portable launcher for every OS when a GitHub release is created and attaches
-# the zips to that release.
+# Builds the release packages as they are shipped, with their SHA256SUMS:
+# - Windows: cross-built with mingw-w64 (as on the Mac), the portable zip and the installer.
+# - Linux: built in Debian 11 (glibc 2.31, so it runs on older distros than the runner's), the
+#   zip, the tar.gz and the AppImage.
+# Started by hand (Actions → Release → Run workflow, on a branch or tag). The packages are the
+# run's artifacts; with a release tag given, they are attached to that release too.
 name: Release
 
 on:
-  release:
-    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Attach the packages to this existing release (e.g. v0.11.16-beta.1). Empty: artifacts only."
+        required: false
+        default: ""
 
 jobs:
-  package:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: windows
-          - os: macos-latest
-            platform: macos
-          # Pinned: sets the oldest glibc the Linux build runs on (see rust.yml).
-          - os: ubuntu-22.04
-            platform: linux
-    runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
+  windows:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
       - uses: Swatinem/rust-cache@v2
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64 nsis p7zip-full
+      - name: Build
+        run: cargo build --release --target x86_64-pc-windows-gnu
+      - name: Package
+        run: |
+          set -euo pipefail
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          mkdir -p target/release pkg
+          cp target/x86_64-pc-windows-gnu/release/EchoVR_Launcher.exe target/release/
+          scripts/package.sh windows "pkg/Echo_VR_Launcher-$V-windows.zip"
+          scripts/package.sh windows-setup "pkg/Echo_VR_Launcher-$V-windows-setup.exe"
+          ls -l pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: pkg/
+          retention-days: 14
+
+  linux:
+    runs-on: ubuntu-24.04
+    container: rust:1-bullseye
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Tools
+        run: apt-get update -qq && apt-get install -y -qq zip
       - name: Build
         run: cargo build --release
       - name: Package
-        id: package
-        shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.event.release.tag_name }}"
-          ASSET="Echo_VR_Launcher-${TAG}-${{ matrix.platform }}.zip"
-          scripts/package.sh "${{ matrix.platform }}" "${ASSET}"
-          echo "asset=${ASSET}" >> "$GITHUB_OUTPUT"
-      - name: Attach zip to the release
-        shell: bash
+          V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          mkdir -p pkg
+          scripts/package.sh linux "pkg/Echo_VR_Launcher-$V-linux.zip"
+          scripts/package.sh appimage "pkg/Echo_VR_Launcher-$V-x86_64.AppImage"
+          s=$(mktemp -d); mkdir -p "$s/EchoVR_Launcher"
+          cp target/release/EchoVR_Launcher LICENSE THIRD_PARTY_NOTICES.txt "$s/EchoVR_Launcher/"
+          tar -C "$s" -czf "pkg/Echo_VR_Launcher-$V-linux.tar.gz" EchoVR_Launcher
+          echo "glibc needed: $(objdump -T target/release/EchoVR_Launcher | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)"
+          ls -l pkg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: pkg/
+          retention-days: 14
+
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: pkg
+          merge-multiple: true
+      - name: SHA256SUMS
+        run: cd pkg && sha256sum Echo_VR_Launcher-* | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: pkg/
+          retention-days: 14
+      - name: Attach to the release
+        if: inputs.tag != ''
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "${{ steps.package.outputs.asset }}" --clobber
+        run: gh release upload "${{ inputs.tag }}" pkg/* --clobber -R "${{ github.repository }}"
