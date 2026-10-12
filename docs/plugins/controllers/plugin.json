@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "id": "controllers",
+  "name": "Controllers",
+  "version": "0.1.0",
+  "author": "marshmallow-mia",
+  "summary": "Set up your controllers for Echo VR through EchoXR: the angle and position of your hands, stick and trigger deadzones, vibration and a Menu button combination. Presets to pick from, your own presets, and preset files to pass on.",
+  "icon": "controller",
+  "settings": {
+    "store": { "kind": "file", "file": "EchoXR.txt", "format": "keyvalue", "live": true, "echoxr": true },
+    "sections": [
+      {
+        "id": "hands",
+        "title": "Hands",
+        "fields": [
+          { "key": "HandPose", "type": "choice", "style": "segmented", "default": "grip",
+            "label": "Hands from",
+            "choices": [
+              { "value": "grip", "label": "Meta", "tooltip": "Where a Rift puts your hands, the same on every headset and runtime" },
+              { "value": "aim", "label": "Revive", "tooltip": "The runtime's pointer, as Revive and EchoXR before 0.6 did: angle and position vary with the runtime" }
+            ],
+            "help": "Meta is where Echo VR expects your hands." },
+          { "key": "Pitch", "type": "number", "min": -45, "max": 45, "step": 1, "default": 0,
+            "style": "slider", "unit": "°", "label": "Tilt up",
+            "help": "Your hands point higher (or, below 0, lower) than your controllers." },
+          { "key": "Yaw", "type": "number", "min": -45, "max": 45, "step": 1, "default": 0,
+            "style": "slider", "unit": "°", "label": "Turn inwards",
+            "help": "Both hands turn towards each other (below 0: apart)." },
+          { "key": "Roll", "type": "number", "min": -45, "max": 45, "step": 1, "default": 0,
+            "style": "slider", "unit": "°", "label": "Roll outwards",
+            "help": "Both hands roll their tops outwards (below 0: inwards)." },
+          { "key": "OffsetZ", "type": "number", "min": -5, "max": 5, "step": 0.5, "default": 0,
+            "style": "slider", "unit": "cm", "advanced": true, "label": "Move forwards" },
+          { "key": "OffsetY", "type": "number", "min": -5, "max": 5, "step": 0.5, "default": 0,
+            "style": "slider", "unit": "cm", "advanced": true, "label": "Move up" },
+          { "key": "OffsetX", "type": "number", "min": -5, "max": 5, "step": 0.5, "default": 0,
+            "style": "slider", "unit": "cm", "advanced": true, "label": "Move inwards" }
+        ]
+      },
+      {
+        "id": "sticks",
+        "title": "Sticks and triggers",
+        "fields": [
+          { "key": "ThumbstickDeadzone", "type": "number", "min": 0, "max": 0.5, "step": 0.01, "default": 0.24,
+            "style": "slider", "label": "Stick deadzone",
+            "help": "How far a stick moves before it counts. Raise it if you drift." },
+          { "key": "TriggerDeadzone", "type": "number", "min": 0, "max": 0.3, "step": 0.01, "default": 0,
+            "style": "slider", "label": "Trigger deadzone",
+            "help": "How far a trigger is pulled before it counts." },
+          { "key": "GripDeadzone", "type": "number", "min": 0, "max": 0.3, "step": 0.01, "default": 0,
+            "style": "slider", "label": "Grip deadzone",
+            "help": "How far a grip is squeezed before it counts." }
+        ]
+      },
+      {
+        "id": "vibration",
+        "title": "Vibration",
+        "fields": [
+          { "key": "Vibration", "type": "number", "integer": true, "min": 0, "max": 100, "step": 5, "default": 100,
+            "style": "slider", "unit": "%", "label": "Strength",
+            "help": "0 turns it off." }
+        ]
+      },
+      {
+        "id": "buttons",
+        "title": "Buttons",
+        "fields": [
+          { "key": "MenuChord", "type": "choice", "style": "segmented", "default": "off",
+            "label": "Menu button",
+            "choices": [
+              { "value": "off", "label": "Menu" },
+              { "value": "xy", "label": "X + Y", "tooltip": "Left X and Y together open Echo VR's menu" }
+            ],
+            "help": "X + Y: for runtimes that keep the Menu button for themselves." },
+          { "key": "RecenterOnStart", "type": "bool", "values": ["1", "0"], "default": true, "style": "switch",
+            "restart": true, "label": "Face forwards at start",
+            "help": "Echo VR's forwards is where you look when it starts." }
+        ]
+      },
+      {
+        "id": "diagnostics",
+        "title": "Diagnostics",
+        "fields": [
+          { "key": "PoseLog", "type": "bool", "values": ["1", "0"], "default": false, "style": "switch",
+            "preset": false, "label": "Log the hands",
+            "help": "Once a second, in EchoXR's runtime.log: where your hands are and how fast they move." }
+        ]
+      }
+    ],
+    "presets": [
+      { "id": "meta", "name": "Default", "help": "Where a Rift puts your hands.", "values": {} },
+      { "id": "revive", "name": "Revive", "help": "Hands from the runtime's pointer, as before EchoXR 0.6.",
+        "values": { "HandPose": "aim" } },
+      { "id": "tilt-up", "name": "Tilted up", "help": "Hands pointing 10° higher.", "values": { "Pitch": 10 } },
+      { "id": "tilt-down", "name": "Tilted down", "help": "Hands pointing 10° lower.", "values": { "Pitch": -10 } }
+    ]
+  },
+  "actions": {},
+  "page": {
+    "columns": [
+      [
+        { "title": "Hands", "blocks": [ { "form": "hands" } ] },
+        { "title": "Sticks and triggers", "blocks": [ { "form": "sticks" } ] },
+        { "title": "Vibration", "blocks": [ { "form": "vibration" } ] },
+        { "title": "Buttons", "blocks": [ { "form": "buttons" } ] },
+        { "title": "Diagnostics", "blocks": [ { "form": "diagnostics" } ] }
+      ],
+      [
+        { "title": "Presets", "blocks": [ { "presets": true } ] },
+        { "title": "How it works", "blocks": [
+          { "text": "These settings apply when Echo VR plays through EchoXR: SteamVR, Virtual Desktop, WiVRn or Monado. Changes apply right away, also while you play.", "tone": "muted" },
+          { "text": "Nothing here changes how hard you throw or push off: EchoXR passes on your hands' speed as your headset measures it.", "tone": "muted" },
+          { "text": "Export… saves your settings as a file; Import… adds one someone gave you.", "tone": "muted" },
+          { "text": "Needs launcher 0.11.16 or newer (Settings, Update now) and EchoXR 0.6.", "tone": "muted" }
+        ] }
+      ]
+    ]
+  }
+}

@@ -39,7 +39,8 @@
               "maxLength": 64
             },
             "format": { "enum": ["keyvalue", "json"] },
-            "live": { "type": "boolean" }
+            "live": { "type": "boolean" },
+            "echoxr": { "type": "boolean" }
           },
           "required": ["kind", "file"],
           "additionalProperties": false
@@ -59,6 +60,20 @@
           "type": "array",
           "items": { "$ref": "#/$defs/section" }
         },
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "$ref": "#/$defs/key" },
+              "name": { "type": "string", "minLength": 1 },
+              "help": { "type": "string" },
+              "values": { "type": "object", "additionalProperties": { "$ref": "#/$defs/scalar" } }
+            },
+            "required": ["name", "values"],
+            "additionalProperties": false
+          }
+        },
         "fields": {
           "type": "array",
           "items": { "$ref": "#/$defs/field" }
@@ -69,6 +84,7 @@
     "section": {
       "type": "object",
       "properties": {
+        "id": { "$ref": "#/$defs/key" },
         "title": { "type": "string" },
         "help": { "type": "string" },
         "tooltip": { "type": "string" },
@@ -118,6 +134,7 @@
         "visible_if": { "$ref": "#/$defs/conditions" },
         "enabled_if": { "$ref": "#/$defs/conditions" },
         "restart": { "type": "boolean" },
+        "preset": { "type": "boolean" },
         "store": { "$ref": "#/$defs/store" },
         "style": {
           "enum": ["check", "switch", "field", "area", "dropdown", "segmented", "radio", "checks", "chips", "slider", "stepper"]

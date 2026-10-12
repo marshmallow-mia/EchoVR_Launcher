@@ -3,6 +3,7 @@
 pub mod catalog;
 pub mod dev_code;
 pub mod discover;
+pub mod echoxr_settings;
 pub mod feed;
 pub mod game;
 pub mod game_sign_in;
@@ -18,6 +19,7 @@ pub mod patch;
 pub mod plugin_page;
 pub mod plugin_settings;
 pub mod plugins;
+pub mod presets;
 pub mod quest;
 pub mod quest_net;
 pub mod ready;

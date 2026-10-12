@@ -55,6 +55,8 @@ pub enum Icon {
     Calendar,
     /// A plug: a launcher plugin's tab, when it names no icon of its own.
     Plug,
+    /// A VR controller: controller settings.
+    Controller,
 }
 
 /// What a control reports back.
@@ -251,6 +253,24 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
                 pt(0.22, 0.3),
             ]);
             line(vec![pt(0.5, 0.7), pt(0.5, 0.92)]);
+        }
+        Icon::Controller => {
+            // A gamepad: its body with two grips, a cross on the left, two buttons right.
+            line(vec![
+                pt(0.2, 0.3),
+                pt(0.8, 0.3),
+                pt(0.94, 0.74),
+                pt(0.82, 0.82),
+                pt(0.66, 0.62),
+                pt(0.34, 0.62),
+                pt(0.18, 0.82),
+                pt(0.06, 0.74),
+                pt(0.2, 0.3),
+            ]);
+            line(vec![pt(0.23, 0.46), pt(0.39, 0.46)]);
+            line(vec![pt(0.31, 0.38), pt(0.31, 0.54)]);
+            p.circle_filled(pt(0.66, 0.42), s * 0.05, c);
+            p.circle_filled(pt(0.76, 0.52), s * 0.05, c);
         }
         Icon::Folder => {
             line(vec![

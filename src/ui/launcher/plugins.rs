@@ -7,14 +7,19 @@ use std::time::Instant;
 use eframe::egui;
 use serde_json::{json, Map, Value};
 
+use super::plugin_form::{self, FormState};
 use super::{empty_state, hero, panel, play, Dashboard, Page};
+use crate::core::launcher::echoxr_settings;
 use crate::core::launcher::plugin_page::{
     self as pp, Block, Button, Card, Method, PluginPage, Request, Step, Tone as TextTone,
 };
+use crate::core::launcher::plugin_settings::{Settings, ECHOXR_FILE};
 use crate::core::launcher::plugins::{self as core, Installed, PluginCatalog};
+use crate::core::launcher::presets::{self, Match, UserPreset};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{GameServer, PackServer, ServerKind};
 use crate::ui::design::{self, dz, Dr};
+use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::parts::Worker;
 use crate::ui::style::Icon;
@@ -31,6 +36,11 @@ const ROW_GAP: f32 = 10.0;
 const REMOVE_KEY: &str = "plugins-remove";
 /// "Play on another server?" (a plugin's `server` step).
 const SERVER_KEY: &str = "plugins-server";
+/// A settings form's button that asks first.
+const FORM_ACTION_KEY: &str = "plugins-form-action";
+/// "Replace your preset?" and "Delete this preset?".
+const PRESET_REPLACE_KEY: &str = "plugins-preset-replace";
+const PRESET_DELETE_KEY: &str = "plugins-preset-delete";
 
 /// The plugins, their catalogue, and each plugin page's state.
 #[derive(Default)]
@@ -56,6 +66,19 @@ pub(super) struct PluginsUi {
     /// The server a plugin's `server` step asked to play on (its id, the server), while the
     /// question is up.
     server_asked: Option<(String, GameServer)>,
+    /// A plugin page's question that is up (its id, what was asked).
+    asked: Option<(String, Asked)>,
+}
+
+/// What a plugin page's settings blocks asked.
+#[derive(Clone)]
+enum Asked {
+    /// A form's button confirms its values (the form keeps them).
+    FormAction,
+    /// Replace the player's preset of this name.
+    Replace(String),
+    /// Delete the player's preset at this index.
+    Delete(usize),
 }
 
 impl PluginsUi {
@@ -95,6 +118,14 @@ struct View {
     drafts: HashMap<String, String>,
     runner: Option<Runner>,
     scroll: [f32; 2],
+    /// Its settings forms: Show advanced, what is typed, a button waiting for its yes.
+    form: FormState,
+    /// The player's presets, read when the page first shows.
+    user_presets: Option<Vec<UserPreset>>,
+    /// What "Save" keeps the settings as.
+    preset_name: String,
+    /// What the presets card last did ("Applied: …").
+    preset_note: String,
 }
 
 /// An action running: its steps, the next one, and the list row it was started on.
@@ -796,6 +827,7 @@ fn set_bound(d: &mut Dashboard, p: &Installed, bind: &str, value: Value) {
             tracing::warn!("plugin {}: {e:#}", p.page.id);
         }
         view(d, p).settings.insert(key.to_string(), text);
+        keep_echoxr(d, p);
     } else if let Some(path) = bind.strip_prefix("page.") {
         pp::set_path(&mut view(d, p).page, path, value);
     }
@@ -815,6 +847,7 @@ pub(super) fn rail_icon(p: &PluginPage) -> Icon {
     match p.icon.as_str() {
         "calendar" => Icon::Calendar,
         "globe" => Icon::Globe,
+        "controller" => Icon::Controller,
         // Not the Mods page's: plugins are the launcher's, mods Echo VR's.
         _ => Icon::Plug,
     }
@@ -825,16 +858,38 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
         return empty_state(kit, Icon::Plus, "Plugins", "This plugin was removed.");
     };
     view(d, &p);
+    answers(d, &p);
     let c = context(d, &p);
+    let f = forms(d, &p);
     let (dx, dy) = (kit.dx(), kit.dy());
     let cols = &p.page.columns;
     match cols.len() {
         0 => {}
-        1 => column(d, kit, ctx, &p, &c, 0, &cols[0], WHOLE.wider(dx).taller(dy)),
+        1 => column(
+            d,
+            kit,
+            ctx,
+            &p,
+            &c,
+            &f,
+            0,
+            &cols[0],
+            WHOLE.wider(dx).taller(dy),
+        ),
         _ => {
-            column(d, kit, ctx, &p, &c, 0, &cols[0], LEFT.wider(dx).taller(dy));
+            column(
+                d,
+                kit,
+                ctx,
+                &p,
+                &c,
+                &f,
+                0,
+                &cols[0],
+                LEFT.wider(dx).taller(dy),
+            );
             panel::at_right(kit, |k| {
-                column(d, k, ctx, &p, &c, 1, &cols[1], RIGHT.taller(dy))
+                column(d, k, ctx, &p, &c, &f, 1, &cols[1], RIGHT.taller(dy))
             });
         }
     }
@@ -848,6 +903,7 @@ fn column(
     ctx: &egui::Context,
     p: &Installed,
     c: &Value,
+    f: &Forms,
     n: usize,
     cards: &[Card],
     r: Dr,
@@ -862,12 +918,12 @@ fn column(
                 || card
                     .blocks
                     .iter()
-                    .any(|b| block_height(kit, b, c, dz(w - 44.0)) > 0.0)
+                    .any(|b| block_height(kit, b, c, f, dz(w - 44.0)) > 0.0)
         })
         .collect();
     let heights: Vec<f32> = shown
         .iter()
-        .map(|card| card_height(kit, card, c, dz(w - 44.0)))
+        .map(|card| card_height(kit, card, c, f, dz(w - 44.0)))
         .collect();
     let total = heights.iter().sum::<f32>() + dz(CARD_GAP) * shown.len().saturating_sub(1) as f32;
     let (x, y, cw, ch) = (dz(r.x), dz(r.y), dz(r.w), dz(r.h));
@@ -892,7 +948,7 @@ fn column(
         let mut top = y - scroll;
         for (ci, (card, h)) in shown.iter().zip(&heights).enumerate() {
             let cr = Dr::new(r.x, top / dz(1.0), r.w, h / dz(1.0));
-            draw_card(d, k, ctx, p, c, card, cr, &format!("{n}-{ci}"));
+            draw_card(d, k, ctx, p, c, f, card, cr, &format!("{n}-{ci}"));
             top += h + dz(CARD_GAP);
         }
     });
@@ -919,7 +975,7 @@ fn text_height(kit: &Kit, text: &str, w: f32) -> f32 {
 }
 
 /// A card's height (logical pixels) with content `w` wide.
-fn card_height(kit: &Kit, card: &Card, c: &Value, w: f32) -> f32 {
+fn card_height(kit: &Kit, card: &Card, c: &Value, f: &Forms, w: f32) -> f32 {
     let mut h = if card.title.is_empty() {
         dz(22.0)
     } else {
@@ -929,14 +985,33 @@ fn card_height(kit: &Kit, card: &Card, c: &Value, w: f32) -> f32 {
         h += text_height(kit, &pp::render(&card.help, c), w) + dz(BLOCK_GAP);
     }
     for b in &card.blocks {
-        h += block_height(kit, b, c, w);
+        h += block_height(kit, b, c, f, w);
     }
     h + dz(10.0)
 }
 
-fn block_height(kit: &Kit, b: &Block, c: &Value, w: f32) -> f32 {
+fn block_height(kit: &Kit, b: &Block, c: &Value, f: &Forms, w: f32) -> f32 {
     let gap = dz(BLOCK_GAP);
     match b {
+        Block::Form { section, when } => match &f.settings {
+            Some(s) if pp::truthy(when, c) => {
+                let part = form_part(s, section);
+                let h = plugin_form::height(kit, &part, &f.values, &f.state, w);
+                if h > 0.0 {
+                    h + gap
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        },
+        Block::Presets { when } => {
+            if f.settings.is_some() && pp::truthy(when, c) {
+                presets_height(kit, f, w) + gap
+            } else {
+                0.0
+            }
+        }
         Block::Text { text, when, .. } => {
             if !pp::truthy(when, c) {
                 return 0.0;
@@ -991,6 +1066,7 @@ fn draw_card(
     ctx: &egui::Context,
     p: &Installed,
     c: &Value,
+    f: &Forms,
     card: &Card,
     r: Dr,
     key: &str,
@@ -1020,7 +1096,7 @@ fn draw_card(
         .is_some_and(|v| v.runner.is_some());
     for (bi, b) in card.blocks.iter().enumerate() {
         let bkey = format!("plugin-{}-{key}-{bi}", p.page.id);
-        y += draw_block(d, k, ctx, p, c, b, x, y, w, &bkey, busy);
+        y += draw_block(d, k, ctx, p, c, f, b, x, y, w, &bkey, busy);
     }
 }
 
@@ -1032,6 +1108,7 @@ fn draw_block(
     ctx: &egui::Context,
     p: &Installed,
     c: &Value,
+    f: &Forms,
     b: &Block,
     x: f32,
     y: f32,
@@ -1040,11 +1117,39 @@ fn draw_block(
     busy: bool,
 ) -> f32 {
     let gap = dz(BLOCK_GAP);
-    let h = block_height(k, b, c, w);
+    let h = block_height(k, b, c, f, w);
     if h == 0.0 {
         return 0.0;
     }
     match b {
+        Block::Form { section, .. } => {
+            if let Some(s) = &f.settings {
+                let part = form_part(s, section);
+                let out = {
+                    let v = view(d, p);
+                    let values = v.settings.clone();
+                    plugin_form::form(
+                        k,
+                        key,
+                        &part,
+                        &values,
+                        &mut v.form,
+                        x,
+                        y,
+                        w,
+                        (f32::NEG_INFINITY, f32::INFINITY),
+                        !busy,
+                    )
+                };
+                if let Some((label, question)) = out.confirm {
+                    d.dialogs
+                        .confirm(FORM_ACTION_KEY, &label, &question, DlgIcon::Warning);
+                    d.plugins.asked = Some((p.page.id.clone(), Asked::FormAction));
+                }
+                write_form(d, p, out.changes);
+            }
+        }
+        Block::Presets { .. } => draw_presets(d, k, p, f, x, y, w, key),
         Block::Text { text, tone, .. } => {
             k.caps_text(
                 x,
@@ -1263,6 +1368,570 @@ fn draw_button(
         tip,
     )
     .clicked
+}
+
+// ---- a plugin's settings forms and presets ----
+
+/// What the settings blocks need besides the page's context, copied for this frame: the
+/// settings, their values, the forms' state and the player's presets.
+#[derive(Default)]
+struct Forms {
+    settings: Option<Settings>,
+    values: BTreeMap<String, String>,
+    state: FormState,
+    user: Vec<UserPreset>,
+    note: String,
+}
+
+fn forms(d: &mut Dashboard, p: &Installed) -> Forms {
+    let v = view(d, p);
+    if v.user_presets.is_none() && p.page.settings.is_some() {
+        v.user_presets = Some(presets::load(&p.dir));
+    }
+    Forms {
+        settings: p.page.settings.clone(),
+        values: v.settings.clone(),
+        state: v.form.clone(),
+        user: v.user_presets.clone().unwrap_or_default(),
+        note: v.preset_note.clone(),
+    }
+}
+
+/// The part of `s` a form block shows: one section, its title left to the card (`*`:
+/// every section, with their titles).
+fn form_part(s: &Settings, section: &str) -> Settings {
+    let mut part = Settings {
+        store: s.store.clone(),
+        ..Default::default()
+    };
+    if section == "*" {
+        part.sections = s.sections.clone();
+    } else if let Some(i) = s.section(section) {
+        let mut sec = s.sections[i].clone();
+        sec.title.clear();
+        sec.tooltip.clear();
+        part.sections.push(sec);
+    }
+    part
+}
+
+/// Writes changes a form or a preset made, and keeps EchoXR's copies with them.
+fn write_form(d: &mut Dashboard, p: &Installed, changes: Vec<(String, String)>) {
+    if changes.is_empty() {
+        return;
+    }
+    if !d.demo {
+        if let Err(e) = core::write_settings(p, &changes) {
+            d.dialogs.error(
+                "Couldn't change the settings",
+                &format!("{e:#}"),
+                Default::default(),
+            );
+            return;
+        }
+    }
+    view(d, p).settings.extend(changes);
+    keep_echoxr(d, p);
+}
+
+/// When `p` keeps EchoXR's settings: its file beside EchoXR in every installed version, so
+/// a change reaches a game that is running.
+fn keep_echoxr(d: &Dashboard, p: &Installed) {
+    if d.demo
+        || !p
+            .page
+            .settings
+            .as_ref()
+            .is_some_and(echoxr_settings::is_echoxr)
+    {
+        return;
+    }
+    let text = std::fs::read_to_string(p.dir.join(ECHOXR_FILE)).unwrap_or_default();
+    echoxr_settings::apply_all(&d.state.versions, Some(&text));
+}
+
+/// The answer to a question `p`'s page asked.
+fn answers(d: &mut Dashboard, p: &Installed) {
+    let Some((id, asked)) = d.plugins.asked.clone() else {
+        return;
+    };
+    if id != p.page.id {
+        return;
+    }
+    let key = match asked {
+        Asked::FormAction => FORM_ACTION_KEY,
+        Asked::Replace(_) => PRESET_REPLACE_KEY,
+        Asked::Delete(_) => PRESET_DELETE_KEY,
+    };
+    let Some(answer) = d.dialogs.take(key) else {
+        return;
+    };
+    d.plugins.asked = None;
+    let yes = answer.is_yes();
+    match asked {
+        Asked::FormAction => {
+            let pending = view(d, p).form.pending.take();
+            if yes {
+                write_form(d, p, pending.unwrap_or_default());
+            }
+        }
+        Asked::Replace(name) => {
+            if let (true, Some(s)) = (yes, &p.page.settings) {
+                let values = view(d, p).settings.clone();
+                save_preset(d, p, s, &values, name, true);
+            }
+        }
+        Asked::Delete(i) => {
+            let mut users = view(d, p).user_presets.clone().unwrap_or_default();
+            if yes && i < users.len() {
+                let gone = users.remove(i);
+                if store_presets(d, p, users) {
+                    view(d, p).preset_note = format!("Deleted: {}.", gone.name);
+                }
+            }
+        }
+    }
+}
+
+/// What the presets card says about the settings as they are.
+fn preset_status(f: &Forms) -> String {
+    let Some(s) = &f.settings else {
+        return String::new();
+    };
+    let now = match presets::matching(s, &f.values, &f.user) {
+        Some(Match::Builtin(i)) => {
+            let p = &s.presets[i];
+            if p.help.is_empty() {
+                format!("These are {}.", p.name)
+            } else {
+                format!("These are {}: {}", p.name, p.help)
+            }
+        }
+        Some(Match::User(i)) => format!("Your preset {}.", f.user[i].name),
+        None => "Your own settings: save them to keep them as a preset.".into(),
+    };
+    if f.note.is_empty() {
+        now
+    } else {
+        format!("{} {now}", f.note)
+    }
+}
+
+/// The name a preset of the current settings goes by: the preset they are, else what is
+/// typed, else a plain one.
+fn current_name(f: &Forms, typed: &str) -> String {
+    let matched =
+        f.settings
+            .as_ref()
+            .and_then(|s| match presets::matching(s, &f.values, &f.user)? {
+                Match::Builtin(i) => Some(s.presets[i].name.clone()),
+                Match::User(i) => Some(f.user[i].name.clone()),
+            });
+    matched
+        .or_else(|| presets::check_name(typed).ok())
+        .unwrap_or_else(|| "My settings".into())
+}
+
+fn presets_height(k: &Kit, f: &Forms, w: f32) -> f32 {
+    let gap = dz(BLOCK_GAP);
+    let advanced = f.settings.as_ref().is_some_and(Settings::has_advanced);
+    dz(LABEL_H)
+        + BTN_H
+        + gap
+        + text_height(k, &preset_status(f), w)
+        + gap
+        + dz(LABEL_H)
+        + BTN_H
+        + gap
+        + BTN_H
+        + if advanced { gap + dz(24.0) } else { 0.0 }
+}
+
+/// The presets card's block: the preset picker, what the settings are, Save under a name,
+/// Rename, Delete, Export… and Import…, and Show advanced.
+#[allow(clippy::too_many_arguments)]
+fn draw_presets(
+    d: &mut Dashboard,
+    k: &mut Kit,
+    p: &Installed,
+    f: &Forms,
+    x: f32,
+    y: f32,
+    w: f32,
+    key: &str,
+) {
+    let Some(s) = &f.settings else {
+        return;
+    };
+    let gap = dz(BLOCK_GAP);
+    let current = presets::matching(s, &f.values, &f.user);
+
+    k.caption(x, y, "Preset");
+    let pick = |label: &str, detail: &str, checked: bool, tip: &str| MenuItem::Pick {
+        label: label.into(),
+        detail: detail.into(),
+        detail_color: design::GREY,
+        checked,
+        tip: tip.into(),
+    };
+    let mut items: Vec<MenuItem> = s
+        .presets
+        .iter()
+        .enumerate()
+        .map(|(i, pr)| pick(&pr.name, "", current == Some(Match::Builtin(i)), &pr.help))
+        .collect();
+    if !f.user.is_empty() {
+        items.push(MenuItem::Divider);
+        items.extend(
+            f.user
+                .iter()
+                .enumerate()
+                .map(|(i, u)| pick(&u.name, "Yours", current == Some(Match::User(i)), "")),
+        );
+    }
+    let shown = match current {
+        Some(Match::Builtin(i)) => s.presets[i].name.clone(),
+        Some(Match::User(i)) => f.user[i].name.clone(),
+        None => "Your own".into(),
+    };
+    let my = y + dz(LABEL_H);
+    let picked = k.menu_button(
+        &format!("{key}-pick"),
+        &shown,
+        &items,
+        x,
+        my,
+        w,
+        BTN_H,
+        "A preset sets every setting it covers at once",
+    );
+    if let Some(i) = picked {
+        let n = s.presets.len();
+        let chosen = if i < n {
+            Some((
+                s.presets[i].name.clone(),
+                s.presets[i].values.clone(),
+                false,
+            ))
+        } else {
+            f.user
+                .get(i.wrapping_sub(n + 1))
+                .map(|u| (u.name.clone(), u.values.clone(), true))
+        };
+        if let Some((name, values, mine)) = chosen {
+            write_form(d, p, presets::changes_to(s, &f.values, &values));
+            let v = view(d, p);
+            v.preset_note = format!("Applied: {name}.");
+            if mine {
+                v.preset_name = name;
+            }
+        }
+    }
+
+    let mut yy = my + BTN_H + gap;
+    let status = preset_status(f);
+    k.caps_text(x, yy, w, &status, TEXT_SIZE, design::GREY, 0.0);
+    yy += text_height(k, &status, w) + gap;
+
+    // Keep the settings under a name.
+    k.caption(x, yy, "Save as a preset");
+    let fy = yy + dz(LABEL_H);
+    let save_w = k.button_width("Save", None, BTN_H).max(dz(120.0));
+    let named = {
+        let v = view(d, p);
+        k.field(
+            &format!("{key}-name"),
+            &mut v.preset_name,
+            x,
+            fy,
+            w - save_w - dz(12.0),
+            BTN_H,
+            "Its name",
+            false,
+            "",
+        );
+        presets::check_name(&v.preset_name)
+    };
+    let save_tip = match &named {
+        Ok(_) => "Keep the settings as they are now under this name",
+        Err(e) => e.as_str(),
+    };
+    if k.button(
+        &format!("{key}-save"),
+        x + w - save_w,
+        fy,
+        save_w,
+        BTN_H,
+        Tone::Go,
+        None,
+        "Save",
+        named.is_ok(),
+        save_tip,
+    )
+    .clicked
+    {
+        if let Ok(name) = named.clone() {
+            save_preset(d, p, s, &f.values, name, false);
+        }
+    }
+    yy = fy + BTN_H + gap;
+
+    // Rename and Delete the player's preset the settings are; Export… and Import….
+    let mine = match current {
+        Some(Match::User(i)) => Some(i),
+        _ => None,
+    };
+    let bw = (w - dz(12.0) * 3.0) / 4.0;
+    let bx = |i: usize| x + i as f32 * (bw + dz(12.0));
+    let rename_to = named
+        .as_ref()
+        .ok()
+        .filter(|n| mine.is_some_and(|i| f.user[i].name != **n));
+    let (rename_tip, delete_tip) = if mine.is_some() {
+        (
+            "Give your preset the name typed above",
+            "Delete your preset (the settings stay as they are)",
+        )
+    } else {
+        (
+            "Pick one of your presets first",
+            "Pick one of your presets first",
+        )
+    };
+    if k.button(
+        &format!("{key}-rename"),
+        bx(0),
+        yy,
+        bw,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Rename",
+        rename_to.is_some(),
+        rename_tip,
+    )
+    .clicked
+    {
+        if let (Some(i), Some(name)) = (mine, rename_to.cloned()) {
+            let mut users = f.user.clone();
+            let others: Vec<UserPreset> = users
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, u)| u.clone())
+                .collect();
+            let name = presets::unique_name(&others, &name);
+            users[i].name = name.clone();
+            if store_presets(d, p, users) {
+                view(d, p).preset_note = format!("Renamed: {name}.");
+            }
+        }
+    }
+    if k.button(
+        &format!("{key}-delete"),
+        bx(1),
+        yy,
+        bw,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Delete",
+        mine.is_some(),
+        delete_tip,
+    )
+    .clicked
+    {
+        if let Some(i) = mine {
+            d.dialogs.confirm_danger(
+                PRESET_DELETE_KEY,
+                "Delete this preset?",
+                &format!(
+                    "Your preset {} goes. The settings stay as they are.",
+                    f.user[i].name
+                ),
+                "Delete",
+            );
+            d.plugins.asked = Some((p.page.id.clone(), Asked::Delete(i)));
+        }
+    }
+    if k.button(
+        &format!("{key}-export"),
+        bx(2),
+        yy,
+        bw,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Export…",
+        true,
+        "Save the settings as a file to pass on",
+    )
+    .clicked
+    {
+        let typed = view(d, p).preset_name.clone();
+        export_preset(d, p, s, &f.values, &current_name(f, &typed));
+    }
+    if k.button(
+        &format!("{key}-import"),
+        bx(3),
+        yy,
+        bw,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Import…",
+        true,
+        "Add a preset from a file and use it",
+    )
+    .clicked
+    {
+        import_preset(d, p, s, &f.values);
+    }
+    yy += BTN_H + gap;
+
+    if s.has_advanced() {
+        let v = view(d, p);
+        k.check(
+            &format!("{key}-advanced"),
+            &mut v.form.advanced,
+            "Show advanced",
+            x,
+            yy,
+            true,
+            "Settings for fine-tuning",
+        );
+    }
+}
+
+/// Keeps `values` as the player's preset `name`; asks first when it would replace one
+/// (unless `replace`).
+fn save_preset(
+    d: &mut Dashboard,
+    p: &Installed,
+    s: &Settings,
+    values: &BTreeMap<String, String>,
+    name: String,
+    replace: bool,
+) {
+    let mut users = view(d, p).user_presets.clone().unwrap_or_default();
+    let values = s.preset_values(values);
+    match users
+        .iter()
+        .position(|u| u.name.eq_ignore_ascii_case(&name))
+    {
+        Some(i) if !replace => {
+            d.dialogs.confirm(
+                PRESET_REPLACE_KEY,
+                "Replace your preset?",
+                &format!(
+                    "You have a preset called {}: replace it with the settings as they are now?",
+                    users[i].name
+                ),
+                DlgIcon::Question,
+            );
+            d.plugins.asked = Some((p.page.id.clone(), Asked::Replace(name)));
+            return;
+        }
+        Some(i) => users[i].values = values,
+        None => users.push(UserPreset {
+            name: name.clone(),
+            values,
+        }),
+    }
+    if store_presets(d, p, users) {
+        view(d, p).preset_note = format!("Saved: {name}.");
+    }
+}
+
+/// Keeps `users` as the player's presets; false (and says why) when they can't be.
+fn store_presets(d: &mut Dashboard, p: &Installed, users: Vec<UserPreset>) -> bool {
+    if !d.demo {
+        if let Err(e) = presets::save(&p.dir, &users) {
+            d.dialogs.error(
+                "Couldn't keep the presets",
+                &format!("{e:#}"),
+                Default::default(),
+            );
+            return false;
+        }
+    }
+    view(d, p).user_presets = Some(users);
+    true
+}
+
+fn export_preset(
+    d: &mut Dashboard,
+    p: &Installed,
+    s: &Settings,
+    values: &BTreeMap<String, String>,
+    name: &str,
+) {
+    let Some(path) = crate::ui::parts::choose_save_json(name) else {
+        return;
+    };
+    let text = presets::export_text(s, &p.page.id, name, values);
+    match std::fs::write(&path, text) {
+        Ok(()) => {
+            let file = path
+                .file_name()
+                .map_or_else(String::new, |f| f.to_string_lossy().into_owned());
+            view(d, p).preset_note = format!("Exported: {file}.");
+        }
+        Err(e) => d.dialogs.error(
+            "Couldn't export the preset",
+            &format!("{}: {e}", path.display()),
+            Default::default(),
+        ),
+    }
+}
+
+fn import_preset(
+    d: &mut Dashboard,
+    p: &Installed,
+    s: &Settings,
+    values: &BTreeMap<String, String>,
+) {
+    let Some(path) = crate::ui::parts::choose_open_json() else {
+        return;
+    };
+    let read = std::fs::metadata(&path)
+        .map_err(|e| e.to_string())
+        .and_then(|m| {
+            if m.len() as usize > presets::MAX_FILE {
+                Err("This file is too big to be a preset.".to_string())
+            } else {
+                std::fs::read_to_string(&path).map_err(|e| e.to_string())
+            }
+        });
+    let imported = read.and_then(|text| presets::import_text(&text, &p.page.id, s));
+    let imp = match imported {
+        Ok(imp) => imp,
+        Err(why) => {
+            d.dialogs
+                .error("Couldn't import the preset", &why, Default::default());
+            return;
+        }
+    };
+    let mut users = view(d, p).user_presets.clone().unwrap_or_default();
+    let name = presets::unique_name(&users, &imp.name);
+    users.push(UserPreset {
+        name: name.clone(),
+        values: s.preset_values(&imp.values),
+    });
+    if !store_presets(d, p, users) {
+        return;
+    }
+    write_form(d, p, presets::changes_to(s, values, &imp.values));
+    let mut note = format!("Imported and applied: {name}.");
+    if !imp.clamped.is_empty() {
+        note += &format!(" Moved into range: {}.", imp.clamped.join(", "));
+    }
+    if !imp.dropped.is_empty() {
+        note += &format!(" Left out: {}.", imp.dropped.join(", "));
+    }
+    let v = view(d, p);
+    v.preset_note = note;
+    v.preset_name = name;
 }
 
 // ---- the Plugins page ----
@@ -1649,6 +2318,53 @@ pub(super) enum SnapServer {
 }
 
 /// Snapshots: the Game server plugin as the second tab in `state`, or not there (`None`).
+/// Snapshots: the Controllers plugin installed (its tab second, `on`), its hands tilted a
+/// little, advanced settings shown and a preset of the player's own.
+pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
+    const ID: &str = "controllers";
+    d.plugins.list.retain(|p| p.page.id != ID);
+    d.plugins.views.remove(ID);
+    if !on {
+        return;
+    }
+    let (page, _) = core::read_description(include_str!(
+        "../../../docs/plugins/controllers/plugin.json"
+    ));
+    let Some(page) = page else {
+        return;
+    };
+    let mut settings = page
+        .settings
+        .as_ref()
+        .map(Settings::defaults)
+        .unwrap_or_default();
+    settings.insert("Pitch".into(), "-6".into());
+    settings.insert("Vibration".into(), "70".into());
+    d.plugins.list.push(Installed {
+        from_catalog: Some(page.version.clone()),
+        page: std::sync::Arc::new(page),
+        dir: std::path::PathBuf::new(),
+        warnings: Vec::new(),
+    });
+    let mut view = View {
+        page: json!({}),
+        settings,
+        settings_read: true,
+        user_presets: Some(vec![UserPreset {
+            name: "Mia's hands".into(),
+            values: BTreeMap::from([
+                ("Pitch".into(), "-6".into()),
+                ("Vibration".into(), "70".into()),
+            ]),
+        }]),
+        preset_name: "Mia's hands".into(),
+        preset_note: "Saved: Mia's hands.".into(),
+        ..Default::default()
+    };
+    view.form.advanced = true;
+    d.plugins.views.insert(ID.into(), view);
+}
+
 pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
     const ID: &str = "game-server";
     d.plugins.list.retain(|p| p.page.id != ID);

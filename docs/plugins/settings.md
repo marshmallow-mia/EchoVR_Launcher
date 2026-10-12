@@ -84,6 +84,28 @@ Keys are letters, digits, `.`, `-` and `_` (at most 64), unique in the file.
 | `restart` | `true`: applies at the next start although the store is live (marked **Next start**); `false`: the other way round. |
 | `style` | How its control looks (per type below). A style that doesn't fit the type is ignored. |
 | `store` | A store of its own (as `settings.store`). |
+| `preset` | `false`: left out of presets and their files (a diagnostic switch, say). A `secret` always is. |
+
+### Presets
+
+A description may bring presets: values for some settings, picked all at once on a launcher
+plugin's page (its `{"presets": true}` block, see [pages.md](pages.md)).
+
+```json
+"presets": [
+  { "id": "tilt-up", "name": "Tilted up", "help": "Hands pointing 10° higher.", "values": { "Pitch": 10 } }
+]
+```
+
+- A preset stands for every setting presets set: what it doesn't name goes back to its default
+  when it is picked.
+- A value is checked like a typed one; a key that isn't a setting, a `secret` or a
+  `"preset": false` one is left out with a warning.
+- Players keep their own presets beside them (`presets.json` in the plugin's folder; an update
+  keeps it) and export or import one as a file:
+  `{"kind": "echovr-launcher-preset", "schema": 1, "plugin": "<id>", "name": "…", "values": {…}}`.
+  Importing keeps only this plugin's settings, moves numbers into their range and says what it
+  left out.
 
 ### Types
 
@@ -138,6 +160,14 @@ value equal to the catalogue's default isn't kept.
 
 Values go into `plugins/<file>`. Use this when your plugin reads its settings while the
 game runs: with `"live": true` the sheet says changes apply right away.
+
+A launcher plugin (Plugins rail) may mark `EchoXR.txt` in the `keyvalue` format with
+`"echoxr": true`: the file is EchoXR's own settings, and the launcher keeps a copy of it beside
+EchoXR in every installed version (`bin/win10/EchoXR/`, `bin/win7/EchoXR/`), also in one that
+is running, so a change reaches the game within half a second. The copies start with a marker
+line; a file without it (written by hand) is kept as `EchoXR.txt.bak` the first time. When the
+plugin is removed, the marked copies go. The Controllers plugin
+(`docs/plugins/controllers/plugin.json`) is the one that does.
 
 - `file`: a plain name in `plugins/` ending in `.txt`, `.ini`, `.cfg` or `.json`. No
   folders, no DLLs, not a `.plugin.json`.

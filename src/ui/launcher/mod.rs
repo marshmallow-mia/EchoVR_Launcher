@@ -679,6 +679,9 @@ pub enum SnapVariant {
     PluginGameServer,
     PluginGameServerAsk,
     PluginGameServerSet,
+    /// The Controllers plugin installed (its tab second), settings changed and a preset of
+    /// the player's own.
+    PluginControllers,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -1462,6 +1465,10 @@ impl Dashboard {
                 _ => None,
             },
         );
+        plugins::snap_controllers(
+            self,
+            self.snap_variant == Some(SnapVariant::PluginControllers),
+        );
         if matches!(
             self.snap_variant,
             Some(SnapVariant::Fresh | SnapVariant::Installing | SnapVariant::Extracting)
@@ -1840,7 +1847,8 @@ impl Dashboard {
             Some(
                 SnapVariant::PluginGameServer
                 | SnapVariant::PluginGameServerAsk
-                | SnapVariant::PluginGameServerSet,
+                | SnapVariant::PluginGameServerSet
+                | SnapVariant::PluginControllers,
             ) => {}
             // The concept's orange "!" on CHECK FOR UPDATES.
             None => {

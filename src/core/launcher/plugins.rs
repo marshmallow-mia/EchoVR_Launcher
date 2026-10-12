@@ -59,6 +59,7 @@ pub fn read_description(text: &str) -> (Option<PluginPage>, Vec<String>) {
                     file: SETTINGS_FILE.into(),
                     format: FileFormat::Json,
                     live: true,
+                    echoxr: false,
                 };
             }
         }
@@ -188,7 +189,9 @@ pub fn launcher_context(state: &LauncherState) -> Value {
         },
         "event_builds": builds,
         // What this launcher can do for a plugin, so one can say when it needs a newer one.
-        "features": {"server": true, "echorelay": true, "host": true},
+        // form: settings forms on the page; presets: the presets card; echoxr_settings: an
+        // `echoxr` store is kept beside EchoXR in every version.
+        "features": {"server": true, "echorelay": true, "host": true, "form": true, "presets": true, "echoxr_settings": true},
     })
 }
 
@@ -420,9 +423,12 @@ pub fn unpack(root: &Path, e: &PluginEntry, zip: &Path, cancel: &AtomicBool) -> 
         }
     };
     let dest = root.join(&e.id);
-    // Its settings stay.
+    // Its settings and the player's presets stay.
     if let Some(s) = &page.settings {
-        for f in plugin_settings::store_files(s) {
+        let kept = plugin_settings::store_files(s)
+            .into_iter()
+            .chain([super::presets::PRESETS_FILE.to_string()]);
+        for f in kept {
             let old = dest.join(&f);
             if old.is_file() && !staged.join(&f).exists() {
                 std::fs::copy(&old, staged.join(&f))?;

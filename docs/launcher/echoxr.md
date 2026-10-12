@@ -25,6 +25,14 @@ Since 0.4.0 it is built with the static C runtime, so it needs no Visual C++ run
 `echoxr.ini` any more; the launcher deletes the one older launchers wrote (only if it's
 exactly theirs).
 
+**Controller settings.** EchoXR 0.6 reads `EchoXR/EchoXR.txt` (the hands' angle and position,
+deadzones, vibration, a Menu chord) and reads it again while the game runs. The **Controllers**
+plugin (Plugins rail, `docs/plugins/controllers/plugin.json`) keeps that file in its own
+folder; the launcher copies it beside EchoXR in every installed version, when it prepares a
+version and at once when a setting or preset changes (`core::launcher::echoxr_settings`). The
+copies start with a marker line and go when the plugin goes; a hand-written file is kept as
+`EchoXR.txt.bak`. No setting changes how fast a hand moves.
+
 `EchoXR.exe` does four things, then waits for the game and returns its exit code:
 
 1. **Patched copy of the game.** If `echovr_openxr.exe` is missing, it makes it: a copy of

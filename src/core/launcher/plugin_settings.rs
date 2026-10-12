@@ -38,10 +38,24 @@ pub struct Settings {
     /// Settings shown on the plugin's row (bools and choices, at most [`ROW_MAX`]).
     pub row: Vec<String>,
     pub sections: Vec<Section>,
+    /// Ready-made sets of values a player can pick (a launcher plugin's presets card).
+    pub presets: Vec<Preset>,
+}
+
+/// A preset: values for some of the settings (the rest take their defaults when it is
+/// picked).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Preset {
+    pub id: String,
+    pub name: String,
+    pub help: String,
+    pub values: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Section {
+    /// How a launcher plugin's page names it (`{"form": "<id>"}`); empty: by its title.
+    pub id: String,
     pub title: String,
     pub help: String,
     /// Shown while the pointer is on its title.
@@ -62,6 +76,9 @@ pub enum Store {
         format: FileFormat,
         /// The plugin re-reads it while the game runs.
         live: bool,
+        /// EchoXR's own settings (`EchoXR.txt`): the launcher keeps a copy beside EchoXR in
+        /// every installed version (see `echoxr_settings`).
+        echoxr: bool,
     },
 }
 
@@ -104,6 +121,8 @@ pub struct Field {
     pub style: Style,
     /// Its own store instead of the description's.
     pub store: Option<Store>,
+    /// Part of presets and their exports (`"preset": false` leaves it out; a secret never is).
+    pub preset: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -232,6 +251,29 @@ impl Field {
         }
     }
 
+    /// A preset sets it (and an export carries it).
+    pub fn in_presets(&self) -> bool {
+        self.preset && self.has_value() && !matches!(self.kind, Kind::Secret { .. })
+    }
+
+    /// `input` as this setting keeps it, a number out of range moved into it; none when it
+    /// can't be one of its values at all (an imported preset's value).
+    pub fn clamp(&self, input: &str) -> Option<String> {
+        match &self.kind {
+            Kind::Number {
+                min,
+                max,
+                step,
+                integer,
+                ..
+            } => {
+                let n: f64 = input.trim().parse().ok()?;
+                n.is_finite().then(|| snap(n, *min, *max, *step, *integer))
+            }
+            _ => self.check(input).ok(),
+        }
+    }
+
     /// `input` as this setting keeps it, or why it can't be.
     pub fn check(&self, input: &str) -> std::result::Result<String, String> {
         let t = input.trim();
@@ -357,6 +399,9 @@ fn check_format(f: TextFormat, t: &str) -> std::result::Result<(), String> {
         })
     }
 }
+
+/// EchoXR's settings file, the one a store may mark `echoxr`.
+pub const ECHOXR_FILE: &str = "EchoXR.txt";
 
 /// The modifiers a key setting takes, as written.
 pub const MODIFIERS: [&str; 4] = ["Ctrl", "Alt", "Shift", "Win"];
@@ -511,6 +556,7 @@ pub fn parse_settings(v: &Value) -> (Option<Settings>, Vec<Warning>) {
             }
         }
         sections.push(Section {
+            id: str_of(so, "id"),
             title: str_of(so, "title"),
             help: str_of(so, "help"),
             tooltip: str_of(so, "tooltip"),
@@ -563,10 +609,62 @@ pub fn parse_settings(v: &Value) -> (Option<Settings>, Vec<Warning>) {
             None => w.push(format!("row: {k} isn't a setting here")),
         }
     }
+    let mut presets: Vec<Preset> = Vec::new();
+    for (pi, pv) in o
+        .get("presets")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        let Some(po) = pv.as_object() else {
+            w.push(format!("preset {pi} isn't an object"));
+            continue;
+        };
+        let name = str_of(po, "name");
+        if name.trim().is_empty() {
+            w.push(format!("preset {pi} has no name"));
+            continue;
+        }
+        let mut id = str_of(po, "id");
+        if id.is_empty() {
+            id = name.to_ascii_lowercase().replace(' ', "-");
+        }
+        if presets.iter().any(|p| p.id == id) {
+            w.push(format!("preset {id} appears twice: the second left out"));
+            continue;
+        }
+        let mut values = BTreeMap::new();
+        for (k, v) in po
+            .get("values")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flatten()
+        {
+            let Some(f) = by_key.get(k.as_str()).filter(|f| f.in_presets()) else {
+                w.push(format!("preset {name}: {k} isn't a setting a preset sets"));
+                continue;
+            };
+            let text = text_of(v).unwrap_or_default();
+            match f.check(&text) {
+                Ok(norm) => {
+                    values.insert(k.clone(), norm);
+                }
+                Err(e) => w.push(format!("preset {name}: {k}: {e}")),
+            }
+        }
+        presets.push(Preset {
+            id,
+            name,
+            help: str_of(po, "help"),
+            values,
+        });
+    }
     let settings = Settings {
         store,
         row,
         sections,
+        presets,
     };
     (Some(settings), w)
 }
@@ -603,7 +701,19 @@ fn parse_store(v: &Value) -> std::result::Result<Store, Warning> {
                 }
             };
             let live = o.get("live").and_then(Value::as_bool).unwrap_or(false);
-            Ok(Store::File { file, format, live })
+            let echoxr = o.get("echoxr").and_then(Value::as_bool).unwrap_or(false);
+            if echoxr && !(file.eq_ignore_ascii_case(ECHOXR_FILE) && format == FileFormat::KeyValue)
+            {
+                return Err(format!(
+                    "an echoxr store is {ECHOXR_FILE}, as key = value lines"
+                ));
+            }
+            Ok(Store::File {
+                file,
+                format,
+                live,
+                echoxr,
+            })
         }
         other => Err(format!("store kind {other:?} isn't args or file")),
     }
@@ -792,6 +902,7 @@ fn parse_field(v: &Value) -> std::result::Result<Field, String> {
         restart: o.get("restart").and_then(Value::as_bool),
         style: Style::Default,
         store: None,
+        preset: o.get("preset").and_then(Value::as_bool).unwrap_or(true),
     };
     if field.has_value() && !is_key(&field.key) {
         return Err(format!("key {:?} isn't letters, digits, . - _", field.key));
@@ -892,6 +1003,33 @@ impl Settings {
             .filter(|f| f.has_value() && !f.default.is_empty())
             .map(|f| (f.key.clone(), f.default.clone()))
             .collect()
+    }
+
+    /// The settings presets set, in the order they are shown.
+    pub fn preset_fields(&self) -> impl Iterator<Item = &Field> {
+        self.fields().filter(|f| f.in_presets())
+    }
+
+    /// Pure: every preset setting's value in `values`, its default where `values` has none:
+    /// the whole state a preset stands for.
+    pub fn preset_values(&self, values: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+        self.preset_fields()
+            .map(|f| {
+                let v = values
+                    .get(&f.key)
+                    .cloned()
+                    .unwrap_or_else(|| f.default.clone());
+                (f.key.clone(), f.check(&v).unwrap_or(v))
+            })
+            .collect()
+    }
+
+    /// The section a launcher plugin's page names: by its id, else its title.
+    pub fn section(&self, name: &str) -> Option<usize> {
+        self.sections
+            .iter()
+            .position(|s| !s.id.is_empty() && s.id == name)
+            .or_else(|| self.sections.iter().position(|s| s.title == name))
     }
 
     /// Every change applies while the game runs.
@@ -1378,6 +1516,7 @@ mod tests {
             Store::File {
                 format: FileFormat::Json,
                 live: false,
+                echoxr: false,
                 ..
             }
         ));

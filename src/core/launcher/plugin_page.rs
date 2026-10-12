@@ -37,7 +37,7 @@ pub struct PluginPage {
 }
 
 /// The rail icons a plugin can pick.
-pub const ICONS: &[&str] = &["plugin", "calendar", "globe"];
+pub const ICONS: &[&str] = &["plugin", "calendar", "globe", "controller"];
 
 /// Something the page fetches, by name (`data.<name>`).
 #[derive(Debug, Clone, PartialEq)]
@@ -124,6 +124,17 @@ pub enum Block {
         when: String,
     },
     Button(Button),
+    /// One section of the plugin's settings as a form (sliders, switches…), its title left
+    /// to the card: `{"form": "<section id or title>"}`, `"*"` for every section.
+    Form {
+        section: String,
+        when: String,
+    },
+    /// The plugin's presets: pick one, keep the current settings as one, export and import
+    /// them as files: `{"presets": true}`.
+    Presets {
+        when: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -357,6 +368,29 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
             return (None, w);
         }
     };
+    // A form shows one of the plugin's settings sections; presets need settings.
+    let mut columns = columns;
+    for (ci, col) in columns.iter_mut().enumerate() {
+        for card in col.iter_mut() {
+            card.blocks.retain(|b| {
+                let why = match (b, &settings) {
+                    (Block::Form { .. } | Block::Presets { .. }, None) => {
+                        Some("a form or presets block needs settings".to_string())
+                    }
+                    (Block::Form { section, .. }, Some(st))
+                        if section != "*" && st.section(section).is_none() =>
+                    {
+                        Some(format!("no settings section {section:?}"))
+                    }
+                    _ => None,
+                };
+                if let Some(why) = &why {
+                    warn(&mut w, &format!("page.columns[{ci}]"), why.clone());
+                }
+                why.is_none()
+            });
+        }
+    }
     for (ci, col) in columns.iter().enumerate() {
         for card in col {
             for b in &card.blocks {
@@ -504,6 +538,15 @@ fn parse_block(v: &Value, path: &str, w: &mut Vec<Warning>) -> Option<Block> {
                 }
             });
         }
+    }
+    if let Some(section) = v.get("form").and_then(Value::as_str) {
+        return Some(Block::Form {
+            section: section.into(),
+            when,
+        });
+    }
+    if v.get("presets").and_then(Value::as_bool) == Some(true) {
+        return Some(Block::Presets { when });
     }
     if let Some(items) = v.get("list").and_then(Value::as_str) {
         return Some(Block::List {
@@ -999,6 +1042,127 @@ mod tests {
         let ctx = serde_json::json!({"settings": {"folder": "", "regions": "eu"}});
         assert_eq!(render(&fields["folder"], &ctx), "server");
         assert_eq!(render(&fields["regions"], &ctx), "eu");
+    }
+
+    /// The Controllers plugin reads without a warning, with one form per section, its
+    /// presets whole, and exactly EchoXR's settings with EchoXR's defaults (a copy of
+    /// `kControllerKeys` and `ControllerSettings` in EchoXR's `xr/src/echoxr_settings.h`):
+    /// none of them is about speed.
+    #[test]
+    fn controllers_plugin() {
+        use super::super::plugin_settings::{Kind, Store};
+        let (p, w) = parse(include_str!(
+            "../../../docs/plugins/controllers/plugin.json"
+        ));
+        assert!(w.is_empty(), "{w:?}");
+        let p = p.unwrap();
+        assert_eq!(p.icon, "controller");
+        let s = p.settings.as_ref().unwrap();
+        assert!(
+            matches!(&s.store, Store::File { file, echoxr: true, live: true, .. } if file == "EchoXR.txt")
+        );
+
+        const ECHOXR: [(&str, &str); 14] = [
+            ("HandPose", "grip"),
+            ("Pitch", "0"),
+            ("Yaw", "0"),
+            ("Roll", "0"),
+            ("OffsetX", "0"),
+            ("OffsetY", "0"),
+            ("OffsetZ", "0"),
+            ("ThumbstickDeadzone", "0.24"),
+            ("TriggerDeadzone", "0"),
+            ("GripDeadzone", "0"),
+            ("Vibration", "100"),
+            ("MenuChord", "off"),
+            ("RecenterOnStart", "1"),
+            ("PoseLog", "0"),
+        ];
+        let mut keys: Vec<&str> = s
+            .fields()
+            .filter(|f| f.has_value())
+            .map(|f| f.key.as_str())
+            .collect();
+        keys.sort_unstable();
+        let mut want: Vec<&str> = ECHOXR.iter().map(|(k, _)| *k).collect();
+        want.sort_unstable();
+        assert_eq!(keys, want);
+        for (k, default) in ECHOXR {
+            let f = s.field(k).unwrap();
+            let kept = match &f.kind {
+                Kind::Bool { on, off } => if f.default == "true" || f.default == *on {
+                    on
+                } else {
+                    off
+                }
+                .clone(),
+                _ => f.default.clone(),
+            };
+            assert_eq!(kept, default, "{k}");
+            let lower = k.to_ascii_lowercase();
+            for word in [
+                "velocity",
+                "speed",
+                "strength",
+                "multiplier",
+                "predict",
+                "boost",
+                "scale",
+            ] {
+                assert!(!lower.contains(word), "{k}");
+            }
+        }
+        // EchoXR's ranges: angles ±45°, offsets ±5 cm.
+        for (k, lo, hi) in [
+            ("Pitch", -45.0, 45.0),
+            ("Roll", -45.0, 45.0),
+            ("OffsetZ", -5.0, 5.0),
+            ("Vibration", 0.0, 100.0),
+        ] {
+            let Kind::Number { min, max, .. } = &s.field(k).unwrap().kind else {
+                panic!("{k} is a number");
+            };
+            assert_eq!((*min, *max), (Some(lo), Some(hi)), "{k}");
+        }
+        // Every section has its form; the presets card is there.
+        let blocks: Vec<&Block> = p.columns.iter().flatten().flat_map(|c| &c.blocks).collect();
+        for sec in &s.sections {
+            assert!(
+                blocks
+                    .iter()
+                    .any(|b| matches!(b, Block::Form { section, .. } if *section == sec.id)),
+                "{}",
+                sec.id
+            );
+        }
+        assert!(blocks.iter().any(|b| matches!(b, Block::Presets { .. })));
+        assert_eq!(s.presets.len(), 4);
+        assert!(s.presets.iter().all(|p| !p.values.contains_key("PoseLog")));
+    }
+
+    #[test]
+    fn form_and_presets_blocks() {
+        let page = |blocks: Value, settings: Option<Value>| {
+            let mut v = json!({"id": "x", "name": "X", "page": {"columns": [[{"title": "T", "blocks": blocks}]]}});
+            if let Some(st) = settings {
+                v["settings"] = st;
+            }
+            parse(&v.to_string())
+        };
+        let settings = json!({"sections": [{"id": "a", "title": "A", "fields": [{"key": "k"}]},
+                                            {"title": "Second", "fields": [{"key": "j"}]}]});
+        let (p, w) = page(
+            json!([{"form": "a"}, {"form": "Second"}, {"form": "*"}, {"presets": true}]),
+            Some(settings.clone()),
+        );
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(p.unwrap().columns[0][0].blocks.len(), 4);
+        let (p, w) = page(json!([{"form": "nope"}, {"presets": true}]), Some(settings));
+        assert_eq!(p.unwrap().columns[0][0].blocks.len(), 1);
+        assert!(w.iter().any(|x| x.contains("no settings section")), "{w:?}");
+        let (p, w) = page(json!([{"form": "*"}, {"presets": true}]), None);
+        assert!(p.unwrap().columns[0][0].blocks.is_empty());
+        assert_eq!(w.len(), 2, "{w:?}");
     }
 
     #[test]

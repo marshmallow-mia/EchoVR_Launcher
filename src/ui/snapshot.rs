@@ -99,6 +99,11 @@ pub fn shots() -> Vec<Shot> {
             Page::Play,
             SnapVariant::PluginGameServerSet,
         ),
+        (
+            "plugin_controllers",
+            Page::Plugin(1),
+            SnapVariant::PluginControllers,
+        ),
         ("dialog_error", Page::Play, SnapVariant::DialogError),
         (
             "dialog_install_error",

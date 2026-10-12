@@ -103,7 +103,9 @@ fn echoxr(state: &LauncherState, v: &InstalledVersion) -> anyhow::Result<()> {
         crate::core::echoxr::platform_beside_game(&bin)?;
         crate::core::echoxr::refresh_openxr_exe(&bin)?;
     }
-    Ok(())
+    // The Controllers plugin's settings beside EchoXR, wherever it is (a removed plugin's
+    // copy goes).
+    super::echoxr_settings::apply(v, super::echoxr_settings::current().as_deref())
 }
 
 /// What [`prepare`] writes `v`'s folder from, as one number: when it changes, the folder
@@ -131,6 +133,7 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
         .hash(&mut h);
     super::dev_code::kept("mods").hash(&mut h);
     crate::core::echoxr::is_fetched().hash(&mut h);
+    super::echoxr_settings::current().hash(&mut h);
     (cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up()).hash(&mut h);
     let bin = v.bin_dir();
     stamp(&v.exe_path()).hash(&mut h);

@@ -55,7 +55,7 @@ there were.
 ```
 
 - **`id`:** lowercase letters, digits, `.`, `-`, `_`. **`name`** is the tab's name.
-- **`icon`:** the tab's icon: `plugin`, `calendar` or `globe`.
+- **`icon`:** the tab's icon: `plugin`, `calendar`, `globe` or `controller`.
 - **`settings`:** what the plugin keeps, in the format of mods' settings
   ([settings.md](settings.md)): keys, types, defaults, checks.
   - The values are kept in `settings.json` in the plugin's folder, unless the description names another
@@ -77,6 +77,7 @@ Every text in a page is a template. `{path}` is filled from the page's context:
 | `launcher.event_builds` | the installed event builds: `[{"id": "halloween", "version": "pc-halloween-2018", "name": "Halloween 2018"}]` |
 | `launcher.server.address`, `.name`, `.kind`, `.discord_id`, `.display_name`, `.plugin` | the server the live build plays on instead of EchoVRCE, as a plugin's `server` step set it (empty: EchoVRCE; `kind`: `nakama` or `echorelay`), and that plugin's id. Its key and password aren't shown. Launchers before 0.11.11-beta.1 have no `launcher.server` |
 | `launcher.features.server`, `.echorelay`, `.host` | `true` when this launcher has the `server` step, its EchoRelay kind (0.11.12 on) and the `host` step (0.11.15 on): a plugin can say when it needs a newer launcher |
+| `launcher.features.form`, `.presets`, `.echoxr_settings` | `true` when this launcher draws the `form` and `presets` blocks and keeps an `echoxr` store beside EchoXR (0.11.16 on) |
 | `item` | inside a list: its row |
 
 Template syntax:
@@ -124,6 +125,8 @@ A card without a title and with nothing to show isn't drawn. Each block may have
 | `{"choice": "page.build", "label": "…", "options": "launcher.event_builds", "option_value": "{item.id}", "option_text": "{item.name}"}` | a dropdown over a list; the first option until one is chosen |
 | `{"list": "data.matches.matches", "filter": "{item.build} == {page.build}", "title": "…", "detail": "…", "button": { … }, "empty": "…"}` | a row per item, with a button on each |
 | `{"button": {"label": "Join", "action": "join", "enabled": "{page.join_id}", "primary": true}}` | a button that runs an action |
+| `{"form": "<section>"}` | one section of the plugin's settings as a form, as the Mods page's settings sheet draws it (sliders, switches, segmented choices…), named by its `id` or its title, its title left to the card; `"*"`: every section with its title. Changes are kept at once |
+| `{"presets": true}` | the plugin's presets ([settings.md](settings.md#presets)): pick one, which preset the settings are, **Save** them under a name, **Rename** and **Delete** the player's own, **Export…** and **Import…** a preset file, and **Show advanced** for the forms |
 
 A list's button runs its action with `item` set to its row. Buttons are off while one of the
 plugin's actions runs.

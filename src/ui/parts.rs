@@ -79,6 +79,23 @@ pub fn choose_exe() -> Option<String> {
         .map(|p| p.to_string_lossy().into_owned())
 }
 
+/// Asks where to save a preset file, `name.json` suggested; `None` when cancelled.
+pub fn choose_save_json(name: &str) -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Export the preset")
+        .set_file_name(format!("{name}.json"))
+        .add_filter("Preset", &["json"])
+        .save_file()
+}
+
+/// Opens a file picker for a preset file; `None` when cancelled.
+pub fn choose_open_json() -> Option<std::path::PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Import a preset")
+        .add_filter("Preset", &["json"])
+        .pick_file()
+}
+
 // ---- Quest connection row ----
 
 enum ConnMsg {
