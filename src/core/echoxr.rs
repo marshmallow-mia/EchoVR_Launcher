@@ -23,15 +23,17 @@ use crate::core::launcher::store::{LaunchProfile, Runtime, VdVia};
 use crate::core::launcher::versions::Step;
 use crate::core::paths;
 
-/// EchoXR's OpenXR layer (marshmallow-mia/EchoXR 0.5.0, its GitHub release): unpacked into the
+/// EchoXR's OpenXR layer (marshmallow-mia/EchoXR 0.6.0, its GitHub release): unpacked into the
 /// game's bin folder (`bin/win10`, or an event build's `bin/win7`). Built with the static C
-/// runtime, so it needs no Visual C++ runtime. 0.5.0 runs the five event builds; 0.4.2
+/// runtime, so it needs no Visual C++ runtime. 0.6.0 reads the controller settings in
+/// `EchoXR.txt` (the Controllers plugin) and takes the hands from the grip pose; 0.5.0 runs
+/// the five event builds; 0.4.2
 /// brings the Platform SDK stand-in; 0.4.1 made it run under GE-Proton.
-pub const VERSION: &str = "0.5.0";
-const ZIP: &str = "EchoXR-OpenXR-v0.5.0.zip";
+pub const VERSION: &str = "0.6.0";
+const ZIP: &str = "EchoXR-OpenXR-v0.6.0.zip";
 const URL: &str =
-    "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.5.0-rc1/EchoXR-OpenXR-v0.5.0.zip";
-const SHA256: &str = "cfc58aa67f6c5f0dd492cc27ce682be58ed57c255b6bb3b5b069f57b1715a0e2";
+    "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.0-rc1/EchoXR-OpenXR-v0.6.0.zip";
+const SHA256: &str = "bc494ba2251498617866759ece68211a3f1824bcb86ad34bc7987d23d3b70edf";
 /// Who made it, as the Mods page credits it: EchoXR, and what it builds on.
 pub const AUTHORS: &str =
     "heisthecat31, marshmallow-mia, Villagers654 (RiftLift), CrossVR (Revive)";
@@ -41,19 +43,19 @@ pub const LAUNCHER: &str = "EchoXR.exe";
 const FILES: [(&str, &str); 4] = [
     (
         LAUNCHER,
-        "d024c0400afa62cac0f91c730ca912823b25535950b0c3c8c5aec535ad3dba65",
+        "eb1ba377b6658690683e5adbccf839afda5800ef8424df6e3e81d7552261c032",
     ),
     (
         "EchoXR/LibOVRRT64_1.dll",
-        "b7595078eb23ece899b9772dc7b03131ff71597fb5ae4e79d383cbf42e858932",
+        "835071d1f5c41b9ff4e329553613db6c4155a838965aef412015e62ee775c83b",
     ),
     (
         "EchoXR/openxr_loader.dll",
-        "a60093f3e01198c19ea1dab7ee9de3561fba0ac68a47a690d634697fbf36040c",
+        "83fc1422fcd30944ddd96d15ca2ec05f91cc657b6fdbeb180d49baf3265c5f33",
     ),
     (
         PLATFORM_IN_ECHOXR,
-        "c8436034b36c6afbb15cf0f3f886f92d36a5587dda5c5c09774a65cc26734295",
+        "be6ceb5bb2dff3ffcf81a057aa6d1360523c0e43887e4ae46d69ac762771650b",
     ),
 ];
 /// EchoXR's Platform SDK stand-in, as the zip has it.
