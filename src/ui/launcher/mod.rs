@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use super::design::{self, dz, Dr, RailIcon};
+use super::design::{self, dz, Dr, RailIcon, RAIL_SMALL_SQ};
 use super::dialogs::DialogHost;
 use super::kit::Kit;
 use super::parts::{QuestConn, Worker};
@@ -115,8 +115,9 @@ const RAIL_W: f32 = 91.0;
 const RAIL_EXTRA: f32 = 150.0;
 /// The rail's dividers between its groups.
 const RAIL_DIVIDER: egui::Color32 = egui::Color32::from_rgb(142, 144, 143);
-/// ⋯'s menu, and a plugin tab's (right click).
-const RAIL_MORE_MENU: &str = "rail-more";
+/// The small tabs' names in the unfolded rail: darker than the game's pages'.
+const RAIL_SMALL_TEXT: egui::Color32 = egui::Color32::from_gray(150);
+/// A plugin tab's menu (right click).
 const RAIL_TAB_MENU: &str = "rail-tab";
 /// How long the rail takes to unfold or fold (seconds).
 const RAIL_SLIDE: f32 = 0.22;
@@ -1498,8 +1499,13 @@ impl Dashboard {
             self.state.rail_open = true;
         }
         if self.snap_variant == Some(SnapVariant::ManyPluginsMenu) {
-            let id = crate::ui::widgets::menu_id(RAIL_MORE_MENU);
-            ctx.data_mut(|d| d.insert_temp(id, true));
+            // Scrolled down a little, a tab's right-click menu up.
+            self.plugins.rail_scroll = 60.0;
+            if let Some(&i) = plugins::pinned(self).get(3) {
+                self.plugins.rail_menu = Some(self.plugins.list[i as usize].page.id.clone());
+                let id = crate::ui::widgets::menu_id(RAIL_TAB_MENU);
+                ctx.data_mut(|d| d.insert_temp(id, true));
+            }
         }
         if matches!(
             self.snap_variant,
@@ -3207,73 +3213,108 @@ impl Dashboard {
 
     /// The rail: the pages' icons, and the ≡ button that unfolds it (`shift` wider than its
     /// icons) to show each page's name, and why its icon has a dot, beside it. Three groups:
-    /// the game's pages, the community's, and the plugins' tabs with the Plugins page;
-    /// Settings at the bottom. More plugin tabs than fit go under ⋯.
+    /// the game's pages; the community's and the plugins' tabs, smaller; the Plugins page
+    /// under them, Settings at the bottom. More plugin tabs than fit scroll.
     fn rail(&mut self, kit: &mut Kit, ctx: &egui::Context, shift: f32) {
         let pinned = plugins::pinned(self);
         let lay = rail_layout(pinned.len(), kit.dy());
-        let shown = &pinned[..lay.plugins.len()];
-        let hidden: Vec<u8> = pinned[lay.plugins.len()..].to_vec();
-        let page = |p: Page| Slot::Page(p);
+        let shown_h = lay.area.1 - lay.area.0;
+        // The open plugin's tab scrolled into view when the page changes.
+        let scroll = &mut self.plugins.rail_scroll;
+        if self.plugins.rail_seen != Some(self.page) {
+            self.plugins.rail_seen = Some(self.page);
+            if let Some(k) = pinned.iter().position(|&i| self.page == Page::Plugin(i)) {
+                let top = k as f32 * RAIL_PITCH;
+                if top < *scroll {
+                    *scroll = top;
+                } else if top + RAIL_PITCH > *scroll + shown_h {
+                    *scroll = top + RAIL_PITCH - shown_h;
+                }
+            }
+        }
+        *scroll = scroll.clamp(0.0, lay.scroll_max);
+        // How far it is unfolded, 0..1.
+        let t = (shift / dz(RAIL_EXTRA)).clamp(0.0, 1.0);
+        let width = RAIL + shift;
+        self.rail_background(kit, ctx, width);
+        // The plugin tabs' wheel and scrollbar, at the rail's right edge.
+        let mut offset = dz(self.plugins.rail_scroll);
+        kit.scroll_area(
+            "rail-plugins",
+            0.0,
+            dz(lay.area.0),
+            width,
+            dz(shown_h),
+            dz(lay.scroll_max + shown_h),
+            &mut offset,
+        );
+        self.plugins.rail_scroll = offset / dz(1.0);
+        let scroll = self.plugins.rail_scroll;
+        let tab_y = |k: usize| lay.first + k as f32 * RAIL_PITCH - scroll;
+        // A tab shows when its middle is in the area.
+        let in_view = |cy: f32| {
+            cy >= lay.area.0 + RAIL_PITCH / 2.0 - 0.5 && cy <= lay.area.1 - RAIL_PITCH / 2.0 + 0.5
+        };
+        let row = |p: Page, icon: RailIcon, cy: f32, small: bool| RailRow {
+            page: p,
+            icon,
+            cy,
+            small,
+            scrolls: false,
+        };
         let mut items = vec![
-            (
-                page(Page::Play),
-                RailIcon::Image("icon_play.png", 24.0),
-                lay.game[0],
-            ),
-            (
-                page(Page::Install),
-                RailIcon::Vector(Icon::Download, 30.0),
-                lay.game[1],
-            ),
-            (
-                page(Page::Mods),
-                RailIcon::Vector(Icon::Mods, 30.0),
-                lay.game[2],
-            ),
-            (
-                page(Page::Servers),
-                RailIcon::Vector(Icon::Globe, 33.0),
-                lay.game[3],
-            ),
-            (
-                page(Page::EchoVrce),
-                RailIcon::Image("icon_echovrce.png", 38.0),
+            row(Page::Play, RailIcon::Image("icon_play.png", 24.0), lay.game[0], false),
+            row(Page::Install, RailIcon::Vector(Icon::Download, 30.0), lay.game[1], false),
+            row(Page::Mods, RailIcon::Vector(Icon::Mods, 30.0), lay.game[2], false),
+            row(Page::Servers, RailIcon::Vector(Icon::Globe, 33.0), lay.game[3], false),
+            row(
+                Page::EchoVrce,
+                RailIcon::Image("icon_echovrce.png", 26.0),
                 lay.community[0],
+                true,
             ),
-            (
-                page(Page::Friends),
-                RailIcon::Image("icon_community.png", 38.0),
+            row(
+                Page::Friends,
+                RailIcon::Image("icon_community.png", 26.0),
                 lay.community[1],
+                true,
             ),
         ];
-        for (&i, &cy) in shown.iter().zip(&lay.plugins) {
+        for (k, &i) in pinned.iter().enumerate() {
+            let cy = tab_y(k);
+            // Only what can show (part of a tab at the area's edges).
+            if cy < lay.area.0 - RAIL_PITCH || cy > lay.area.1 + RAIL_PITCH {
+                continue;
+            }
             let icon = plugins::rail_icon(&self.plugins.list[i as usize].page);
-            items.push((page(Page::Plugin(i)), RailIcon::Vector(icon, 30.0), cy));
+            items.push(RailRow {
+                scrolls: true,
+                ..row(Page::Plugin(i), RailIcon::Vector(icon, 22.0), cy, true)
+            });
         }
-        if let Some(cy) = lay.more {
-            items.push((Slot::More, RailIcon::Vector(Icon::More, 30.0), cy));
-        }
-        items.push((
-            page(Page::Plugins),
-            RailIcon::Vector(Icon::Puzzle, 32.0),
+        items.push(row(
+            Page::Plugins,
+            RailIcon::Vector(Icon::Puzzle, 24.0),
             lay.hub,
+            true,
         ));
-        items.push((
-            page(Page::Settings),
+        items.push(row(
+            Page::Settings,
             RailIcon::Vector(Icon::Gear, 34.0),
             lay.settings,
+            false,
         ));
-        // Where a page shows in the rail: a hidden tab under ⋯, an unpinned one under the
+        // Where a page shows in the rail: an unpinned or scrolled-away tab's under the
         // Plugins page.
+        let shows = |p: Page| items.iter().any(|r| r.page == p && (!r.scrolls || in_view(r.cy)));
         let slot_of = |p: Page| match p {
-            Page::Plugin(i) if hidden.contains(&i) => Slot::More,
-            Page::Plugin(i) if !pinned.contains(&i) => Slot::Page(Page::Plugins),
-            p => Slot::Page(p),
+            Page::Plugin(_) if !shows(p) => Page::Plugins,
+            p => p,
         };
         let current = slot_of(self.page);
-        // Each slot's dot: its reasons (a hidden tab's under ⋯), the first one's colour.
-        let mut badges: Vec<(Slot, String, egui::Color32)> = Vec::new();
+        // Each slot's dot: its reasons (an unpinned tab's on the Plugins page), the first
+        // one's colour.
+        let mut badges: Vec<(Page, String, egui::Color32)> = Vec::new();
         for (p, why, color) in self.rail_badges() {
             let s = slot_of(p);
             match badges.iter_mut().find(|(b, ..)| *b == s) {
@@ -3281,11 +3322,7 @@ impl Dashboard {
                 None => badges.push((s, why, color)),
             }
         }
-        let badge = |s: Slot| badges.iter().find(|(b, ..)| *b == s);
-        // How far it is unfolded, 0..1.
-        let t = (shift / dz(RAIL_EXTRA)).clamp(0.0, 1.0);
-        let width = RAIL + shift;
-        self.rail_background(kit, ctx, width);
+        let badge = |p: Page| badges.iter().find(|(b, ..)| *b == p);
         let open = self.state.rail_open;
         let tip = if open {
             "Fold the tabs' names away"
@@ -3293,7 +3330,7 @@ impl Dashboard {
             "Show the tabs' names"
         };
         if kit
-            .rail_item("rail-fold", RailIcon::Menu(28.0, t), 130.0, false, tip)
+            .rail_item("rail-fold", RailIcon::Menu(22.0, t), 42.0, false, true, tip)
             .clicked
         {
             self.state.rail_open = !open;
@@ -3304,100 +3341,130 @@ impl Dashboard {
             (t > 0.01).then(|| (kit.window().min.x + width, (t * 1.6 - 0.6).clamp(0.0, 1.0)));
         let titles: Vec<String> = items
             .iter()
-            .map(|(s, ..)| match s {
-                Slot::Page(Page::Plugin(i)) => plugins::title(self, *i),
-                Slot::Page(p) => p.title().to_string(),
-                Slot::More => format!("{} more", hidden.len()),
+            .map(|r| match r.page {
+                Page::Plugin(i) => plugins::title(self, i),
+                p => p.title().to_string(),
             })
             .collect();
-        // The menus first: the click that opens one isn't taken as a click away from it.
-        let more_was_open = kit.menu_open(RAIL_MORE_MENU);
-        self.rail_menus(kit, &items, &hidden, width);
-        let mut menu_for: Option<(String, f32)> = None;
-        for ((slot, icon, cy), title) in items.iter().cloned().zip(titles) {
-            let tip = match (badge(slot), slot) {
+        // The menu first: the click that opens it isn't taken as a click away from it.
+        self.rail_menu(kit, &items, width);
+        let area = kit.drect(Dr::new(0.0, lay.area.0, 0.0, shown_h));
+        let area = egui::Rect::from_x_y_ranges(kit.window().x_range(), area.y_range());
+        let clip = kit.ui.clip_rect();
+        let mut menu_for: Option<String> = None;
+        for (r, title) in items.iter().zip(titles) {
+            let tip = match (badge(r.page), r.page) {
                 (Some((_, why, _)), _) => format!("{title}: {why}"),
-                (None, Slot::Page(Page::Plugin(_))) => {
-                    format!("{title} (right click: unpin, move)")
-                }
+                (None, Page::Plugin(_)) => format!("{title} (right click: unpin, move)"),
                 (None, _) => title.clone(),
             };
-            let selected = current == slot;
-            let mut r = kit.rail_item(&format!("rail-{title}"), icon, cy, selected, &tip);
-            if let Some((edge, alpha)) = names {
-                let x = 98.0;
-                let room = dz(RAIL_EXTRA + RAIL_W - x - 14.0);
-                let fade = |c: egui::Color32| c.gamma_multiply(alpha);
-                let color = if selected {
-                    design::TEXT
-                } else {
-                    egui::Color32::from_gray(200)
-                };
-                let lines = rail_name(kit, &title, fade(color), room);
-                let why = badge(slot).map(|(_, why, color)| {
-                    kit.label_galley(why, design::din(13.0), fade(*color), room)
-                });
-                let name_h: f32 = lines.iter().map(|g| g.size().y).sum();
-                let why_h = why.as_ref().map_or(0.0, |g| g.size().y + dz(2.0));
-                let top = dz(cy) - (name_h + why_h) / 2.0;
-                let clip = kit.ui.clip_rect();
-                let mut cut = clip;
-                cut.max.x = cut.max.x.min(edge);
-                kit.ui.set_clip_rect(cut);
-                let mut ly = top;
-                for g in lines {
-                    let h = g.size().y;
-                    kit.put(dz(x), ly, g);
-                    ly += h;
-                }
-                if let Some(g) = why {
-                    kit.put(dz(x), top + name_h + dz(2.0), g);
-                }
-                kit.ui.set_clip_rect(clip);
-                // The whole row answers, the name as the icon.
-                let row = egui::Rect::from_min_max(
-                    kit.drect(Dr::new(73.0, cy - 26.5, 0.0, 0.0)).min,
+            if r.scrolls {
+                kit.ui.set_clip_rect(clip.intersect(area));
+            }
+            let selected = current == r.page;
+            let half = if r.small { RAIL_PITCH / 2.0 - 1.0 } else { 26.5 };
+            // Unfolded, the whole row answers, the name as the icon.
+            let mut name_hit = crate::ui::style::Resp::default();
+            if let Some((edge, _)) = names {
+                let from = if r.small { 66.0 } else { 73.0 };
+                let hit = egui::Rect::from_min_max(
+                    kit.drect(Dr::new(from, r.cy - half, 0.0, 0.0)).min,
                     egui::pos2(
-                        edge - dz(8.0),
-                        kit.drect(Dr::new(0.0, cy + 26.5, 0.0, 0.0)).min.y,
+                        edge - dz(14.0),
+                        kit.drect(Dr::new(0.0, r.cy + half, 0.0, 0.0)).min.y,
                     ),
                 );
-                if row.width() > 0.0 {
-                    let (more, ..) = kit.hot(&format!("rail-name-{title}"), row, true, &tip);
-                    r.clicked |= more.clicked;
-                    r.secondary |= more.secondary;
+                if hit.width() > 0.0 {
+                    name_hit = kit.hot(&format!("rail-name-{title}"), hit, true, &tip).0;
                 }
             }
-            match slot {
-                // A click on ⋯ while its menu is up only closes it.
-                Slot::More if r.clicked && !more_was_open => {
-                    let id = crate::ui::widgets::menu_id(RAIL_MORE_MENU);
-                    ctx.data_mut(|d| d.insert_temp(id, true));
+            let mut resp = kit.rail_item(
+                &format!("rail-{title}"),
+                r.icon,
+                r.cy,
+                selected,
+                r.small,
+                &tip,
+            );
+            resp.clicked |= name_hit.clicked;
+            resp.secondary |= name_hit.secondary;
+            let hovered = resp.hovered || name_hit.hovered;
+            if let Some((edge, alpha)) = names {
+                let fade = |c: egui::Color32| c.gamma_multiply(alpha);
+                let saved = kit.ui.clip_rect();
+                let mut cut = saved;
+                cut.max.x = cut.max.x.min(edge);
+                kit.ui.set_clip_rect(cut);
+                if r.small {
+                    // Smaller and darker than the game's pages: one line, its reason in
+                    // the tip.
+                    let x = 74.0;
+                    let room = dz(RAIL_EXTRA + RAIL_W - x - 16.0);
+                    let color = if selected {
+                        design::TEXT
+                    } else if hovered {
+                        egui::Color32::from_gray(215)
+                    } else {
+                        RAIL_SMALL_TEXT
+                    };
+                    let g = kit.label_galley(&title, design::din(13.0), fade(color), room);
+                    let h = g.size().y;
+                    kit.put(dz(x), dz(r.cy) - h / 2.0, g);
+                } else {
+                    let x = 98.0;
+                    let room = dz(RAIL_EXTRA + RAIL_W - x - 14.0);
+                    let color = if selected {
+                        design::TEXT
+                    } else {
+                        egui::Color32::from_gray(200)
+                    };
+                    let lines = rail_name(kit, &title, fade(color), room);
+                    let why = badge(r.page).map(|(_, why, color)| {
+                        kit.label_galley(why, design::din(13.0), fade(*color), room)
+                    });
+                    let name_h: f32 = lines.iter().map(|g| g.size().y).sum();
+                    let why_h = why.as_ref().map_or(0.0, |g| g.size().y + dz(2.0));
+                    let top = dz(r.cy) - (name_h + why_h) / 2.0;
+                    let mut ly = top;
+                    for g in lines {
+                        let h = g.size().y;
+                        kit.put(dz(x), ly, g);
+                        ly += h;
+                    }
+                    if let Some(g) = why {
+                        kit.put(dz(x), top + name_h + dz(2.0), g);
+                    }
                 }
-                Slot::Page(p) if r.clicked => self.page = p,
-                Slot::Page(Page::Plugin(i)) if r.secondary => {
-                    let id = self.plugins.list[i as usize].page.id.clone();
-                    menu_for = Some((id, cy));
+                kit.ui.set_clip_rect(saved);
+            }
+            // (Its clicks too were only inside the area.)
+            if r.scrolls {
+                kit.ui.set_clip_rect(clip);
+            }
+            match r.page {
+                p if resp.clicked => self.page = p,
+                Page::Plugin(i) if resp.secondary => {
+                    menu_for = Some(self.plugins.list[i as usize].page.id.clone());
                 }
                 _ => {}
             }
         }
-        if let Some((id, _)) = &menu_for {
-            self.plugins.rail_menu = Some(id.clone());
+        if let Some(id) = menu_for {
+            self.plugins.rail_menu = Some(id);
             let key = crate::ui::widgets::menu_id(RAIL_TAB_MENU);
             ctx.data_mut(|d| d.insert_temp(key, true));
         }
-        // The dividers, as wide as the rail; unfolded, the group's name on it.
+        // The dividers, as wide as the rail; unfolded, the group's name in the middle.
         for (cy, name) in lay.dividers.iter().zip(["Community", "Plugins"]) {
             let line = |kit: &Kit, x0: f32, x1: f32| {
-                let r = kit.drect(Dr::new(0.0, cy - 1.5, 0.0, 3.0));
+                let r = kit.drect(Dr::new(0.0, cy - 1.0, 0.0, 2.0));
                 let r = egui::Rect::from_x_y_ranges(x0..=x1, r.y_range());
                 if r.width() > 0.0 {
-                    kit.ui.painter().rect_filled(r, dz(1.5), RAIL_DIVIDER);
+                    kit.ui.painter().rect_filled(r, dz(1.0), RAIL_DIVIDER);
                 }
             };
             let o = kit.window().min.x;
-            let end = o + width - dz(17.0);
+            let (start, end) = (o + dz(17.0), o + width - dz(17.0));
             match names {
                 Some((_, alpha)) if alpha > 0.01 => {
                     let label = kit.spaced_galley(
@@ -3405,11 +3472,11 @@ impl Dashboard {
                         design::din(13.0),
                         RAIL_DIVIDER.gamma_multiply(alpha),
                         dz(1.0),
-                        true,
+                        false,
                     );
-                    let lx = o + dz(98.0);
                     let lw = label.size().x;
-                    line(kit, o + dz(17.0), o + dz(76.0).min(end));
+                    let lx = (start + end - lw) / 2.0;
+                    line(kit, start, lx - dz(12.0));
                     kit.ui.painter().galley(
                         egui::pos2(
                             lx,
@@ -3418,20 +3485,29 @@ impl Dashboard {
                         label,
                         RAIL_DIVIDER,
                     );
-                    line(kit, (lx + lw + dz(10.0)).min(end), end);
+                    line(kit, lx + lw + dz(12.0), end);
                 }
-                _ => line(kit, o + dz(17.0), end),
+                _ => line(kit, start, end),
             }
         }
         // A bright "!" on an icon whose page has news (its reason in the tip and under its
         // name), with a soft shadow so it still reads on a hovered or selected icon.
         for (slot, _, color) in &badges {
-            let Some((_, _, cy)) = items.iter().find(|(s, ..)| s == slot) else {
+            let Some(r) = items.iter().find(|r| r.page == *slot) else {
                 continue;
             };
             // Conthrax's "!", as on CHECK FOR UPDATES, centred on the icon's corner.
-            let c = kit.drect(Dr::new(64.0, cy - 21.0, 0.0, 0.0)).min;
-            let font = design::conthrax(34.0);
+            let (c, size) = if r.small {
+                let h = RAIL_SMALL_SQ / 2.0;
+                (Dr::new(47.0 + h - 1.0, r.cy - h + 4.0, 0.0, 0.0), 24.0)
+            } else {
+                (Dr::new(64.0, r.cy - 21.0, 0.0, 0.0), 34.0)
+            };
+            let c = kit.drect(c).min;
+            let font = design::conthrax(size);
+            if r.scrolls {
+                kit.ui.set_clip_rect(clip.intersect(area));
+            }
             let painter = kit.ui.painter();
             let mark = |off: egui::Vec2, color: egui::Color32| {
                 painter.text(
@@ -3442,9 +3518,10 @@ impl Dashboard {
                     color,
                 );
             };
+            let k = size / 34.0;
             for (dx, dy, a) in [(2.5, 3.0, 60), (1.5, 2.0, 100), (1.0, 1.0, 140)] {
                 mark(
-                    egui::vec2(dz(dx), dz(dy)),
+                    egui::vec2(dz(dx * k), dz(dy * k)),
                     egui::Color32::from_black_alpha(a),
                 );
             }
@@ -3452,41 +3529,13 @@ impl Dashboard {
                 egui::Vec2::ZERO,
                 color.lerp_to_gamma(egui::Color32::WHITE, 0.3),
             );
+            kit.ui.set_clip_rect(clip);
         }
     }
 
-    /// The rail's menus: ⋯'s (the plugin tabs that don't fit) and a plugin tab's (right
-    /// click: unpin, move, details). Beside the rail, at their icon.
-    fn rail_menus(
-        &mut self,
-        kit: &mut Kit,
-        items: &[(Slot, RailIcon, f32)],
-        hidden: &[u8],
-        width: f32,
-    ) {
+    /// A plugin tab's menu (right click: unpin, move, details), beside the rail at its icon.
+    fn rail_menu(&mut self, kit: &mut Kit, items: &[RailRow], width: f32) {
         use crate::ui::widgets::MenuItem;
-        let anchor = |kit: &Kit, cy: f32| {
-            let x = kit.window().min.x + width + dz(8.0);
-            let y = kit.drect(Dr::new(0.0, cy - 26.5, 0.0, 0.0)).min.y;
-            egui::Rect::from_min_size(egui::pos2(x, y - 6.0), egui::vec2(280.0, 0.0))
-        };
-        if let Some((_, _, cy)) = items.iter().find(|(s, ..)| *s == Slot::More) {
-            let mut rows: Vec<MenuItem> = hidden
-                .iter()
-                .map(|&i| MenuItem::row(&plugins::title(self, i), "Open its tab"))
-                .collect();
-            rows.push(MenuItem::Divider);
-            rows.push(MenuItem::row(
-                "Manage plugins",
-                "The Plugins page: pin, unpin, get more",
-            ));
-            let r = anchor(kit, *cy);
-            match kit.menu_at(RAIL_MORE_MENU, r, &rows) {
-                Some(n) if n < hidden.len() => self.page = Page::Plugin(hidden[n]),
-                Some(_) => self.page = Page::Plugins,
-                None => {}
-            }
-        }
         let Some(id) = self.plugins.rail_menu.clone() else {
             return;
         };
@@ -3494,8 +3543,8 @@ impl Dashboard {
         let cy = at.and_then(|i| {
             items
                 .iter()
-                .find(|(s, ..)| *s == Slot::Page(Page::Plugin(i as u8)))
-                .map(|(.., cy)| *cy)
+                .find(|r| r.page == Page::Plugin(i as u8))
+                .map(|r| r.cy)
         });
         let Some(cy) = cy else {
             self.plugins.rail_menu = None;
@@ -3513,9 +3562,12 @@ impl Dashboard {
             MenuItem::row("Move up", "").unless(first.then_some("It's at the top")),
             MenuItem::row("Move down", "").unless(last.then_some("It's at the bottom")),
             MenuItem::Divider,
-            MenuItem::row("Plugin details", "Its entry on the Plugins page"),
+            MenuItem::row("Plugin details", "Its card on the Plugins page"),
         ];
-        match kit.menu_at(RAIL_TAB_MENU, anchor(kit, cy), &rows) {
+        let x = kit.window().min.x + width + dz(8.0);
+        let y = kit.drect(Dr::new(0.0, cy - RAIL_PITCH / 2.0, 0.0, 0.0)).min.y;
+        let anchor = egui::Rect::from_min_size(egui::pos2(x, y - 6.0), egui::vec2(280.0, 0.0));
+        match kit.menu_at(RAIL_TAB_MENU, anchor, &rows) {
             Some(0) => plugins::set_pinned(self, &id, false),
             Some(1) => plugins::move_tab(self, &id, -1),
             Some(2) => plugins::move_tab(self, &id, 1),
@@ -3954,11 +4006,15 @@ fn demo_state() -> LauncherState {
     s
 }
 
-/// What a rail icon opens: a page, or ⋯'s menu (the plugin tabs that don't fit).
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Slot {
-    Page(Page),
-    More,
+/// A rail icon: its page, where (design y), small (the community's and the plugins'),
+/// and whether it scrolls (a plugin tab).
+#[derive(Clone, Copy)]
+struct RailRow {
+    page: Page,
+    icon: RailIcon,
+    cy: f32,
+    small: bool,
+    scrolls: bool,
 }
 
 /// Where the rail's icons sit: their centres' design y.
@@ -3968,42 +4024,39 @@ struct RailLayout {
     game: [f32; 4],
     /// The dividers over the community's pages and over the plugins.
     dividers: [f32; 2],
-    /// EchoVRCE, Friends.
+    /// EchoVRCE, Friends (small).
     community: [f32; 2],
-    /// The plugin tabs that fit, in order.
-    plugins: Vec<f32>,
-    /// ⋯, when not all of them fit.
-    more: Option<f32>,
-    /// The Plugins page.
+    /// The first plugin tab's centre, not scrolled; the others follow `RAIL_PITCH` apart.
+    first: f32,
+    /// The plugin tabs' area (design y, top and bottom): they scroll within it.
+    area: (f32, f32),
+    /// How far they scroll (design pixels): 0 while they all fit.
+    scroll_max: f32,
+    /// The Plugins page, under the plugin tabs.
     hub: f32,
     settings: f32,
 }
 
+/// How far apart the small tabs are (design pixels): the community's, the plugins'.
+const RAIL_PITCH: f32 = 40.0;
+
 /// The rail's icons for `tabs` plugin tabs in a window `dy` design pixels taller than the
-/// design. The design's spacing while they fit; with more, the gaps above the plugins
-/// shrink (the game's pages from about 102 apart down to 66) and the rest go under ⋯.
+/// design. The design's spacing while they fit; with more, the gaps shrink (the game's
+/// pages from about 102 apart down to 66), and then the plugin tabs scroll.
 fn rail_layout(tabs: usize, dy: f32) -> RailLayout {
     const PLAY: f32 = 232.5;
-    const PITCH: f32 = 61.0;
-    /// From the last plugin tab (or ⋯) to the Plugins page, and that to Settings.
-    const ABOVE_SETTINGS: f32 = 70.0;
+    /// From the Plugins page to Settings, at least.
+    const ABOVE_SETTINGS: f32 = 72.0;
     // The gaps that give: Play→Install→Mods→Servers, Servers→divider→EchoVRCE,
     // Friends→divider→first plugin tab. As designed, and at the tightest.
-    const NATURAL: [f32; 7] = [102.5, 102.0, 101.0, 87.5, 66.5, 45.0, 45.0];
-    const TIGHT: [f32; 7] = [66.0, 66.0, 66.0, 40.0, 40.0, 33.0, 33.0];
+    const NATURAL: [f32; 7] = [102.5, 102.0, 101.0, 82.0, 48.0, 56.0, 48.0];
+    const TIGHT: [f32; 7] = [66.0, 66.0, 66.0, 46.0, 36.0, 40.0, 36.0];
     let settings = 1035.0 + dy.max(0.0);
-    let room = settings - ABOVE_SETTINGS - PLAY - PITCH;
     let natural: f32 = NATURAL.iter().sum();
     let tight: f32 = TIGHT.iter().sum();
-    // Slots between the second divider and the Plugins page.
-    let max_slots = ((room - tight) / PITCH).floor().max(0.0) as usize;
-    let (shown, more) = if tabs <= max_slots || max_slots == 0 {
-        (tabs.min(max_slots), false)
-    } else {
-        (max_slots - 1, true)
-    };
-    let slots = shown + usize::from(more);
-    let give = ((room - slots as f32 * PITCH - tight) / (natural - tight)).clamp(0.0, 1.0);
+    // Room for the gaps: all of it but Friends' row and the plugin tabs'.
+    let room = settings - ABOVE_SETTINGS - PLAY - RAIL_PITCH - tabs as f32 * RAIL_PITCH;
+    let give = ((room - tight) / (natural - tight)).clamp(0.0, 1.0);
     let gap = |i: usize| TIGHT[i] + (NATURAL[i] - TIGHT[i]) * give;
     let mut y = PLAY;
     let mut game = [0.0; 4];
@@ -4014,25 +4067,20 @@ fn rail_layout(tabs: usize, dy: f32) -> RailLayout {
         }
     }
     let first_divider = y + gap(3);
-    let community = [first_divider + gap(4), first_divider + gap(4) + PITCH];
+    let community = [first_divider + gap(4), first_divider + gap(4) + RAIL_PITCH];
     let second_divider = community[1] + gap(5);
-    let mut y = second_divider + gap(6);
-    let mut plugins = Vec::new();
-    for _ in 0..shown {
-        plugins.push(y);
-        y += PITCH;
-    }
-    let more = more.then(|| {
-        y += PITCH;
-        y - PITCH
-    });
+    let first = second_divider + gap(6);
+    // All of them, or as many as fit, scrolling.
+    let hub = (first + tabs as f32 * RAIL_PITCH).min(settings - ABOVE_SETTINGS);
+    let half = RAIL_PITCH / 2.0;
     RailLayout {
         game,
         dividers: [first_divider, second_divider],
         community,
-        plugins,
-        more,
-        hub: y,
+        first,
+        area: (first - half, hub - half),
+        scroll_max: (first + tabs as f32 * RAIL_PITCH - hub).max(0.0),
+        hub,
         settings,
     }
 }
@@ -4091,52 +4139,44 @@ fn demo_catalog() -> Catalog {
 mod tests {
     use super::{clash, Res};
 
-    /// The rail as designed while its plugin tabs fit, tighter with more, ⋯ for the rest,
-    /// never into Settings, and a taller window gives room back.
+    /// The rail as designed while its plugin tabs fit, tighter with more, scrolling with
+    /// more still, never into Settings, and a taller window gives room back.
     #[test]
     fn rail_layout_fits_the_tabs() {
-        use super::rail_layout;
+        use super::{rail_layout, RAIL_PITCH};
         let base = rail_layout(0, 0.0);
         assert_eq!(base.game, [232.5, 335.0, 437.0, 538.0]);
-        assert_eq!(base.dividers[0], 625.5);
-        assert_eq!(base.community, [692.0, 753.0]);
+        assert_eq!(base.dividers[0], 620.0);
+        assert_eq!(base.community, [668.0, 708.0]);
         assert_eq!(
-            rail_layout(2, 0.0).game,
+            rail_layout(3, 0.0).game,
             base.game,
-            "two tabs fit as designed"
+            "three tabs fit as designed"
         );
         for dy in [0.0, 60.0, 200.0, 600.0] {
-            for tabs in 0..=12 {
+            for tabs in 0..=20 {
                 let l = rail_layout(tabs, dy);
-                let mut ys: Vec<f32> = l.game.to_vec();
-                ys.extend(l.community);
-                ys.extend(&l.plugins);
-                ys.extend(l.more);
-                ys.push(l.hub);
-                for w in ys.windows(2) {
-                    assert!(w[1] - w[0] >= 61.0 - 1e-3, "{tabs} tabs, dy {dy}: {ys:?}");
+                for w in l.game.windows(2) {
+                    assert!(w[1] - w[0] >= 66.0 - 1e-3, "{tabs} tabs, dy {dy}: {l:?}");
                 }
-                assert!(l.settings - l.hub >= 70.0 - 1e-3, "{tabs} tabs, dy {dy}");
-                assert!(l.dividers[0] > l.game[3] && l.dividers[0] < l.community[0]);
-                assert!(l.dividers[1] > l.community[1]);
-                assert!(l.plugins.first().is_none_or(|&p| p > l.dividers[1]));
-                // All of them, or as many as fit with ⋯ for the rest.
-                match l.more {
-                    None => assert_eq!(l.plugins.len(), tabs),
-                    Some(_) => assert!(l.plugins.len() < tabs && l.plugins.len() >= 3),
-                }
+                assert!(l.dividers[0] > l.game[3] + 40.0 && l.dividers[0] < l.community[0]);
+                assert!(l.community[1] - l.community[0] >= RAIL_PITCH - 1e-3);
+                assert!(l.dividers[1] > l.community[1] && l.dividers[1] < l.first);
+                assert!(l.settings - l.hub >= 72.0 - 1e-3, "{tabs} tabs, dy {dy}");
+                // The area holds the tabs that show; the rest is the scroll.
+                let shown = l.area.1 - l.area.0;
+                assert!(shown >= 0.0);
+                let all = tabs as f32 * RAIL_PITCH;
+                assert!((shown + l.scroll_max - all).abs() < 1e-3, "{tabs}, {dy}: {l:?}");
+                assert!((l.hub - l.area.1 - RAIL_PITCH / 2.0).abs() < 1e-3);
             }
         }
-        // The normal window: five slots at the tightest.
-        assert_eq!(rail_layout(5, 0.0).plugins.len(), 5);
-        let six = rail_layout(6, 0.0);
-        assert_eq!((six.plugins.len(), six.more.is_some()), (4, true));
-        assert!(
-            rail_layout(6, 300.0).more.is_none(),
-            "a taller window fits them"
-        );
-        // Tighter only when needed: three tabs barely move the game's pages.
-        assert!(rail_layout(3, 0.0).game[1] - 232.5 > 85.0);
+        // The normal window: eight tabs at the tightest, then they scroll.
+        assert_eq!(rail_layout(8, 0.0).scroll_max, 0.0);
+        assert!(rail_layout(9, 0.0).scroll_max > 0.0);
+        assert_eq!(rail_layout(9, 300.0).scroll_max, 0.0, "a taller window fits them");
+        // Tighter only when needed: four tabs barely move the game's pages.
+        assert!(rail_layout(4, 0.0).game[1] - 232.5 > 95.0);
     }
 
     fn v(id: &str) -> Res {

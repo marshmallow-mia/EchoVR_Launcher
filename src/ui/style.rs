@@ -57,8 +57,11 @@ pub enum Icon {
     Plug,
     /// A VR controller: controller settings.
     Controller,
-    /// Three dots: more of something (the rail's tabs that don't fit).
+    /// Three dots: more of something (a plugin card's menu).
     More,
+    /// A pushpin: a plugin's tab is in the rail (`Pinned`) or not (`Pin`, an outline).
+    Pin,
+    Pinned,
     /// A puzzle piece: the launcher's plugins (the rail's Plugins page).
     Puzzle,
 }
@@ -283,6 +286,21 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
             for x in [0.2, 0.5, 0.8] {
                 p.circle_filled(pt(x, 0.5), s * 0.075, c);
             }
+        }
+        Icon::Pin | Icon::Pinned => {
+            // A pushpin, upright: its head, its body widening into a collar, the needle.
+            let head = [pt(0.38, 0.14), pt(0.62, 0.14), pt(0.62, 0.42), pt(0.38, 0.42)];
+            let collar = [pt(0.38, 0.42), pt(0.62, 0.42), pt(0.78, 0.6), pt(0.22, 0.6)];
+            if icon == Icon::Pinned {
+                for part in [head.to_vec(), collar.to_vec()] {
+                    p.add(Shape::convex_polygon(part, c, Stroke::NONE));
+                }
+            }
+            line(vec![pt(0.3, 0.12), pt(0.7, 0.12)]);
+            line(vec![
+                head[0], head[3], collar[3], collar[2], head[2], head[1],
+            ]);
+            line(vec![pt(0.5, 0.6), pt(0.5, 0.92)]);
         }
         Icon::Puzzle => {
             // A square piece with a knob on top and one on the right.

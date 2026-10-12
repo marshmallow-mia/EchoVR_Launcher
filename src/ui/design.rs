@@ -130,6 +130,9 @@ pub fn fade(t: f32) -> Color32 {
     Color32::from_white_alpha((255.0 * t.clamp(0.0, 1.0)).round() as u8)
 }
 
+/// The square of a small rail slot (design pixels).
+pub const RAIL_SMALL_SQ: f32 = 36.0;
+
 /// Something to draw in a rail slot.
 #[derive(Debug, Clone, Copy)]
 pub enum RailIcon {
@@ -444,20 +447,31 @@ impl Kit<'_> {
 
     /// A rail slot centred at design y `cy`: the blue glow square when selected (lighter
     /// under the pointer), the violet square on hover (lighter while pressed), and the icon.
+    /// A `small` one (the community's and the plugins' tabs) has a smaller square.
     pub fn rail_item(
         &mut self,
         key: &str,
         icon: RailIcon,
         cy: f32,
         selected: bool,
+        small: bool,
         tip: &str,
     ) -> Resp {
-        let sq = Dr::new(21.0, cy - 26.5, 52.0, 53.0);
+        let sq = if small {
+            Dr::new(47.0 - RAIL_SMALL_SQ / 2.0, cy - RAIL_SMALL_SQ / 2.0, RAIL_SMALL_SQ, RAIL_SMALL_SQ)
+        } else {
+            Dr::new(21.0, cy - 26.5, 52.0, 53.0)
+        };
         let (resp, t, pressed) = self.hot(key, self.drect(sq), true, tip);
+        // sidebar_selected(_hover).png: a 264 px square at (74, 74) in its 412×416 glow.
+        let s = sq.w / 264.0;
+        let glow = Dr::new(sq.x - 74.0 * s, sq.y - 74.0 * s, 412.0 * s, 416.0 * s);
+        if !selected {
+            // Ready for when it is (a small slot's glow is a size of its own).
+            self.prefetch_d("sidebar_selected.png", glow);
+            self.prefetch_d("sidebar_selected_hover.png", glow);
+        }
         if selected {
-            // sidebar_selected(_hover).png: a 264 px square at (74, 74) in its 412×416 glow.
-            let s = sq.w / 264.0;
-            let glow = Dr::new(sq.x - 74.0 * s, sq.y - 74.0 * s, 412.0 * s, 416.0 * s);
             self.image_d("sidebar_selected.png", glow);
             self.image_tinted("sidebar_selected_hover.png", glow, fade(t));
         } else if pressed {

@@ -1,6 +1,6 @@
 //! Launcher plugins in the UI: each installed plugin's tab (its page, drawn from its
-//! description: see `core::launcher::plugin_page`), and the Plugins page (the rail's +),
-//! where plugins are got from the catalogue, updated and removed.
+//! description: see `core::launcher::plugin_page`), and the Plugins page (the rail's puzzle piece),
+//! the library where plugins are got from the catalogue, pinned, updated and removed.
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
@@ -51,9 +51,12 @@ pub(super) struct PluginsUi {
     /// When the catalogue was read (the built-in one is replaced when it can be).
     catalog_at: Option<std::time::Instant>,
     started: bool,
-    /// The two lists, scrolled.
-    installed_scroll: f32,
-    more_scroll: f32,
+    /// The library, scrolled (logical pixels), and which plugins it shows.
+    library_scroll: f32,
+    filter: Filter,
+    /// The plugin whose card menu is open, and where (its ⋯'s bottom right).
+    card_menu: Option<String>,
+    card_menu_at: (f32, f32),
     views: HashMap<String, View>,
     worker: Worker<Msg>,
     /// The plugin being installed, updated or removed.
@@ -70,6 +73,10 @@ pub(super) struct PluginsUi {
     asked: Option<(String, Asked)>,
     /// The plugin whose rail menu (right click) is open.
     pub rail_menu: Option<String>,
+    /// How far the rail's plugin tabs are scrolled (design pixels).
+    pub rail_scroll: f32,
+    /// The page the rail last kept in view (its tab scrolls into view when it changes).
+    pub rail_seen: Option<Page>,
     /// The plugin the Plugins page scrolls to and marks (Plugin details).
     pub focus: Option<String>,
 }
@@ -923,13 +930,7 @@ pub(super) fn title(d: &Dashboard, i: u8) -> String {
 }
 
 pub(super) fn rail_icon(p: &PluginPage) -> Icon {
-    match p.icon.as_str() {
-        "calendar" => Icon::Calendar,
-        "globe" => Icon::Globe,
-        "controller" => Icon::Controller,
-        // Not the Mods page's: plugins are the launcher's, mods Echo VR's.
-        _ => Icon::Plug,
-    }
+    icon_named(&p.icon)
 }
 
 pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i: u8) {
@@ -2013,231 +2014,101 @@ fn import_preset(
     v.preset_name = name;
 }
 
-// ---- the Plugins page ----
+// ---- the Plugins page: the library ----
 
-const INSTALLED_CARD: Dr = Dr::new(137.0, 156.0, 1146.0, 890.0);
-const MORE_CARD: Dr = Dr::new(1318.0, 156.0, 555.0, 890.0);
-const TILE_H: f32 = 118.0;
-
-pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
-    let (dx, dy) = (kit.dx(), kit.dy());
-    let (x, y, w, bottom) = hero::card_frame(
-        kit,
-        INSTALLED_CARD.wider(dx).taller(dy),
-        "Installed plugins",
-    );
-    if d.plugins.list.is_empty() {
-        kit.caps_text(
-            x,
-            y,
-            w,
-            "None yet. Plugins add apps to the launcher, each with a tab in the rail (unpin it to keep the rail short). Get one from the list on the right.",
-            TEXT_SIZE,
-            design::GREY,
-            0.0,
-        );
-    }
-    let busy = d.plugins.busy.clone();
-    let catalog = d.plugins.catalog.clone().unwrap_or_default();
-    let list = d.plugins.list.clone();
-    let pad = dz(18.0);
-    // Each tile as tall as its summary needs; more than fit scroll.
-    let heights: Vec<f32> = list
-        .iter()
-        .map(|p| {
-            let summary: f32 = kit
-                .caps_block(&p.page.summary, 15.0, design::BODY, w - pad * 2.0)
-                .iter()
-                .map(|g| g.size().y)
-                .sum();
-            (dz(76.0) + summary + pad).max(dz(TILE_H))
-        })
-        .collect();
-    let gap = dz(12.0);
-    let content_h = heights.iter().map(|h| h + gap).sum::<f32>() - gap;
-    let list_h = bottom - y;
-    // Plugin details (the rail's menu): scrolled to it, marked until another is asked for.
-    let focus = d.plugins.focus.clone();
-    if let Some(at) = focus
-        .as_ref()
-        .and_then(|id| list.iter().position(|p| &p.page.id == id))
-    {
-        let top: f32 = heights[..at].iter().map(|h| h + gap).sum();
-        let max = (content_h - list_h).max(0.0);
-        let s = &mut d.plugins.installed_scroll;
-        if top < *s || top + heights[at] > *s + list_h {
-            *s = top.min(max);
-        }
-    }
-    kit.scroll_area(
-        "plugins-installed",
-        x,
-        y,
-        w + dz(16.0),
-        list_h,
-        content_h,
-        &mut d.plugins.installed_scroll,
-    );
-    let list_top = y;
-    let mut ty = y - d.plugins.installed_scroll;
-    // Why Remove and Update wait: the plugin being worked on.
-    let busy_tip = busy.as_ref().map(|id| {
-        let name = list
-            .iter()
-            .find(|p| &p.page.id == id)
-            .map_or(id.as_str(), |p| p.page.name.as_str());
-        format!("Wait: {name} is being installed or updated")
-    });
-    kit.clipped(x, y, w, list_h, |kit| {
-        for ((i, p), &th) in list.iter().enumerate().zip(&heights) {
-            let y = ty;
-            ty += th + gap;
-            if y + th < list_top || y > bottom {
-                continue;
-            }
-            let marked = focus.as_deref() == Some(p.page.id.as_str());
-            hero::tile(kit, x, y, w, th, marked);
-            let mut meta = Vec::new();
-            if !p.page.version.is_empty() {
-                meta.push(format!("v{}", p.page.version));
-            }
-            if !p.page.author.is_empty() {
-                meta.push(format!("by {}", p.page.author));
-            }
-            if p.from_catalog.is_none() {
-                meta.push("added by hand".into());
-            }
-            let pinned = is_pinned(d, &p.page.id);
-            if !pinned {
-                meta.push("not in the rail".into());
-            }
-            if !p.warnings.is_empty() {
-                // The details are in the launcher's log.
-                meta.push(format!(
-                    "{} problem(s) in its plugin.json, see the log",
-                    p.warnings.len()
-                ));
-            }
-            // Its rail icon beside its name and line.
-            let icon = dz(30.0);
-            icon_at(
-                kit.ui.painter(),
-                rail_icon(&p.page),
-                kit.rect(x + pad, y + dz(27.0), icon, icon).min,
-                icon,
-                design::TEXT,
-            );
-            let tx = x + pad + icon + dz(16.0);
-            let name = kit.label_galley(&p.page.name, design::din(22.0), design::TEXT, w * 0.4);
-            kit.put(tx, y + dz(14.0), name);
-            let m = kit.label_galley(&meta.join(" · "), design::din(14.0), design::GREY, w * 0.4);
-            kit.put(tx, y + dz(48.0), m);
-            kit.caps_text(
-                x + pad,
-                y + dz(76.0),
-                w - pad * 2.0,
-                &p.page.summary,
-                15.0,
-                design::BODY,
-                0.0,
-            );
-            // Its buttons, right to left.
-            let mut right = x + w - pad;
-            let by = y + dz(14.0);
-            let mut button =
-                |kit: &mut Kit, key: &str, label: &str, tone: Tone, enabled: bool, tip: &str| {
-                    let bw = kit.button_width(label, None, BTN_H).max(dz(110.0));
-                    right -= bw;
-                    let hit = kit
-                        .button(key, right, by, bw, BTN_H, tone, None, label, enabled, tip)
-                        .clicked;
-                    right -= dz(12.0);
-                    hit
-                };
-            let idle = busy.is_none();
-            if button(
-                kit,
-                &format!("plugins-remove-{}", p.page.id),
-                "Remove",
-                Tone::Dark,
-                idle,
-                busy_tip.as_deref().unwrap_or("Remove it and its settings"),
-            ) {
-                d.plugins.remove_asked = Some(p.page.id.clone());
-                d.dialogs.confirm_danger(
-                    REMOVE_KEY,
-                    "Remove plugin",
-                    &format!("Remove {} and its settings?", p.page.name),
-                    "Remove",
-                );
-            }
-            if let Some(e) = core::update_for(p, &catalog) {
-                let label = format!("Update to {}", e.version);
-                if button(
-                    kit,
-                    &format!("plugins-update-{}", p.page.id),
-                    &label,
-                    Tone::Go,
-                    idle,
-                    busy_tip.as_deref().unwrap_or("Get the catalogue's version"),
-                ) {
-                    get(d, ctx, e.clone(), "Plugin updated");
-                }
-            }
-            let (label, tip) = if pinned {
-                ("Unpin", "Take its tab off the rail: it opens from here")
-            } else {
-                ("Pin", "Put its tab on the rail")
-            };
-            if button(
-                kit,
-                &format!("plugins-pin-{}", p.page.id),
-                label,
-                Tone::Dark,
-                true,
-                tip,
-            ) {
-                set_pinned(d, &p.page.id, !pinned);
-            }
-            if button(
-                kit,
-                &format!("plugins-open-{}", p.page.id),
-                "Open",
-                Tone::Blue,
-                true,
-                "Open its tab",
-            ) {
-                d.page = Page::Plugin(i as u8);
-            }
-            if busy.as_deref() == Some(p.page.id.as_str()) {
-                kit.chip(
-                    right - dz(120.0),
-                    by + dz(6.0),
-                    "Working…",
-                    design::QUEST_WARN,
-                );
-            }
-        }
-    });
-    panel::at_right(kit, |k| more_card(d, k, ctx, MORE_CARD.taller(dy)));
+/// Which plugins the library shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum Filter {
+    #[default]
+    All,
+    Installed,
+    Available,
 }
 
-fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
-    let (x, top, w, bottom) = hero::card_frame(k, r, "More plugins");
-    // Refresh, in the title's row: the catalogues are also read every 30 seconds.
+/// A card in the library: an installed plugin (its index), or one of the catalogue's
+/// others (its index among them).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LibCard {
+    Installed(u8),
+    Offered(usize),
+}
+
+/// The library's cards: the installed plugins in the rail's order (the pinned ones, then
+/// the others as installed), then the catalogue's others; `filter` keeps some of them.
+fn library_cards(pinned: &[u8], installed: usize, offered: usize, filter: Filter) -> Vec<LibCard> {
+    let mut out = Vec::new();
+    if filter != Filter::Available {
+        let rest = (0..installed)
+            .filter_map(|i| u8::try_from(i).ok())
+            .filter(|i| !pinned.contains(i));
+        out.extend(pinned.iter().copied().chain(rest).map(LibCard::Installed));
+    }
+    if filter != Filter::Installed {
+        out.extend((0..offered).map(LibCard::Offered));
+    }
+    out
+}
+
+/// The grid's columns in `w` (logical pixels): as many cards at least `LIB_CARD_W` wide as
+/// fit, `LIB_GAP` apart, stretched to fill the row. Their count and width.
+fn library_grid(w: f32) -> (usize, f32) {
+    let (min, gap) = (dz(LIB_CARD_W), dz(LIB_GAP));
+    let cols = (((w + gap) / (min + gap)).floor() as usize).max(1);
+    (cols, (w - gap * (cols - 1) as f32) / cols as f32)
+}
+
+const LIBRARY: Dr = Dr::new(137.0, 156.0, 1736.0, 890.0);
+const LIB_CARD_W: f32 = 230.0;
+const LIB_CARD_H: f32 = 330.0;
+const LIB_GAP: f32 = 28.0;
+const LIB_PAD: f32 = 20.0;
+/// A plugin card's menu (its ⋯ or a right click).
+const CARD_MENU: &str = "plugins-card";
+
+/// The icon a plugin names (plugin.json's or the catalogue's `icon`).
+fn icon_named(name: &str) -> Icon {
+    match name {
+        "calendar" => Icon::Calendar,
+        "globe" => Icon::Globe,
+        "controller" => Icon::Controller,
+        // Not the Mods page's: plugins are the launcher's, mods Echo VR's.
+        _ => Icon::Plug,
+    }
+}
+
+/// The Plugins page: every plugin as a card, the installed ones first. Pin the ones you
+/// use to the rail; get more, update and remove them here.
+pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    let (dx, dy) = (kit.dx(), kit.dy());
+    let r = LIBRARY.wider(dx).taller(dy);
+    let (x, top, w, bottom) = hero::card_frame(kit, r, "Library");
+    let catalog = d.plugins.catalog.clone();
+    let list = d.plugins.list.clone();
+    let offered: Vec<core::PluginEntry> = catalog
+        .as_ref()
+        .map(|c| {
+            c.plugins
+                .iter()
+                .filter(|e| !list.iter().any(|p| p.page.id == e.id))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    // The filters and Refresh, in the title's row (the catalogues are also read every 30
+    // seconds).
     let ly = dz(r.y + 28.0);
-    let link_w = k
+    let link_w = kit
         .spaced_galley("REFRESH", design::din(14.0), design::TEXT, dz(0.5), true)
         .size()
         .x;
-    let lx = dz(r.right() - 22.0) - link_w;
+    let mut fx = dz(r.right() - 22.0) - link_w;
     if d.plugins.loading {
-        let g = k.spaced_galley("REFRESH", design::din(14.0), design::GREY, dz(0.5), false);
-        k.put(lx, ly, g);
-    } else if k
+        let g = kit.spaced_galley("REFRESH", design::din(14.0), design::GREY, dz(0.5), false);
+        kit.put(fx, ly, g);
+    } else if kit
         .link(
             "plugins-refresh",
-            lx,
+            fx,
             ly,
             "Refresh",
             14.0,
@@ -2247,125 +2118,444 @@ fn more_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
     {
         refresh(d, ctx);
     }
-    let Some(catalog) = d.plugins.catalog.clone() else {
-        k.caps_text(
-            x,
-            top,
-            w,
-            "Reading the plugins list…",
-            TEXT_SIZE,
-            design::GREY,
-            0.0,
-        );
-        return;
-    };
-    let offered: Vec<_> = catalog
-        .plugins
-        .iter()
-        .filter(|e| !d.plugins.list.iter().any(|p| p.page.id == e.id))
-        .cloned()
-        .collect();
-    if offered.is_empty() {
-        k.caps_text(
-            x,
-            top,
-            w,
-            "You have every plugin there is.",
-            TEXT_SIZE,
-            design::GREY,
-            0.0,
-        );
-    }
-    let idle = d.plugins.busy.is_none();
-    let busy_id = d.plugins.busy.clone();
-    // Each entry: its name and Get, the download's chip, its summary. More than fit
-    // scroll.
-    let height = |k: &Kit, e: &core::PluginEntry| {
-        let summary: f32 = k
-            .caps_block(&e.summary, 15.0, design::GREY, w)
-            .iter()
-            .map(|g| g.size().y)
-            .sum();
-        let chip = if busy_id.as_deref() == Some(e.id.as_str()) {
-            dz(34.0)
+    fx -= dz(40.0);
+    for (f, label) in [
+        (Filter::Available, "Available"),
+        (Filter::Installed, "Installed"),
+        (Filter::All, "All"),
+    ]
+    .into_iter()
+    {
+        let on = d.plugins.filter == f;
+        let color = if on { design::TEXT } else { design::GREY };
+        let g = kit.spaced_galley(&label.to_uppercase(), design::din(14.0), color, dz(0.5), on);
+        fx -= g.size().x;
+        let rect = egui::Rect::from_min_size(kit.origin + egui::vec2(fx, ly), g.size());
+        let (resp, t, _) = kit.hot(&format!("plugins-filter-{label}"), rect.expand(dz(6.0)), true, "");
+        let g = if t > 0.01 && !on {
+            kit.spaced_galley(
+                &label.to_uppercase(),
+                design::din(14.0),
+                crate::ui::style::mix(design::GREY, design::TEXT, t),
+                dz(0.5),
+                false,
+            )
         } else {
-            0.0
+            g
         };
-        BTN_H + dz(8.0) + chip + summary + dz(26.0)
-    };
-    let content_h: f32 = offered.iter().map(|e| height(k, e)).sum();
-    let list_h = bottom - top + dz(4.0);
-    k.scroll_area(
-        "plugins-more",
+        kit.put(fx, ly, g);
+        if resp.clicked {
+            d.plugins.filter = f;
+            d.plugins.library_scroll = 0.0;
+        }
+        fx -= dz(28.0);
+    }
+    let pinned = pinned(d);
+    let cards = library_cards(&pinned, list.len(), offered.len(), d.plugins.filter);
+    if cards.is_empty() {
+        let text = match (d.plugins.filter, catalog.is_some()) {
+            (Filter::Installed, _) => {
+                "None yet. Plugins add apps to the launcher. Get one under Available, and pin the ones you use to the rail."
+            }
+            (_, false) => "Reading the plugins list…",
+            _ => "You have every plugin there is.",
+        };
+        kit.caps_text(x, top, w, text, TEXT_SIZE, design::GREY, 0.0);
+    }
+    // The menu first: the click that opens it isn't taken as a click away from it.
+    let menu_was_open = kit.menu_open(CARD_MENU);
+    card_menu(d, kit, ctx);
+    let (cols, cw) = library_grid(w);
+    let (ch, gap) = (dz(LIB_CARD_H), dz(LIB_GAP));
+    let rows = cards.len().div_ceil(cols);
+    let content_h = (rows as f32 * (ch + gap) - gap).max(0.0);
+    let list_h = bottom - top;
+    // Plugin details (the rail's menu): scrolled to it, marked until another is asked for.
+    let focus = d.plugins.focus.clone();
+    if let Some(at) = focus.as_ref().and_then(|id| {
+        cards.iter().position(|c| match c {
+            LibCard::Installed(i) => list.get(*i as usize).is_some_and(|p| &p.page.id == id),
+            LibCard::Offered(_) => false,
+        })
+    }) {
+        let row_top = (at / cols) as f32 * (ch + gap);
+        let max = (content_h - list_h).max(0.0);
+        let s = &mut d.plugins.library_scroll;
+        if row_top < *s || row_top + ch > *s + list_h {
+            *s = row_top.min(max);
+        }
+    }
+    kit.scroll_area(
+        "plugins-library",
         x,
-        top - dz(4.0),
+        top,
         w + dz(16.0),
         list_h,
         content_h,
-        &mut d.plugins.more_scroll,
+        &mut d.plugins.library_scroll,
     );
-    let mut y = top - d.plugins.more_scroll;
+    let scroll = d.plugins.library_scroll;
+    kit.clipped(x, top, w + dz(8.0), list_h, |kit| {
+        for (n, card) in cards.iter().enumerate() {
+            let cx = x + (n % cols) as f32 * (cw + gap);
+            let cy = top + (n / cols) as f32 * (ch + gap) - scroll;
+            if cy + ch < top || cy > bottom {
+                continue;
+            }
+            match *card {
+                LibCard::Installed(i) => {
+                    installed_card(d, kit, ctx, i, (cx, cy, cw, ch), menu_was_open)
+                }
+                LibCard::Offered(k) => offered_card(d, kit, ctx, &offered[k], (cx, cy, cw, ch)),
+            }
+        }
+    });
+}
+
+/// A card's frame, icon, name, line and tags, and its summary down to `bottom`: the y
+/// below its text.
+#[allow(clippy::too_many_arguments)]
+fn card_face(
+    kit: &mut Kit,
+    (x, y, w, h): (f32, f32, f32, f32),
+    marked: bool,
+    icon: Icon,
+    name: &str,
+    meta: &str,
+    tags: &[(&str, egui::Color32)],
+    summary: &str,
+) {
+    hero::tile(kit, x, y, w, h, marked);
+    let pad = dz(LIB_PAD);
+    // The icon on a tinted square.
+    let side = dz(60.0);
+    let sq = kit.rect(x + pad, y + pad, side, side);
+    kit.ui
+        .painter()
+        .rect_filled(sq, dz(10.0), design::BLUE.gamma_multiply(0.22));
+    let s = dz(36.0);
+    icon_at(
+        kit.ui.painter(),
+        icon,
+        sq.center() - egui::vec2(s, s) / 2.0,
+        s,
+        design::TEXT,
+    );
+    let inner = w - pad * 2.0;
+    let mut ty = y + pad + side + dz(16.0);
+    for g in super::rail_name(kit, name, design::TEXT, inner) {
+        let h = g.size().y;
+        kit.put(x + pad, ty, g);
+        ty += h;
+    }
+    if !meta.is_empty() {
+        let g = kit.label_galley(meta, design::din(13.0), design::GREY, inner);
+        kit.put(x + pad, ty + dz(4.0), g);
+        ty += dz(26.0);
+    }
+    let mut tx = x + pad;
+    let tag_y = ty + dz(14.0);
+    for (label, color) in tags {
+        let tw = kit.dot_tag_width(label, 12.0);
+        if tx + tw > x + w - pad {
+            break;
+        }
+        tx += kit.dot_tag(tx, tag_y, label, 12.0, *color) + dz(14.0);
+    }
+    if !tags.is_empty() {
+        ty += dz(30.0);
+    }
+    // The summary, as many whole lines as fit above the buttons.
+    let text_top = ty + dz(8.0);
+    let room = y + h - pad - BTN_H - dz(12.0) - text_top;
+    let block = kit.caps_block(summary, 14.0, design::BODY, inner);
+    let line_h = block
+        .first()
+        .map_or(1.0, |g| g.size().y / g.rows.len().max(1) as f32);
+    let lines = (room / line_h).floor().max(0.0);
+    if lines > 0.0 {
+        kit.clipped(x + pad, text_top, inner, lines * line_h + 1.0, |kit| {
+            kit.caps_text(x + pad, text_top, inner, summary, 14.0, design::BODY, 0.0);
+        });
+    }
+}
+
+/// An installed plugin's card: Open (and Update), its pin and ⋯ at the top right.
+fn installed_card(
+    d: &mut Dashboard,
+    kit: &mut Kit,
+    ctx: &egui::Context,
+    i: u8,
+    (x, y, w, h): (f32, f32, f32, f32),
+    menu_was_open: bool,
+) {
+    let Some(p) = d.plugins.list.get(i as usize).cloned() else {
+        return;
+    };
+    let catalog = d.plugins.catalog.clone().unwrap_or_default();
+    let update = core::update_for(&p, &catalog).cloned();
+    let id = p.page.id.clone();
+    let pin = is_pinned(d, &id);
+    let busy = d.plugins.busy.clone();
+    // The whole card: the summary in its tip, its menu on a right click.
+    let card = kit.rect(x, y, w, h);
+    let (resp, ..) = kit.hot(&format!("plugins-card-{id}"), card, true, &p.page.summary);
+    let mut meta = Vec::new();
+    if !p.page.version.is_empty() {
+        meta.push(format!("v{}", p.page.version));
+    }
+    if !p.page.author.is_empty() {
+        meta.push(format!("by {}", p.page.author));
+    }
+    if p.from_catalog.is_none() {
+        meta.push("added by hand".into());
+    }
+    let mut tags: Vec<(&str, egui::Color32)> = Vec::new();
+    if update.is_some() {
+        tags.push(("Update", design::QUEST_ON));
+    }
+    if !pin {
+        tags.push(("Not in the rail", design::GREY));
+    }
+    let problems = format!("{} problem(s), see the log", p.warnings.len());
+    if !p.warnings.is_empty() {
+        // The details are in the launcher's log.
+        tags.push((&problems, design::QUEST_WARN));
+    }
+    let marked = d.plugins.focus.as_deref() == Some(id.as_str());
+    card_face(
+        kit,
+        (x, y, w, h),
+        marked,
+        rail_icon(&p.page),
+        &p.page.name,
+        &meta.join(" · "),
+        &tags,
+        &p.page.summary,
+    );
+    let pad = dz(LIB_PAD);
+    // Top right: ⋯, and the pin left of it.
+    let side = dz(34.0);
+    let more = kit.rect(x + w - pad - side + dz(6.0), y + pad - dz(4.0), side, side);
+    let pin_r = more.translate(egui::vec2(-side - dz(4.0), 0.0));
+    let icon_button = |kit: &mut Kit, key: &str, r: egui::Rect, icon: Icon, bright: bool, tip: &str| {
+        let (resp, t, _) = kit.hot(key, r, true, tip);
+        if t > 0.01 {
+            kit.ui
+                .painter()
+                .rect_filled(r, dz(6.0), egui::Color32::from_white_alpha((24.0 * t) as u8));
+        }
+        let s = dz(24.0);
+        let rest = if bright {
+            egui::Color32::from_gray(225)
+        } else {
+            design::GREY
+        };
+        icon_at(
+            kit.ui.painter(),
+            icon,
+            r.center() - egui::vec2(s, s) / 2.0,
+            s,
+            crate::ui::style::mix(rest, design::TEXT, t),
+        );
+        resp
+    };
+    let (pin_icon, pin_tip) = if pin {
+        (Icon::Pinned, "In the rail: click to unpin it")
+    } else {
+        (Icon::Pin, "Pin it to the rail")
+    };
+    if icon_button(kit, &format!("plugins-pin-{id}"), pin_r, pin_icon, pin, pin_tip).clicked {
+        set_pinned(d, &id, !pin);
+    }
+    let more_resp = icon_button(kit, &format!("plugins-more-{id}"), more, Icon::More, true, "More");
+    if (more_resp.clicked && !(menu_was_open && d.plugins.card_menu.as_deref() == Some(&id)))
+        || resp.secondary
+    {
+        d.plugins.card_menu = Some(id.clone());
+        d.plugins.card_menu_at = (more.max.x, more.max.y);
+        let key = crate::ui::widgets::menu_id(CARD_MENU);
+        ctx.data_mut(|dd| dd.insert_temp(key, true));
+    }
+    // At the bottom: Open, and Update beside it.
+    let by = y + h - pad - BTN_H;
+    let inner = w - pad * 2.0;
+    if busy.as_deref() == Some(id.as_str()) {
+        kit.chip(x + pad, by + dz(6.0), "Working…", design::QUEST_WARN);
+        return;
+    }
+    let idle = busy.is_none();
+    let busy_tip = busy.as_ref().map(|b| format!("Wait: {b} is being installed or updated"));
+    let open_w = if update.is_some() {
+        (inner - dz(10.0)) / 2.0
+    } else {
+        inner
+    };
+    if let Some(e) = &update {
+        if kit
+            .button(
+                &format!("plugins-update-{id}"),
+                x + pad,
+                by,
+                open_w,
+                BTN_H,
+                Tone::Go,
+                None,
+                "Update",
+                idle,
+                busy_tip
+                    .as_deref()
+                    .unwrap_or(&format!("Get version {}", e.version)),
+            )
+            .clicked
+        {
+            get(d, ctx, e.clone(), "Plugin updated");
+        }
+    }
+    if kit
+        .button(
+            &format!("plugins-open-{id}"),
+            x + w - pad - open_w,
+            by,
+            open_w,
+            BTN_H,
+            Tone::Blue,
+            None,
+            "Open",
+            true,
+            "Open its tab",
+        )
+        .clicked
+    {
+        d.page = Page::Plugin(i);
+    }
+}
+
+/// A catalogue plugin you don't have: Get (or Coming soon).
+fn offered_card(
+    d: &mut Dashboard,
+    kit: &mut Kit,
+    ctx: &egui::Context,
+    e: &core::PluginEntry,
+    (x, y, w, h): (f32, f32, f32, f32),
+) {
+    let mut meta = Vec::new();
+    if !e.version.is_empty() {
+        meta.push(format!("v{}", e.version));
+    }
+    if !e.author.is_empty() {
+        meta.push(format!("by {}", e.author));
+    }
+    let mut tags = Vec::new();
+    if e.dev {
+        // From the dev folder of the dev code in Advanced settings, not published.
+        tags.push(("Dev", design::RIM_BOTTOM));
+    }
+    let card = kit.rect(x, y, w, h);
+    kit.hot(&format!("plugins-card-{}", e.id), card, true, &e.summary);
+    card_face(
+        kit,
+        (x, y, w, h),
+        false,
+        icon_named(&e.icon),
+        &e.name,
+        &meta.join(" · "),
+        &tags,
+        &e.summary,
+    );
+    let pad = dz(LIB_PAD);
+    let by = y + h - pad - BTN_H;
+    if d.plugins.busy.as_deref() == Some(e.id.as_str()) {
+        kit.chip(x + pad, by + dz(6.0), "Downloading…", design::QUEST_WARN);
+        return;
+    }
+    let label = if e.downloadable() { "Get" } else { "Coming soon" };
     let busy_tip = d
         .plugins
         .busy
         .as_ref()
         .map(|id| format!("Wait: {id} is being installed"));
-    k.clipped(x, top - dz(4.0), w, list_h, |k| {
-        for e in offered {
-            let h = height(k, &e);
-            if y + h < top || y > bottom {
-                y += h;
-                continue;
+    let tip = match &busy_tip {
+        _ if !e.downloadable() => "Not published yet",
+        Some(b) => b.as_str(),
+        None => "Download and add it: it gets a tab in the rail",
+    };
+    if kit
+        .button(
+            &format!("plugins-get-{}", e.id),
+            x + pad,
+            by,
+            w - pad * 2.0,
+            BTN_H,
+            Tone::Go,
+            None,
+            label,
+            d.plugins.busy.is_none() && e.downloadable(),
+            tip,
+        )
+        .clicked
+    {
+        get(d, ctx, e.clone(), "Plugin added: it has its own tab now");
+    }
+}
+
+/// The open card's menu: Update, Pin or Unpin, Remove, Homepage.
+fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    let Some(id) = d.plugins.card_menu.clone() else {
+        return;
+    };
+    let Some(p) = d.plugins.list.iter().find(|p| p.page.id == id).cloned() else {
+        d.plugins.card_menu = None;
+        return;
+    };
+    let catalog = d.plugins.catalog.clone().unwrap_or_default();
+    let update = core::update_for(&p, &catalog).cloned();
+    let entry = catalog.plugins.iter().find(|e| e.id == id).cloned();
+    let homepage = entry.map(|e| e.homepage).unwrap_or_default();
+    let pin = is_pinned(d, &id);
+    let idle = d.plugins.busy.is_none();
+    let wait = (!idle).then_some("Wait: a plugin is being installed or updated");
+    let rows = [
+        match &update {
+            Some(e) => MenuItem::row(&format!("Update to {}", e.version), "Get the catalogue's version")
+                .unless(wait),
+            None => MenuItem::row("Update", "").unless(Some("It's up to date")),
+        },
+        if pin {
+            MenuItem::row("Unpin from the rail", "Its tab leaves the rail: open it from here")
+        } else {
+            MenuItem::row("Pin to the rail", "Its tab goes in the rail")
+        },
+        MenuItem::row("Remove", "Remove it and its settings")
+            .unless(wait),
+        MenuItem::Divider,
+        MenuItem::row("Homepage", "Its page in your browser")
+            .unless(homepage.is_empty().then_some("It names no homepage")),
+    ];
+    let (rx, ry) = d.plugins.card_menu_at;
+    let anchor = egui::Rect::from_min_size(egui::pos2(rx - 260.0, ry), egui::vec2(260.0, 0.0));
+    match kit.menu_at(CARD_MENU, anchor, &rows) {
+        Some(0) => {
+            if let Some(e) = update {
+                get(d, ctx, e, "Plugin updated");
             }
-            let name = k.label_galley(&e.name, design::din(20.0), design::TEXT, w * 0.6);
-            let nr = k.put(x, y, name);
-            if e.dev {
-                // From the dev folder of the dev code in Advanced settings, not published.
-                k.dot_tag(
-                    nr.max.x - k.origin.x + dz(14.0),
-                    nr.center().y - k.origin.y,
-                    "Dev",
-                    12.0,
-                    design::RIM_BOTTOM,
-                );
-            }
-            let label = if e.downloadable() {
-                "Get"
-            } else {
-                "Coming soon"
-            };
-            let bw = k.button_width(label, None, BTN_H).max(dz(110.0));
-            let tip = match &busy_tip {
-                _ if !e.downloadable() => "Not published yet",
-                Some(b) => b.as_str(),
-                None => "Download and add it",
-            };
-            if k.button(
-                &format!("plugins-get-{}", e.id),
-                x + w - bw,
-                y - dz(4.0),
-                bw,
-                BTN_H,
-                Tone::Go,
-                None,
-                label,
-                idle && e.downloadable(),
-                tip,
-            )
-            .clicked
-            {
-                get(d, ctx, e.clone(), "Plugin added: it has its own tab now");
-            }
-            // The summary under the button, not beside it.
-            let mut ey = y + BTN_H + dz(8.0);
-            if d.plugins.busy.as_deref() == Some(e.id.as_str()) {
-                k.chip(x, ey, "Downloading…", design::QUEST_WARN);
-                ey += dz(34.0);
-            }
-            k.caps_text(x, ey, w, &e.summary, 15.0, design::GREY, 0.0);
-            y += h;
         }
-    });
+        Some(1) => set_pinned(d, &id, !pin),
+        Some(2) => {
+            d.plugins.remove_asked = Some(id.clone());
+            d.dialogs.confirm_danger(
+                REMOVE_KEY,
+                "Remove plugin",
+                &format!("Remove {} and its settings?", p.page.name),
+                "Remove",
+            );
+        }
+        Some(4) => crate::core::platform::open_url(&homepage),
+        _ => {}
+    }
+    if !kit.menu_open(CARD_MENU) {
+        d.plugins.card_menu = None;
+    }
 }
 
 fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str) {
@@ -2385,9 +2575,31 @@ fn demo() -> PluginsUi {
     let (page, _) = core::read_description(include_str!(
         "../../../docs/plugins/event-lobbies/plugin.json"
     ));
+    let mut catalog = PluginCatalog::builtin();
+    // The library's other cards: the plugins there are, one from a dev folder.
+    for (text, dev) in [
+        (include_str!("../../../docs/plugins/game-server/plugin.json"), false),
+        (include_str!("../../../docs/plugins/server-host/plugin.json"), false),
+        (include_str!("../../../docs/plugins/controllers/plugin.json"), true),
+    ] {
+        if let Some(p) = core::read_description(text).0 {
+            catalog.plugins.push(core::PluginEntry {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                summary: p.summary.clone(),
+                author: p.author.clone(),
+                version: p.version.clone(),
+                url: format!("https://release.echovr.de/launcher/plugins/{}.zip", p.id),
+                sha256: "0".repeat(64),
+                icon: p.icon.clone(),
+                dev,
+                ..Default::default()
+            });
+        }
+    }
     let mut ui = PluginsUi {
         started: true,
-        catalog: Some(PluginCatalog::builtin()),
+        catalog: Some(catalog),
         ..Default::default()
     };
     let Some(page) = page else {
@@ -2456,6 +2668,10 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
         include_str!("../../../docs/plugins/game-server/plugin.json"),
         include_str!("../../../docs/plugins/event-lobbies/plugin.json"),
         include_str!("../../../docs/plugins/server-host/plugin.json"),
+        include_str!("../../../docs/plugins/controllers/plugin.json"),
+        include_str!("../../../docs/plugins/event-lobbies/plugin.json"),
+        include_str!("../../../docs/plugins/game-server/plugin.json"),
+        include_str!("../../../docs/plugins/server-host/plugin.json"),
     ];
     let renamed = [
         None,
@@ -2464,6 +2680,10 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
         Some(("Tournament tools", "calendar")),
         Some(("Replay viewer", "globe")),
         Some(("Practice drills", "plugin")),
+        Some(("Coach mode", "controller")),
+        Some(("Map voting", "calendar")),
+        Some(("Stats tracker", "plugin")),
+        Some(("Clip recorder", "globe")),
     ];
     for (n, (text, rename)) in manifests.iter().zip(renamed).enumerate() {
         let Some(mut page) = core::read_description(text).0 else {
@@ -2599,6 +2819,43 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
 #[cfg(test)]
 mod tests {
     use super::Failure;
+
+    /// The library: the pinned plugins in the rail's order, the unpinned ones, then the
+    /// catalogue's others; the filters keep either part.
+    #[test]
+    fn library_cards_in_order() {
+        use super::{library_cards, Filter, LibCard::*};
+        // Four installed, 2 unpinned, pinned as 3, 0, 1; two to get.
+        let pinned = [3, 0, 1];
+        assert_eq!(
+            library_cards(&pinned, 4, 2, Filter::All),
+            [Installed(3), Installed(0), Installed(1), Installed(2), Offered(0), Offered(1)]
+        );
+        assert_eq!(
+            library_cards(&pinned, 4, 2, Filter::Installed),
+            [Installed(3), Installed(0), Installed(1), Installed(2)]
+        );
+        assert_eq!(
+            library_cards(&pinned, 4, 2, Filter::Available),
+            [Offered(0), Offered(1)]
+        );
+        assert!(library_cards(&[], 0, 0, Filter::All).is_empty());
+    }
+
+    /// The library's grid: six columns on the normal window, one at the least, filling the
+    /// row.
+    #[test]
+    fn library_grid_fills_the_row() {
+        use super::{library_grid, LIBRARY, LIB_CARD_W, LIB_GAP};
+        use crate::ui::design::dz;
+        let normal = dz(LIBRARY.w - 44.0);
+        let (cols, w) = library_grid(normal);
+        assert_eq!(cols, 6);
+        assert!(w >= dz(LIB_CARD_W));
+        assert!((cols as f32 * w + (cols - 1) as f32 * dz(LIB_GAP) - normal).abs() < 0.01);
+        assert_eq!(library_grid(10.0).0, 1);
+        assert!(library_grid(normal + 600.0).0 > 6, "a wider window, more columns");
+    }
 
     /// The rail's plugin tabs: the player's order, then ones installed since; unpinned
     /// and uninstalled ones left out.

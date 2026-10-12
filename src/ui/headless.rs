@@ -129,13 +129,13 @@ fn tab_switch_timing() {
     }
 }
 
-/// The rail's menus with seven plugins: ⋯ opens its menu and stays open, a row opens
-/// that plugin, a right click on a plugin tab opens its menu and Move up moves it.
-/// `ECHOVR_SNAPSHOTS=<dir> cargo test rail_menus -- --ignored` (pictures of each step).
+/// The rail with ten pinned plugins: the wheel scrolls their tabs, the last one opens,
+/// a right click on it opens its menu, and Move up moves it.
+/// `ECHOVR_SNAPSHOTS=<dir> cargo test rail_scroll -- --ignored` (pictures of each step).
 #[test]
-#[ignore = "needs a GPU; run with ECHOVR_SNAPSHOTS=<dir> cargo test rail_menus -- --ignored"]
-fn rail_menus() {
-    use egui::{pos2, Event, PointerButton};
+#[ignore = "needs a GPU; run with ECHOVR_SNAPSHOTS=<dir> cargo test rail_scroll -- --ignored"]
+fn rail_scroll() {
+    use egui::{pos2, vec2, Event, PointerButton};
     let dir = std::env::var_os("ECHOVR_SNAPSHOTS").map(std::path::PathBuf::from);
     let mut harness = egui_kittest::Harness::builder()
         .with_size(egui::vec2(launcher::W, launcher::H))
@@ -171,27 +171,34 @@ fn rail_menus() {
     let save = |h: &mut egui_kittest::Harness<App>, name: &str| {
         if let Some(dir) = &dir {
             let img = h.render().expect("render");
-            img.save(dir.join(format!("rail_menus_{name}.png")))
+            img.save(dir.join(format!("rail_scroll_{name}.png")))
                 .unwrap();
         }
     };
-    // ⋯ (logical pixels in the 1280×720 window): its menu opens and stays.
-    click(&mut harness, 31.0, 602.0, PointerButton::Primary);
-    assert!(open(&harness, "rail-more"), "⋯'s menu opened");
-    save(&mut harness, "1_more");
-    // Its first row: the first plugin that didn't fit.
-    click(&mut harness, 230.0, 604.0, PointerButton::Primary);
-    assert!(!open(&harness, "rail-more"));
-    assert!(matches!(
-        harness.state().menu.page,
-        launcher::Page::Plugin(_)
-    ));
+    // (Logical pixels in the 1280×720 window.) The wheel over the plugin tabs: down to
+    // the end, where the last one sits right over the Plugins page.
+    harness.hover_at(pos2(60.0, 500.0));
+    harness.step();
+    harness.event(Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: vec2(0.0, -600.0),
+        phase: egui::TouchPhase::Move,
+        modifiers: Default::default(),
+    });
+    harness.run_steps(40);
+    save(&mut harness, "1_scrolled");
+    // The last one, Clip recorder (the 11th installed: the 3rd is unpinned).
+    click(&mut harness, 60.0, 615.0, PointerButton::Primary);
+    assert_eq!(harness.state().menu.page, launcher::Page::Plugin(10));
     save(&mut harness, "2_opened");
-    // A right click on Controllers (the third tab), then Move up.
-    click(&mut harness, 31.0, 521.0, PointerButton::Secondary);
+    // Its menu, above it (no room below), then Move up.
+    click(&mut harness, 60.0, 615.0, PointerButton::Secondary);
     assert!(open(&harness, "rail-tab"), "the tab's menu opened");
     save(&mut harness, "3_tab_menu");
-    click(&mut harness, 260.0, 541.0, PointerButton::Primary);
+    click(&mut harness, 260.0, 502.0, PointerButton::Primary);
     assert!(!open(&harness, "rail-tab"));
     save(&mut harness, "4_moved");
+    // Stats tracker is the last tab now.
+    click(&mut harness, 60.0, 615.0, PointerButton::Primary);
+    assert_eq!(harness.state().menu.page, launcher::Page::Plugin(9));
 }

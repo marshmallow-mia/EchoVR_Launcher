@@ -211,6 +211,8 @@ pub struct PluginEntry {
     pub sha256: String,
     pub size: Option<u64>,
     pub homepage: String,
+    /// Its icon, as plugin.json's `icon` names it (the library's card before it is got).
+    pub icon: String,
     /// From the dev folder of the dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
