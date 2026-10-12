@@ -18,18 +18,25 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
   `plugin.json` and its settings. The data folder is `%LOCALAPPDATA%\EchoVR_Launcher` on Windows and
   `~/.local/share/EchoVR_Launcher` on Linux.
 - **Its tab in the rail:**
-  - A new plugin's tab goes last in the rail's plugin section.
-  - **Unpin** on the Plugins page takes it off the rail, and its page opens from there; **Pin**
-    puts it back. A right click on the tab unpins or moves it (Move up, Move down).
+  - A new plugin's tab goes last in the rail's plugin section (small tabs, like EchoVRCE's and
+    Friends').
+  - The pin on its card on the Plugins page takes it off the rail, and its page opens from the card
+    (**Open**); the pin puts it back. A right click on the tab unpins or moves it (Move up, Move
+    down).
   - The order and the unpinned plugins are kept in `launcher.json` (`rail_order`,
     `rail_unpinned`).
-  - With more tabs, the gaps above them get tighter. The ones that still don't fit go under **⋯**
-    (a taller window shows more).
-- **Getting one:** the Plugins page (the rail's puzzle piece) gets plugins from the catalogue,
+  - With more tabs, the gaps above them get tighter; with more still, the plugin tabs scroll (a
+    taller window shows more).
+- **The Plugins page** (the rail's puzzle piece) is the library: a card for every plugin, the
+  installed ones first (in the rail's order), then the catalogue's others. **All**, **Installed**
+  and **Available** pick which. An installed one's card has **Open**, **Update** when there is one,
+  its pin, and **⋯** (or a right click) for Update, Pin, Remove and its homepage.
+- **Getting one:** the Plugins page gets plugins from the catalogue,
   `https://release.echovr.de/launcher/plugins.json`. The launcher's built-in draft is
   [../launcher/plugins.json](../launcher/plugins.json).
 - **A catalogue entry:** it names a zip with `plugin.json` at its root (or in one top folder) and its
-  `sha256`, like a mod: `id`, `name`, `summary`, `author`, `version`, `url`, `sha256`, `homepage`.
+  `sha256`, like a mod: `id`, `name`, `summary`, `author`, `version`, `url`, `sha256`, `homepage`,
+  and `icon` (as in `plugin.json`: the card's icon before the plugin is got).
   - A different `version` puts **Update** on the plugin.
   - An update keeps the plugin's settings files.
   - **When the catalogue is read:** at the start, every 30 seconds while the launcher is open

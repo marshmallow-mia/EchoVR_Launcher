@@ -73,9 +73,9 @@ them, close the launcher and set `"event_builds": false` in its `launcher.json`
 
 ## Plugins
 
-Plugins are apps inside the launcher, each with its own tab in the rail; the **Plugins** tab
-(the puzzle piece) gets them. Unpin a tab you rarely use, or right-click it to move it; tabs that
-don't fit go under **⋯**. A plugin is a description of its page (`plugin.json`) that the launcher draws itself:
+Plugins are apps inside the launcher, each with its own tab in the rail. The **Plugins** tab
+(the puzzle piece) is their library: every plugin as a card, to get, open, update or remove. Pin the
+ones you use to the rail, or right-click a tab to move or unpin it; many tabs scroll. A plugin is a description of its page (`plugin.json`) that the launcher draws itself:
 [docs/plugins/pages.md](docs/plugins/pages.md). The first one, Event lobbies, lists the
 public matches of the event builds and joins a friend's match by its id.
 
