@@ -24,7 +24,12 @@ jobs:
           targets: x86_64-pc-windows-gnu
       - uses: Swatinem/rust-cache@v2
       - name: Tools
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64 nsis p7zip-full
+        # The posix-threads mingw-w64, as Homebrew's on the Mac (the win32 one lacks what the
+        # static C++ runtime links against).
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mingw-w64 nsis p7zip-full
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
       - name: Build
         run: cargo build --release --target x86_64-pc-windows-gnu
       - name: Package
@@ -45,6 +50,9 @@ jobs:
   linux:
     runs-on: ubuntu-24.04
     container: rust:1-bullseye
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
