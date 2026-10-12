@@ -244,6 +244,11 @@ pub struct LauncherState {
     pub echoxr_hands: bool,
     /// The rail is unfolded: the tabs' names beside their icons (new players start so).
     pub rail_open: bool,
+    /// The plugins' tabs in the rail, in the order the player put them (plugin ids). One
+    /// installed since goes after them; one not installed is skipped.
+    pub rail_order: Vec<String>,
+    /// Plugins the player took off the rail (ids): their pages open from the Plugins page.
+    pub rail_unpinned: std::collections::BTreeSet<String>,
     /// How far the EchoVRCE site is zoomed, in percent (100 = its own size).
     pub vrce_zoom: u16,
     /// Updates found are announced on the desktop too.
@@ -371,6 +376,8 @@ impl Default for LauncherState {
             event_builds: EVENT_BUILDS_DEFAULT,
             echoxr_hands: false,
             rail_open: true,
+            rail_order: Vec::new(),
+            rail_unpinned: Default::default(),
             vrce_zoom: 100,
             desktop_notifications: true,
             tray: true,

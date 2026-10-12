@@ -22,7 +22,7 @@ use crate::ui::design::{self, dz, Dr};
 use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::parts::Worker;
-use crate::ui::style::Icon;
+use crate::ui::style::{icon_at, Icon};
 use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 
 /// The page's two columns: the wide left one and the right-hand panel's.
@@ -68,6 +68,10 @@ pub(super) struct PluginsUi {
     server_asked: Option<(String, GameServer)>,
     /// A plugin page's question that is up (its id, what was asked).
     asked: Option<(String, Asked)>,
+    /// The plugin whose rail menu (right click) is open.
+    pub rail_menu: Option<String>,
+    /// The plugin the Plugins page scrolls to and marks (Plugin details).
+    pub focus: Option<String>,
 }
 
 /// What a plugin page's settings blocks asked.
@@ -140,6 +144,9 @@ struct Runner {
 // ---- reading, fetching and acting (each frame) ----
 
 pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
+    if d.page != Page::Plugins {
+        d.plugins.focus = None;
+    }
     if d.demo {
         if !d.plugins.started {
             d.plugins = demo();
@@ -251,6 +258,10 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
     }
     if let Some(ans) = d.dialogs.take(REMOVE_KEY) {
         if let (true, Some(id)) = (ans.is_yes(), d.plugins.remove_asked.take()) {
+            // Got again later, it starts on the rail.
+            d.state.rail_order.retain(|o| *o != id);
+            d.state.rail_unpinned.remove(&id);
+            d.save();
             d.plugins.busy = Some(id.clone());
             d.plugins.worker.spawn(ctx, move |tx| {
                 let r = core::remove(&id).map_err(|e| format!("{e:#}"));
@@ -831,6 +842,74 @@ fn set_bound(d: &mut Dashboard, p: &Installed, bind: &str, value: Value) {
     } else if let Some(path) = bind.strip_prefix("page.") {
         pp::set_path(&mut view(d, p).page, path, value);
     }
+}
+
+// ---- the rail's plugin tabs ----
+
+/// The plugins on the rail, in its order (indices into the installed list): the ones the
+/// player ordered, then the ones installed since. Unpinned ones are left out.
+pub(super) fn pinned(d: &Dashboard) -> Vec<u8> {
+    let ids: Vec<&str> = d.plugins.list.iter().map(|p| p.page.id.as_str()).collect();
+    rail_order(&ids, &d.state.rail_order, &d.state.rail_unpinned)
+}
+
+/// [`pinned`] for these installed ids.
+fn rail_order(
+    installed: &[&str],
+    order: &[String],
+    unpinned: &std::collections::BTreeSet<String>,
+) -> Vec<u8> {
+    let index = |id: &str| installed.iter().position(|i| *i == id);
+    let mut out: Vec<u8> = Vec::new();
+    let ordered = order.iter().filter_map(|id| index(id));
+    for i in ordered.chain(0..installed.len()) {
+        let Ok(b) = u8::try_from(i) else { continue };
+        if !out.contains(&b) && !unpinned.contains(installed[i]) {
+            out.push(b);
+        }
+    }
+    out
+}
+
+/// Whether the plugin is on the rail.
+pub(super) fn is_pinned(d: &Dashboard, id: &str) -> bool {
+    !d.state.rail_unpinned.contains(id)
+}
+
+/// Puts the plugin on the rail (last) or takes it off.
+pub(super) fn set_pinned(d: &mut Dashboard, id: &str, on: bool) {
+    let mut order = pinned_ids(d);
+    order.retain(|o| o != id);
+    if on {
+        d.state.rail_unpinned.remove(id);
+        order.push(id.to_string());
+    } else {
+        d.state.rail_unpinned.insert(id.to_string());
+    }
+    d.state.rail_order = order;
+    d.save();
+}
+
+/// Moves the plugin's tab one up (`-1`) or down (`1`) the rail.
+pub(super) fn move_tab(d: &mut Dashboard, id: &str, by: isize) {
+    let mut order = pinned_ids(d);
+    let Some(at) = order.iter().position(|o| o == id) else {
+        return;
+    };
+    let to = at as isize + by;
+    if to < 0 || to as usize >= order.len() {
+        return;
+    }
+    order.swap(at, to as usize);
+    d.state.rail_order = order;
+    d.save();
+}
+
+fn pinned_ids(d: &Dashboard) -> Vec<String> {
+    pinned(d)
+        .into_iter()
+        .map(|i| d.plugins.list[i as usize].page.id.clone())
+        .collect()
 }
 
 // ---- a plugin's page ----
@@ -1952,7 +2031,7 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
             x,
             y,
             w,
-            "None yet. Plugins add apps to the launcher: each gets its own tab in the rail. Get one from the list on the right.",
+            "None yet. Plugins add apps to the launcher, each with a tab in the rail (unpin it to keep the rail short). Get one from the list on the right.",
             TEXT_SIZE,
             design::GREY,
             0.0,
@@ -1977,6 +2056,19 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
     let gap = dz(12.0);
     let content_h = heights.iter().map(|h| h + gap).sum::<f32>() - gap;
     let list_h = bottom - y;
+    // Plugin details (the rail's menu): scrolled to it, marked until another is asked for.
+    let focus = d.plugins.focus.clone();
+    if let Some(at) = focus
+        .as_ref()
+        .and_then(|id| list.iter().position(|p| &p.page.id == id))
+    {
+        let top: f32 = heights[..at].iter().map(|h| h + gap).sum();
+        let max = (content_h - list_h).max(0.0);
+        let s = &mut d.plugins.installed_scroll;
+        if top < *s || top + heights[at] > *s + list_h {
+            *s = top.min(max);
+        }
+    }
     kit.scroll_area(
         "plugins-installed",
         x,
@@ -2003,7 +2095,8 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
             if y + th < list_top || y > bottom {
                 continue;
             }
-            hero::tile(kit, x, y, w, th, false);
+            let marked = focus.as_deref() == Some(p.page.id.as_str());
+            hero::tile(kit, x, y, w, th, marked);
             let mut meta = Vec::new();
             if !p.page.version.is_empty() {
                 meta.push(format!("v{}", p.page.version));
@@ -2014,6 +2107,10 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
             if p.from_catalog.is_none() {
                 meta.push("added by hand".into());
             }
+            let pinned = is_pinned(d, &p.page.id);
+            if !pinned {
+                meta.push("not in the rail".into());
+            }
             if !p.warnings.is_empty() {
                 // The details are in the launcher's log.
                 meta.push(format!(
@@ -2021,10 +2118,20 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
                     p.warnings.len()
                 ));
             }
-            let name = kit.label_galley(&p.page.name, design::din(22.0), design::TEXT, w * 0.5);
-            kit.put(x + pad, y + dz(14.0), name);
-            let m = kit.label_galley(&meta.join(" · "), design::din(14.0), design::GREY, w * 0.5);
-            kit.put(x + pad, y + dz(48.0), m);
+            // Its rail icon beside its name and line.
+            let icon = dz(30.0);
+            icon_at(
+                kit.ui.painter(),
+                rail_icon(&p.page),
+                kit.rect(x + pad, y + dz(27.0), icon, icon).min,
+                icon,
+                design::TEXT,
+            );
+            let tx = x + pad + icon + dz(16.0);
+            let name = kit.label_galley(&p.page.name, design::din(22.0), design::TEXT, w * 0.4);
+            kit.put(tx, y + dz(14.0), name);
+            let m = kit.label_galley(&meta.join(" · "), design::din(14.0), design::GREY, w * 0.4);
+            kit.put(tx, y + dz(48.0), m);
             kit.caps_text(
                 x + pad,
                 y + dz(76.0),
@@ -2076,6 +2183,21 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
                 ) {
                     get(d, ctx, e.clone(), "Plugin updated");
                 }
+            }
+            let (label, tip) = if pinned {
+                ("Unpin", "Take its tab off the rail: it opens from here")
+            } else {
+                ("Pin", "Put its tab on the rail")
+            };
+            if button(
+                kit,
+                &format!("plugins-pin-{}", p.page.id),
+                label,
+                Tone::Dark,
+                true,
+                tip,
+            ) {
+                set_pinned(d, &p.page.id, !pinned);
             }
             if button(
                 kit,
@@ -2320,6 +2442,51 @@ pub(super) enum SnapServer {
 /// Snapshots: the Game server plugin as the second tab in `state`, or not there (`None`).
 /// Snapshots: the Controllers plugin installed (its tab second, `on`), its hands tilted a
 /// little, advanced settings shown and a preset of the player's own.
+/// Snapshots: six more plugins (the catalogue's and two made up), one of them unpinned.
+pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
+    const PREFIX: &str = "many-";
+    d.plugins.list.retain(|p| !p.page.id.starts_with(PREFIX));
+    if !on {
+        return;
+    }
+    let manifests = [
+        include_str!("../../../docs/plugins/game-server/plugin.json"),
+        include_str!("../../../docs/plugins/server-host/plugin.json"),
+        include_str!("../../../docs/plugins/controllers/plugin.json"),
+        include_str!("../../../docs/plugins/game-server/plugin.json"),
+        include_str!("../../../docs/plugins/event-lobbies/plugin.json"),
+        include_str!("../../../docs/plugins/server-host/plugin.json"),
+    ];
+    let renamed = [
+        None,
+        None,
+        None,
+        Some(("Tournament tools", "calendar")),
+        Some(("Replay viewer", "globe")),
+        Some(("Practice drills", "plugin")),
+    ];
+    for (n, (text, rename)) in manifests.iter().zip(renamed).enumerate() {
+        let Some(mut page) = core::read_description(text).0 else {
+            continue;
+        };
+        page.id = format!("{PREFIX}{n}-{}", page.id);
+        if let Some((name, icon)) = rename {
+            page.name = name.into();
+            page.icon = icon.into();
+        }
+        d.plugins.list.push(Installed {
+            from_catalog: Some(page.version.clone()),
+            page: std::sync::Arc::new(page),
+            dir: std::path::PathBuf::new(),
+            warnings: Vec::new(),
+        });
+    }
+    // The second one off the rail.
+    if let Some(p) = d.plugins.list.get(2) {
+        d.state.rail_unpinned.insert(p.page.id.clone());
+    }
+}
+
 pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
     const ID: &str = "controllers";
     d.plugins.list.retain(|p| p.page.id != ID);
@@ -2432,6 +2599,20 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
 #[cfg(test)]
 mod tests {
     use super::Failure;
+
+    /// The rail's plugin tabs: the player's order, then ones installed since; unpinned
+    /// and uninstalled ones left out.
+    #[test]
+    fn rail_order_keeps_the_players_order() {
+        use super::rail_order;
+        let installed = ["a", "b", "c", "d"];
+        let none = Default::default();
+        assert_eq!(rail_order(&installed, &[], &none), [0, 1, 2, 3]);
+        let order = ["c".to_string(), "gone".into(), "a".into()];
+        assert_eq!(rail_order(&installed, &order, &none), [2, 0, 1, 3]);
+        let unpinned = ["a".to_string(), "d".into()].into_iter().collect();
+        assert_eq!(rail_order(&installed, &order, &unpinned), [2, 1]);
+    }
 
     #[test]
     fn failures_by_kind() {

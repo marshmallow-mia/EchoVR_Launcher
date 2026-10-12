@@ -57,6 +57,10 @@ pub enum Icon {
     Plug,
     /// A VR controller: controller settings.
     Controller,
+    /// Three dots: more of something (the rail's tabs that don't fit).
+    More,
+    /// A puzzle piece: the launcher's plugins (the rail's Plugins page).
+    Puzzle,
 }
 
 /// What a control reports back.
@@ -64,6 +68,8 @@ pub enum Icon {
 pub struct Resp {
     pub clicked: bool,
     pub hovered: bool,
+    /// Right-clicked (a context menu).
+    pub secondary: bool,
 }
 
 // ---- 9-slice ----
@@ -142,6 +148,7 @@ impl Kit<'_> {
             out.hovered = resp.hovered();
             if enabled {
                 out.clicked = resp.clicked();
+                out.secondary = resp.secondary_clicked();
                 pressed = resp.is_pointer_button_down_on();
                 if out.hovered {
                     self.ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -271,6 +278,31 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
             line(vec![pt(0.31, 0.38), pt(0.31, 0.54)]);
             p.circle_filled(pt(0.66, 0.42), s * 0.05, c);
             p.circle_filled(pt(0.76, 0.52), s * 0.05, c);
+        }
+        Icon::More => {
+            for x in [0.2, 0.5, 0.8] {
+                p.circle_filled(pt(x, 0.5), s * 0.075, c);
+            }
+        }
+        Icon::Puzzle => {
+            // A square piece with a knob on top and one on the right.
+            let knob = |cx: f32, cy: f32, from: f32, to: f32| -> Vec<Pos2> {
+                (0..=8)
+                    .map(|k| {
+                        let a = from + (to - from) * k as f32 / 8.0;
+                        pt(cx + 0.11 * a.cos(), cy + 0.11 * a.sin())
+                    })
+                    .collect()
+            };
+            let pi = std::f32::consts::PI;
+            let mut pts = vec![pt(0.12, 0.3), pt(0.38, 0.3)];
+            // The top knob, bulging up from (0.38..0.6, 0.3).
+            pts.extend(knob(0.49, 0.22, 0.75 * pi, 2.25 * pi));
+            pts.extend([pt(0.6, 0.3), pt(0.8, 0.3), pt(0.8, 0.5)]);
+            // The right one, bulging out from (0.8, 0.5..0.72).
+            pts.extend(knob(0.88, 0.61, 1.25 * pi, 2.75 * pi));
+            pts.extend([pt(0.8, 0.72), pt(0.8, 0.9), pt(0.12, 0.9), pt(0.12, 0.3)]);
+            line(pts);
         }
         Icon::Folder => {
             line(vec![

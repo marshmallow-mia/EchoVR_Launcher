@@ -128,3 +128,70 @@ fn tab_switch_timing() {
         eprintln!("slowest: {slowest:.1} ms");
     }
 }
+
+/// The rail's menus with seven plugins: ⋯ opens its menu and stays open, a row opens
+/// that plugin, a right click on a plugin tab opens its menu and Move up moves it.
+/// `ECHOVR_SNAPSHOTS=<dir> cargo test rail_menus -- --ignored` (pictures of each step).
+#[test]
+#[ignore = "needs a GPU; run with ECHOVR_SNAPSHOTS=<dir> cargo test rail_menus -- --ignored"]
+fn rail_menus() {
+    use egui::{pos2, Event, PointerButton};
+    let dir = std::env::var_os("ECHOVR_SNAPSHOTS").map(std::path::PathBuf::from);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(launcher::W, launcher::H))
+        .wgpu()
+        .build_eframe(|cc| {
+            theme::install_fonts(&cc.egui_ctx);
+            theme::install_style(&cc.egui_ctx);
+            let mut app = App::default();
+            app.menu.demo = true;
+            app.menu.page = launcher::Page::Play;
+            app.menu.snap_variant = Some(launcher::SnapVariant::ManyPluginsOpen);
+            app
+        });
+    harness.run_steps(6);
+    let click = |h: &mut egui_kittest::Harness<App>, x: f32, y: f32, button: PointerButton| {
+        let pos = pos2(x, y);
+        h.hover_at(pos);
+        h.step();
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos,
+                button,
+                pressed,
+                modifiers: Default::default(),
+            });
+        }
+        h.run_steps(3);
+    };
+    let open = |h: &egui_kittest::Harness<App>, key: &str| {
+        let id = crate::ui::widgets::menu_id(key);
+        h.ctx.data(|d| d.get_temp::<bool>(id).unwrap_or(false))
+    };
+    let save = |h: &mut egui_kittest::Harness<App>, name: &str| {
+        if let Some(dir) = &dir {
+            let img = h.render().expect("render");
+            img.save(dir.join(format!("rail_menus_{name}.png")))
+                .unwrap();
+        }
+    };
+    // ⋯ (logical pixels in the 1280×720 window): its menu opens and stays.
+    click(&mut harness, 31.0, 602.0, PointerButton::Primary);
+    assert!(open(&harness, "rail-more"), "⋯'s menu opened");
+    save(&mut harness, "1_more");
+    // Its first row: the first plugin that didn't fit.
+    click(&mut harness, 230.0, 604.0, PointerButton::Primary);
+    assert!(!open(&harness, "rail-more"));
+    assert!(matches!(
+        harness.state().menu.page,
+        launcher::Page::Plugin(_)
+    ));
+    save(&mut harness, "2_opened");
+    // A right click on Controllers (the third tab), then Move up.
+    click(&mut harness, 31.0, 521.0, PointerButton::Secondary);
+    assert!(open(&harness, "rail-tab"), "the tab's menu opened");
+    save(&mut harness, "3_tab_menu");
+    click(&mut harness, 260.0, 541.0, PointerButton::Primary);
+    assert!(!open(&harness, "rail-tab"));
+    save(&mut harness, "4_moved");
+}

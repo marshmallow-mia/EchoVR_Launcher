@@ -1,7 +1,7 @@
 # Launcher plugins: their pages
 
-A launcher plugin is an app inside the launcher. It gets its own tab in the rail's lower
-section, above the +, and its page is what its `plugin.json` describes. The launcher draws
+A launcher plugin is an app inside the launcher. It gets its own tab in the rail's plugin
+section, above the Plugins page (the puzzle piece), and its page is what its `plugin.json` describes. The launcher draws
 it with its own cards, lists, fields and buttons. No plugin code runs in the launcher: a
 page fetches JSON over HTTP, shows it, and its buttons run the steps it lists.
 
@@ -17,7 +17,15 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
 - **The folder:** each plugin is a folder `plugins/<id>/` in the launcher's data folder, holding its
   `plugin.json` and its settings. The data folder is `%LOCALAPPDATA%\EchoVR_Launcher` on Windows and
   `~/.local/share/EchoVR_Launcher` on Linux.
-- **Getting one:** the Plugins page (the rail's +) gets plugins from the catalogue,
+- **Its tab in the rail:**
+  - A new plugin's tab goes last in the rail's plugin section.
+  - **Unpin** on the Plugins page takes it off the rail, and its page opens from there; **Pin**
+    puts it back. A right click on the tab unpins or moves it (Move up, Move down).
+  - The order and the unpinned plugins are kept in `launcher.json` (`rail_order`,
+    `rail_unpinned`).
+  - With more tabs, the gaps above them get tighter. The ones that still don't fit go under **⋯**
+    (a taller window shows more).
+- **Getting one:** the Plugins page (the rail's puzzle piece) gets plugins from the catalogue,
   `https://release.echovr.de/launcher/plugins.json`. The launcher's built-in draft is
   [../launcher/plugins.json](../launcher/plugins.json).
 - **A catalogue entry:** it names a zip with `plugin.json` at its root (or in one top folder) and its

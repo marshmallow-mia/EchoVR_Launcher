@@ -408,6 +408,7 @@ impl Kit<'_> {
                 // A click without a pointer (keyboard, accessibility tools) is in the shape.
                 let at = resp.interact_pointer_pos();
                 out.clicked = resp.clicked() && (at.is_none() || within(at));
+                out.secondary = resp.secondary_clicked() && (at.is_none() || within(at));
                 pressed = out.hovered && resp.is_pointer_button_down_on();
                 if out.hovered {
                     self.ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
@@ -450,7 +451,7 @@ impl Kit<'_> {
         cy: f32,
         selected: bool,
         tip: &str,
-    ) -> bool {
+    ) -> Resp {
         let sq = Dr::new(21.0, cy - 26.5, 52.0, 53.0);
         let (resp, t, pressed) = self.hot(key, self.drect(sq), true, tip);
         if selected {
@@ -492,7 +493,7 @@ impl Kit<'_> {
                 }
             }
         }
-        resp.clicked
+        resp
     }
 
     /// Clicks on something already drawn at `r` (links): returns the click.

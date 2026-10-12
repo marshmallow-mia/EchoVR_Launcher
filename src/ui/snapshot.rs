@@ -135,6 +135,17 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("play_beta_channel", Page::Play, SnapVariant::BetaChannel),
         ("play_rail_open", Page::Play, SnapVariant::RailOpen),
+        ("play_many_plugins", Page::Play, SnapVariant::ManyPlugins),
+        (
+            "plugins_many_rail_open",
+            Page::Plugins,
+            SnapVariant::ManyPluginsOpen,
+        ),
+        (
+            "play_many_plugins_menu",
+            Page::Play,
+            SnapVariant::ManyPluginsMenu,
+        ),
         ("play_updates", Page::Play, SnapVariant::UpdatesFound),
         (
             "settings_updates",
