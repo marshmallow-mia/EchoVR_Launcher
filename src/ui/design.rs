@@ -131,7 +131,7 @@ pub fn fade(t: f32) -> Color32 {
 }
 
 /// The square of a small rail slot (design pixels).
-pub const RAIL_SMALL_SQ: f32 = 36.0;
+pub const RAIL_SMALL_SQ: f32 = 44.0;
 
 /// Something to draw in a rail slot.
 #[derive(Debug, Clone, Copy)]
@@ -322,9 +322,10 @@ impl Kit<'_> {
         spacing: f32,
         underline: bool,
     ) -> Arc<Galley> {
+        let text = super::uwu::text(text);
         let mut job = LayoutJob::default();
         job.append(
-            text,
+            &text,
             0.0,
             TextFormat {
                 font_id: font,
@@ -351,9 +352,10 @@ impl Kit<'_> {
         underline: bool,
         max_w: f32,
     ) -> Arc<Galley> {
+        let text = super::uwu::text(text);
         let mut job = LayoutJob::default();
         job.append(
-            text,
+            &text,
             0.0,
             TextFormat {
                 font_id: font,
@@ -368,7 +370,9 @@ impl Kit<'_> {
             },
         );
         job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
-        self.ui.ctx().fonts_mut(|f| f.layout_job(job))
+        let g = self.ui.ctx().fonts_mut(|f| f.layout_job(job));
+        super::cuts::note(&g, &text);
+        g
     }
 
     /// Draws a galley with its top-left at logical (x, y); returns where it went.
@@ -418,7 +422,7 @@ impl Kit<'_> {
                 }
             }
             if out.hovered && !tip.is_empty() {
-                resp.on_hover_text(tip);
+                resp.on_hover_text(super::uwu::text(tip).into_owned());
             }
         }
         // Disabled buttons have hover images too (their tooltip says why they are off).
@@ -581,7 +585,8 @@ pub fn caps_append(job: &mut LayoutJob, text: &str, size: f32, color: Color32, k
         append_text(job, text, format(myriad()));
         return;
     }
-    let mut rest = text;
+    let text = super::uwu::text(text);
+    let mut rest = &*text;
     while !rest.is_empty() {
         let space = rest.starts_with(char::is_whitespace);
         let end = rest

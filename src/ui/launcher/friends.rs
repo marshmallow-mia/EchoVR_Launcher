@@ -16,12 +16,10 @@ use crate::ui::widgets::{Tone, BTN_H};
 
 /// FIND PLAYERS on the left, FRIENDS in the middle (sharing the extra width), PLAYED WITH
 /// in the right-hand column.
-/// (Under the line saying where friends come from.)
-const FIND: Dr = Dr::new(137.0, 118.0, 560.0, 928.0);
-const LIST: Dr = Dr::new(717.0, 118.0, 581.0, 928.0);
-const PLAYED: Dr = Dr::new(1318.0, 118.0, 555.0, 928.0);
-/// Where friends come from, over the cards.
-const ABOUT_Y: f32 = 74.0;
+/// (Under the page's title, as on the Mods page.)
+const FIND: Dr = Dr::new(137.0, 156.0, 560.0, 890.0);
+const LIST: Dr = Dr::new(717.0, 156.0, 581.0, 890.0);
+const PLAYED: Dr = Dr::new(1318.0, 156.0, 555.0, 890.0);
 const ROW_H: f32 = 64.0;
 const ROW_GAP: f32 = 10.0;
 const PAD: f32 = 14.0;
@@ -34,21 +32,6 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         answers(d, ctx);
     }
     let (half, dy) = (kit.dx() / 2.0, kit.dy());
-    let about = format!(
-        "Your friends are kept on your EchoVRCE account, not on Discord. Find players by their \
-         in-game name; Played with lists the players of your last {RECENT_MATCHES} Arena and \
-         Combat matches."
-    );
-    let w = PLAYED.x + PLAYED.w - FIND.x + kit.dx();
-    kit.caps_text(
-        dz(FIND.x + 4.0),
-        dz(ABOUT_Y),
-        dz(w - 8.0),
-        &about,
-        14.0,
-        design::SUBTLE,
-        0.0,
-    );
     let Some((tokens, account)) = d.vrce.session() else {
         signed_out(d, kit, ctx);
         return;
@@ -66,6 +49,15 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     panel::at_right(kit, |k| {
         played_card(d, k, ctx, &token, &account, PLAYED.taller(dy))
     });
+}
+
+/// A card with its title and a line under it saying what it holds. Returns the content's
+/// left edge, top, width and bottom, as [`hero::card_frame`] does.
+fn card(k: &Kit, r: Dr, title: &str, about: &str) -> (f32, f32, f32, f32) {
+    let (x, y, w, bottom) = hero::card_frame(k, r, title);
+    let g = k.label_galley(about, design::din(14.0), design::SUBTLE, w);
+    k.put(x, y - dz(8.0), g);
+    (x, y + dz(30.0), w, bottom)
 }
 
 /// "Remove <name>?": yes removes them.
@@ -193,7 +185,7 @@ fn find_card(
     account: &Account,
     r: Dr,
 ) {
-    let (x, y, w, bottom) = hero::card_frame(k, r, "Find players");
+    let (x, y, w, bottom) = card(k, r, "Find players", "By their in-game name");
     let bw = k.button_width("Search", None, BTN_H).max(dz(120.0));
     let ended = k.field(
         "friends-search",
@@ -299,7 +291,7 @@ fn list_card(
     account: &Account,
     r: Dr,
 ) {
-    let (x, y, w, bottom) = hero::card_frame(k, r, "Friends");
+    let (x, y, w, bottom) = card(k, r, "Friends", "On your EchoVRCE account, not on Discord");
     let mut requests = d.servers.requests.clone();
     // Theirs first.
     requests.sort_by_key(|f| {
@@ -435,7 +427,8 @@ fn played_card(
     account: &Account,
     r: Dr,
 ) {
-    let (x, y, w, bottom) = hero::card_frame(k, r, "Played with");
+    let about = format!("Your last {RECENT_MATCHES} Arena and Combat matches");
+    let (x, y, w, bottom) = card(k, r, "Played with", &about);
     let recent = match &d.servers.history {
         None => {
             note(k, x, y, w, "Loading your last matches…");

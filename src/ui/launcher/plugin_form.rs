@@ -661,7 +661,7 @@ fn hover_tip(k: &mut Kit, id: &str, r: egui::Rect, tip: &str) {
     let id = egui::Id::new(("plugin-form-hover", id));
     let _ =
         k.ui.interact(r, id, egui::Sense::hover())
-            .on_hover_text(tip);
+            .on_hover_text(crate::ui::uwu::text(tip).into_owned());
 }
 
 /// A stepper button's − (or +, `plus`), drawn: the font's minus is a speck at this size.

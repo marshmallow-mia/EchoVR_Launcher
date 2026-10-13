@@ -227,6 +227,9 @@ pub struct LauncherState {
     /// Content packs that play on a server of their own instead of EchoVRCE (by the pack's
     /// id, e.g. "echocombat"): where, and as whom. None set: EchoVRCE, as without the pack.
     pub pack_servers: std::collections::BTreeMap<String, PackServer>,
+    /// How much nEVR logs (Mods → Logs): the launcher writes nEVR's log filter from it
+    /// before each start. The default leaves nEVR's own.
+    pub nevr_logging: super::nevr::Logging,
     /// The server the live build plays on instead of EchoVRCE, as a launcher plugin set it
     /// (its `server` step, after the player said yes). A pack's own server comes first.
     /// None: EchoVRCE.
@@ -384,6 +387,7 @@ impl Default for LauncherState {
             tray_at_login: false,
             relay_account: None,
             pack_servers: Default::default(),
+            nevr_logging: Default::default(),
             game_server: None,
             plugins_seen: None,
             launcher_channel: Channel::Main,

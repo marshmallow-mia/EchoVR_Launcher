@@ -13,6 +13,7 @@
 //! END
 //! ```
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -33,12 +34,20 @@ pub const MAX_LINE: usize = 16 << 10;
 /// and tokens, end up in text).
 const MAX_BASE64_RUN: usize = 1024;
 
-/// Echo VR's newest logs, across the installed versions, from the last two weeks.
-const ECHO_FILES: usize = 5;
+/// The most each group sends, so that one can't crowd the others out of the `MAX_FILES`
+/// (what the others don't use, nEVR's and the plugins' logs get).
+const LAUNCHER_FILES: usize = 6;
+const ECHOXR_FILES: usize = 3;
+/// Echo VR's newest logs, across the installed versions, from the last two weeks (under
+/// nEVR they hold little: nEVR's own log has the game's lines).
+const ECHO_FILES: usize = 2;
+const QUEST_FILES: usize = 2;
 /// Each plugin's newest logs (and the newest crash records) per version.
 const PLUGIN_FILES: usize = 3;
-/// The loader's and the plugins' logs, across the versions.
-const PLUGIN_TOTAL: usize = 8;
+/// What nEVR's and the plugins' logs get at the least: the groups above (6 + 3 + 2 + 2)
+/// leave 11 of the 24, room for nEVR's newest log and crash record, the boot log and the
+/// newest log of eight plugins.
+const PLUGIN_MIN: usize = MAX_FILES - (LAUNCHER_FILES + ECHOXR_FILES + ECHO_FILES + QUEST_FILES);
 const RECENT: Duration = Duration::from_secs(14 * 24 * 3600);
 
 /// The launcher's own logs (its window's, Linux' PLAY through Steam, the administrator
@@ -46,14 +55,15 @@ const RECENT: Duration = Duration::from_secs(14 * 24 * 3600);
 /// of the last Linux start.
 const LAUNCHER_LOGS: [&str; 9] = [
     "EchoVR_Launcher.log",
-    "EchoVR_Launcher.log.1",
     "play.log",
-    "play.log.1",
     "admin-helper.log",
-    "admin-helper.log.1",
     "tray.log",
-    "tray.log.1",
     "proton.log",
+    // The rotated ones after the current ones: they go when the room is short.
+    "EchoVR_Launcher.log.1",
+    "play.log.1",
+    "admin-helper.log.1",
+    "tray.log.1",
 ];
 
 /// nEVR's newest logs of a start and crash records, from the last two weeks.
@@ -185,7 +195,8 @@ fn source(kind: Kind, name: &str, path: PathBuf) -> Option<Source> {
 
 /// Every log there is to send, by kind, at most `MAX_FILES`: from the launcher's log
 /// folder `log_dir`, nEVR's `nevr_dir`, and the installed versions (with their plugins'
-/// `plugin_logs`).
+/// `plugin_logs`). Each group has a most (so none crowds the others out); nEVR's and the
+/// plugins' logs get what is left, the newest log of each of them first.
 fn collect_from(
     log_dir: &Path,
     nevr_dir: Option<&Path>,
@@ -193,17 +204,20 @@ fn collect_from(
     now: SystemTime,
 ) -> Vec<Source> {
     let recent = |t: &SystemTime| now.duration_since(*t).map_or(true, |age| age <= RECENT);
-    let mut out: Vec<Source> = LAUNCHER_LOGS
+    let launcher: Vec<Source> = LAUNCHER_LOGS
         .iter()
         .filter_map(|n| source(Kind::Launcher, n, log_dir.join(n)))
+        .take(LAUNCHER_FILES)
         .collect();
     let present: Vec<&InstalledVersion> = versions.iter().filter(|v| v.present()).collect();
+    let mut echoxr = Vec::new();
     for v in &present {
         let dir = v.bin_dir().join(super::echoxr::DIR);
         for n in ["launcher.log", "runtime.log", "platform.log"] {
-            out.extend(source(Kind::EchoXr, &format!("{}.{n}", v.id), dir.join(n)));
+            echoxr.extend(source(Kind::EchoXr, &format!("{}.{n}", v.id), dir.join(n)));
         }
     }
+    echoxr.truncate(ECHOXR_FILES);
     // Echo VR's newest, whichever version they're from.
     let mut echo: Vec<(&InstalledVersion, PathBuf, SystemTime)> = present
         .iter()
@@ -218,32 +232,21 @@ fn collect_from(
         .filter(|(_, _, t)| recent(t))
         .collect();
     echo.sort_by_key(|e| std::cmp::Reverse(e.2));
-    for (v, p, _) in echo.into_iter().take(ECHO_FILES) {
-        let name = format!(
-            "{}.{}",
-            v.id,
-            p.file_name().unwrap_or_default().to_string_lossy()
-        );
-        out.extend(source(Kind::Echo, &name, p));
-    }
-    let mut plugins: Vec<Source> = nevr_dir
-        .map(|d| newest_in(d, |n| nevr::is_run_log(n) || nevr::is_crash_log(n)))
-        .unwrap_or_default()
+    let echo: Vec<Source> = echo
         .into_iter()
-        .filter(|(_, t)| recent(t))
-        .take(NEVR_FILES)
-        .filter_map(|(p, _)| {
-            let name = p.file_name()?.to_string_lossy().into_owned();
-            source(Kind::Plugin, &name, p)
+        .take(ECHO_FILES)
+        .filter_map(|(v, p, _)| {
+            let name = format!(
+                "{}.{}",
+                v.id,
+                p.file_name().unwrap_or_default().to_string_lossy()
+            );
+            source(Kind::Echo, &name, p)
         })
         .collect();
-    for v in &present {
-        plugins.extend(plugin_logs(v, &recent));
-    }
-    out.extend(plugins.into_iter().take(PLUGIN_TOTAL));
     // The Quest's logs as "Quest logs" saved them last (a folder each time).
-    let quest = newest_in_dirs(&log_dir.join("quest")).filter(|(_, t)| recent(t));
-    if let Some((dir, _)) = quest {
+    let mut quest: Vec<Source> = Vec::new();
+    if let Some((dir, _)) = newest_in_dirs(&log_dir.join("quest")).filter(|(_, t)| recent(t)) {
         let mut files: Vec<(PathBuf, SystemTime)> = std::fs::read_dir(&dir)
             .into_iter()
             .flatten()
@@ -251,29 +254,95 @@ fn collect_from(
             .flat_map(|e| newest_in(&e.path(), is_log))
             .collect();
         files.sort_by_key(|f| std::cmp::Reverse(f.1));
-        for (p, _) in files.into_iter().take(ECHO_FILES) {
+        quest.extend(files.into_iter().take(QUEST_FILES).filter_map(|(p, _)| {
             let name = p
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            out.extend(source(Kind::Quest, &name, p));
-        }
+            source(Kind::Quest, &name, p)
+        }));
     }
+    let room = MAX_FILES
+        .saturating_sub(launcher.len() + echoxr.len() + echo.len() + quest.len())
+        .max(PLUGIN_MIN);
+    let plugins = nevr_and_plugin_logs(nevr_dir, &present, &recent);
+    let mut out = launcher;
+    out.extend(echoxr);
+    out.extend(echo);
+    out.extend(plugins.into_iter().take(room));
+    out.extend(quest);
     out.truncate(MAX_FILES);
     out
 }
 
-/// `v`'s nEVR boot log, then each plugin's folder (and `crashes`), the newest of each.
-fn plugin_logs(v: &InstalledVersion, recent: &impl Fn(&SystemTime) -> bool) -> Vec<Source> {
+/// nEVR's logs and its plugins', in the order they are worth keeping when the room is
+/// short: first nEVR's newest run and newest crash record, each version's boot log and
+/// the newest log of every plugin (so none is missing), then the next of each.
+fn nevr_and_plugin_logs(
+    nevr_dir: Option<&Path>,
+    versions: &[&InstalledVersion],
+    recent: &impl Fn(&SystemTime) -> bool,
+) -> Vec<Source> {
+    let mut nevr: Vec<(PathBuf, SystemTime)> = nevr_dir
+        .map(|d| newest_in(d, |n| nevr::is_run_log(n) || nevr::is_crash_log(n)))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, t)| recent(t))
+        .take(NEVR_FILES)
+        .collect();
+    // The newest run and the newest crash record lead.
+    let is_crash = |p: &PathBuf| {
+        p.file_name()
+            .is_some_and(|n| nevr::is_crash_log(&n.to_string_lossy()))
+    };
+    let first_run = nevr.iter().position(|(p, _)| !is_crash(p));
+    let first_crash = nevr.iter().position(|(p, _)| is_crash(p));
+    let mut lead = Vec::new();
+    for at in [first_run, first_crash].into_iter().flatten() {
+        lead.push(at);
+    }
+    lead.sort_unstable();
+    let mut nevr_first = Vec::new();
+    for at in lead.into_iter().rev() {
+        nevr_first.push(nevr.remove(at));
+    }
+    nevr_first.reverse();
+    let nevr_source = |(p, _): (PathBuf, SystemTime)| {
+        let name = p.file_name()?.to_string_lossy().into_owned();
+        source(Kind::Plugin, &name, p)
+    };
+    let mut out: Vec<Source> = nevr_first.into_iter().filter_map(nevr_source).collect();
+    // Each version's boot log, then each plugin folder's logs, newest first.
+    let mut folders: Vec<VecDeque<Source>> = Vec::new();
+    for v in versions {
+        let (boot, plugin_folders) = plugin_logs(v, recent);
+        out.extend(boot);
+        folders.extend(plugin_folders.into_iter().map(VecDeque::from));
+    }
+    // Round by round: every folder's newest, then every folder's second, ...
+    for round in 0..PLUGIN_FILES {
+        if round == 1 {
+            out.extend(nevr.drain(..).filter_map(nevr_source));
+        }
+        out.extend(folders.iter_mut().filter_map(VecDeque::pop_front));
+    }
+    out.extend(nevr.drain(..).filter_map(nevr_source));
+    out
+}
+
+/// `v`'s nEVR boot log, and a list for each plugin folder (and the files of
+/// `plugin_logs` itself, such as the old loader's), the newest first.
+fn plugin_logs(
+    v: &InstalledVersion,
+    recent: &impl Fn(&SystemTime) -> bool,
+) -> (Option<Source>, Vec<Vec<Source>>) {
     let bin = v.bin_dir();
     let dir = super::launcher::mods::log_dir(&bin);
     let boot = nevr::boot_log(&bin);
-    let mut out: Vec<Source> = Some(boot)
+    let boot = Some(boot)
         .filter(|p| modified(p).is_some_and(|t| recent(&t)))
-        .and_then(|p| source(Kind::Plugin, &format!("{}.nevr-boot.jsonl", v.id), p))
-        .into_iter()
-        .collect();
+        .and_then(|p| source(Kind::Plugin, &format!("{}.nevr-boot.jsonl", v.id), p));
     let mut folders: Vec<PathBuf> = std::fs::read_dir(&dir)
         .into_iter()
         .flatten()
@@ -282,26 +351,39 @@ fn plugin_logs(v: &InstalledVersion, recent: &impl Fn(&SystemTime) -> bool) -> V
         .map(|e| e.path())
         .collect();
     folders.sort();
-    for folder in folders {
-        let label = folder
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        for (p, _) in newest_in(&folder, is_log)
-            .into_iter()
-            .filter(|(_, t)| recent(t))
-            .take(PLUGIN_FILES)
-        {
-            let name = format!(
-                "{}.{label}.{}",
-                v.id,
-                p.file_name().unwrap_or_default().to_string_lossy()
-            );
-            out.extend(source(Kind::Plugin, &name, p));
-        }
-    }
-    out
+    // The folder itself last: logs a plugin keeps beside the folders, as a folder of their own.
+    folders.push(dir.clone());
+    let lists = folders
+        .into_iter()
+        .map(|folder| {
+            let label = (folder != dir).then(|| {
+                folder
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            newest_in(&folder, is_log)
+                .into_iter()
+                .filter(|(_, t)| recent(t))
+                .take(PLUGIN_FILES)
+                .filter_map(|(p, _)| {
+                    let file = p
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    let name = match &label {
+                        Some(label) => format!("{}.{label}.{file}", v.id),
+                        None => format!("{}.{file}", v.id),
+                    };
+                    source(Kind::Plugin, &name, p)
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|l| !l.is_empty())
+        .collect();
+    (boot, lists)
 }
 
 /// The newest folder in `dir`.
@@ -725,6 +807,104 @@ mod tests {
         );
         let err = upload(body.into_bytes(), &who).unwrap_err().to_string();
         assert!(err.contains("doesn't look like a log"), "{err}");
+    }
+
+    /// Every plugin's log gets sent even when every group is full: nEVR's own logs, a
+    /// crash record, and EchoCombat's four plugins besides nEVR's own (none is crowded out
+    /// for being late in the alphabet).
+    #[test]
+    fn sends_every_plugins_log_when_the_room_is_short() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        for n in LAUNCHER_LOGS {
+            write(&logs.join(n), "launcher\n");
+        }
+        for i in 0..4 {
+            write(
+                &logs.join(format!("quest/2026-10-03_10-00-0{i}/r14logs/{i}.log")),
+                "q\n",
+            );
+        }
+        let root = dir.path().join("pc");
+        let bin = root.join(paths::ARENA_DIR).join("bin/win10");
+        write(&bin.join("echovr.exe"), "MZ");
+        for n in ["launcher.log", "runtime.log", "platform.log"] {
+            write(&bin.join("EchoXR").join(n), "x\n");
+        }
+        for i in 0..6 {
+            write(
+                &root
+                    .join(paths::ARENA_DIR)
+                    .join(format!("_local/r14logs/[r14]-{i}.log")),
+                "x\n",
+            );
+        }
+        write(&bin.join("logs/nevr-boot.jsonl"), "{}\n");
+        let nevr_dir = dir.path().join("EchoVR/logs");
+        for i in 0..5 {
+            write(
+                &nevr_dir.join(format!("nevr-2026-10-04T10-00-0{i}.000.jsonl")),
+                "{}\n",
+            );
+        }
+        write(&nevr_dir.join("nevr-crash-1.txt"), "crash\n");
+        let plugins = [
+            "CombatBots",
+            "DroneFix",
+            "NvrAssetPatches",
+            "NvrContentOverlay",
+            "NvrServerPatches",
+            "PowerBoost",
+            "VeilNet",
+        ];
+        for p in plugins {
+            for i in 0..3 {
+                write(&bin.join(format!("plugin_logs/{p}/{p}.{i}.log")), "x\n");
+            }
+        }
+        write(&bin.join("plugin_logs/loader.log"), "loader\n");
+        let v = InstalledVersion {
+            id: "pc-latest".into(),
+            root: paths::normalize(&root.to_string_lossy()),
+            ..Default::default()
+        };
+        let sources = collect_from(&logs, Some(&nevr_dir), &[v], SystemTime::now());
+        assert!(sources.len() <= MAX_FILES, "{}", sources.len());
+        let names: Vec<&str> = sources
+            .iter()
+            .filter(|s| s.kind == Kind::Plugin)
+            .map(|s| s.name.as_str())
+            .collect();
+        for p in plugins {
+            assert!(
+                names
+                    .iter()
+                    .any(|n| n.starts_with(&format!("pc-latest.{p}."))),
+                "{p} is missing: {names:?}"
+            );
+        }
+        assert!(names.contains(&"pc-latest.loader.log"), "{names:?}");
+        assert!(names.contains(&"pc-latest.nevr-boot.jsonl"));
+        assert!(names.contains(&"nevr-crash-1.txt"));
+        assert!(
+            names.iter().any(|n| n.starts_with("nevr-2026-10-04")),
+            "nEVR's own log"
+        );
+        // The current launcher logs are all there; only the rotated ones give way.
+        let launcher: Vec<&str> = sources
+            .iter()
+            .filter(|s| s.kind == Kind::Launcher)
+            .map(|s| s.name.as_str())
+            .collect();
+        for n in [
+            "EchoVR_Launcher.log",
+            "play.log",
+            "admin-helper.log",
+            "tray.log",
+            "proton.log",
+        ] {
+            assert!(launcher.contains(&n), "{n}: {launcher:?}");
+        }
     }
 
     #[test]

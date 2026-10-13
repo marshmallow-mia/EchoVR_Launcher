@@ -219,8 +219,9 @@ pub fn icon() -> egui::IconData {
     }
 }
 
-/// A texture's cache key: the image and its size in physical pixels.
-type Key = (&'static str, u32, u32);
+/// A texture's cache key: the image, its size in physical pixels, and whether it is the
+/// uwu easter egg's pink copy.
+type Key = (&'static str, u32, u32, bool);
 
 #[derive(Default)]
 pub struct Assets {
@@ -247,7 +248,7 @@ struct Shared {
     decoded: Mutex<HashMap<&'static str, Arc<image::RgbaImage>>>,
     textures: Mutex<HashMap<Key, TextureHandle>>,
     /// Full-size textures (mipmapped): drawn until the scaled one is ready.
-    native: Mutex<HashMap<&'static str, TextureHandle>>,
+    native: Mutex<HashMap<(&'static str, bool), TextureHandle>>,
     queue: Mutex<Queue>,
     wake: Condvar,
 }
@@ -273,10 +274,10 @@ impl Shared {
 
     /// Scales `key`'s image to its size (Lanczos) and uploads it.
     fn scale(&self, ctx: &Context, key: Key) -> TextureHandle {
-        let (name, tw, th) = key;
+        let (name, tw, th, pink) = key;
         let started = Instant::now();
         let src = self.decoded(name);
-        let img = if (src.width(), src.height()) != (tw, th) {
+        let mut img = if (src.width(), src.height()) != (tw, th) {
             to_color_image(&image::imageops::resize(
                 &*src,
                 tw,
@@ -286,7 +287,18 @@ impl Shared {
         } else {
             to_color_image(&src)
         };
-        let t = ctx.load_texture(format!("{name}@{tw}x{th}"), img, TextureOptions::LINEAR);
+        if pink {
+            super::uwu::pinkify(&mut img);
+        }
+        let uwu = if pink { "-uwu" } else { "" };
+        let t = ctx.load_texture(
+            format!("{name}@{tw}x{th}{uwu}"),
+            img,
+            TextureOptions::LINEAR,
+        );
+        if pink {
+            super::uwu::mark_pink(t.id());
+        }
         tracing::debug!(
             "{name} scaled to {tw}x{th} in {:.0} ms",
             started.elapsed().as_secs_f64() * 1000.0
@@ -295,14 +307,21 @@ impl Shared {
     }
 
     /// The image at its own size, mipmapped so it also looks right drawn smaller.
-    fn native(&self, ctx: &Context, name: &'static str) -> TextureHandle {
-        if let Some(t) = lock(&self.native).get(name) {
+    fn native(&self, ctx: &Context, name: &'static str, pink: bool) -> TextureHandle {
+        if let Some(t) = lock(&self.native).get(&(name, pink)) {
             return t.clone();
         }
-        let img = to_color_image(&self.decoded(name));
+        let mut img = to_color_image(&self.decoded(name));
+        if pink {
+            super::uwu::pinkify(&mut img);
+        }
         let options = TextureOptions::LINEAR.with_mipmap_mode(Some(TextureFilter::Linear));
-        let t = ctx.load_texture(format!("{name}@native"), img, options);
-        lock(&self.native).entry(name).or_insert(t).clone()
+        let uwu = if pink { "-uwu" } else { "" };
+        let t = ctx.load_texture(format!("{name}@native{uwu}"), img, options);
+        if pink {
+            super::uwu::mark_pink(t.id());
+        }
+        lock(&self.native).entry((name, pink)).or_insert(t).clone()
     }
 
     /// Queues `key` for a scaling thread; `urgent` ones (on screen) go first.
@@ -375,10 +394,11 @@ impl Assets {
             (w as f32 * ppp).round() as u32,
             (h as f32 * ppp).round() as u32,
         );
+        let pink = super::uwu::pink_image(name);
         if tw > 0 && th > 0 && (tw < nw || th < nh) {
-            (name, tw, th)
+            (name, tw, th, pink)
         } else {
-            (name, nw, nh)
+            (name, nw, nh, pink)
         }
     }
 
@@ -453,7 +473,7 @@ impl Assets {
         if self.sync.get() || ctx.cumulative_frame_nr() == 0 {
             return self.shared.scale(ctx, key);
         }
-        let native = self.shared.native(ctx, key.0);
+        let native = self.shared.native(ctx, key.0, key.3);
         if (key.1, key.2) == native_size(key.0) {
             lock(&self.shared.textures).insert(key, native.clone());
             return native;

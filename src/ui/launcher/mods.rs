@@ -17,6 +17,7 @@ use crate::core::launcher::catalog::Platform;
 use crate::core::launcher::mods::{
     self, AssetPatch, Loader, ModCatalog, ModEntry, ModView, Plugin, PluginStatus, Source, Status,
 };
+use crate::core::launcher::nevr;
 use crate::core::launcher::plugin_settings;
 use crate::core::launcher::store::{InstalledVersion, Target};
 use crate::core::platform;
@@ -492,45 +493,36 @@ fn loader_card(
         Loader::Unknown => {}
     }
     let bin = v.bin_dir();
-    let folders = [
-        (
-            "mods-logs",
-            "Logs",
-            mods::log_dir(&bin),
-            "Open the plugins' logs (nEVR's own are in %LOCALAPPDATA%\\EchoVR\\logs)",
-        ),
-        (
-            "mods-folder",
-            "Mods folder",
-            mods::plugins_dir(v),
-            "Open the game's plugins folder, where the mods are",
-        ),
-    ];
+    // Logs: where they are (the plugins' and nEVR's own), and how much nEVR writes.
     let mut right = x + w;
-    for (key, label, dir, tip) in folders {
-        let bw = kit
-            .button_width(label, Some(Icon::Folder), BTN_H)
-            .max(dz(150.0));
-        right -= bw;
-        if kit
-            .button(
-                key,
-                right,
-                by,
-                bw,
-                BTN_H,
-                Tone::Dark,
-                Some(Icon::Folder),
-                label,
-                true,
-                tip,
-            )
-            .clicked
-        {
-            open_dir(d, &dir);
-        }
-        right -= dz(14.0);
+    right = logs_menu(d, kit, v, view, &bin, right, by);
+    let (label, dir, tip) = (
+        "Mods folder",
+        mods::plugins_dir(v),
+        "Open the game's plugins folder, where the mods are",
+    );
+    let bw = kit
+        .button_width(label, Some(Icon::Folder), BTN_H)
+        .max(dz(150.0));
+    right -= bw;
+    if kit
+        .button(
+            "mods-folder",
+            right,
+            by,
+            bw,
+            BTN_H,
+            Tone::Dark,
+            Some(Icon::Folder),
+            label,
+            true,
+            tip,
+        )
+        .clicked
+    {
+        open_dir(d, &dir);
     }
+    right -= dz(14.0);
     // A content pack kept off for this nEVR: the way to the one it needs.
     let pack_waits = view.packs.iter().any(|p| p.record.enabled)
         && matches!(view.loader, Loader::Nevr { .. })
@@ -558,6 +550,159 @@ fn loader_card(
         {
             d.overlay = Some(setup::Overlay::Advanced);
         }
+    }
+}
+
+/// What a row of the Logs menu does.
+#[derive(Clone, Copy)]
+enum LogAct {
+    PluginLogs,
+    NevrLog,
+    Level(nevr::LogLevel),
+}
+
+/// The LOGS button: a menu with the two log folders (the plugins' own, and nEVR's) and,
+/// with nEVR in place, how much it logs. Returns the left edge of what it drew.
+fn logs_menu(
+    d: &mut Dashboard,
+    kit: &mut Kit,
+    v: &InstalledVersion,
+    view: &ModView,
+    bin: &std::path::Path,
+    right: f32,
+    by: f32,
+) -> f32 {
+    let label = "Logs";
+    let bw = (kit.button_width(label, None, BTN_H) + dz(30.0)).max(dz(150.0));
+    let plugin_logs = mods::log_dir(bin);
+    let nevr_log = nevr::log_dir();
+    let mut items = vec![
+        MenuItem::row(
+            "Plugin logs folder",
+            &format!(
+                "{}: where each plugin keeps its own log",
+                plugin_logs.display()
+            ),
+        ),
+        MenuItem::row(
+            "nEVR log folder",
+            &nevr_log.as_ref().map_or_else(
+                || "nEVR's log folder isn't known on this system".to_string(),
+                |p| {
+                    format!(
+                        "{}: nEVR's log of each start, and its crash records",
+                        p.display()
+                    )
+                },
+            ),
+        )
+        .unless(
+            nevr_log
+                .is_none()
+                .then_some("This system has no folder for it"),
+        ),
+    ];
+    let mut acts = vec![Some(LogAct::PluginLogs), Some(LogAct::NevrLog)];
+    if matches!(view.loader, Loader::Nevr { .. }) {
+        items.push(MenuItem::Divider);
+        acts.push(None);
+        if let Some(own) = nevr::own_log_filter(bin) {
+            items.push(
+                MenuItem::row(
+                    "Logging: your own filter is in use",
+                    &format!(
+                        "{} decides how much nEVR logs: the launcher leaves it as it is",
+                        own.display()
+                    ),
+                )
+                .unless(Some("Delete or rename that file to choose here")),
+            );
+            acts.push(None);
+        } else {
+            let l = d.state.nevr_logging;
+            for (level, name, detail, tip) in [
+                (
+                    nevr::LogLevel::Normal,
+                    "Normal",
+                    "info",
+                    "nEVR's own defaults: info and up, with the game's noisiest lines left out",
+                ),
+                (
+                    nevr::LogLevel::Detailed,
+                    "Detailed",
+                    "everything",
+                    "Debug lines too, and none of the game's lines left out: for finding a problem",
+                ),
+                (
+                    nevr::LogLevel::Quiet,
+                    "Quiet",
+                    "warnings",
+                    "Only warnings and errors",
+                ),
+            ] {
+                items.push(MenuItem::Pick {
+                    label: format!("Logging: {name}"),
+                    detail: detail.into(),
+                    detail_color: design::GREY,
+                    checked: l.level == level,
+                    tip: tip.into(),
+                });
+                acts.push(Some(LogAct::Level(level)));
+            }
+        }
+    }
+    let at = right - bw;
+    let picked = kit.menu_button(
+        "mods-logs",
+        label,
+        &items,
+        at,
+        by,
+        bw,
+        BTN_H,
+        "Open the logs' folders; with nEVR, set how much it logs",
+    );
+    if let Some(act) = picked.and_then(|i| acts.get(i).copied().flatten()) {
+        match act {
+            LogAct::PluginLogs => open_dir(d, &plugin_logs),
+            LogAct::NevrLog => {
+                if let Some(dir) = nevr_log {
+                    open_dir(d, &dir);
+                }
+            }
+            LogAct::Level(level) => set_logging(d, v, bin, |l| l.level = level),
+        }
+    }
+    at - dz(14.0)
+}
+
+/// Changes the logging choice, writes nEVR's log filter at once (a start writes it again)
+/// and says what applies when.
+fn set_logging(
+    d: &mut Dashboard,
+    v: &InstalledVersion,
+    bin: &std::path::Path,
+    change: impl FnOnce(&mut nevr::Logging),
+) {
+    change(&mut d.state.nevr_logging);
+    d.save();
+    if d.demo {
+        return;
+    }
+    match nevr::apply_logging(bin, &d.state.nevr_logging) {
+        Ok(nevr::LoggingStep::Done) => d.notify(&format!(
+            "Logging for {}: from the next start of Echo VR",
+            v.name
+        )),
+        Ok(nevr::LoggingStep::Own(own)) => d.notify(&format!(
+            "{} is your own: it decides how much nEVR logs",
+            own.display()
+        )),
+        Err(e) => d.dialogs.error(
+            "Couldn't change the logging",
+            &format!("{e:#}"),
+            Default::default(),
+        ),
     }
 }
 

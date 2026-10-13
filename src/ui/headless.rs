@@ -5,7 +5,8 @@
 //! `ECHOVR_SNAPSHOTS=<dir> cargo test headless -- --ignored` (`ECHOVR_SNAPSHOTS_ONLY`
 //! filters as in snapshot mode; `ECHOVR_SNAPSHOTS_SCALE=2` renders at 2x;
 //! `ECHOVR_SNAPSHOTS_SIZE=1680x720` in a window of that size (logical pixels);
-//! `ECHOVR_SNAPSHOTS_FEED=live` shows the real RIGHT NOW numbers and news instead of made-up ones).
+//! `ECHOVR_SNAPSHOTS_FEED=live` shows the real RIGHT NOW numbers and news instead of made-up ones;
+//! `ECHOVR_SNAPSHOTS_RAIL=1` unfolds the rail). Every text cut with "…" goes to `cuts.txt`.
 
 use super::{launcher, snapshot, theme, App};
 
@@ -29,6 +30,7 @@ fn headless_snapshots() {
         })
         .unwrap_or(egui::vec2(launcher::W, launcher::H));
     for shot in snapshot::shots() {
+        super::cuts::set_shot(&shot.name);
         let mut harness = egui_kittest::Harness::builder()
             .with_size(size)
             .with_pixels_per_point(scale)
@@ -75,6 +77,12 @@ fn headless_snapshots() {
         let img = harness.render().expect("render");
         img.save(dir.join(format!("{}.png", shot.name))).unwrap();
     }
+    // Every text cut with "…", by shot: labels that don't fit.
+    let cuts: String = super::cuts::take()
+        .into_iter()
+        .map(|(shot, text)| format!("{shot}\t{}\n", text.replace('\n', " ")))
+        .collect();
+    std::fs::write(dir.join("cuts.txt"), cuts).unwrap();
 }
 
 /// Opening each page for the first time, as in the real app (images scaled in the
@@ -195,10 +203,78 @@ fn rail_scroll() {
     click(&mut harness, 60.0, 615.0, PointerButton::Secondary);
     assert!(open(&harness, "rail-tab"), "the tab's menu opened");
     save(&mut harness, "3_tab_menu");
-    click(&mut harness, 260.0, 502.0, PointerButton::Primary);
+    click(&mut harness, 260.0, 485.0, PointerButton::Primary);
     assert!(!open(&harness, "rail-tab"));
     save(&mut harness, "4_moved");
     // Stats tracker is the last tab now.
     click(&mut harness, 60.0, 615.0, PointerButton::Primary);
     assert_eq!(harness.state().menu.page, launcher::Page::Plugin(9));
+}
+
+/// The uwu easter egg: "uwu" typed into a field (and nothing else) turns it on, Unuwufy
+/// turns it off, and the field still saying "uwu" doesn't turn it on again.
+/// `ECHOVR_SNAPSHOTS=<dir> cargo test uwu_trigger -- --ignored` (pictures of each step).
+#[test]
+#[ignore = "needs a GPU; run with cargo test uwu_trigger -- --ignored"]
+fn uwu_trigger() {
+    use egui::{pos2, Event, Key, PointerButton};
+    let dir = std::env::var_os("ECHOVR_SNAPSHOTS").map(std::path::PathBuf::from);
+    let mut harness = egui_kittest::Harness::builder()
+        .with_size(egui::vec2(launcher::W, launcher::H))
+        .wgpu()
+        .build_eframe(|cc| {
+            theme::install_fonts(&cc.egui_ctx);
+            theme::install_style(&cc.egui_ctx);
+            let mut app = App::default();
+            app.menu.demo = true;
+            app.menu.page = launcher::Page::Settings;
+            app
+        });
+    harness.run_steps(6);
+    let click = |h: &mut egui_kittest::Harness<App>, x: f32, y: f32| {
+        let pos = pos2(x, y);
+        h.hover_at(pos);
+        h.step();
+        for pressed in [true, false] {
+            h.event(Event::PointerButton {
+                pos,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            });
+        }
+        h.run_steps(3);
+    };
+    let save = |h: &mut egui_kittest::Harness<App>, name: &str| {
+        if let Some(dir) = &dir {
+            let img = h.render().expect("render");
+            img.save(dir.join(format!("uwu_trigger_{name}.png")))
+                .unwrap();
+        }
+    };
+    // (Logical pixels in the 1280×720 window.) Settings' Extra arguments field.
+    click(&mut harness, 276.0, 489.0);
+    harness.event(Event::Text("uwux".into()));
+    harness.run_steps(3);
+    assert!(!super::uwu::on(), "\"uwux\" isn't the word");
+    harness.event(Event::Key {
+        key: Key::Backspace,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    });
+    harness.run_steps(6);
+    save(&mut harness, "1_on");
+    assert!(super::uwu::on(), "\"uwu\" turns it on");
+    // Unuwufy, at the status bar's right end.
+    click(&mut harness, 814.0, 24.0);
+    harness.run_steps(6);
+    save(&mut harness, "2_off");
+    assert!(!super::uwu::on(), "Unuwufy turns it off");
+    harness.run_steps(6);
+    assert!(
+        !super::uwu::on(),
+        "the field still saying uwu doesn't turn it on again"
+    );
 }

@@ -658,6 +658,10 @@ pub enum SnapVariant {
     ModsOptions,
     /// Mods: the loader's longest text (a plugin skipped, your own config.json).
     ModsLongText,
+    /// Mods: the Logs menu open, Detailed chosen.
+    ModsLogsMenu,
+    /// The uwu easter egg on.
+    Uwu,
     /// EchoVRCE isn't answering (502): signed in, the session kept.
     VrceDown,
     /// ...not signed in, after a sign-in that failed on it.
@@ -1437,6 +1441,8 @@ impl Dashboard {
             return;
         }
         self.applied_variant = Some(self.snap_variant);
+        // The uwu easter egg is on for its shots only (it's one switch for the process).
+        crate::ui::uwu::set(self.snap_variant == Some(SnapVariant::Uwu));
         self.jobs.clear();
         self.overlay = None;
         self.notice = None;
@@ -1871,6 +1877,15 @@ impl Dashboard {
             Some(
                 SnapVariant::ModsNoLoader | SnapVariant::ModsOptions | SnapVariant::ModsLongText,
             ) => {}
+            // Set above, for every page.
+            Some(SnapVariant::Uwu) => {}
+            Some(SnapVariant::ModsLogsMenu) => {
+                self.state.nevr_logging = crate::core::launcher::nevr::Logging {
+                    level: crate::core::launcher::nevr::LogLevel::Detailed,
+                };
+                let id = crate::ui::widgets::menu_id("mods-logs");
+                ctx.data_mut(|d| d.insert_temp(id, true));
+            }
             Some(SnapVariant::ModsHands | SnapVariant::ModsSettings | SnapVariant::ModsSettingsAll) => {
                 self.state.echoxr_hands = true;
             }
@@ -3057,6 +3072,8 @@ impl Dashboard {
             let focused = ctx.input(|i| i.viewport().focused) != Some(false);
             let play = focused && !self.game().is_running();
             if let Some(tex) = self.video.frame(ctx, play) {
+                // Part of the UI: the uwu easter egg tints it.
+                crate::ui::uwu::mark_tint(tex.id());
                 kit.texture_cover(tex, window, 0.0);
                 return;
             }
@@ -3073,7 +3090,7 @@ impl Dashboard {
         // (The EchoVRCE site draws its own where the status bar is elsewhere.)
         if !matches!(
             page,
-            Page::Play | Page::Install | Page::Settings | Page::Servers | Page::Friends
+            Page::Play | Page::Install | Page::Settings | Page::Servers
         ) && !(page == Page::EchoVrce && echovrce::fills_page(self))
         {
             let h = HEADER.wider(kit.dx());
@@ -3269,13 +3286,13 @@ impl Dashboard {
             row(Page::Servers, RailIcon::Vector(Icon::Globe, 33.0), lay.game[3], false),
             row(
                 Page::EchoVrce,
-                RailIcon::Image("icon_echovrce.png", 26.0),
+                RailIcon::Image("icon_echovrce.png", 30.0),
                 lay.community[0],
                 true,
             ),
             row(
                 Page::Friends,
-                RailIcon::Image("icon_community.png", 26.0),
+                RailIcon::Image("icon_community.png", 30.0),
                 lay.community[1],
                 true,
             ),
@@ -3289,12 +3306,12 @@ impl Dashboard {
             let icon = plugins::rail_icon(&self.plugins.list[i as usize].page);
             items.push(RailRow {
                 scrolls: true,
-                ..row(Page::Plugin(i), RailIcon::Vector(icon, 22.0), cy, true)
+                ..row(Page::Plugin(i), RailIcon::Vector(icon, 26.0), cy, true)
             });
         }
         items.push(row(
             Page::Plugins,
-            RailIcon::Vector(Icon::Puzzle, 24.0),
+            RailIcon::Vector(Icon::Puzzle, 28.0),
             lay.hub,
             true,
         ));
@@ -3398,7 +3415,7 @@ impl Dashboard {
                 if r.small {
                     // Smaller and darker than the game's pages: one line, its reason in
                     // the tip.
-                    let x = 74.0;
+                    let x = 78.0;
                     let room = dz(RAIL_EXTRA + RAIL_W - x - 16.0);
                     let color = if selected {
                         design::TEXT
@@ -3407,9 +3424,14 @@ impl Dashboard {
                     } else {
                         RAIL_SMALL_TEXT
                     };
-                    let g = kit.label_galley(&title, design::din(13.0), fade(color), room);
-                    let h = g.size().y;
-                    kit.put(dz(x), dz(r.cy) - h / 2.0, g);
+                    let lines = rail_name(kit, &title, fade(color), room, &[15.0, 13.0]);
+                    let h: f32 = lines.iter().map(|g| g.size().y).sum();
+                    let mut ly = dz(r.cy) - h / 2.0;
+                    for g in lines {
+                        let gh = g.size().y;
+                        kit.put(dz(x), ly, g);
+                        ly += gh;
+                    }
                 } else {
                     let x = 98.0;
                     let room = dz(RAIL_EXTRA + RAIL_W - x - 14.0);
@@ -3418,7 +3440,7 @@ impl Dashboard {
                     } else {
                         egui::Color32::from_gray(200)
                     };
-                    let lines = rail_name(kit, &title, fade(color), room);
+                    let lines = rail_name(kit, &title, fade(color), room, &[19.0, 17.0, 15.0]);
                     let why = badge(r.page).map(|(_, why, color)| {
                         kit.label_galley(why, design::din(13.0), fade(*color), room)
                     });
@@ -3499,7 +3521,7 @@ impl Dashboard {
             // Conthrax's "!", as on CHECK FOR UPDATES, centred on the icon's corner.
             let (c, size) = if r.small {
                 let h = RAIL_SMALL_SQ / 2.0;
-                (Dr::new(47.0 + h - 1.0, r.cy - h + 4.0, 0.0, 0.0), 24.0)
+                (Dr::new(47.0 + h - 1.0, r.cy - h + 4.0, 0.0, 0.0), 28.0)
             } else {
                 (Dr::new(64.0, r.cy - 21.0, 0.0, 0.0), 34.0)
             };
@@ -3802,8 +3824,12 @@ impl Dashboard {
             }
         }
 
-        // Not on main: the launcher's channel, at the bar's right end.
+        // The uwu easter egg's way back, at the bar's right end.
         let mut status_end = bar.right() - 12.0;
+        if crate::ui::uwu::on() {
+            status_end = unuwufy_button(kit, status_end + 1.0, bar.y + bar.h / 2.0) - 12.0;
+        }
+        // Not on main: the launcher's channel.
         if let Some((text, color, tip)) = self.channel_chip() {
             let g = kit.spaced_galley(
                 &text.to_uppercase(),
@@ -3813,7 +3839,7 @@ impl Dashboard {
                 false,
             );
             let w = g.size().x / dz(1.0) + 20.0;
-            let chip = Dr::new(bar.right() - 11.0 - w, 23.0, w, 27.0);
+            let chip = Dr::new(status_end + 1.0 - w, 23.0, w, 27.0);
             let r = kit.drect(chip);
             kit.ui.painter().rect_filled(r, dz(4.0), color);
             kit.ui
@@ -4006,6 +4032,37 @@ fn demo_state() -> LauncherState {
     s
 }
 
+/// The Unuwufy button (while uwu mode is on): a real button, its right edge at design x
+/// `right`, centred on design y `cy`, its own label and tip left as they are. Turns uwu
+/// mode off. Returns its left edge (design pixels).
+fn unuwufy_button(kit: &mut Kit, right: f32, cy: f32) -> f32 {
+    const H: f32 = 31.0;
+    let label = "Unuwufy";
+    crate::ui::uwu::raw(|| {
+        let w = kit.button_width(label, None, dz(H)) / dz(1.0) + 8.0;
+        let x = right - w;
+        if kit
+            .button(
+                "unuwufy",
+                dz(x),
+                dz(cy - H / 2.0),
+                dz(w),
+                dz(H),
+                crate::ui::widgets::Tone::Blue,
+                None,
+                label,
+                true,
+                "Back to the launcher as it was",
+            )
+            .clicked
+        {
+            crate::ui::uwu::set(false);
+            kit.ui.ctx().request_repaint();
+        }
+        x
+    })
+}
+
 /// A rail icon: its page, where (design y), small (the community's and the plugins'),
 /// and whether it scrolls (a plugin tab).
 #[derive(Clone, Copy)]
@@ -4038,27 +4095,31 @@ struct RailLayout {
 }
 
 /// How far apart the small tabs are (design pixels): the community's, the plugins'.
-const RAIL_PITCH: f32 = 40.0;
+const RAIL_PITCH: f32 = 56.0;
 
 /// The rail's icons for `tabs` plugin tabs in a window `dy` design pixels taller than the
-/// design. The design's spacing while they fit; with more, the gaps shrink (the game's
-/// pages from about 102 apart down to 66), and then the plugin tabs scroll.
+/// design. The design's spacing while they fit; with more, Play moves up first (from
+/// 232.5 to 150), then the gaps shrink (the game's pages from 72 apart down to 60), and
+/// then the plugin tabs scroll.
 fn rail_layout(tabs: usize, dy: f32) -> RailLayout {
-    const PLAY: f32 = 232.5;
+    /// Play at the highest; as designed it is `DROP` lower.
+    const PLAY: f32 = 150.0;
+    const DROP: f32 = 82.5;
     /// From the Plugins page to Settings, at least.
     const ABOVE_SETTINGS: f32 = 72.0;
     // The gaps that give: Play→Install→Mods→Servers, Servers→divider→EchoVRCE,
     // Friends→divider→first plugin tab. As designed, and at the tightest.
-    const NATURAL: [f32; 7] = [102.5, 102.0, 101.0, 82.0, 48.0, 56.0, 48.0];
-    const TIGHT: [f32; 7] = [66.0, 66.0, 66.0, 46.0, 36.0, 40.0, 36.0];
+    const NATURAL: [f32; 7] = [72.0, 72.0, 72.0, 50.0, 44.0, 44.0, 44.0];
+    const TIGHT: [f32; 7] = [60.0, 60.0, 60.0, 40.0, 36.0, 36.0, 36.0];
     let settings = 1035.0 + dy.max(0.0);
     let natural: f32 = NATURAL.iter().sum();
     let tight: f32 = TIGHT.iter().sum();
     // Room for the gaps: all of it but Friends' row and the plugin tabs'.
     let room = settings - ABOVE_SETTINGS - PLAY - RAIL_PITCH - tabs as f32 * RAIL_PITCH;
+    let drop = (room - natural).clamp(0.0, DROP);
     let give = ((room - tight) / (natural - tight)).clamp(0.0, 1.0);
     let gap = |i: usize| TIGHT[i] + (NATURAL[i] - TIGHT[i]) * give;
-    let mut y = PLAY;
+    let mut y = PLAY + drop;
     let mut game = [0.0; 4];
     for (i, g) in game.iter_mut().enumerate() {
         *g = y;
@@ -4086,18 +4147,19 @@ fn rail_layout(tabs: usize, dy: f32) -> RailLayout {
 }
 
 /// A tab's name in the unfolded rail, `room` wide: on two lines when it doesn't fit on
-/// one (a plugin's name can be long), at the size of the others; smaller only when a
-/// word alone is too wide even so.
+/// one (a plugin's name can be long), at the first of `sizes` (the others'); smaller only
+/// when a word alone is too wide even so.
 fn rail_name(
     kit: &Kit,
     title: &str,
     color: egui::Color32,
     room: f32,
+    sizes: &[f32],
 ) -> Vec<std::sync::Arc<egui::Galley>> {
     let words: Vec<&str> = title.split_whitespace().collect();
     let line =
         |text: &str, size: f32| kit.label_galley(text, design::din(size), color, f32::INFINITY);
-    for size in [19.0, 17.0, 15.0] {
+    for &size in sizes {
         let whole = line(title, size);
         if whole.size().x <= room {
             return vec![whole];
@@ -4115,7 +4177,8 @@ fn rail_name(
             break;
         }
     }
-    vec![kit.label_galley(title, design::din(15.0), color, room)]
+    let smallest = sizes.last().copied().unwrap_or(15.0);
+    vec![kit.label_galley(title, design::din(smallest), color, room)]
 }
 
 /// The built-in catalogue plus an older build that is not installed, for snapshots.
@@ -4145,21 +4208,22 @@ mod tests {
     fn rail_layout_fits_the_tabs() {
         use super::{rail_layout, RAIL_PITCH};
         let base = rail_layout(0, 0.0);
-        assert_eq!(base.game, [232.5, 335.0, 437.0, 538.0]);
-        assert_eq!(base.dividers[0], 620.0);
-        assert_eq!(base.community, [668.0, 708.0]);
+        assert_eq!(base.game, [232.5, 304.5, 376.5, 448.5]);
+        assert_eq!(base.dividers, [498.5, 642.5]);
+        assert_eq!(base.community, [542.5, 598.5]);
+        assert_eq!(base.first, 686.5);
         assert_eq!(
-            rail_layout(3, 0.0).game,
+            rail_layout(4, 0.0).game,
             base.game,
-            "three tabs fit as designed"
+            "four tabs fit as designed"
         );
         for dy in [0.0, 60.0, 200.0, 600.0] {
             for tabs in 0..=20 {
                 let l = rail_layout(tabs, dy);
                 for w in l.game.windows(2) {
-                    assert!(w[1] - w[0] >= 66.0 - 1e-3, "{tabs} tabs, dy {dy}: {l:?}");
+                    assert!(w[1] - w[0] >= 60.0 - 1e-3, "{tabs} tabs, dy {dy}: {l:?}");
                 }
-                assert!(l.dividers[0] > l.game[3] + 40.0 && l.dividers[0] < l.community[0]);
+                assert!(l.dividers[0] >= l.game[3] + 40.0 - 1e-3 && l.dividers[0] < l.community[0]);
                 assert!(l.community[1] - l.community[0] >= RAIL_PITCH - 1e-3);
                 assert!(l.dividers[1] > l.community[1] && l.dividers[1] < l.first);
                 assert!(l.settings - l.hub >= 72.0 - 1e-3, "{tabs} tabs, dy {dy}");
@@ -4171,12 +4235,24 @@ mod tests {
                 assert!((l.hub - l.area.1 - RAIL_PITCH / 2.0).abs() < 1e-3);
             }
         }
-        // The normal window: eight tabs at the tightest, then they scroll.
-        assert_eq!(rail_layout(8, 0.0).scroll_max, 0.0);
-        assert!(rail_layout(9, 0.0).scroll_max > 0.0);
-        assert_eq!(rail_layout(9, 300.0).scroll_max, 0.0, "a taller window fits them");
-        // Tighter only when needed: four tabs barely move the game's pages.
-        assert!(rail_layout(4, 0.0).game[1] - 232.5 > 95.0);
+        // With more, Play moves up first, the gaps as designed.
+        let six = rail_layout(6, 0.0);
+        assert!(six.game[0] < base.game[0] && six.game[0] > 150.0, "{six:?}");
+        assert!((six.game[1] - six.game[0] - 72.0).abs() < 1e-3);
+        // Then the gaps shrink: seven tabs at the top, then they scroll.
+        assert_eq!(rail_layout(7, 0.0).game[0], 150.0);
+        assert_eq!(rail_layout(7, 0.0).scroll_max, 0.0);
+        assert!(rail_layout(8, 0.0).scroll_max > 0.0);
+        assert_eq!(
+            rail_layout(8, 300.0).scroll_max,
+            0.0,
+            "a taller window fits them"
+        );
+        assert_eq!(
+            rail_layout(4, 300.0).game,
+            base.game,
+            "Play no lower when taller"
+        );
     }
 
     fn v(id: &str) -> Res {

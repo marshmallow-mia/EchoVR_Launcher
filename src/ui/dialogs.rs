@@ -234,7 +234,7 @@ fn draw(k: &mut Kit, d: &mut Dialog) -> Option<Answer> {
     let tg = {
         let mut job = egui::text::LayoutJob::default();
         job.append(
-            &d.title.to_uppercase(),
+            &super::uwu::text(&d.title).to_uppercase(),
             0.0,
             egui::TextFormat {
                 font_id: design::conthrax(21.0),
@@ -245,7 +245,9 @@ fn draw(k: &mut Kit, d: &mut Dialog) -> Option<Answer> {
         );
         job.wrap.max_width = title_w;
         job.wrap.max_rows = 2;
-        k.ui.ctx().fonts_mut(|f| f.layout_job(job))
+        let g = k.ui.ctx().fonts_mut(|f| f.layout_job(job));
+        super::cuts::note(&g, &d.title);
+        g
     };
     let head = tg.size().y.max(dz(ICON)) + dz(20.0);
     let list_h = devices as f32 * (BTN_H + 8.0);

@@ -1384,37 +1384,15 @@ fn signed_out(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 
 /// The servers (or your match history), as VERSIONS has its rows.
 fn list_card(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, tokens: &Tokens, r: Dr) {
-    kit.image_d("card_bg.png", r);
-    kit.gradient_frame(
-        kit.drect(r),
-        dz(6.0),
-        dz(2.0),
-        design::RIM_TOP,
-        design::RIM_BOTTOM,
-    );
-    let (x, w) = (dz(r.x + 22.0), dz(r.w - 44.0));
+    let (x, _, w, _) = hero::card_frame_bare(kit, r);
     let top = dz(r.y + 20.0);
 
     // Tabs: the design's title, the other one greyed.
-    let mut tx = x;
-    for (tab, title) in [(Tab::Live, "Servers"), (Tab::History, "My matches")] {
-        let on = d.servers.tab == tab;
-        let color = if on { design::TEXT } else { design::GREY };
-        let g = kit.spaced_galley(
-            &title.to_uppercase(),
-            design::conthrax(24.0),
-            color,
-            dz(1.8),
-            false,
-        );
-        let gr = kit.rect(tx, top, g.size().x, g.size().y);
-        let (resp, _, _) = kit.hot(&format!("servers-tab-{title}"), gr, !on, title);
-        kit.put(tx, top, g);
-        if resp.clicked {
-            d.servers.tab = tab;
-            d.servers.scroll = 0.0;
-        }
-        tx += gr.width() + dz(40.0);
+    let tabs = [(Tab::Live, "Servers"), (Tab::History, "My matches")];
+    let titles = tabs.map(|(tab, title)| (title, d.servers.tab == tab));
+    if let Some(n) = hero::card_tabs(kit, "servers-tab", x, top, &titles) {
+        d.servers.tab = tabs[n].0;
+        d.servers.scroll = 0.0;
     }
 
     // On the title row's right: Refresh, and left of it the mode filters (servers only).
