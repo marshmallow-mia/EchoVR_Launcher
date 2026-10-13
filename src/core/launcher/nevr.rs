@@ -636,6 +636,110 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 
 // ---- what it did ----
 
+// ---- how much it logs ----
+
+/// How much nEVR writes to its log (`nevr-<time>.jsonl`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    /// nEVR's own defaults: info and up, the game's noisiest lines left out.
+    #[default]
+    Normal,
+    /// Everything, debug lines too, and none of the game's lines left out.
+    Detailed,
+    /// Warnings and errors.
+    Quiet,
+}
+
+/// The logging choices: what the Mods page's Logs menu sets.
+///
+/// Not offered: nEVR's `passthrough_to_engine`, which would fill Echo VR's own log files
+/// (`_local/r14logs`, nearly empty under nEVR, whose log has the game's lines). With it
+/// on, a headless server under Proton printed nothing after nEVR's log filter started
+/// (GE-Proton 11-3, 2026-10-13): the file always says off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Logging {
+    pub level: LogLevel,
+}
+
+/// What a nEVR start reads its log settings from, in the order it looks (the first found
+/// wins), beside the exe. Having one at all replaces nEVR's built-in defaults, so what it
+/// doesn't name is off or empty (no file log, no rotation, no suppressed lines).
+const LOG_FILTER_FILES: [&str; 4] = [
+    "log_filter_config.yml",
+    "log_filter_config.yaml",
+    "log_filter_config.jsonc",
+    "log_filter_config.json",
+];
+/// The one the launcher writes: JSON, whose `//` comments nEVR's reader drops.
+const LOG_FILTER_FILE: &str = "log_filter_config.json";
+const LOG_FILTER_NOTE: &str =
+    "// Written by the Echo VR launcher (Mods > Logs). Setting Logging back to Normal removes it.";
+
+/// Pure: nEVR's log filter for `l`, or None for nEVR's own defaults. nEVR reads its levels
+/// as 1 debug, 2 info, 4 warning, 8 error.
+pub fn render_log_filter(l: &Logging) -> Option<String> {
+    // The channels nobody wants to read stay out, except when everything is asked for.
+    let (level, max_line, channels) = match l.level {
+        LogLevel::Normal => return None,
+        LogLevel::Detailed => (1, 2000, "[]"),
+        LogLevel::Quiet => (
+            4,
+            500,
+            r#"["[LOADING TIPS]", "[DIALOGUE]", "[DEBUGPRINT]"]"#,
+        ),
+    };
+    Some(format!(
+        "{LOG_FILTER_NOTE}\n{{\n  \"min_level\": {level},\n  \"max_line_length\": {max_line},\n  \"passthrough_to_engine\": false,\n  \"console_enabled\": true,\n  \"console_color\": true,\n  \"file_enabled\": true,\n  \"file_jsonl\": true,\n  \"rotate_enabled\": true,\n  \"rotate_max_size_mb\": 50,\n  \"rotate_keep\": 5,\n  \"suppress_channels\": {channels}\n}}\n"
+    ))
+}
+
+/// A log filter in `bin` that isn't the launcher's (someone's own: a game server's, or a
+/// developer's), which the launcher leaves as it is.
+pub fn own_log_filter(bin: &Path) -> Option<PathBuf> {
+    LOG_FILTER_FILES.iter().map(|n| bin.join(n)).find(|p| {
+        std::fs::read_to_string(p)
+            .map(|t| {
+                !t.trim_start_matches('\u{feff}')
+                    .starts_with(LOG_FILTER_NOTE)
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// What [`apply_logging`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoggingStep {
+    /// The file is as asked (written, or taken away for the defaults).
+    Done,
+    /// A file of someone's own is there: the choice doesn't reach nEVR.
+    Own(PathBuf),
+}
+
+/// Writes (or takes away) nEVR's log filter beside the exe in `bin` for `l`.
+pub fn apply_logging(bin: &Path, l: &Logging) -> Result<LoggingStep> {
+    if let Some(own) = own_log_filter(bin) {
+        return Ok(LoggingStep::Own(own));
+    }
+    let path = bin.join(LOG_FILTER_FILE);
+    match render_log_filter(l) {
+        Some(text) => {
+            if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
+                return Ok(LoggingStep::Done);
+            }
+            std::fs::write(&path, text)
+                .with_context(|| format!("Couldn't write {}", path.display()))?;
+        }
+        None => match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("Couldn't remove {}", path.display())),
+        },
+    }
+    Ok(LoggingStep::Done)
+}
+
 /// Where nEVR logs: `%LOCALAPPDATA%\EchoVR\logs` (on Linux, the Wine prefix's).
 pub fn log_dir() -> Option<PathBuf> {
     let local = if cfg!(target_os = "linux") {
@@ -1263,6 +1367,68 @@ mod tests {
             std::fs::read_to_string(&own).unwrap(),
             "identity:\n  discord_id: \"1\"\n"
         );
+    }
+
+    /// nEVR's log filter: none for the defaults; otherwise a file nEVR reads (levels 1/2/4,
+    /// every key it needs to keep its file log on), which the launcher alone takes away.
+    #[test]
+    fn writes_nevrs_log_filter_only_when_asked() {
+        assert_eq!(render_log_filter(&Logging::default()), None);
+        let all = |level| Logging { level };
+        let read = |l: &Logging| -> Value {
+            // As nEVR reads it: `//` comments dropped.
+            let text = render_log_filter(l).unwrap();
+            let json: String = text.lines().filter(|l| !l.starts_with("//")).collect();
+            serde_json::from_str(&json).unwrap()
+        };
+        let detailed = read(&all(LogLevel::Detailed));
+        assert_eq!(detailed["min_level"], 1);
+        assert_eq!(detailed["suppress_channels"], serde_json::json!([]));
+        // Having a file replaces the defaults: its file log must be named on, and the
+        // game's logger must not be passed through (it stopped a start once).
+        for l in [all(LogLevel::Detailed), all(LogLevel::Quiet)] {
+            let j = read(&l);
+            assert_eq!(j["file_enabled"], true, "{l:?}");
+            assert_eq!(j["rotate_enabled"], true, "{l:?}");
+            assert_eq!(j["file_jsonl"], true, "{l:?}");
+            assert_eq!(j["passthrough_to_engine"], false, "{l:?}");
+        }
+        assert_eq!(read(&all(LogLevel::Quiet))["min_level"], 4);
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path();
+        // Written, rewritten, taken away again.
+        assert_eq!(
+            apply_logging(bin, &all(LogLevel::Detailed)).unwrap(),
+            LoggingStep::Done
+        );
+        let file = bin.join(LOG_FILTER_FILE);
+        assert!(file.is_file());
+        apply_logging(bin, &all(LogLevel::Quiet)).unwrap();
+        assert!(std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("\"min_level\": 4"));
+        apply_logging(bin, &Logging::default()).unwrap();
+        assert!(!file.exists());
+        // No file and nothing asked: nothing happens, and no error.
+        apply_logging(bin, &Logging::default()).unwrap();
+
+        // Someone's own filter, whatever its format, is left alone (and wins over ours).
+        for name in LOG_FILTER_FILES {
+            let own = bin.join(name);
+            std::fs::write(&own, "min_level: 1\n").unwrap();
+            assert_eq!(own_log_filter(bin), Some(own.clone()));
+            assert_eq!(
+                apply_logging(bin, &all(LogLevel::Detailed)).unwrap(),
+                LoggingStep::Own(own.clone())
+            );
+            assert_eq!(
+                apply_logging(bin, &Logging::default()).unwrap(),
+                LoggingStep::Own(own.clone())
+            );
+            assert_eq!(std::fs::read_to_string(&own).unwrap(), "min_level: 1\n");
+            std::fs::remove_file(&own).unwrap();
+        }
     }
 
     #[test]

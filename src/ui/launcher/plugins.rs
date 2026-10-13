@@ -2057,11 +2057,54 @@ fn library_grid(w: f32) -> (usize, f32) {
     (cols, (w - gap * (cols - 1) as f32) / cols as f32)
 }
 
+/// The library's scrolled content: where each heading goes (its top) and each card (its
+/// index in `cards`, column, top and height), in logical pixels, and the content's height. A row is as tall
+/// as its tallest card (`heights`, in the order of `cards`). With `sections`, the
+/// installed plugins and the others each under a heading, on rows of their own.
+#[allow(clippy::type_complexity)]
+fn library_layout(
+    cards: &[LibCard],
+    heights: &[f32],
+    cols: usize,
+    sections: bool,
+) -> (Vec<(&'static str, f32)>, Vec<(usize, usize, f32, f32)>, f32) {
+    let (gap, head) = (dz(LIB_GAP), dz(LIB_HEAD));
+    let all: Vec<usize> = (0..cards.len().min(heights.len())).collect();
+    let (installed, offered): (Vec<usize>, Vec<usize>) = all
+        .iter()
+        .partition(|&&n| matches!(cards[n], LibCard::Installed(_)));
+    let groups: Vec<(Option<&'static str>, Vec<usize>)> = if sections {
+        vec![
+            (Some("Your plugins"), installed),
+            (Some("More plugins"), offered),
+        ]
+    } else {
+        vec![(None, all)]
+    };
+    let (mut headings, mut placed, mut y) = (Vec::new(), Vec::new(), 0.0);
+    for (title, group) in groups.into_iter().filter(|(_, g)| !g.is_empty()) {
+        if let Some(t) = title {
+            headings.push((t, y));
+            y += head;
+        }
+        for row in group.chunks(cols) {
+            let row_h = row.iter().map(|&n| heights[n]).fold(0.0, f32::max);
+            for (col, &n) in row.iter().enumerate() {
+                placed.push((n, col, y, row_h));
+            }
+            y += row_h + gap;
+        }
+    }
+    (headings, placed, (y - gap).max(0.0))
+}
+
 const LIBRARY: Dr = Dr::new(137.0, 156.0, 1736.0, 890.0);
 const LIB_CARD_W: f32 = 230.0;
 const LIB_CARD_H: f32 = 330.0;
 const LIB_GAP: f32 = 28.0;
 const LIB_PAD: f32 = 20.0;
+/// A section's heading in the library, with the room under it.
+const LIB_HEAD: f32 = 34.0;
 /// A plugin card's menu (its ⋯ or a right click).
 const CARD_MENU: &str = "plugins-card";
 
@@ -2081,7 +2124,18 @@ fn icon_named(name: &str) -> Icon {
 pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (dx, dy) = (kit.dx(), kit.dy());
     let r = LIBRARY.wider(dx).taller(dy);
-    let (x, top, w, bottom) = hero::card_frame(kit, r, "Library");
+    // The filters are the card's title, as SERVERS and MY MATCHES are on the Servers page.
+    let (x, top, w, bottom) = hero::card_frame_bare(kit, r);
+    let filters = [
+        (Filter::All, "All"),
+        (Filter::Installed, "Installed"),
+        (Filter::Available, "Available"),
+    ];
+    let tabs = filters.map(|(f, label)| (label, d.plugins.filter == f));
+    if let Some(n) = hero::card_tabs(kit, "plugins-filter", x, dz(r.y + 20.0), &tabs) {
+        d.plugins.filter = filters[n].0;
+        d.plugins.library_scroll = 0.0;
+    }
     let catalog = d.plugins.catalog.clone();
     let list = d.plugins.list.clone();
     let offered: Vec<core::PluginEntry> = catalog
@@ -2101,7 +2155,7 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
         .spaced_galley("REFRESH", design::din(14.0), design::TEXT, dz(0.5), true)
         .size()
         .x;
-    let mut fx = dz(r.right() - 22.0) - link_w;
+    let fx = dz(r.right() - 22.0) - link_w;
     if d.plugins.loading {
         let g = kit.spaced_galley("REFRESH", design::din(14.0), design::GREY, dz(0.5), false);
         kit.put(fx, ly, g);
@@ -2117,38 +2171,6 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
         .clicked
     {
         refresh(d, ctx);
-    }
-    fx -= dz(40.0);
-    for (f, label) in [
-        (Filter::Available, "Available"),
-        (Filter::Installed, "Installed"),
-        (Filter::All, "All"),
-    ]
-    .into_iter()
-    {
-        let on = d.plugins.filter == f;
-        let color = if on { design::TEXT } else { design::GREY };
-        let g = kit.spaced_galley(&label.to_uppercase(), design::din(14.0), color, dz(0.5), on);
-        fx -= g.size().x;
-        let rect = egui::Rect::from_min_size(kit.origin + egui::vec2(fx, ly), g.size());
-        let (resp, t, _) = kit.hot(&format!("plugins-filter-{label}"), rect.expand(dz(6.0)), true, "");
-        let g = if t > 0.01 && !on {
-            kit.spaced_galley(
-                &label.to_uppercase(),
-                design::din(14.0),
-                crate::ui::style::mix(design::GREY, design::TEXT, t),
-                dz(0.5),
-                false,
-            )
-        } else {
-            g
-        };
-        kit.put(fx, ly, g);
-        if resp.clicked {
-            d.plugins.filter = f;
-            d.plugins.library_scroll = 0.0;
-        }
-        fx -= dz(28.0);
     }
     let pinned = pinned(d);
     let cards = library_cards(&pinned, list.len(), offered.len(), d.plugins.filter);
@@ -2166,19 +2188,27 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
     let menu_was_open = kit.menu_open(CARD_MENU);
     card_menu(d, kit, ctx);
     let (cols, cw) = library_grid(w);
-    let (ch, gap) = (dz(LIB_CARD_H), dz(LIB_GAP));
-    let rows = cards.len().div_ceil(cols);
-    let content_h = (rows as f32 * (ch + gap) - gap).max(0.0);
+    let gap = dz(LIB_GAP);
+    // Each card as tall as its text needs, so its whole summary shows.
+    let infos: Vec<CardInfo> = cards
+        .iter()
+        .map(|c| match *c {
+            LibCard::Installed(i) => installed_info(d, i),
+            LibCard::Offered(k) => offered_info(&offered[k]),
+        })
+        .collect();
+    let heights: Vec<f32> = infos.iter().map(|c| lib_card_height(kit, c, cw)).collect();
+    let (headings, placed, content_h) =
+        library_layout(&cards, &heights, cols, d.plugins.filter == Filter::All);
     let list_h = bottom - top;
     // Plugin details (the rail's menu): scrolled to it, marked until another is asked for.
     let focus = d.plugins.focus.clone();
-    if let Some(at) = focus.as_ref().and_then(|id| {
-        cards.iter().position(|c| match c {
+    if let Some(&(_, _, row_top, ch)) = focus.as_ref().and_then(|id| {
+        placed.iter().find(|(n, ..)| match &cards[*n] {
             LibCard::Installed(i) => list.get(*i as usize).is_some_and(|p| &p.page.id == id),
             LibCard::Offered(_) => false,
         })
     }) {
-        let row_top = (at / cols) as f32 * (ch + gap);
         let max = (content_h - list_h).max(0.0);
         let s = &mut d.plugins.library_scroll;
         if row_top < *s || row_top + ch > *s + list_h {
@@ -2196,35 +2226,246 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
     );
     let scroll = d.plugins.library_scroll;
     kit.clipped(x, top, w + dz(8.0), list_h, |kit| {
-        for (n, card) in cards.iter().enumerate() {
-            let cx = x + (n % cols) as f32 * (cw + gap);
-            let cy = top + (n / cols) as f32 * (ch + gap) - scroll;
+        for &(title, hy) in &headings {
+            let g = kit.spaced_galley(
+                &title.to_uppercase(),
+                design::din(14.0),
+                design::GREY,
+                dz(1.0),
+                false,
+            );
+            kit.put(x, top + hy - scroll, g);
+        }
+        for &(n, col, cy, ch) in &placed {
+            let info = &infos[n];
+            let cx = x + col as f32 * (cw + gap);
+            let cy = top + cy - scroll;
             if cy + ch < top || cy > bottom {
                 continue;
             }
-            match *card {
+            match cards[n] {
                 LibCard::Installed(i) => {
-                    installed_card(d, kit, ctx, i, (cx, cy, cw, ch), menu_was_open)
+                    installed_card(d, kit, ctx, i, info, (cx, cy, cw, ch), menu_was_open)
                 }
-                LibCard::Offered(k) => offered_card(d, kit, ctx, &offered[k], (cx, cy, cw, ch)),
+                LibCard::Offered(k) => {
+                    offered_card(d, kit, ctx, &offered[k], info, (cx, cy, cw, ch))
+                }
             }
         }
     });
 }
 
-/// A card's frame, icon, name, line and tags, and its summary down to `bottom`: the y
-/// below its text.
-#[allow(clippy::too_many_arguments)]
-fn card_face(
-    kit: &mut Kit,
-    (x, y, w, h): (f32, f32, f32, f32),
-    marked: bool,
+/// What a library card shows: its icon, name, version line, tags and summary, and
+/// whether it has two buttons (Update beside or over Open).
+struct CardInfo {
     icon: Icon,
-    name: &str,
-    meta: &str,
-    tags: &[(&str, egui::Color32)],
-    summary: &str,
-) {
+    name: String,
+    meta: String,
+    tags: Vec<(String, egui::Color32)>,
+    summary: String,
+    two_buttons: bool,
+    /// More for its tip.
+    note: Option<String>,
+}
+
+impl CardInfo {
+    /// The card's tip: its name, line and whole summary.
+    fn tip(&self) -> String {
+        let mut tip = if self.meta.is_empty() {
+            format!("{}\n{}", self.name, self.summary)
+        } else {
+            format!("{} ({})\n{}", self.name, self.meta, self.summary)
+        };
+        if let Some(note) = &self.note {
+            tip.push_str(&format!("\n\n{note}"));
+        }
+        tip
+    }
+}
+
+/// An installed plugin's card.
+fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
+    let Some(p) = d.plugins.list.get(i as usize) else {
+        return offered_info(&core::PluginEntry::default());
+    };
+    let catalog = d.plugins.catalog.clone().unwrap_or_default();
+    let update = core::update_for(p, &catalog).is_some();
+    let mut meta = Vec::new();
+    if !p.page.version.is_empty() {
+        meta.push(format!("v{}", p.page.version));
+    }
+    if !p.page.author.is_empty() {
+        meta.push(format!("by {}", p.page.author));
+    }
+    if p.from_catalog.is_none() {
+        meta.push("added by hand".into());
+    }
+    let mut tags = Vec::new();
+    if update {
+        tags.push(("Update".to_string(), design::QUEST_ON));
+    }
+    if !is_pinned(d, &p.page.id) {
+        tags.push(("Not in the rail".to_string(), design::GREY));
+    }
+    if !p.warnings.is_empty() {
+        // Short enough for a card's width; the tip says where the details are.
+        let problems = match p.warnings.len() {
+            1 => "1 problem".to_string(),
+            n => format!("{n} problems"),
+        };
+        tags.push((problems, design::QUEST_WARN));
+    }
+    CardInfo {
+        icon: rail_icon(&p.page),
+        name: p.page.name.clone(),
+        meta: meta.join(" · "),
+        tags,
+        summary: p.page.summary.clone(),
+        two_buttons: update,
+        note: (!p.warnings.is_empty())
+            .then(|| "Its description has problems: the launcher's log lists them.".into()),
+    }
+}
+
+/// A catalogue plugin's card.
+fn offered_info(e: &core::PluginEntry) -> CardInfo {
+    let mut meta = Vec::new();
+    if !e.version.is_empty() {
+        meta.push(format!("v{}", e.version));
+    }
+    if !e.author.is_empty() {
+        meta.push(format!("by {}", e.author));
+    }
+    let mut tags = Vec::new();
+    if e.dev {
+        // From the dev folder of the dev code in Advanced settings, not published.
+        tags.push(("Dev".to_string(), design::RIM_BOTTOM));
+    }
+    CardInfo {
+        icon: icon_named(&e.icon),
+        name: e.name.clone(),
+        meta: meta.join(" · "),
+        tags,
+        summary: e.summary.clone(),
+        two_buttons: false,
+        note: None,
+    }
+}
+
+/// The most lines of a summary a card shows (its tip has all of it).
+const SUMMARY_ROWS: usize = 12;
+
+/// A card's text, laid out `inner` wide: the name (smaller when long), the version line
+/// (on more lines at its " · " when long), the tags on rows that fit, and the summary.
+struct CardText {
+    name: std::sync::Arc<egui::Galley>,
+    name_h: f32,
+    meta: Vec<std::sync::Arc<egui::Galley>>,
+    tag_rows: Vec<Vec<usize>>,
+    summary: std::sync::Arc<egui::Galley>,
+}
+
+fn card_text(kit: &Kit, c: &CardInfo, inner: f32) -> CardText {
+    let name_h = kit
+        .label_galley("X", design::din(19.0), design::TEXT, f32::INFINITY)
+        .size()
+        .y;
+    let name = [19.0, 17.0, 15.0]
+        .into_iter()
+        .map(|size| kit.label_galley(&c.name, design::din(size), design::TEXT, f32::INFINITY))
+        .find(|g| g.size().x <= inner)
+        .unwrap_or_else(|| kit.label_galley(&c.name, design::din(15.0), design::TEXT, inner));
+    let line = |t: &str| kit.label_galley(t, design::din(13.0), design::GREY, inner);
+    let mut meta = Vec::new();
+    let mut cur = String::new();
+    for part in c.meta.split(" · ").filter(|p| !p.is_empty()) {
+        let joined = if cur.is_empty() {
+            part.to_string()
+        } else {
+            format!("{cur} · {part}")
+        };
+        let wide = kit
+            .label_galley(&joined, design::din(13.0), design::GREY, f32::INFINITY)
+            .size()
+            .x;
+        if cur.is_empty() || wide <= inner {
+            cur = joined;
+        } else {
+            meta.push(line(&cur));
+            cur = part.to_string();
+        }
+    }
+    if !cur.is_empty() {
+        meta.push(line(&cur));
+    }
+    let mut tag_rows: Vec<Vec<usize>> = Vec::new();
+    let mut row_w = 0.0;
+    for (n, (label, _)) in c.tags.iter().enumerate() {
+        let tw = kit.dot_tag_width(label, 12.0);
+        match tag_rows.last_mut() {
+            Some(row) if row_w + dz(14.0) + tw <= inner => {
+                row.push(n);
+                row_w += dz(14.0) + tw;
+            }
+            _ => {
+                tag_rows.push(vec![n]);
+                row_w = tw;
+            }
+        }
+    }
+    let summary = kit.caps_rows(&c.summary, 14.0, design::BODY, inner, SUMMARY_ROWS);
+    CardText {
+        name,
+        name_h,
+        meta,
+        tag_rows,
+        summary,
+    }
+}
+
+/// How a card's buttons go: one row (Update beside Open) or stacked, when the two
+/// labels don't both fit side by side.
+fn buttons_stacked(kit: &Kit, c: &CardInfo, inner: f32) -> bool {
+    let widest = kit
+        .button_width("Update", None, BTN_H)
+        .max(kit.button_width("Open", None, BTN_H));
+    c.two_buttons && 2.0 * widest + dz(10.0) > inner
+}
+
+/// The top of a card's buttons, `h` high at `y`.
+fn buttons_top(kit: &Kit, c: &CardInfo, y: f32, h: f32, inner: f32) -> f32 {
+    let rows = if buttons_stacked(kit, c, inner) {
+        2.0
+    } else {
+        1.0
+    };
+    y + h - dz(LIB_PAD) - rows * BTN_H - (rows - 1.0) * dz(10.0)
+}
+
+/// The tag rows' height.
+fn tags_h(t: &CardText) -> f32 {
+    t.tag_rows.len() as f32 * dz(28.0)
+}
+
+/// How tall a card `w` wide must be for all of its text: at least `LIB_CARD_H`.
+fn lib_card_height(kit: &Kit, c: &CardInfo, w: f32) -> f32 {
+    let pad = dz(LIB_PAD);
+    let inner = w - pad * 2.0;
+    let t = card_text(kit, c, inner);
+    let meta_h = (t.meta.len() as f32 * dz(20.0)).max(dz(20.0));
+    let text = pad + dz(60.0 + 16.0) + t.name_h + dz(6.0) + meta_h + dz(8.0) + t.summary.size().y;
+    let below = if t.tag_rows.is_empty() {
+        dz(12.0)
+    } else {
+        dz(12.0) + tags_h(&t)
+    };
+    let buttons = buttons_top(kit, c, 0.0, 0.0, inner);
+    (text + below - buttons).max(dz(LIB_CARD_H))
+}
+
+/// A card's frame, icon, name, line, its summary and its tags over the buttons. The name
+/// takes one row on every card, so the summaries of a row start together.
+fn card_face(kit: &mut Kit, (x, y, w, h): (f32, f32, f32, f32), marked: bool, c: &CardInfo) {
     hero::tile(kit, x, y, w, h, marked);
     let pad = dz(LIB_PAD);
     // The icon on a tinted square.
@@ -2236,47 +2477,33 @@ fn card_face(
     let s = dz(36.0);
     icon_at(
         kit.ui.painter(),
-        icon,
+        c.icon,
         sq.center() - egui::vec2(s, s) / 2.0,
         s,
         design::TEXT,
     );
     let inner = w - pad * 2.0;
+    let t = card_text(kit, c, inner);
     let mut ty = y + pad + side + dz(16.0);
-    for g in super::rail_name(kit, name, design::TEXT, inner) {
-        let h = g.size().y;
-        kit.put(x + pad, ty, g);
-        ty += h;
+    let gh = t.name.size().y;
+    kit.put(x + pad, ty + (t.name_h - gh) / 2.0, t.name.clone());
+    ty += t.name_h + dz(6.0);
+    let meta_top = ty;
+    for g in &t.meta {
+        kit.put(x + pad, ty, g.clone());
+        ty += dz(20.0);
     }
-    if !meta.is_empty() {
-        let g = kit.label_galley(meta, design::din(13.0), design::GREY, inner);
-        kit.put(x + pad, ty + dz(4.0), g);
-        ty += dz(26.0);
-    }
-    let mut tx = x + pad;
-    let tag_y = ty + dz(14.0);
-    for (label, color) in tags {
-        let tw = kit.dot_tag_width(label, 12.0);
-        if tx + tw > x + w - pad {
-            break;
+    ty = ty.max(meta_top + dz(20.0));
+    // The summary, then the tags right over the buttons.
+    kit.put(x + pad, ty + dz(8.0), t.summary.clone());
+    let mut row_cy = buttons_top(kit, c, y, h, inner) - dz(12.0) - tags_h(&t) + dz(14.0);
+    for row in &t.tag_rows {
+        let mut tx = x + pad;
+        for &n in row {
+            let (label, color) = &c.tags[n];
+            tx += kit.dot_tag(tx, row_cy, label, 12.0, *color) + dz(14.0);
         }
-        tx += kit.dot_tag(tx, tag_y, label, 12.0, *color) + dz(14.0);
-    }
-    if !tags.is_empty() {
-        ty += dz(30.0);
-    }
-    // The summary, as many whole lines as fit above the buttons.
-    let text_top = ty + dz(8.0);
-    let room = y + h - pad - BTN_H - dz(12.0) - text_top;
-    let block = kit.caps_block(summary, 14.0, design::BODY, inner);
-    let line_h = block
-        .first()
-        .map_or(1.0, |g| g.size().y / g.rows.len().max(1) as f32);
-    let lines = (room / line_h).floor().max(0.0);
-    if lines > 0.0 {
-        kit.clipped(x + pad, text_top, inner, lines * line_h + 1.0, |kit| {
-            kit.caps_text(x + pad, text_top, inner, summary, 14.0, design::BODY, 0.0);
-        });
+        row_cy += dz(28.0);
     }
 }
 
@@ -2286,6 +2513,7 @@ fn installed_card(
     kit: &mut Kit,
     ctx: &egui::Context,
     i: u8,
+    info: &CardInfo,
     (x, y, w, h): (f32, f32, f32, f32),
     menu_was_open: bool,
 ) {
@@ -2299,40 +2527,20 @@ fn installed_card(
     let busy = d.plugins.busy.clone();
     // The whole card: the summary in its tip, its menu on a right click.
     let card = kit.rect(x, y, w, h);
-    let (resp, ..) = kit.hot(&format!("plugins-card-{id}"), card, true, &p.page.summary);
-    let mut meta = Vec::new();
-    if !p.page.version.is_empty() {
-        meta.push(format!("v{}", p.page.version));
-    }
-    if !p.page.author.is_empty() {
-        meta.push(format!("by {}", p.page.author));
-    }
-    if p.from_catalog.is_none() {
-        meta.push("added by hand".into());
-    }
-    let mut tags: Vec<(&str, egui::Color32)> = Vec::new();
-    if update.is_some() {
-        tags.push(("Update", design::QUEST_ON));
-    }
-    if !pin {
-        tags.push(("Not in the rail", design::GREY));
-    }
-    let problems = format!("{} problem(s), see the log", p.warnings.len());
-    if !p.warnings.is_empty() {
-        // The details are in the launcher's log.
-        tags.push((&problems, design::QUEST_WARN));
-    }
+    let (resp, hover, _) = kit.hot(&format!("plugins-card-{id}"), card, true, &info.tip());
     let marked = d.plugins.focus.as_deref() == Some(id.as_str());
-    card_face(
-        kit,
-        (x, y, w, h),
-        marked,
-        rail_icon(&p.page),
-        &p.page.name,
-        &meta.join(" · "),
-        &tags,
-        &p.page.summary,
-    );
+    card_face(kit, (x, y, w, h), marked, info);
+    // The whole card opens it (its buttons over it keep their own clicks).
+    if hover > 0.01 {
+        kit.ui.painter().rect_filled(
+            card,
+            dz(6.0),
+            egui::Color32::from_white_alpha((6.0 * hover) as u8),
+        );
+    }
+    if resp.clicked {
+        d.page = Page::Plugin(i);
+    }
     let pad = dz(LIB_PAD);
     // Top right: ⋯, and the pin left of it.
     let side = dz(34.0);
@@ -2377,19 +2585,22 @@ fn installed_card(
         let key = crate::ui::widgets::menu_id(CARD_MENU);
         ctx.data_mut(|dd| dd.insert_temp(key, true));
     }
-    // At the bottom: Open, and Update beside it.
-    let by = y + h - pad - BTN_H;
+    // At the bottom: Open, and Update beside it (or over it, when both don't fit).
     let inner = w - pad * 2.0;
+    let by = buttons_top(kit, info, y, h, inner);
     if busy.as_deref() == Some(id.as_str()) {
         kit.chip(x + pad, by + dz(6.0), "Working…", design::QUEST_WARN);
         return;
     }
     let idle = busy.is_none();
-    let busy_tip = busy.as_ref().map(|b| format!("Wait: {b} is being installed or updated"));
-    let open_w = if update.is_some() {
-        (inner - dz(10.0)) / 2.0
-    } else {
-        inner
+    let busy_tip = busy
+        .as_ref()
+        .map(|b| format!("Wait: {b} is being installed or updated"));
+    let stacked = buttons_stacked(kit, info, inner);
+    let (open_w, open_y) = match (&update, stacked) {
+        (Some(_), false) => ((inner - dz(10.0)) / 2.0, by),
+        (Some(_), true) => (inner, by + BTN_H + dz(10.0)),
+        (None, _) => (inner, by),
     };
     if let Some(e) = &update {
         if kit
@@ -2416,7 +2627,7 @@ fn installed_card(
         .button(
             &format!("plugins-open-{id}"),
             x + w - pad - open_w,
-            by,
+            open_y,
             open_w,
             BTN_H,
             Tone::Blue,
@@ -2437,49 +2648,37 @@ fn offered_card(
     kit: &mut Kit,
     ctx: &egui::Context,
     e: &core::PluginEntry,
+    info: &CardInfo,
     (x, y, w, h): (f32, f32, f32, f32),
 ) {
-    let mut meta = Vec::new();
-    if !e.version.is_empty() {
-        meta.push(format!("v{}", e.version));
-    }
-    if !e.author.is_empty() {
-        meta.push(format!("by {}", e.author));
-    }
-    let mut tags = Vec::new();
-    if e.dev {
-        // From the dev folder of the dev code in Advanced settings, not published.
-        tags.push(("Dev", design::RIM_BOTTOM));
-    }
     let card = kit.rect(x, y, w, h);
-    kit.hot(&format!("plugins-card-{}", e.id), card, true, &e.summary);
-    card_face(
-        kit,
-        (x, y, w, h),
-        false,
-        icon_named(&e.icon),
-        &e.name,
-        &meta.join(" · "),
-        &tags,
-        &e.summary,
-    );
+    kit.hot(&format!("plugins-card-{}", e.id), card, false, &info.tip());
+    card_face(kit, (x, y, w, h), false, info);
     let pad = dz(LIB_PAD);
     let by = y + h - pad - BTN_H;
     if d.plugins.busy.as_deref() == Some(e.id.as_str()) {
         kit.chip(x + pad, by + dz(6.0), "Downloading…", design::QUEST_WARN);
         return;
     }
-    let label = if e.downloadable() { "Get" } else { "Coming soon" };
+    if !e.downloadable() {
+        // As on the Mods page: not a button that can't be pressed.
+        let chip = "Coming soon";
+        kit.chip(
+            x + pad,
+            by + (BTN_H - dz(27.0)) / 2.0,
+            chip,
+            design::QUEST_OFF,
+        );
+        return;
+    }
     let busy_tip = d
         .plugins
         .busy
         .as_ref()
         .map(|id| format!("Wait: {id} is being installed"));
-    let tip = match &busy_tip {
-        _ if !e.downloadable() => "Not published yet",
-        Some(b) => b.as_str(),
-        None => "Download and add it: it gets a tab in the rail",
-    };
+    let tip = busy_tip
+        .as_deref()
+        .unwrap_or("Download and add it: it gets a tab in the rail");
     if kit
         .button(
             &format!("plugins-get-{}", e.id),
@@ -2488,9 +2687,9 @@ fn offered_card(
             w - pad * 2.0,
             BTN_H,
             Tone::Go,
-            None,
-            label,
-            d.plugins.busy.is_none() && e.downloadable(),
+            Some(Icon::Download),
+            "Get",
+            d.plugins.busy.is_none(),
             tip,
         )
         .clicked
@@ -2658,6 +2857,9 @@ pub(super) enum SnapServer {
 pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
     const PREFIX: &str = "many-";
     d.plugins.list.retain(|p| !p.page.id.starts_with(PREFIX));
+    if let Some(c) = d.plugins.catalog.as_mut() {
+        c.plugins.retain(|e| !e.id.starts_with(PREFIX));
+    }
     if !on {
         return;
     }
@@ -2694,11 +2896,31 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
             page.name = name.into();
             page.icon = icon.into();
         }
+        // One with an update, one whose description has a problem: their tags and
+        // buttons.
+        if n == 3 {
+            if let Some(c) = d.plugins.catalog.as_mut() {
+                c.plugins.retain(|e| e.id != page.id);
+                c.plugins.push(core::PluginEntry {
+                    id: page.id.clone(),
+                    name: page.name.clone(),
+                    version: "9.9.9".into(),
+                    url: format!("https://release.echovr.de/launcher/plugins/{}.zip", page.id),
+                    sha256: "0".repeat(64),
+                    ..Default::default()
+                });
+            }
+        }
+        let warnings = if n == 5 {
+            vec!["made-up problem".to_string()]
+        } else {
+            Vec::new()
+        };
         d.plugins.list.push(Installed {
             from_catalog: Some(page.version.clone()),
             page: std::sync::Arc::new(page),
             dir: std::path::PathBuf::new(),
-            warnings: Vec::new(),
+            warnings,
         });
     }
     // The second one off the rail.
@@ -2840,6 +3062,39 @@ mod tests {
             [Offered(0), Offered(1)]
         );
         assert!(library_cards(&[], 0, 0, Filter::All).is_empty());
+    }
+
+    /// The library's sections: each group under its heading on rows of its own, an empty
+    /// group left out, each row as tall as its tallest card; without sections one grid
+    /// and no headings.
+    #[test]
+    fn library_layout_sections() {
+        use super::{library_layout, LibCard::*, LIB_CARD_H, LIB_GAP, LIB_HEAD};
+        use crate::ui::design::dz;
+        let (ch, gap, head) = (dz(LIB_CARD_H), dz(LIB_GAP), dz(LIB_HEAD));
+        let cards = [Installed(0), Offered(0), Installed(1)];
+        let tall = ch + 50.0;
+        let heights = [ch, ch, tall];
+        let (heads, placed, h) = library_layout(&cards, &heights, 4, true);
+        assert_eq!(heads.len(), 2);
+        assert_eq!(heads[0].1, 0.0);
+        // The installed ones first, side by side, the row as tall as the taller.
+        assert_eq!(placed[0], (0, 0, head, tall));
+        assert_eq!(placed[1], (2, 1, head, tall));
+        assert!((heads[1].1 - (head + tall + gap)).abs() < 1e-3);
+        assert_eq!(placed[2].0, 1, "the offered one under its own heading");
+        assert_eq!(placed[2].1, 0);
+        assert!((placed[2].2 - (heads[1].1 + head)).abs() < 1e-3);
+        assert!((h - (placed[2].2 + ch)).abs() < 1e-3);
+        let (heads, placed, _) = library_layout(&[Offered(0)], &[ch], 4, true);
+        assert_eq!(heads.len(), 1, "no heading over nothing");
+        assert_eq!(placed[0].2, head);
+        // One grid without sections: two rows of two, each as tall as its cards.
+        let (heads, placed, h) = library_layout(&cards, &heights, 2, false);
+        assert!(heads.is_empty());
+        assert_eq!((placed[2].1, placed[2].2, placed[2].3), (0, ch + gap, tall));
+        assert!((h - (ch + gap + tall)).abs() < 1e-3);
+        assert_eq!(library_layout(&[], &[], 4, true).2, 0.0);
     }
 
     /// The library's grid: six columns on the normal window, one at the least, filling the

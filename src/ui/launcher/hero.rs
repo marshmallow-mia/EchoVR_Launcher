@@ -631,6 +631,7 @@ fn play_label(kit: &Kit, label: &str, lit: bool, t: f32, extra: f32) {
     };
     let mut font = play_font(kit);
     let room = dz(LABEL_W + extra);
+    let label = &*crate::ui::uwu::text(label);
     let w = kit.text_width(label, font.clone());
     if w > room {
         font.size *= room / w;
@@ -732,6 +733,23 @@ pub(super) fn tile(kit: &Kit, x: f32, y: f32, w: f32, h: f32, selected: bool) {
 /// A card like the news cards: card_bg with the violet-to-pink rim and a Conthrax title.
 /// Returns the content's left edge, top, width and bottom (logical pixels).
 pub(super) fn card_frame(kit: &Kit, r: Dr, title: &str) -> (f32, f32, f32, f32) {
+    let (x, top, w, bottom) = card_frame_bare(kit, r);
+    let g = crate::ui::uwu::letters(|| {
+        kit.spaced_fit(
+            &title.to_uppercase(),
+            design::conthrax(24.0),
+            design::TEXT,
+            dz(1.8),
+            false,
+            dz(r.w - 44.0),
+        )
+    });
+    kit.put(x, dz(r.y + 20.0), g);
+    (x, top, w, bottom)
+}
+
+/// [`card_frame`] without its title, for a card whose title row is its own (tabs).
+pub(super) fn card_frame_bare(kit: &Kit, r: Dr) -> (f32, f32, f32, f32) {
     kit.image_d("card_bg.png", r);
     kit.gradient_frame(
         kit.drect(r),
@@ -741,16 +759,46 @@ pub(super) fn card_frame(kit: &Kit, r: Dr, title: &str) -> (f32, f32, f32, f32) 
         design::RIM_BOTTOM,
     );
     let inner = r.shrink(22.0);
-    let g = kit.spaced_fit(
-        &title.to_uppercase(),
-        design::conthrax(24.0),
-        design::TEXT,
-        dz(1.8),
-        false,
-        dz(r.w - 44.0),
-    );
-    let (x, w) = (dz(inner.x), dz(inner.w));
-    let y = dz(r.y + 20.0);
-    kit.put(x, y, g);
-    (x, dz(r.y + 72.0), w, dz(inner.bottom()))
+    (dz(inner.x), dz(r.y + 72.0), dz(inner.w), dz(inner.bottom()))
+}
+
+/// Tabs as a card's title (SERVERS · MY MATCHES): Conthrax, the open one white, the others
+/// grey (lighter under the pointer), 40 design pixels apart from logical (x, y). Returns
+/// the one clicked.
+pub(super) fn card_tabs(
+    kit: &mut Kit,
+    key: &str,
+    x: f32,
+    y: f32,
+    tabs: &[(&str, bool)],
+) -> Option<usize> {
+    let mut clicked = None;
+    let mut tx = x;
+    for (n, &(title, on)) in tabs.iter().enumerate() {
+        let galley = |kit: &Kit, color| {
+            crate::ui::uwu::letters(|| {
+                kit.spaced_galley(
+                    &title.to_uppercase(),
+                    design::conthrax(24.0),
+                    color,
+                    dz(1.8),
+                    false,
+                )
+            })
+        };
+        let size = galley(kit, design::TEXT).size();
+        let gr = kit.rect(tx, y, size.x, size.y);
+        let (resp, t, _) = kit.hot(&format!("{key}-{title}"), gr, !on, title);
+        let color = if on {
+            design::TEXT
+        } else {
+            crate::ui::style::mix(design::GREY, design::BODY, t)
+        };
+        kit.put(tx, y, galley(kit, color));
+        if resp.clicked {
+            clicked = Some(n);
+        }
+        tx += size.x + dz(40.0);
+    }
+    clicked
 }

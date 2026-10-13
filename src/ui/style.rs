@@ -146,7 +146,7 @@ impl Kit<'_> {
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name.clone())
             });
             if !tip.is_empty() {
-                resp = resp.on_hover_text(tip);
+                resp = resp.on_hover_text(crate::ui::uwu::text(tip).into_owned());
             }
             out.hovered = resp.hovered();
             if enabled {

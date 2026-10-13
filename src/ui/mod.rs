@@ -3,6 +3,7 @@
 
 mod assets;
 mod controls;
+mod cuts;
 mod design;
 mod dialogs;
 #[cfg(test)]
@@ -15,6 +16,7 @@ mod snapshot;
 mod style;
 mod theme;
 pub mod tray;
+mod uwu;
 mod video;
 mod web;
 mod widgets;
@@ -55,6 +57,8 @@ struct App {
     assets: assets::Assets,
     menu: Dashboard,
     snapshots: Option<snapshot::Snapshotter>,
+    /// The uwu easter egg's colours are hooked into the context (once).
+    uwu_hooked: bool,
     /// Tests: scale images in the background, as the real app does, despite `demo`.
     #[cfg(test)]
     async_assets: bool,
@@ -78,6 +82,10 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if !self.uwu_hooked {
+            ctx.add_plugin(uwu::UwuPlugin);
+            self.uwu_hooked = true;
+        }
         fit_zoom(&ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));

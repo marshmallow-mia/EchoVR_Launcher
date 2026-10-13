@@ -86,6 +86,17 @@ pub fn prepare(state: &LauncherState, v: &InstalledVersion) -> Result<(), Failed
         mods::before_start(v, state.own_game_config, hands, &mods::Servers::of(state))
             .map_err(fail(Part::Mods))?;
     }
+    // nEVR's log filter, from the Logs menu's choice (where nEVR is in place).
+    if mods::nevr_in(&v.bin_dir()) {
+        match super::nevr::apply_logging(&v.bin_dir(), &state.nevr_logging) {
+            Ok(super::nevr::LoggingStep::Own(own)) => {
+                tracing::info!("{}: {} is your own: left as it is", v.id, own.display())
+            }
+            Ok(super::nevr::LoggingStep::Done) => {}
+            // Only logs: a start isn't worth stopping for them.
+            Err(e) => tracing::warn!("{}: logging: {e:#}", v.id),
+        }
+    }
     echoxr(state, v).map_err(fail(Part::EchoXr))
 }
 
@@ -118,6 +129,7 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
         &state.profile,
         &state.game_server,
         &state.pack_servers,
+        &state.nevr_logging,
         state.own_game_config,
         state.echoxr_hands,
         &state.relay_server,

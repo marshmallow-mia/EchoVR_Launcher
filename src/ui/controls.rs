@@ -206,7 +206,7 @@ impl Kit<'_> {
             let mut resp = self.ui.interact(r, id(key), sense);
             resp.widget_info(|| egui::WidgetInfo::slider(enabled, *value, label.to_string()));
             if !tip.is_empty() {
-                resp = resp.on_hover_text(tip);
+                resp = resp.on_hover_text(super::uwu::text(tip).into_owned());
             }
             hovered = resp.hovered();
             if enabled {
@@ -418,10 +418,15 @@ impl Kit<'_> {
             .desired_width(w - 20.0)
             .interactive(!self.blocked);
         let resp = self.ui.put(r.shrink2(vec2(4.0, 2.0)), edit);
+        // The easter egg, as in single-line fields.
+        if resp.changed() && super::uwu::is_trigger(text) {
+            super::uwu::set(true);
+            self.ui.ctx().request_repaint();
+        }
         let resp = if tip.is_empty() || self.blocked {
             resp
         } else {
-            resp.on_hover_text(tip)
+            resp.on_hover_text(super::uwu::text(tip).into_owned())
         };
         resp.lost_focus()
     }

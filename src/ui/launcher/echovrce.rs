@@ -729,6 +729,9 @@ fn approve_here(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     );
     let cy = header.y + header.h / 2.0;
     let mut right = header.right() - 22.0;
+    if crate::ui::uwu::on() {
+        right = super::unuwufy_button(kit, right, cy) - 26.0;
+    }
     let mut link = |kit: &mut Kit, key: &str, text: &str, tip: &str| {
         let g = kit.spaced_galley(
             &text.to_uppercase(),
@@ -953,8 +956,12 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         Page::EchoVrce.title(),
     );
     let cy = header.y + header.h / 2.0;
-    // Right to left: Sign out, In browser, Reload, the zoom, then who is signed in.
+    // Right to left: Unuwufy (the easter egg's), Sign out, In browser, Reload, the zoom,
+    // then who is signed in.
     let mut right = header.right() - 22.0;
+    if crate::ui::uwu::on() {
+        right = super::unuwufy_button(kit, right, cy) - 26.0;
+    }
     let mut link = |kit: &mut Kit, key: &str, text: &str, tip: &str, gap: f32| {
         let g = kit.spaced_galley(
             &text.to_uppercase(),

@@ -784,7 +784,9 @@ pub(super) fn myriad(
             ..Default::default()
         }
     };
-    kit.ui.ctx().fonts_mut(|f| f.layout_job(job))
+    let g = kit.ui.ctx().fonts_mut(|f| f.layout_job(job));
+    crate::ui::cuts::note(&g, text);
+    g
 }
 
 /// A path in Myriad on one line, `w` wide at most: too long, it loses its middle, so its

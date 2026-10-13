@@ -114,6 +114,12 @@ pub fn shots() -> Vec<Shot> {
         ("mods_no_loader", Page::Mods, SnapVariant::ModsNoLoader),
         ("mods_options", Page::Mods, SnapVariant::ModsOptions),
         ("mods_long_text", Page::Mods, SnapVariant::ModsLongText),
+        ("mods_logs_menu", Page::Mods, SnapVariant::ModsLogsMenu),
+        ("play_uwu", Page::Play, SnapVariant::Uwu),
+        ("mods_uwu", Page::Mods, SnapVariant::Uwu),
+        ("plugins_uwu", Page::Plugins, SnapVariant::Uwu),
+        ("friends_uwu", Page::Friends, SnapVariant::Uwu),
+        ("settings_uwu", Page::Settings, SnapVariant::Uwu),
         ("dialog_confirm", Page::Install, SnapVariant::DialogConfirm),
         ("dialog_browser", Page::Play, SnapVariant::DialogBrowser),
         (

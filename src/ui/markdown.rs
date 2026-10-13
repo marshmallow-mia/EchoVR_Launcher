@@ -234,10 +234,11 @@ fn inline(job: &mut LayoutJob, s: &str, font: &FontId, color: Color32, bold: boo
     };
     let mut lit = String::new();
     let up = |t: &str| {
+        let t = super::uwu::text(t);
         if look.uppercase {
             t.to_uppercase()
         } else {
-            t.to_string()
+            t.into_owned()
         }
     };
     let flush = |job: &mut LayoutJob, lit: &mut String, m: Marks| {

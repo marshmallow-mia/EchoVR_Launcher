@@ -118,7 +118,7 @@ fn caps_line(
 ) -> Arc<Galley> {
     let mut job = LayoutJob::default();
     job.append(
-        &text.to_uppercase(),
+        &super::uwu::text(text).to_uppercase(),
         0.0,
         egui::TextFormat {
             font_id: font,
@@ -128,12 +128,22 @@ fn caps_line(
         },
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(max_w);
-    ctx.fonts_mut(|f| f.layout_job(job))
+    let g = ctx.fonts_mut(|f| f.layout_job(job));
+    super::cuts::note(&g, text);
+    g
 }
 
-/// A disabled control's fill: the colour sunk into the page's violet.
+/// A disabled control's fill: a near-grey violet whatever its colour (a dim green or blue
+/// still reads as one to press). A fill darker than that stays as it is: it must not
+/// look lighter, so more pressable, when off.
 pub(crate) fn disabled(c: Color32) -> Color32 {
-    mix(c, Color32::from_rgb(44, 38, 60), 0.6)
+    let off = Color32::from_rgb(40, 36, 52);
+    let luma = |c: Color32| c.r() as u32 * 3 + c.g() as u32 * 6 + c.b() as u32;
+    if luma(c) <= luma(off) {
+        c
+    } else {
+        mix(c, off, 0.9)
+    }
 }
 
 /// The label font of a button `h` high.
@@ -146,7 +156,7 @@ pub(crate) fn fg(enabled: bool) -> Color32 {
     if enabled {
         design::TEXT
     } else {
-        Color32::from_gray(160)
+        Color32::from_gray(130)
     }
 }
 
@@ -170,13 +180,16 @@ impl Kit<'_> {
 
     /// A title in Conthrax with wide letter spacing, as the design's headings.
     pub fn title(&self, x: f32, y: f32, text: &str, size: f32) -> Rect {
-        let g = self.spaced_galley(
-            &text.to_uppercase(),
-            design::conthrax(size),
-            design::TEXT,
-            dz(size * 0.2),
-            false,
-        );
+        // (Uwufied, its letters only, as every title: it must still fit.)
+        let g = super::uwu::letters(|| {
+            self.spaced_galley(
+                &text.to_uppercase(),
+                design::conthrax(size),
+                design::TEXT,
+                dz(size * 0.2),
+                false,
+            )
+        });
         self.put(x, y, g)
     }
 
@@ -203,6 +216,41 @@ impl Kit<'_> {
                 self.ui.ctx().fonts_mut(|f| f.layout_job(job))
             })
             .collect()
+    }
+
+    /// Text in DMCAPS caps as one block (paragraphs run on) of at most `rows` lines,
+    /// wrapped at `w`; cut after a whole word with "…" when it goes on: a card's summary.
+    pub fn caps_rows(
+        &self,
+        text: &str,
+        size: f32,
+        color: Color32,
+        w: f32,
+        rows: usize,
+    ) -> Arc<Galley> {
+        let lay = |t: &str| {
+            let mut job = LayoutJob::default();
+            design::caps_append(&mut job, t, size, color, false);
+            job.wrap.max_width = w;
+            self.ui.ctx().fonts_mut(|f| f.layout_job(job))
+        };
+        let words: Vec<&str> = text.split_whitespace().collect();
+        let whole = lay(&words.join(" "));
+        if whole.rows.len() <= rows {
+            return whole;
+        }
+        super::cuts::note_text(text);
+        for n in (1..words.len()).rev() {
+            let cut = words[..n].join(" ");
+            let g = lay(&format!(
+                "{}…",
+                cut.trim_end_matches([',', ';', ':', '.', '('])
+            ));
+            if g.rows.len() <= rows {
+                return g;
+            }
+        }
+        lay("…")
     }
 
     /// [`Kit::caps_block`] drawn with `gap` between paragraphs; returns its height.
@@ -281,7 +329,7 @@ impl Kit<'_> {
         p.rect_filled(r, R, if enabled { fill } else { disabled(fill) });
         if pressed {
             p.rect_filled(r, R, Color32::from_black_alpha(50));
-        } else if t > 0.01 {
+        } else if enabled && t > 0.01 {
             p.rect_filled(r, R, Color32::from_white_alpha((34.0 * t) as u8));
         }
     }
@@ -296,7 +344,17 @@ impl Kit<'_> {
             0.0
         };
         let icon_w = icon.map_or(0.0, |_| isz + gap);
-        let g = self.label_galley(label, label_font(h), color, r.width() - h * 0.5 - icon_w);
+        // A label too long for the button gets a little smaller before it is cut.
+        let room = r.width() - h * 0.5 - icon_w;
+        let g = super::uwu::letters(|| {
+            let font = label_font(h);
+            [1.0, 0.92, 0.85]
+                .into_iter()
+                .map(|k| egui::FontId::new(font.size * k, font.family.clone()))
+                .map(|f| self.label_galley(label, f, color, f32::INFINITY))
+                .find(|g| g.size().x <= room)
+                .unwrap_or_else(|| self.label_galley(label, label_font(h), color, room))
+        });
         let mut x = r.center().x - (g.size().x + icon_w) / 2.0;
         if let Some(i) = icon {
             icon_at(
@@ -314,10 +372,11 @@ impl Kit<'_> {
 
     /// The width a button needs for its label (and icon) at height `h`.
     pub fn button_width(&self, label: &str, icon: Option<Icon>, h: f32) -> f32 {
-        let text = self
-            .label_galley(label, label_font(h), design::TEXT, f32::INFINITY)
-            .size()
-            .x;
+        let text = super::uwu::letters(|| {
+            self.label_galley(label, label_font(h), design::TEXT, f32::INFINITY)
+        })
+        .size()
+        .x;
         let icon = icon.map_or(0.0, |_| (h * 0.46).round() + (h * 0.26).round());
         (text + icon + h * 1.2).ceil()
     }
@@ -409,16 +468,19 @@ impl Kit<'_> {
         let pad = dz(22.0);
         // A long title in a narrow tile (the rail unfolded) gets smaller before it is cut.
         let upper = title.to_uppercase();
-        let size = [23.0, 21.0, 19.0, 17.5]
-            .into_iter()
-            .find(|&s| {
-                self.spaced_galley(&upper, design::din(s), design::TEXT, SPACING, false)
-                    .size()
-                    .x
-                    <= w - 2.0 * pad
-            })
-            .unwrap_or(17.5);
-        let g = self.label_galley(title, design::din(size), design::TEXT, w - 2.0 * pad);
+        // (Uwufied, its letters only: the title must still fit.)
+        let g = super::uwu::letters(|| {
+            let size = [23.0, 21.0, 19.0, 17.5]
+                .into_iter()
+                .find(|&s| {
+                    self.spaced_galley(&upper, design::din(s), design::TEXT, SPACING, false)
+                        .size()
+                        .x
+                        <= w - 2.0 * pad
+                })
+                .unwrap_or(17.5);
+            self.label_galley(title, design::din(size), design::TEXT, w - 2.0 * pad)
+        });
         let color = if selected { design::TEXT } else { design::BODY };
         let notes = self.caps_block(note, 15.0, color, w - 2.0 * pad);
         let gap = dz(8.0);
@@ -435,13 +497,15 @@ impl Kit<'_> {
 
     /// A status chip like the Quest chip; returns its width.
     pub fn chip(&self, x: f32, y: f32, text: &str, color: Color32) -> f32 {
-        let g = self.spaced_galley(
-            &text.to_uppercase(),
-            design::din(12.0),
-            design::TEXT,
-            dz(0.5),
-            false,
-        );
+        let g = super::uwu::letters(|| {
+            self.spaced_galley(
+                &text.to_uppercase(),
+                design::din(12.0),
+                design::TEXT,
+                dz(0.5),
+                false,
+            )
+        });
         let r = self.rect(x, y, g.size().x + dz(20.0), dz(27.0));
         self.ui.painter().rect_filled(r, dz(4.0), color);
         self.ui
@@ -469,23 +533,27 @@ impl Kit<'_> {
     }
 
     fn dot_tag_galley(&self, label: &str, size: f32, color: Color32) -> Arc<Galley> {
-        self.spaced_galley(
-            &label.to_uppercase(),
-            design::conthrax(size),
-            color,
-            dz(size * 0.08),
-            false,
-        )
+        super::uwu::letters(|| {
+            self.spaced_galley(
+                &label.to_uppercase(),
+                design::conthrax(size),
+                color,
+                dz(size * 0.08),
+                false,
+            )
+        })
     }
 
     pub fn chip_width(&self, text: &str) -> f32 {
-        let g = self.spaced_galley(
-            &text.to_uppercase(),
-            design::din(12.0),
-            design::TEXT,
-            dz(0.5),
-            false,
-        );
+        let g = super::uwu::letters(|| {
+            self.spaced_galley(
+                &text.to_uppercase(),
+                design::din(12.0),
+                design::TEXT,
+                dz(0.5),
+                false,
+            )
+        });
         g.size().x + dz(20.0)
     }
 
@@ -615,16 +683,21 @@ impl Kit<'_> {
             .password(secret)
             .interactive(!self.blocked);
         let resp = self.ui.put(r.shrink2(vec2(10.0, 2.0)), edit);
+        // The easter egg: "uwu" typed into a field, and nothing else.
+        if resp.changed() && super::uwu::is_trigger(text) {
+            super::uwu::set(true);
+            self.ui.ctx().request_repaint();
+        }
         let resp = if tip.is_empty() || self.blocked {
             resp
         } else {
-            resp.on_hover_text(tip)
+            resp.on_hover_text(super::uwu::text(tip).into_owned())
         };
         if text.is_empty() && !placeholder.is_empty() {
             self.ui.painter().with_clip_rect(r).text(
                 pos2(r.min.x + 10.0, r.center().y),
                 egui::Align2::LEFT_CENTER,
-                placeholder,
+                super::uwu::text(placeholder),
                 design::myriad(20.0),
                 design::SUBTLE,
             );
@@ -815,7 +888,7 @@ impl Kit<'_> {
                             };
                             let mut resp = ui.interact(rr, open_id.with(i), sense);
                             if !tip.is_empty() {
-                                resp = resp.on_hover_text(tip);
+                                resp = resp.on_hover_text(super::uwu::text(tip).into_owned());
                             }
                             if resp.hovered() && *enabled {
                                 ui.painter().rect_filled(rr, R, design::BLUE);
@@ -829,7 +902,7 @@ impl Kit<'_> {
                             let g = ui.ctx().fonts_mut(|f| {
                                 let mut job = LayoutJob::default();
                                 job.append(
-                                    &label.to_uppercase(),
+                                    &super::uwu::text(label).to_uppercase(),
                                     0.0,
                                     egui::TextFormat {
                                         font_id: design::din(18.0),
@@ -842,6 +915,7 @@ impl Kit<'_> {
                                     egui::text::TextWrapping::truncate_at_width(rr.width() - 24.0);
                                 f.layout_job(job)
                             });
+                            super::cuts::note(&g, label);
                             let gy = rr.center().y - g.size().y / 2.0;
                             ui.painter().galley(pos2(rr.min.x + 12.0, gy), g, color);
                             if resp.clicked() && *enabled {
@@ -857,7 +931,7 @@ impl Kit<'_> {
                         } => {
                             let mut resp = ui.interact(rr, open_id.with(i), Sense::click());
                             if !tip.is_empty() {
-                                resp = resp.on_hover_text(tip);
+                                resp = resp.on_hover_text(super::uwu::text(tip).into_owned());
                             }
                             let hot = resp.hovered();
                             if hot {
@@ -952,13 +1026,15 @@ impl Kit<'_> {
             Color32::WHITE,
         );
         let size = h / dz(1.0) * 0.43;
-        let g = self.spaced_galley(
-            &title.to_uppercase(),
-            design::conthrax(size),
-            design::TEXT,
-            dz(size * 0.26),
-            false,
-        );
+        let g = super::uwu::letters(|| {
+            self.spaced_galley(
+                &title.to_uppercase(),
+                design::conthrax(size),
+                design::TEXT,
+                dz(size * 0.26),
+                false,
+            )
+        });
         let gy = r.center().y - g.size().y / 2.0;
         self.ui
             .painter()
