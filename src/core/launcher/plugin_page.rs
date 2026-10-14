@@ -1138,6 +1138,21 @@ mod tests {
         assert!(blocks.iter().any(|b| matches!(b, Block::Presets { .. })));
         assert_eq!(s.presets.len(), 4);
         assert!(s.presets.iter().all(|p| !p.values.contains_key("PoseLog")));
+        // A launcher before 0.11.16 (no `form`/`presets` blocks, no `features` for them)
+        // shows only the card that asks for a newer launcher; this one never shows it.
+        let shown = |ctx: &Value| -> Vec<&str> {
+            p.columns
+                .iter()
+                .flatten()
+                .filter(|c| truthy(&c.when, ctx))
+                .map(|c| c.title.as_str())
+                .collect()
+        };
+        let old = json!({"launcher": {"features": {"server": true, "echorelay": true, "host": true}}});
+        assert_eq!(shown(&old), ["Needs a newer launcher", "How it works"]);
+        let new = json!({"launcher": {"features": {"form": true, "presets": true}}});
+        assert!(!shown(&new).contains(&"Needs a newer launcher"));
+        assert_eq!(shown(&new).len(), 7);
     }
 
     #[test]

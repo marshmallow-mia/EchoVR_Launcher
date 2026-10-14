@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "controllers",
   "name": "Controllers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "marshmallow-mia",
   "summary": "Set up your controllers for Echo VR through EchoXR: the angle and position of your hands, stick and trigger deadzones, vibration and a Menu button combination. Presets to pick from, your own presets, and preset files to pass on.",
   "icon": "controller",
@@ -99,14 +99,17 @@
   "page": {
     "columns": [
       [
-        { "title": "Hands", "blocks": [ { "form": "hands" } ] },
-        { "title": "Sticks and triggers", "blocks": [ { "form": "sticks" } ] },
-        { "title": "Vibration", "blocks": [ { "form": "vibration" } ] },
-        { "title": "Buttons", "blocks": [ { "form": "buttons" } ] },
-        { "title": "Diagnostics", "blocks": [ { "form": "diagnostics" } ] }
+        { "title": "Needs a newer launcher", "when": "!{launcher.features.form}", "blocks": [
+          { "text": "Controllers needs launcher 0.11.16 or newer: Settings, Update now.", "tone": "warn" }
+        ] },
+        { "title": "Hands", "when": "{launcher.features.form}", "blocks": [ { "form": "hands" } ] },
+        { "title": "Sticks and triggers", "when": "{launcher.features.form}", "blocks": [ { "form": "sticks" } ] },
+        { "title": "Vibration", "when": "{launcher.features.form}", "blocks": [ { "form": "vibration" } ] },
+        { "title": "Buttons", "when": "{launcher.features.form}", "blocks": [ { "form": "buttons" } ] },
+        { "title": "Diagnostics", "when": "{launcher.features.form}", "blocks": [ { "form": "diagnostics" } ] }
       ],
       [
-        { "title": "Presets", "blocks": [ { "presets": true } ] },
+        { "title": "Presets", "when": "{launcher.features.presets}", "blocks": [ { "presets": true } ] },
         { "title": "How it works", "blocks": [
           { "text": "These settings apply when Echo VR plays through EchoXR: SteamVR, Virtual Desktop, WiVRn or Monado. Changes apply right away, also while you play.", "tone": "muted" },
           { "text": "Nothing here changes how hard you throw or push off: EchoXR passes on your hands' speed as your headset measures it.", "tone": "muted" },
