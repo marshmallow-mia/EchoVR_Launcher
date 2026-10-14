@@ -18,12 +18,12 @@
       "name": "Controllers",
       "summary": "Set up your controllers for Echo VR through EchoXR: the angle and position of your hands, stick and trigger deadzones, vibration and a Menu button combination. Presets to pick from, your own presets, and preset files to pass on.",
       "author": "marshmallow-mia",
-      "version": "0.1.1",
-      "url": "https://release.echovr.de/launcher/plugins/controllers-0.1.1.zip",
-      "sha256": "c3bf590decb47aaf05ef7f9c003febd9a1f3b81a1376580f4a36b85555136912",
+      "version": "0.1.2",
+      "url": "https://release.echovr.de/launcher/plugins/controllers-0.1.2.zip",
+      "sha256": "26365a3018efa2eb69f5533592f4a01dfbeb20807bb53060a03d8a15d7dff2bb",
       "homepage": "",
       "icon": "controller",
-      "size": 1935
+      "size": 1878
     }
   ]
 }

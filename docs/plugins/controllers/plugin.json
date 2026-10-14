@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "controllers",
   "name": "Controllers",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "marshmallow-mia",
   "summary": "Set up your controllers for Echo VR through EchoXR: the angle and position of your hands, stick and trigger deadzones, vibration and a Menu button combination. Presets to pick from, your own presets, and preset files to pass on.",
   "icon": "controller",
@@ -112,7 +112,6 @@
         { "title": "Presets", "when": "{launcher.features.presets}", "blocks": [ { "presets": true } ] },
         { "title": "How it works", "blocks": [
           { "text": "These settings apply when Echo VR plays through EchoXR: SteamVR, Virtual Desktop, WiVRn or Monado. Changes apply right away, also while you play.", "tone": "muted" },
-          { "text": "Nothing here changes how hard you throw or push off: EchoXR passes on your hands' speed as your headset measures it.", "tone": "muted" },
           { "text": "Export… saves your settings as a file; Import… adds one someone gave you.", "tone": "muted" },
           { "text": "Needs launcher 0.11.16 or newer (Settings, Update now) and EchoXR 0.6.", "tone": "muted" }
         ] }
