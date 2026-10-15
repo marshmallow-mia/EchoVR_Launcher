@@ -215,10 +215,14 @@ const SCRIPT: &str = if cfg!(windows) {
 /// nEVR, or still in place), else just EchoVRCE's publisher lock.
 fn game_config(v: &InstalledVersion) -> String {
     let local = nevr::local_dir(v);
-    ["config.json.pre-nevr", "config.json"]
-        .iter()
-        .find_map(|f| std::fs::read_to_string(local.join(f)).ok())
-        .unwrap_or_else(|| "{\"publisher_lock\": \"echovrce\"}\n".into())
+    [
+        nevr::GAME_CONFIG_OLD,
+        nevr::GAME_CONFIG_PRE_NEVR,
+        nevr::GAME_CONFIG,
+    ]
+    .iter()
+    .find_map(|f| std::fs::read_to_string(local.join(f)).ok())
+    .unwrap_or_else(|| "{\"publisher_lock\": \"echovrce\"}\n".into())
 }
 
 /// Writes `text` to `path`, readable only by this user where the OS can say (it holds the

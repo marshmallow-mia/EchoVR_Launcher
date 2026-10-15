@@ -34,21 +34,10 @@ pub const DBGCORE: &str = "dbgcore.dll";
 /// The game's own config, which nEVR doesn't need: without one it supplies its built-in
 /// one, which turns on friends, parties, presence and matchmaking.
 pub const GAME_CONFIG: &str = "config.json";
-/// Where a game config nEVR replaces is kept.
-pub const GAME_CONFIG_ASIDE: &str = "config.json.pre-nevr";
-/// What the EchoRelay-era game config held: the service hosts and the build lock.
-const SERVICE_KEYS: [&str; 9] = [
-    "apiservice_host",
-    "configservice_host",
-    "loginservice_host",
-    "matchingservice_host",
-    "serverdb_host",
-    "transactionservice_host",
-    "graphservice_host",
-    "publisher_lock",
-    "api_host",
-];
-
+/// Where a game config nEVR doesn't use is kept (`.old.2`, `.old.3`, … when that is taken).
+pub const GAME_CONFIG_OLD: &str = "config.json.old";
+/// Where launchers before 0.11.17 kept it.
+pub const GAME_CONFIG_PRE_NEVR: &str = "config.json.pre-nevr";
 /// A game sign-in with less than this left is replaced before it runs out.
 const LOGIN_MARGIN_S: i64 = 24 * 3600;
 /// A refresh token's life when it doesn't say (EchoVRCE's are 30 days).
@@ -151,7 +140,8 @@ const WRITTEN_BY: &str = "# Written by the Echo VR launcher";
 /// else is someone's own, such as a game server's.
 fn written_by_launcher(text: &str) -> bool {
     let text = text.trim_start_matches('\u{feff}');
-    if text.starts_with(WRITTEN_BY) {
+    // Its header on any line: the local plugins' switch added above it, as the docs said.
+    if text.lines().any(|l| l.starts_with(WRITTEN_BY)) {
         return true;
     }
     text.lines()
@@ -160,25 +150,48 @@ fn written_by_launcher(text: &str) -> bool {
         .all(|k| k == super::mods::LOCAL_PLUGINS_KEY)
 }
 
-/// `v`'s `config.yaml` when it is someone's own (a game server's, written by hand): the
-/// launcher leaves it, and the sign-in beside it, as they are; its mods and server choices
-/// then don't reach the game.
-pub fn own_config(v: &InstalledVersion) -> Option<PathBuf> {
-    let path = local_dir(v).join(CONFIG);
-    std::fs::read_to_string(&path)
-        .ok()
-        .filter(|text| !written_by_launcher(text))
-        .map(|_| path)
+/// `path` kept as `<name>.old` (`.old.2`, `.old.3`, … when that is taken: nothing of the
+/// player's is ever written over). Where it went.
+pub fn keep_as_old(path: &Path) -> Result<PathBuf> {
+    let old = free_old(path);
+    std::fs::rename(path, &old).with_context(|| {
+        format!(
+            "Couldn't move {} out of the way (to {})",
+            path.display(),
+            old.display()
+        )
+    })?;
+    Ok(old)
 }
 
-/// A `config.yaml` nEVR reads instead of the launcher's (one nearer the exe), if any.
-pub fn shadowing_config(v: &InstalledVersion) -> Option<PathBuf> {
+/// Before a start of `v` with nEVR: every `config.yaml` nEVR would read instead of the
+/// launcher's goes to `.old`: someone's own in the game's `_local` (written by hand, an
+/// older tool's), and any one nearer the exe, which nEVR reads first. Then the Mods page's
+/// choices and a plugin's server reach the game. Game servers' configs (in their own
+/// folders) aren't nEVR's search, so they stay. Where each went.
+pub fn migrate_own_configs(v: &InstalledVersion) -> Result<Vec<PathBuf>> {
     let ours = local_dir(v).join(CONFIG);
-    search(v)
-        .into_iter()
-        .map(|d| d.join(CONFIG))
-        .take_while(|p| !same_file(p, &ours))
-        .find(|p| p.is_file())
+    let mut moved = Vec::new();
+    let mut local = false;
+    for dir in search(v) {
+        let path = dir.join(CONFIG);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if same_file(&path, &ours) && written_by_launcher(&text) {
+            continue;
+        }
+        local |= local_plugins_in(&text);
+        moved.push(keep_as_old(&path)?);
+    }
+    // The local plugins' switch it had stays on: the launcher's config keeps it.
+    let ours_local = std::fs::read_to_string(&ours).is_ok_and(|t| local_plugins_in(&t));
+    if local && !ours_local {
+        std::fs::create_dir_all(local_dir(v))?;
+        std::fs::write(&ours, format!("{}: true\n", super::mods::LOCAL_PLUGINS_KEY))
+            .with_context(|| format!("write {}", ours.display()))?;
+    }
+    Ok(moved)
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -188,79 +201,76 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Pure: whether a game config (its text) is an obsolete EchoVRCE one: nothing but the
-/// EchoRelay-era service settings, every host on echovrce.com (the archive's, and the
-/// personalized copies with a Discord id in the login host). One pointing at another
-/// server, or with anything else in it, is someone's own.
-pub fn obsolete_echovrce_config(text: &str) -> bool {
-    let Ok(Value::Object(o)) = serde_json::from_str::<Value>(text) else {
-        return false;
-    };
-    o.iter().all(|(k, v)| {
-        SERVICE_KEYS.contains(&k.as_str())
-            && (!k.ends_with("_host") || v.as_str().is_some_and(on_echovrce))
-    })
-}
-
-/// Whether `url`'s host is echovrce.com or one of its subdomains.
-fn on_echovrce(url: &str) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|h| h == "echovrce.com" || h.ends_with(".echovrce.com"))
-}
-
-/// What [`arrange_game_config`] did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GameConfigStep {
-    Nothing,
-    /// An obsolete EchoVRCE config went to `config.json.pre-nevr`.
-    SetAside,
-    /// "Use my own config.json": the one set aside earlier is back.
-    Restored,
-}
-
-/// Before a start of `v` with nEVR in its slot: with `own` (Settings, Launch options: "Use
-/// my own config.json") the game's config stays, and one set aside earlier is put back;
-/// otherwise an obsolete EchoVRCE config is set aside, so nEVR uses its built-in one
-/// (friends and parties on). Every `_local` nEVR looks in counts.
-pub fn arrange_game_config(v: &InstalledVersion, own: bool) -> Result<GameConfigStep> {
-    if own {
-        return restore_game_config(v);
+/// Before a start of `v` with nEVR in its slot: every game `config.json` in a `_local` nEVR
+/// looks in goes to `config.json.old`, so nEVR's built-in config (friends, parties,
+/// presence, matchmaking) applies. nEVR doesn't take a server from it anyway: a plugin's
+/// server is in `config.yaml`. One kept by an older launcher (`.pre-nevr`) becomes `.old`
+/// too, and the launcher's own for EchoRelay (gone again when nEVR is back) stays. Where
+/// each one the player had in place went.
+pub fn arrange_game_config(v: &InstalledVersion) -> Result<Vec<PathBuf>> {
+    let mut moved = Vec::new();
+    for dir in search(v) {
+        let legacy = dir.join(GAME_CONFIG_PRE_NEVR);
+        if legacy.is_file() {
+            // Named as a config.json kept now would be.
+            let target = free_old(&dir.join(GAME_CONFIG));
+            std::fs::rename(&legacy, &target)
+                .with_context(|| format!("rename {}", legacy.display()))?;
+        }
+        let path = dir.join(GAME_CONFIG);
+        if !path.is_file() || super::relay::is_launchers(&path) {
+            continue;
+        }
+        moved.push(keep_as_old(&path)?);
     }
-    let mut step = GameConfigStep::Nothing;
+    Ok(moved)
+}
+
+/// The first of `<path>.old`, `.old.2`, … that isn't taken.
+fn free_old(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    (1..)
+        .map(|n| {
+            let suffix = if n == 1 {
+                ".old".to_string()
+            } else {
+                format!(".old.{n}")
+            };
+            path.with_file_name(format!("{name}{suffix}"))
+        })
+        .find(|p| !p.exists())
+        .unwrap_or_else(|| path.with_file_name(format!("{name}.old")))
+}
+
+/// Before a start without nEVR, which needs it: a game config kept as `config.json.old`
+/// (or by an older launcher as `.pre-nevr`) is back in its place, where that has none.
+/// Whether one came back.
+pub fn restore_game_config(v: &InstalledVersion) -> Result<bool> {
+    let mut restored = false;
     for dir in search(v) {
         let path = dir.join(GAME_CONFIG);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if !obsolete_echovrce_config(&text) {
+        if path.exists() {
             continue;
         }
-        std::fs::rename(&path, dir.join(GAME_CONFIG_ASIDE))
-            .with_context(|| format!("move {} aside", path.display()))?;
-        step = GameConfigStep::SetAside;
-    }
-    Ok(step)
-}
-
-/// Puts a game config set aside for nEVR back where it was (when that place has none):
-/// for "Use my own config.json", and before a start without nEVR, which needs it.
-pub fn restore_game_config(v: &InstalledVersion) -> Result<GameConfigStep> {
-    let mut step = GameConfigStep::Nothing;
-    for dir in search(v) {
-        let (path, aside) = (dir.join(GAME_CONFIG), dir.join(GAME_CONFIG_ASIDE));
-        if !path.exists() && aside.is_file() {
-            std::fs::rename(&aside, &path)
+        let kept = [GAME_CONFIG_OLD, GAME_CONFIG_PRE_NEVR]
+            .iter()
+            .map(|f| dir.join(f))
+            .find(|p| p.is_file());
+        if let Some(kept) = kept {
+            std::fs::rename(&kept, &path)
                 .with_context(|| format!("put {} back", path.display()))?;
-            step = GameConfigStep::Restored;
+            restored = true;
         }
     }
-    Ok(step)
+    Ok(restored)
 }
 
 /// The game config nEVR loads for `v` (the first `config.json` in its search), if any.
-pub fn game_config_in_use(v: &InstalledVersion) -> Option<PathBuf> {
+#[cfg(test)]
+fn game_config_in_use(v: &InstalledVersion) -> Option<PathBuf> {
     search(v)
         .into_iter()
         .map(|d| d.join(GAME_CONFIG))
@@ -460,10 +470,6 @@ pub fn write_config(
 ) -> Result<()> {
     let dir = local_dir(v);
     let path = dir.join(CONFIG);
-    if let Some(own) = own_config(v) {
-        tracing::info!("{}: {} is your own: left as it is", v.id, own.display());
-        return Ok(());
-    }
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let text = render_config(plugins, local, backend);
     if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
@@ -1285,63 +1291,59 @@ mod tests {
     }
 
     #[test]
-    fn sets_aside_only_obsolete_echovrce_configs() {
-        // The archive's, and a personalized copy (a Discord id in the login host).
-        let archive = r#"{"apiservice_host":"http://g.echovrce.com:80/api","configservice_host":"ws://g.echovrce.com:80/config","loginservice_host":"ws://g.echovrce.com:80/login?discordid=1&password=x","matchingservice_host":"ws://g.echovrce.com:80/matching","serverdb_host":"ws://g.echovrce.com:80/serverdb","transactionservice_host":"ws://g.echovrce.com:80/transaction","publisher_lock":"echovrce"}"#;
-        assert!(obsolete_echovrce_config(archive));
-        // Another server, extra keys, a look-alike host, not JSON: someone's own.
+    fn keeps_every_game_config_as_old() {
+        // The archive's (a personalized copy, with a Discord id in the login host), and
+        // one pointing at another server.
+        let archive = r#"{"apiservice_host":"http://g.echovrce.com:80/api","loginservice_host":"ws://g.echovrce.com:80/login?discordid=1&password=x","publisher_lock":"echovrce"}"#;
         let private = archive.replace("g.echovrce.com", "relay.example.org");
-        assert!(!obsolete_echovrce_config(&private));
-        assert!(!obsolete_echovrce_config(
-            r#"{"publisher_lock":"x","fov":90}"#
-        ));
-        assert!(!obsolete_echovrce_config(
-            r#"{"loginservice_host":"ws://echovrce.com.evil.net/login"}"#
-        ));
-        assert!(!obsolete_echovrce_config("not json"));
-
         let dir = tempfile::tempdir().unwrap();
         let v = version_at(dir.path());
-        assert_eq!(
-            arrange_game_config(&v, false).unwrap(),
-            GameConfigStep::Nothing
-        );
+        assert!(arrange_game_config(&v).unwrap().is_empty());
         std::fs::create_dir_all(local_dir(&v)).unwrap();
         let path = local_dir(&v).join(GAME_CONFIG);
+        let old = local_dir(&v).join(GAME_CONFIG_OLD);
+        // Any game config is kept as .old (nEVR takes no server from it): the archive's,
+        // and one pointing at another server alike.
         std::fs::write(&path, archive).unwrap();
-        assert_eq!(
-            arrange_game_config(&v, false).unwrap(),
-            GameConfigStep::SetAside
-        );
+        assert_eq!(arrange_game_config(&v).unwrap(), vec![old.clone()]);
         assert!(!path.exists() && game_config_in_use(&v).is_none());
-        // "Use my own config.json": it comes back, and then stays.
-        assert_eq!(
-            arrange_game_config(&v, true).unwrap(),
-            GameConfigStep::Restored
-        );
-        assert_eq!(game_config_in_use(&v), Some(path.clone()));
-        assert_eq!(
-            arrange_game_config(&v, true).unwrap(),
-            GameConfigStep::Nothing
-        );
+        assert!(arrange_game_config(&v).unwrap().is_empty());
         std::fs::write(&path, &private).unwrap();
-        assert_eq!(
-            arrange_game_config(&v, false).unwrap(),
-            GameConfigStep::Nothing
-        );
+        let old2 = local_dir(&v).join("config.json.old.2");
+        assert_eq!(arrange_game_config(&v).unwrap(), vec![old2.clone()]);
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), archive);
+        assert_eq!(std::fs::read_to_string(&old2).unwrap(), private);
+        // A start without nEVR, which needs one: .old comes back, and goes again after.
+        assert!(restore_game_config(&v).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), archive);
+        assert!(!restore_game_config(&v).unwrap());
+        assert_eq!(arrange_game_config(&v).unwrap(), vec![old.clone()]);
+        // The launcher's own for EchoRelay stays (it goes with EchoRelay's other files).
+        let relay = r#"{"publisher_lock":"echovrce","x-echovr-launcher":"echorelay"}"#;
+        std::fs::write(&path, relay).unwrap();
+        assert!(arrange_game_config(&v).unwrap().is_empty());
         assert!(path.exists());
-        // One beside the exe (read first) is set aside too, and comes back without nEVR.
+        std::fs::remove_file(&path).unwrap();
+        // An older launcher's .pre-nevr becomes .old, without a notice (it was aside).
+        std::fs::remove_file(&old).unwrap();
+        std::fs::rename(&old2, local_dir(&v).join(GAME_CONFIG_PRE_NEVR)).unwrap();
+        assert!(arrange_game_config(&v).unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&old).unwrap(), private);
+        assert!(!local_dir(&v).join(GAME_CONFIG_PRE_NEVR).exists());
+        // An older launcher's .pre-nevr comes back for a start without nEVR too.
+        std::fs::rename(&old, local_dir(&v).join(GAME_CONFIG_PRE_NEVR)).unwrap();
+        assert!(restore_game_config(&v).unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), private);
+        // One beside the exe (read first) goes too.
         std::fs::remove_file(&path).unwrap();
         let near = v.bin_dir().join("_local");
         std::fs::create_dir_all(&near).unwrap();
         std::fs::write(near.join(GAME_CONFIG), archive).unwrap();
         assert_eq!(
-            arrange_game_config(&v, false).unwrap(),
-            GameConfigStep::SetAside
+            arrange_game_config(&v).unwrap(),
+            vec![near.join(GAME_CONFIG_OLD)]
         );
         assert!(game_config_in_use(&v).is_none());
-        assert_eq!(restore_game_config(&v).unwrap(), GameConfigStep::Restored);
-        assert_eq!(game_config_in_use(&v), Some(near.join(GAME_CONFIG)));
     }
 
     #[test]
@@ -1360,13 +1362,55 @@ mod tests {
         let v = version_at(dir.path());
         let own = local_dir(&v).join(CONFIG);
         std::fs::create_dir_all(local_dir(&v)).unwrap();
-        std::fs::write(&own, "identity:\n  discord_id: \"1\"\n").unwrap();
-        assert_eq!(own_config(&v), Some(own.clone()));
+        // The launcher's own, one with only the local plugins' switch, and the launcher's
+        // with that switch added above its header (as the docs said) stay.
         write_config(&v, &[], false, None).unwrap();
+        assert!(migrate_own_configs(&v).unwrap().is_empty());
+        std::fs::write(&own, "x-local-plugins: true\n").unwrap();
+        assert!(migrate_own_configs(&v).unwrap().is_empty());
+        let edited = format!("x-local-plugins: true\n{}", render_config(&[], false, None));
+        std::fs::write(&own, &edited).unwrap();
+        assert!(migrate_own_configs(&v).unwrap().is_empty());
+        assert!(local_plugins(&v));
+        // A hand-written one with the switch on: kept as .old, the switch stays on.
+        std::fs::write(
+            &own,
+            "x-local-plugins: true\nplugins:\n  - name: \"Music\"\n",
+        )
+        .unwrap();
+        assert_eq!(migrate_own_configs(&v).unwrap().len(), 1);
+        assert!(local_plugins(&v));
+        for f in std::fs::read_dir(local_dir(&v)).unwrap().flatten() {
+            if f.file_name()
+                .to_string_lossy()
+                .starts_with("config.yaml.old")
+            {
+                std::fs::remove_file(f.path()).unwrap();
+            }
+        }
+        // Someone's own is kept as .old (then .old.2), and the launcher's is written.
+        std::fs::write(&own, "identity:\n  discord_id: \"1\"\n").unwrap();
+        let old = local_dir(&v).join("config.yaml.old");
+        assert_eq!(migrate_own_configs(&v).unwrap(), vec![old.clone()]);
+        assert!(!own.exists());
+        write_config(&v, &[], false, None).unwrap();
+        assert!(written_by_launcher(&std::fs::read_to_string(&own).unwrap()));
         assert_eq!(
-            std::fs::read_to_string(&own).unwrap(),
+            std::fs::read_to_string(&old).unwrap(),
             "identity:\n  discord_id: \"1\"\n"
         );
+        std::fs::write(&own, "plugins: []\n").unwrap();
+        assert_eq!(
+            migrate_own_configs(&v).unwrap(),
+            vec![local_dir(&v).join("config.yaml.old.2")]
+        );
+        // A game server's, in its own folder, isn't nEVR's search: it stays.
+        let server = local_dir(&v).join("server-1");
+        std::fs::create_dir_all(&server).unwrap();
+        std::fs::write(server.join(CONFIG), "services:\n  socket_uri: \"ws://h\"\n").unwrap();
+        write_config(&v, &[], false, None).unwrap();
+        assert!(migrate_own_configs(&v).unwrap().is_empty());
+        assert!(server.join(CONFIG).is_file());
     }
 
     /// nEVR's log filter: none for the defaults; otherwise a file nEVR reads (levels 1/2/4,
@@ -1432,14 +1476,18 @@ mod tests {
     }
 
     #[test]
-    fn notices_a_config_read_before_ours() {
+    fn moves_a_config_read_before_ours() {
         let dir = tempfile::tempdir().unwrap();
         let v = version_at(dir.path());
         write_config(&v, &[], false, None).unwrap();
-        assert_eq!(shadowing_config(&v), None);
+        // Nearer the exe (nEVR reads it first): it goes whoever wrote it.
         let near = v.bin_dir().join("_local");
         std::fs::create_dir_all(&near).unwrap();
-        std::fs::write(near.join(CONFIG), "plugins: []\n").unwrap();
-        assert_eq!(shadowing_config(&v), Some(near.join(CONFIG)));
+        std::fs::write(near.join(CONFIG), render_config(&[], false, None)).unwrap();
+        assert_eq!(
+            migrate_own_configs(&v).unwrap(),
+            vec![near.join("config.yaml.old")]
+        );
+        assert!(local_dir(&v).join(CONFIG).is_file());
     }
 }

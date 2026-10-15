@@ -729,20 +729,11 @@ fn loader_text(view: &ModView) -> String {
             "{} needs a nEVR that loads plugins before the game reads its data (the Beta channel's, for now), so it stays off with this one.",
             pack.unwrap_or_default()
         ),
-        Loader::Nevr { .. } if view.shadowed.is_some() => format!(
-            "nEVR reads your own {} (a game server's?), which the launcher leaves as it is, so the choices here don't apply: rename or delete it to have them back.",
-            view.shadowed.as_deref().map(|p| p.display().to_string()).unwrap_or_default()
-        ),
         Loader::Nevr { .. } if !view.enabled => {
             "Mods are off: Echo VR starts with only the required plugins.".into()
         }
         Loader::Nevr { version } => {
-            let config = if view.game_config.is_some() {
-                " The game reads your own _local/config.json."
-            } else {
-                ""
-            };
-            let about = format!("Discord sign-in, friends and parties in the game, and the mods below. Build {version}.{config}");
+            let about = format!("Discord sign-in, friends and parties in the game, and the mods below. Build {version}.");
             match last {
                 Some(l) => format!("{l} {about}"),
                 None => format!("It hasn't started yet: what it loads shows here after you PLAY. {about}"),
@@ -3006,8 +2997,6 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
             plugins: plugins.iter().filter_map(|p| p.status.clone()).collect(),
         }),
         plugins,
-        shadowed: None,
-        game_config: long.then(|| "_local/config.json".into()),
         stray_dbgcore: false,
         packs: Vec::new(),
         loads_early: true,

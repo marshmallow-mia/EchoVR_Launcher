@@ -656,7 +656,7 @@ pub enum SnapVariant {
     ModsNoLoader,
     /// Mods: a plugin's options open.
     ModsOptions,
-    /// Mods: the loader's longest text (a plugin skipped, your own config.json).
+    /// Mods: the loader's longest text (a plugin skipped).
     ModsLongText,
     /// Mods: the Logs menu open, Detailed chosen.
     ModsLogsMenu,
@@ -2226,6 +2226,10 @@ impl Dashboard {
             } else if l.seen || l.at.elapsed() > game::LAUNCH_WAIT {
                 self.launched = None;
             }
+        }
+        // A start's preparation kept the player's own config as .old: said once.
+        for n in crate::core::launcher::mods::take_notices() {
+            self.notify(&n);
         }
         for m in self.worker.drain() {
             match m {

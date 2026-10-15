@@ -219,8 +219,8 @@ script). The step ends the action when:
 - on Linux, the game was never set up there (PLAY does it).
 
 The launcher writes that folder only in this step: PLAY and its keeper keep to the game's
-own `_local/config.yaml`, and a `config.yaml` that isn't the launcher's own is never written
-over. A server signs in only as its own account, with nEVR 4.1.0 on: it keeps its sign-in
+own `_local/config.yaml` (one that isn't the launcher's is kept as `config.yaml.old`
+first). A server signs in only as its own account, with nEVR 4.1.0 on: it keeps its sign-in
 beside its own `config.yaml`, never the player's. A guild it hosts for has to give that
 account its server host role, or it registers for no guild. Content packs on a server need
 nEVR 4.1.0 or newer.

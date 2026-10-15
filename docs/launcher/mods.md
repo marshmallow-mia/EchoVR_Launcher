@@ -68,22 +68,25 @@ the last catalogue it fetched (`mods.json` in its data folder) to use offline be
 start.
 
 **The game's own config.** nEVR doesn't need `_local/config.json`: without one it supplies
-its built-in game config, with friends, parties, presence and matchmaking on. Before PLAY
-the launcher moves an obsolete EchoVRCE one aside (to `config.json.pre-nevr`): only the old
-service hosts and `publisher_lock`, every host on echovrce.com. One pointing at another
-server, or with anything else in it, stays and nEVR uses it. "Use my own config.json" on the
-Mods page turns the moving off and puts a file moved aside back.
+its built-in game config, with friends, parties, presence and matchmaking on, and it takes
+no server from a `config.json` anyway (a plugin's server goes into `config.yaml`). So
+before a start with nEVR the launcher keeps any `config.json` in a `_local` nEVR looks in as
+`config.json.old` (`.old.2`, … when that is taken; one an older launcher kept as
+`config.json.pre-nevr` becomes `.old` too), and says so once. A start without nEVR puts it
+back first. The `config.json` the launcher writes for an EchoRelay server stays: it goes
+with EchoRelay's other files when nEVR is back.
 
-**A `config.yaml` of your own** stays as it is. The launcher writes `_local/config.yaml` only
-when it's its own, which starts with `# Written by the Echo VR launcher`, or when it sets
-nothing but `x-local-plugins`. One written by hand, a game server's for example, is left
-alone, and so is the sign-in beside it. The Mods page's choices and the server then don't
-reach the game, and the log says so. A game server of your own gets a setup in a folder of
-its own: see [the plugins' `host` step](../plugins/pages.md#a-game-servers-setup).
+**A `config.yaml` of your own** is kept as `config.yaml.old` (`.old.2`, …) before a start,
+and the launcher writes its own, so the Mods page's choices and a plugin's server reach the
+game. The launcher's own starts with `# Written by the Echo VR launcher` (on any line: the
+local plugins' switch may be above it), or sets nothing but `x-local-plugins`; a
+`config.yaml` nearer the exe, which nEVR would read first, goes too. A switch for local
+plugins in the one kept as `.old` stays on. A game server of your own gets a setup in a
+folder of its own, which this leaves alone: see [the plugins' `host`
+step](../plugins/pages.md#a-game-servers-setup).
 
 nEVR looks for `_local/config.yaml` beside the exe, then one and two folders up (the
-game's own `_local`); the first found wins, so the page warns when one nearer the exe
-shadows the launcher's. nEVR refuses to start with a `dbgcore.dll` beside the exe (the old
+game's own `_local`); the first found wins, so one nearer the exe is kept as `.old` too. nEVR refuses to start with a `dbgcore.dll` beside the exe (the old
 loader's place): PLAY takes it out first, and the update manifest deletes it.
 
 The page tells the DLL in the slot apart: nEVR (its `[NEVR.BOOT]` log string, version from

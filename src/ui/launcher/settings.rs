@@ -287,25 +287,6 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
     );
     let mut changed = flipped;
     y += h;
-    // Your own _local/config.json (another server) instead of nEVR's built-in one.
-    let (note, tip) = say(
-        "Only with the mod loader: Echo VR keeps using your own _local/config.json (e.g. for another server).",
-        "Off: an EchoVRCE-era _local/config.json is set aside before each start, and nEVR's built-in config, with friends and parties, applies",
-    );
-    let (flipped, h) = option(
-        kit,
-        "opt-own-config",
-        &mut d.state.own_game_config,
-        "Use my own config.json",
-        note,
-        x,
-        y,
-        w,
-        true,
-        &tip,
-    );
-    changed |= flipped;
-    y += h;
     y += start_points(d, kit, ctx, x, y, w, compact);
     kit.caption(x, y, "Extra arguments");
     y += dz(30.0);

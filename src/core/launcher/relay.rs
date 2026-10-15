@@ -483,6 +483,12 @@ fn live_config_json(server: &str, account: &RelayAccount) -> String {
 /// Whether the JSON file at `path` (`config.json`, `echoloader.local.json`) is the one the
 /// launcher wrote for EchoRelay.
 fn ours(path: &Path) -> bool {
+    is_launchers(path)
+}
+
+/// Whether the `config.json` at `path` is the one the launcher wrote for EchoRelay (so a
+/// move of the player's own configs leaves it).
+pub fn is_launchers(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())

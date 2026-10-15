@@ -14,7 +14,7 @@
 //!
 //! What nEVR did with them at the last start is in its log.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -724,11 +724,6 @@ pub struct ModView {
     pub plugins: Vec<Plugin>,
     /// The last start, if nEVR ever started.
     pub status: Option<Status>,
-    /// A `config.yaml` nEVR reads instead of the launcher's: one nearer the exe, or the
-    /// launcher's own place holding someone's own (a game server's).
-    pub shadowed: Option<PathBuf>,
-    /// The game's own `_local/config.json` nEVR loads (none: its built-in one).
-    pub game_config: Option<PathBuf>,
     /// A `dbgcore.dll` beside the exe: nEVR won't start with it.
     pub stray_dbgcore: bool,
     /// Asset patches on at all, and each.
@@ -858,8 +853,6 @@ pub fn read(v: &InstalledVersion) -> ModView {
         plugins,
         loader,
         status,
-        shadowed: nevr::shadowing_config(v).or_else(|| nevr::own_config(v)),
-        game_config: nevr::game_config_in_use(v),
         stray_dbgcore: nevr::stray_dbgcore(&bin),
         assets_enabled,
         asset_patches,
@@ -1018,17 +1011,41 @@ fn plugin(
     }
 }
 
+/// What a start's preparation moved out of the player's way, for the window to say once.
+static NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Notes that the player's `what` was kept as `old`, and what applies instead (said once per
+/// file and run of the launcher).
+fn notice(old: &Path, what: &str, instead: &str) {
+    static SAID: std::sync::Mutex<BTreeSet<PathBuf>> = std::sync::Mutex::new(BTreeSet::new());
+    let dir = old.parent().unwrap_or(old).to_path_buf();
+    if !SAID
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(dir.join(what))
+    {
+        return;
+    }
+    let name = old
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    NOTICES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(format!("Your own {what} is kept as {name}: {instead}"));
+}
+
+/// The notices since the last call (see [`notice`]).
+pub fn take_notices() -> Vec<String> {
+    std::mem::take(&mut *NOTICES.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Before starting `v` with nEVR in its slot: takes out a `dbgcore.dll` beside the exe
-/// (the old loader's place, which nEVR won't start beside), arranges the game's
-/// `_local/config.json` (an obsolete EchoVRCE one is set aside so nEVR's built-in one,
-/// with friends and parties, applies; with `own_game_config` yours is used), and writes
-/// `config.yaml`. Without nEVR there is nothing to do.
-pub fn before_start(
-    v: &InstalledVersion,
-    own_game_config: bool,
-    hands: bool,
-    servers: &Servers,
-) -> Result<()> {
+/// (the old loader's place, which nEVR won't start beside), keeps the game's own
+/// `_local/config.json` as `config.json.old` (nEVR's built-in one, with friends and
+/// parties, applies) and writes `config.yaml`. Without nEVR there is nothing to do.
+pub fn before_start(v: &InstalledVersion, hands: bool, servers: &Servers) -> Result<()> {
     let bin = v.bin_dir();
     // After playing on an EchoRelay server: nEVR back in its place first.
     if super::relay::leave_live(v)? {
@@ -1036,7 +1053,7 @@ pub fn before_start(
     }
     if !nevr_in(&bin) {
         // Without nEVR the game needs its config again (Verify put the stock DLL back).
-        if nevr::restore_game_config(v)? == nevr::GameConfigStep::Restored {
+        if nevr::restore_game_config(v)? {
             tracing::info!("no nEVR: the _local/config.json set aside for it is back");
         }
         return Ok(());
@@ -1051,14 +1068,17 @@ pub fn before_start(
         })?;
         tracing::info!("removed {} (nEVR won't start beside it)", path.display());
     }
-    match nevr::arrange_game_config(v, own_game_config)? {
-        nevr::GameConfigStep::SetAside => tracing::info!(
-            "moved the EchoVRCE-era _local/config.json aside: nEVR's built-in one applies"
-        ),
-        nevr::GameConfigStep::Restored => {
-            tracing::info!("your _local/config.json is back (Use my own config.json)")
-        }
-        nevr::GameConfigStep::Nothing => {}
+    for old in nevr::arrange_game_config(v)? {
+        tracing::info!(
+            "{}: the game's own config.json is kept as {}: nEVR's built-in one applies",
+            v.id,
+            old.display()
+        );
+        notice(
+            &old,
+            "config.json",
+            "nEVR's built-in one, with friends and parties, applies now",
+        );
     }
     // EchoXR Hands' plugin in plugins/ for this start, or out of it; nEVR's list follows.
     if let Err(e) = crate::core::echoxr_hands::apply(&bin, hands) {
@@ -1097,10 +1117,19 @@ pub fn ensure_required(v: &InstalledVersion, catalog: &ModCatalog) -> Result<()>
 /// loads only its required patches). A plugin the launcher added whose file no longer
 /// matches the checksum it noted is left out.
 pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
-    // Someone's own config.yaml (a game server's): it decides the server and the sign-in.
-    if let Some(own) = nevr::own_config(v) {
-        tracing::info!("{}: {} is your own: left as it is", v.id, own.display());
-        return Ok(());
+    // A config.yaml of someone's own (by hand, an older tool's) would decide the plugins
+    // and the server instead of the Mods page and the plugins: kept as .old.
+    for old in nevr::migrate_own_configs(v)? {
+        tracing::info!(
+            "{}: a config.yaml of your own is kept as {}: the launcher's applies",
+            v.id,
+            old.display()
+        );
+        notice(
+            &old,
+            "config.yaml",
+            "the launcher's mods and server settings apply now",
+        );
     }
     let overlay = Overlay::read(&choices_path(v));
     let catalog = ModCatalog::cached();
@@ -2421,7 +2450,7 @@ mod tests {
         let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
         // The old loader's place: nEVR won't start beside it, so it goes.
         std::fs::write(bin.join("dbgcore.dll"), "MZ EchoLoader 1").unwrap();
-        before_start(&v, false, false, &Servers::default()).unwrap();
+        before_start(&v, false, &Servers::default()).unwrap();
         assert!(!bin.join("dbgcore.dll").exists());
         assert!(bin.join("plugins/dbgcore.dll").exists());
         let text = std::fs::read_to_string(&yaml).unwrap();
@@ -2484,7 +2513,7 @@ mod tests {
         // Without nEVR, nothing is written.
         std::fs::write(bin.join(SLOT), "MZ stock").unwrap();
         std::fs::remove_file(&yaml).unwrap();
-        before_start(&v, false, false, &Servers::default()).unwrap();
+        before_start(&v, false, &Servers::default()).unwrap();
         assert!(!yaml.exists());
     }
 
@@ -2891,14 +2920,53 @@ mod tests {
     }
 
     #[test]
-    fn sees_game_files_an_old_installer_changed() {
+    fn a_config_yaml_of_your_own_is_kept_as_old() {
+        // As a player had it: their own config.yaml with the pack's overlay and plugins,
+        // and a config.json of their own.
         let dir = tempfile::tempdir().unwrap();
         let v = live(dir.path());
-        assert!(!read(&v).repacked);
+        std::fs::write(
+            v.bin_dir().join(SLOT),
+            "MZ [NEVR.BOOT] plugin(s) marked early;  4.0.1 ",
+        )
+        .unwrap();
+        with_pack(&v);
+        let local = nevr::local_dir(&v);
+        std::fs::create_dir_all(&local).unwrap();
+        let own =
+            "plugins:\n  - name: \"NvrContentOverlay\"\n    early: true\n  - name: \"Music\"\n";
+        std::fs::write(local.join(nevr::CONFIG), own).unwrap();
+        std::fs::write(local.join(nevr::GAME_CONFIG), "{\"fov\": 90}").unwrap();
+        take_notices();
+        before_start(&v, false, &Servers::default()).unwrap();
+        let yaml = std::fs::read_to_string(local.join(nevr::CONFIG)).unwrap();
+        assert!(yaml.contains("\"NvrContentOverlay.dll\"") && yaml.contains("\"One.dll\""));
+        assert!(!yaml.contains("Music"));
+        assert_eq!(
+            std::fs::read_to_string(local.join("config.yaml.old")).unwrap(),
+            own
+        );
+        assert!(!local.join(nevr::GAME_CONFIG).exists());
+        assert!(local.join(nevr::GAME_CONFIG_OLD).is_file());
+        let notices = take_notices();
+        assert_eq!(notices.len(), 2, "{notices:?}");
+        // The next start has nothing to move and says nothing.
+        before_start(&v, false, &Servers::default()).unwrap();
+        assert!(take_notices().is_empty());
+    }
+
+    #[test]
+    fn an_old_installers_leftovers_alone_dont_count() {
+        // What counts is the manifests' hashes (serves_no_pack_on_game_data_an_old_
+        // installer_repacked): a leftover from an old installer beside repaired files is
+        // harmless.
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        with_pack(&v);
         let scripts = v.bin_dir().join("scripts");
         std::fs::create_dir_all(&scripts).unwrap();
         std::fs::write(scripts.join("190ed14fe6c74dd3.dll.orig"), "MZ").unwrap();
-        assert!(read(&v).repacked);
+        assert!(!read(&v).repacked);
     }
 
     #[test]
