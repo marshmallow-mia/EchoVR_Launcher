@@ -284,18 +284,23 @@ fn nevr_and_plugin_logs(
     versions: &[&InstalledVersion],
     recent: &impl Fn(&SystemTime) -> bool,
 ) -> Vec<Source> {
-    let mut nevr: Vec<(PathBuf, SystemTime)> = nevr_dir
-        .map(|d| newest_in(d, |n| nevr::is_run_log(n) || nevr::is_crash_log(n)))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(_, t)| recent(t))
-        .take(NEVR_FILES)
-        .collect();
-    // The newest run and the newest crash record lead.
     let is_crash = |p: &PathBuf| {
         p.file_name()
             .is_some_and(|n| nevr::is_crash_log(&n.to_string_lossy()))
     };
+    let all: Vec<(PathBuf, SystemTime)> = nevr_dir
+        .map(|d| newest_in(d, |n| nevr::is_run_log(n) || nevr::is_crash_log(n)))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(_, t)| recent(t))
+        .collect();
+    let mut nevr: Vec<(PathBuf, SystemTime)> = all.iter().take(NEVR_FILES).cloned().collect();
+    // The newest crash record even behind more runs than that (or written in the same
+    // tick as them).
+    if !nevr.iter().any(|(p, _)| is_crash(p)) {
+        nevr.extend(all.iter().find(|(p, _)| is_crash(p)).cloned());
+    }
+    // The newest run and the newest crash record lead.
     let first_run = nevr.iter().position(|(p, _)| !is_crash(p));
     let first_crash = nevr.iter().position(|(p, _)| is_crash(p));
     let mut lead = Vec::new();
@@ -812,6 +817,33 @@ mod tests {
     /// Every plugin's log gets sent even when every group is full: nEVR's own logs, a
     /// crash record, and EchoCombat's four plugins besides nEVR's own (none is crowded out
     /// for being late in the alphabet).
+    /// nEVR's newest crash record goes even behind more runs than it keeps, whatever the
+    /// order the files' times put them in.
+    #[test]
+    fn sends_the_newest_crash_record_behind_newer_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let nevr_dir = dir.path().join("EchoVR/logs");
+        std::fs::create_dir_all(&nevr_dir).unwrap();
+        let at = |secs: u64| SystemTime::now() - std::time::Duration::from_secs(3600 - secs);
+        let put = |name: &str, secs: u64| {
+            let path = nevr_dir.join(name);
+            std::fs::write(&path, "x\n").unwrap();
+            let f = std::fs::File::options().write(true).open(&path).unwrap();
+            f.set_modified(at(secs)).unwrap();
+        };
+        put("nevr-crash-1.txt", 0);
+        for i in 0..NEVR_FILES + 2 {
+            put(
+                &format!("nevr-2026-10-04T10-00-0{i}.000.jsonl"),
+                10 + i as u64,
+            );
+        }
+        let out = nevr_and_plugin_logs(Some(&nevr_dir), &[], &|_| true);
+        let names: Vec<&str> = out.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"nevr-crash-1.txt"), "{names:?}");
+        assert_eq!(names.len(), NEVR_FILES + 1, "{names:?}");
+    }
+
     #[test]
     fn sends_every_plugins_log_when_the_room_is_short() {
         let dir = tempfile::tempdir().unwrap();
