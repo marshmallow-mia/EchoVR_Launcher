@@ -121,7 +121,7 @@ fn echoxr(state: &LauncherState, v: &InstalledVersion) -> anyhow::Result<()> {
 /// What [`prepare`] writes `v`'s folder from, as one number: when it changes, the folder
 /// is due again. The choices in `state` that matter, `v`'s Mods page choices and plugins,
 /// the mods catalogue (its required mods), whether EchoXR is there, and the game's own
-/// files (an update or Verify replaces them).
+/// files (an update or Verify replaces them, a repair the data a content pack needs).
 pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let choices = serde_json::to_string(&(
@@ -147,6 +147,12 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
     (cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up()).hash(&mut h);
     let bin = v.bin_dir();
     stamp(&v.exe_path()).hash(&mut h);
+    // The game data the packs need as it shipped (a repair puts it back: they're served).
+    for pack in mods::installed_packs(v) {
+        for (manifest, _) in super::packs::stock_manifests(&bin, &pack.content) {
+            stamp(&manifest).hash(&mut h);
+        }
+    }
     stamp(&bin.join(mods::SLOT)).hash(&mut h);
     if let Ok(entries) = std::fs::read_dir(bin.join("plugins")) {
         let mut plugins: Vec<_> = entries

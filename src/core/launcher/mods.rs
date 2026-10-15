@@ -2109,7 +2109,7 @@ impl ModCatalog {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -2446,7 +2446,7 @@ mod tests {
 
     /// A live version with nEVR in its slot, the update's plugin, and EchoRelay's patch
     /// still in `plugins/`.
-    fn live(dir: &Path) -> InstalledVersion {
+    pub(crate) fn live(dir: &Path) -> InstalledVersion {
         let root = dir.join("pc");
         let bin = root.join(paths::ARENA_DIR).join("bin/win10");
         std::fs::create_dir_all(bin.join("plugins")).unwrap();
@@ -2688,7 +2688,7 @@ mod tests {
 
     /// `v` with pack "test" (One.dll and Two.dll, One.ini, content/test) as the launcher
     /// installs it, and the overlay plugin.
-    fn with_pack(v: &InstalledVersion) {
+    pub(crate) fn with_pack(v: &InstalledVersion) {
         let plugins = plugins_dir(v);
         for (f, body) in [
             (packs::OVERLAY_PLUGIN, "MZ overlay"),
@@ -2784,6 +2784,47 @@ mod tests {
         prepare(&v, &Servers::default()).unwrap();
         assert!(!listed("NvrContentOverlay") && !listed("One.dll"));
         assert!(!read(&v).packs[0].present);
+    }
+
+    /// `v`'s pack (from [`with_pack`]) built from a manifest that is stock now (`stock`) or
+    /// not; with the nEVR that loads plugins early. The manifest's path.
+    pub(crate) fn with_pack_data(v: &InstalledVersion, stock: bool) -> PathBuf {
+        std::fs::write(
+            v.bin_dir().join(SLOT),
+            "MZ [NEVR.BOOT] plugin(s) marked early;  4.0.1 ",
+        )
+        .unwrap();
+        let game = Path::new(&v.root).join(paths::ARENA_DIR);
+        let manifests = game.join("_data/5932408047/rad15/win10/manifests");
+        std::fs::create_dir_all(&manifests).unwrap();
+        let manifest = manifests.join("48037dc70b0ecab2");
+        std::fs::write(&manifest, "stock").unwrap();
+        let sha = download::sha256_file(&manifest).unwrap();
+        std::fs::write(
+            content_dir(v, "test").join("content.json"),
+            format!(
+                r#"{{"data_dir": "_data/5932408047/rad15/win10",
+                    "manifests": [{{"package": "48037dc70b0ecab2", "stock_sha256": "{sha}"}}]}}"#
+            ),
+        )
+        .unwrap();
+        if !stock {
+            std::fs::write(&manifest, "repacked by install.bat").unwrap();
+        }
+        manifest
+    }
+
+    #[test]
+    fn a_repair_makes_the_folder_due_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        with_pack(&v);
+        let manifest = with_pack_data(&v, false);
+        let state = crate::core::launcher::store::LauncherState::default();
+        let before = super::super::ready::fingerprint(&state, &v);
+        assert_eq!(before, super::super::ready::fingerprint(&state, &v));
+        std::fs::write(&manifest, "stock").unwrap();
+        assert_ne!(before, super::super::ready::fingerprint(&state, &v));
     }
 
     #[test]

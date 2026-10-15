@@ -167,6 +167,19 @@ impl DialogHost {
         self.stack.retain(|d| d.key != key);
     }
 
+    /// The dialogs up, top-most last (tests).
+    #[cfg(test)]
+    pub fn open_keys(&self) -> Vec<&'static str> {
+        self.stack.iter().map(|d| d.key).collect()
+    }
+
+    /// Answers the dialog under `key` as the player would (tests).
+    #[cfg(test)]
+    pub fn press(&mut self, key: &'static str, answer: Answer) {
+        self.stack.retain(|d| d.key != key);
+        self.answers.push((key, answer));
+    }
+
     pub fn take(&mut self, key: &'static str) -> Option<Answer> {
         let i = self.answers.iter().position(|(k, _)| *k == key)?;
         Some(self.answers.remove(i).1)

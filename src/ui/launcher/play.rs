@@ -1937,3 +1937,65 @@ pub(super) fn login_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::launcher::mods::tests::{live, with_pack, with_pack_data};
+
+    /// A window whose selected version has pack "Test" on, built from game data that an
+    /// older installer changed (or not, `stock`).
+    fn window(dir: &std::path::Path, stock: bool) -> (Dashboard, egui::Context) {
+        let v = live(dir);
+        with_pack(&v);
+        with_pack_data(&v, stock);
+        let mut d = Dashboard::default();
+        d.state.selected = Some(v.id.clone());
+        d.state.versions = vec![v];
+        // A new player not asked yet: a start stops at that question, before the game.
+        d.state.owner = None;
+        d.platform = Platform::Pc;
+        (d, egui::Context::default())
+    }
+
+    #[test]
+    fn play_asks_to_repair_game_files_a_pack_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ctx) = window(dir.path(), false);
+        try_start(&mut d, &ctx, None);
+        assert_eq!(d.dialogs.open_keys(), vec![PACK_DATA_PLAY]);
+        assert!(d.overlay.is_none());
+
+        // Cancel: nothing starts, and PLAY asks again.
+        d.dialogs.press(PACK_DATA_PLAY, Answer::Button(2));
+        answers(&mut d, &ctx);
+        assert!(d.overlay.is_none() && d.pack_play_without.is_empty());
+        try_start(&mut d, &ctx, None);
+        assert_eq!(d.dialogs.open_keys(), vec![PACK_DATA_PLAY]);
+
+        // Play without it: the start goes on (to the licence question here), and isn't
+        // asked about again this run.
+        d.dialogs.press(PACK_DATA_PLAY, Answer::Button(1));
+        answers(&mut d, &ctx);
+        assert!(d.pack_play_without.contains("pc-latest"));
+        assert!(matches!(d.overlay, Some(setup::Overlay::Owner)));
+        assert!(d.dialogs.open_keys().is_empty());
+
+        // Repair: without the catalogue read it says so instead of guessing a build.
+        let (mut d, ctx) = window(dir.path(), false);
+        try_start(&mut d, &ctx, None);
+        d.dialogs.press(PACK_DATA_PLAY, Answer::Button(0));
+        answers(&mut d, &ctx);
+        assert_eq!(d.dialogs.open_keys().len(), 1);
+        assert!(d.overlay.is_none());
+    }
+
+    #[test]
+    fn play_doesnt_ask_with_game_files_as_they_shipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut d, ctx) = window(dir.path(), true);
+        try_start(&mut d, &ctx, None);
+        assert!(d.dialogs.open_keys().is_empty());
+        assert!(matches!(d.overlay, Some(setup::Overlay::Owner)));
+    }
+}

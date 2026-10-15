@@ -243,21 +243,28 @@ fn is_hex(s: &str, len: usize) -> bool {
 /// all as shipped, or nothing to check (no readable `content.json`; the overlay says why).
 /// The manifests are hashed again only when their size or time changed.
 pub fn changed_data(bin: &Path, content: &str) -> Option<String> {
-    let text =
-        std::fs::read_to_string(bin.join(CONTENT).join(content).join("content.json")).ok()?;
-    let pack: ContentJson = serde_json::from_str(&text).ok()?;
-    if !is_plain_path(&pack.data_dir) {
-        return None;
-    }
-    let manifests = game_dir(bin)?.join(&pack.data_dir).join("manifests");
+    stock_manifests(bin, content)
+        .into_iter()
+        .find(|(path, stock)| !cached_sha256(path).is_some_and(|h| h.eq_ignore_ascii_case(stock)))
+        .and_then(|(path, _)| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// The game's manifests content pack `content` in `bin` needs as they shipped, with
+/// their stock sha256 (none without a readable `content.json`).
+pub fn stock_manifests(bin: &Path, content: &str) -> Vec<(PathBuf, String)> {
+    let pack = std::fs::read_to_string(bin.join(CONTENT).join(content).join("content.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<ContentJson>(&t).ok());
+    let (Some(pack), Some(game)) = (pack.filter(|p| is_plain_path(&p.data_dir)), game_dir(bin))
+    else {
+        return Vec::new();
+    };
+    let manifests = game.join(&pack.data_dir).join("manifests");
     pack.manifests
-        .iter()
+        .into_iter()
         .filter(|m| is_hex(&m.package, 16) && is_hex(&m.stock_sha256, 64))
-        .find(|m| {
-            !cached_sha256(&manifests.join(&m.package))
-                .is_some_and(|h| h.eq_ignore_ascii_case(&m.stock_sha256))
-        })
-        .map(|m| m.package.clone())
+        .map(|m| (manifests.join(&m.package), m.stock_sha256))
+        .collect()
 }
 
 /// NvrContentOverlay's log, in its default folder (relative to `bin/win10`).
