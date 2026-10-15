@@ -20,7 +20,7 @@ pub const OPENXR_EXE: &str = "echovr_openxr.exe";
 /// Every executable a running game can have.
 pub const GAME_PROCESSES: [&str; 3] = [DEFAULT_EXE, "EchoArena.exe", OPENXR_EXE];
 /// Where a build keeps its executable, newest layout first.
-const BIN_DIRS: [&str; 2] = ["bin/win10", "bin/win7"];
+pub const BIN_DIRS: [&str; 2] = ["bin/win10", "bin/win7"];
 
 /// Per-user cache root. Never the shared temp dir (world-writable on Linux), and a folder
 /// of its own: on Windows the system cache folder is the data folder, where

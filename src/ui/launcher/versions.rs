@@ -68,6 +68,7 @@ pub(super) fn reinstall(
     keep_patch: bool,
 ) {
     let id = v.id.clone();
+    let mut consent = setup::consent_asker(d.worker.tx(ctx));
     d.start_job(
         ctx,
         JobKind::Reinstall,
@@ -75,7 +76,7 @@ pub(super) fn reinstall(
         res(&v.id, v.publisher_lock.is_some()),
         &format!("Reinstalling {}", v.name),
         "Reading the build's checksums...",
-        move |cancel, on| match versions::reinstall(&e, &v, keep_patch, cancel, on) {
+        move |cancel, on| match versions::reinstall(&e, &v, keep_patch, cancel, on, &mut consent) {
             Ok(r) => JobResult::Reinstalled(r),
             Err(err) => job_err(err, "Reinstall Failed"),
         },
@@ -114,6 +115,7 @@ pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
     }
     let library = d.state.library.clone();
     let id = e.id.clone();
+    let mut consent = setup::consent_asker(d.worker.tx(ctx));
     d.start_job(
         ctx,
         JobKind::Install,
@@ -121,7 +123,7 @@ pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
         res(&e.id, e.publisher_lock.is_some()),
         &format!("Installing {}", e.name),
         "Preparing download...",
-        move |cancel, on| match versions::install(&e, &library, cancel, on) {
+        move |cancel, on| match versions::install(&e, &library, cancel, on, &mut consent) {
             Ok(i) => JobResult::Installed(i.version, i.update_failed),
             Err(err) => job_err(err, "Install Failed"),
         },
@@ -151,6 +153,7 @@ pub(super) fn adopt(
     d.state.selected = Some(id.clone());
     d.save();
     let job = id.clone();
+    let mut consent = setup::consent_asker(d.worker.tx(ctx));
     d.start_job(
         ctx,
         JobKind::Install,
@@ -158,7 +161,7 @@ pub(super) fn adopt(
         res(&job, e.publisher_lock.is_some()),
         &format!("Adding {}", e.name),
         "Checking the game files...",
-        move |cancel, on| match versions::adopt(&e, &norm, &id, cancel, on) {
+        move |cancel, on| match versions::adopt(&e, &norm, &id, cancel, on, &mut consent) {
             Ok(i) => JobResult::Installed(i.version, i.update_failed),
             Err(err) => job_err(err, "Couldn't Add Echo VR"),
         },

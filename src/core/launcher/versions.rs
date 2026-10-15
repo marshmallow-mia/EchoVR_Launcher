@@ -54,6 +54,7 @@ pub fn install(
     library: &str,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
+    consent: &mut dyn FnMut() -> bool,
 ) -> Result<Installed> {
     if entry.platform != Platform::Pc {
         bail!("Quest versions are installed from the Quest side of the Play page.");
@@ -79,7 +80,7 @@ pub fn install(
             );
         }
     }
-    finish(entry, version, cancel, on)
+    finish(entry, version, cancel, on, consent)
 }
 
 /// Takes the copy of `entry` at `root` (installed some other way: the Meta app, an older
@@ -93,6 +94,7 @@ pub fn adopt(
     id: &str,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
+    consent: &mut dyn FnMut() -> bool,
 ) -> Result<Installed> {
     if entry.platform != Platform::Pc {
         bail!("Quest versions are installed from the Quest side of the Play page.");
@@ -108,7 +110,7 @@ pub fn adopt(
         bail!("There is no Echo VR in {root}.");
     }
     version.patched = super::patch::is_applied(&version.bin_dir());
-    finish(entry, version, cancel, on)
+    finish(entry, version, cancel, on, consent)
 }
 
 /// Version `id` of `entry` at `root`, as installed now.
@@ -132,27 +134,24 @@ fn from_entry(entry: &VersionEntry, id: &str, root: &str) -> InstalledVersion {
 
 /// The rest of an install once the game files are in place: every file against the
 /// build's checksums, whichever mirror the zip came from (their archives differ, their
-/// files don't), the broken ones again from the archive; then its patch and update. A
+/// files don't), the broken ones again from the archive (through the admin helper, after
+/// `consent`, where the folder needs administrator rights); then its patch and update. A
 /// copy installed elsewhere (`external`) that is mostly another build is refused.
 fn finish(
     entry: &VersionEntry,
     version: InstalledVersion,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
+    consent: &mut dyn FnMut() -> bool,
 ) -> Result<Installed> {
     if let Some(url) = &entry.files_manifest {
         match Checksums::fetch(url, &version, version.patched) {
             Ok(sums) => {
                 let bad = sums.check(cancel, on)?;
                 if version.external && mostly_bad(bad.len(), sums.files().count()) {
-                    bail!(
-                        "{} holds another build of Echo VR than {}, so it wasn't added as that. Add it with \"Add existing folder\" in your library instead, or download {} here.",
-                        version.root,
-                        entry.name,
-                        entry.name
-                    );
+                    bail!(another_build(&version, entry));
                 }
-                sums.repair(&bad, cancel, on)?;
+                sums.repair(&bad, cancel, on, consent)?;
             }
             Err(e) if version.external => return Err(e),
             Err(e) => tracing::warn!("{} installed unchecked: {e:#}", entry.id),
@@ -166,6 +165,14 @@ fn finish(
     })
 }
 
+/// What refusing a copy elsewhere that is mostly another build than `entry` says.
+fn another_build(v: &InstalledVersion, entry: &VersionEntry) -> String {
+    format!(
+        "{} holds another build of Echo VR than {}, so it wasn't added as that. Add it with \"Add existing folder\" in your library instead, or download {} here.",
+        v.root, entry.name, entry.name
+    )
+}
+
 /// Pure: most of a build's `total` files are broken or missing (`bad`): another build,
 /// or most of it gone.
 fn mostly_bad(bad: usize, total: usize) -> bool {
@@ -176,13 +183,16 @@ fn mostly_bad(bad: usize, total: usize) -> bool {
 /// file is checked against the build's checksums on the server, and only the broken or
 /// missing ones are fetched again, out of the build's archive. Then its update.
 /// `keep_patch` leaves a licence-patched `pnsovr.dll` alone; otherwise the original
-/// comes back. When most of the game is gone, the whole archive is downloaded instead.
+/// comes back. When most of the game is gone, the whole archive is downloaded instead
+/// (not into a copy elsewhere, `external`: that is refused as another build). Files in a
+/// folder only administrators may write go in through the admin helper, after `consent`.
 pub fn reinstall(
     entry: &VersionEntry,
     v: &InstalledVersion,
     keep_patch: bool,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
+    consent: &mut dyn FnMut() -> bool,
 ) -> Result<Reinstalled> {
     let Some(url) = &entry.files_manifest else {
         bail!(
@@ -194,13 +204,16 @@ pub fn reinstall(
     let sums = Checksums::fetch(url, v, keep_patch)?;
     let mut bad = sums.check(cancel, on)?;
     if mostly_bad(bad.len(), sums.files().count()) {
+        if v.external {
+            bail!(another_build(v, entry));
+        }
         on(Step::Status(
             "Most game files are missing: downloading all of them".into(),
         ));
         download_and_extract(entry, &v.root, cancel, on)?;
         bad = sums.check(cancel, on)?;
     }
-    sums.repair(&bad, cancel, on)?;
+    sums.repair(&bad, cancel, on, consent)?;
     let version = InstalledVersion {
         patched: keep_patch && v.patched,
         publisher_lock: entry.publisher_lock.clone(),
@@ -264,6 +277,8 @@ fn game_data(path: &str) -> bool {
 /// licence patch).
 struct Checksums {
     manifest: Manifest,
+    /// Where it came from (the admin helper reads it again itself).
+    url: String,
     /// The archive's folder in the install (`<root>/ready-at-dawn-echo-arena`).
     game: PathBuf,
     /// Paths as the manifest has them, lowercase.
@@ -312,6 +327,7 @@ impl Checksums {
         }
         Ok(Checksums {
             manifest,
+            url: url.to_string(),
             game,
             skip,
         })
@@ -354,12 +370,16 @@ impl Checksums {
         Ok(bad)
     }
 
-    /// Fetches `bad` again, out of the build's archive on the server.
+    /// Fetches `bad` again, out of the build's archive on the server. Where the game's
+    /// folder needs administrator rights (the Meta app's library under Program Files, for
+    /// example), they are fetched into a folder of the launcher's first and the admin
+    /// helper puts them in place, after `consent` (it checks them itself).
     fn repair(
         &self,
         bad: &[(String, String)],
         cancel: &AtomicBool,
         on: &mut dyn FnMut(Step),
+        consent: &mut dyn FnMut() -> bool,
     ) -> Result<()> {
         if bad.is_empty() {
             return Ok(());
@@ -369,9 +389,36 @@ impl Checksums {
             bail!("The build's checksums on the server don't name its archive");
         };
         let n = bad.len();
-        remote_zip::extract_members(&url, root, bad, &self.game, cancel, &mut |i, path| {
-            on(Step::Status(format!("Repairing {}/{n}: {path}", i + 1)))
-        })
+        let direct =
+            remote_zip::extract_members(&url, root, bad, &self.game, cancel, &mut |i, path| {
+                on(Step::Status(format!("Repairing {}/{n}: {path}", i + 1)))
+            });
+        match direct {
+            Err(e) if cfg!(windows) && crate::core::revive::needs_elevation(&e) => {
+                tracing::info!("repair needs elevation ({e:#}); using the helper");
+                let staging = paths::cache_dir().join(format!("repair-{}", std::process::id()));
+                let _ = std::fs::remove_dir_all(&staging);
+                let staged = remote_zip::extract_members(
+                    &url,
+                    root,
+                    bad,
+                    &staging,
+                    cancel,
+                    &mut |i, path| on(Step::Status(format!("Fetching {}/{n}: {path}", i + 1))),
+                )
+                .and_then(|()| {
+                    on(Step::Status(
+                        "Putting the repaired files in place (administrator)...".into(),
+                    ));
+                    crate::core::elevation::repair_game_files(
+                        &self.game, &self.url, &staging, consent,
+                    )
+                });
+                let _ = std::fs::remove_dir_all(&staging);
+                staged.context("Couldn't repair the game files with administrator rights")
+            }
+            r => r,
+        }
     }
 }
 
@@ -534,7 +581,15 @@ mod tests {
             ..Default::default()
         };
         let cancel = AtomicBool::new(false);
-        let err = adopt(&entry, &root, "pc-latest", &cancel, &mut |_| {}).err();
+        let err = adopt(
+            &entry,
+            &root,
+            "pc-latest",
+            &cancel,
+            &mut |_| {},
+            &mut || false,
+        )
+        .err();
         assert!(err.is_some_and(|e| e.to_string().contains("no Echo VR")));
 
         // No checksums to go by: taken as it is, as the launcher's version of the entry.
@@ -542,11 +597,60 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join(paths::DEFAULT_EXE), b"MZ").unwrap();
         std::fs::write(bin.join("pnsovr.dll.orig"), b"original").unwrap();
-        let i = adopt(&entry, &root, "pc-latest-2", &cancel, &mut |_| {}).unwrap();
+        let i = adopt(
+            &entry,
+            &root,
+            "pc-latest-2",
+            &cancel,
+            &mut |_| {},
+            &mut || false,
+        )
+        .unwrap();
         assert_eq!(i.version.id, "pc-latest-2");
         assert_eq!(i.version.catalog_id.as_deref(), Some("pc-latest"));
         assert!(i.version.external && i.version.patched);
         assert_eq!(i.version.exe, None);
+    }
+
+    /// A copy elsewhere that is mostly another build than the entry is refused, never
+    /// filled with a whole download of the entry's archive.
+    #[test]
+    fn never_downloads_a_whole_build_into_a_copy_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = paths::normalize(&dir.path().to_string_lossy());
+        // An older layout (bin/win7): no live update to read.
+        let bin = dir.path().join(paths::ARENA_DIR).join("bin/win7");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(paths::DEFAULT_EXE), b"MZ").unwrap();
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/build.manifest", server.server_addr());
+        let sha = "a".repeat(64);
+        let body = format!(
+            "# Archive: build.zip\n# Root: build/\nadd bin/win7/a.dll {sha}\nadd bin/win7/b.dll {sha}\nadd bin/win7/c.dll {sha}\n"
+        );
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let _ = req.respond(tiny_http::Response::from_string(body.clone()));
+            }
+        });
+        let entry = VersionEntry {
+            id: "pc-old".into(),
+            name: "Old".into(),
+            url: "http://127.0.0.1:1/never.zip".into(),
+            files_manifest: Some(url),
+            ..Default::default()
+        };
+        let v = InstalledVersion {
+            id: "existing".into(),
+            root,
+            external: true,
+            ..Default::default()
+        };
+        let cancel = AtomicBool::new(false);
+        let err = reinstall(&entry, &v, false, &cancel, &mut |_| {}, &mut || false)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("holds another build"), "{err:#}");
     }
 
     /// Every event build on the server: its checksums read, they name the archive the
@@ -606,14 +710,20 @@ mod tests {
             .unwrap();
         let cancel = AtomicBool::new(false);
         let mut last = String::new();
-        let done = install(&entry, &library, &cancel, &mut |s| {
-            if let Step::Status(s) = s {
-                if s != last {
-                    eprintln!("{s}");
-                    last = s;
+        let done = install(
+            &entry,
+            &library,
+            &cancel,
+            &mut |s| {
+                if let Step::Status(s) = s {
+                    if s != last {
+                        eprintln!("{s}");
+                        last = s;
+                    }
                 }
-            }
-        })
+            },
+            &mut || false,
+        )
         .unwrap();
         let v = done.version;
         assert!(done.update_failed.is_none());
@@ -645,7 +755,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
         assert_eq!(c["publisher_lock"], "release4_5");
         assert!(config.with_file_name("config.json.orig").is_file());
-        let again = reinstall(&entry, &v, false, &cancel, &mut |_| {}).unwrap();
+        let again = reinstall(&entry, &v, false, &cancel, &mut |_| {}, &mut || false).unwrap();
         assert!(again.repaired.is_empty(), "{:?}", again.repaired);
     }
 
@@ -674,16 +784,31 @@ mod tests {
             ..Default::default()
         };
         let mut steps = Vec::new();
-        let r = reinstall(&entry, &v, false, &AtomicBool::new(false), &mut |s| {
-            if let Step::Status(s) = s {
-                steps.push(s)
-            }
-        })
+        let r = reinstall(
+            &entry,
+            &v,
+            false,
+            &AtomicBool::new(false),
+            &mut |s| {
+                if let Step::Status(s) = s {
+                    steps.push(s)
+                }
+            },
+            &mut || false,
+        )
         .unwrap();
         eprintln!("repaired: {:?}\nsteps: {steps:?}", r.repaired);
         assert!(r.update_failed.is_none());
         // Everything is right now: a second pass fetches nothing.
-        let again = reinstall(&entry, &v, false, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        let again = reinstall(
+            &entry,
+            &v,
+            false,
+            &AtomicBool::new(false),
+            &mut |_| {},
+            &mut || false,
+        )
+        .unwrap();
         assert!(again.repaired.is_empty());
     }
 

@@ -1,5 +1,6 @@
 //! Elevation broker for the few admin-only steps (Revive install, artwork into Program Files,
-//! Echo VR's entry in Revive's SteamVR library manifest).
+//! Echo VR's entry in Revive's SteamVR library manifest, repairing the game files of an
+//! Echo VR in a folder only administrators may write).
 //!
 //! Operations are first tried in-process. Only if one fails for lack of rights does the
 //! app ask for consent and relaunch *itself* elevated as `--admin-helper <pipe> <pid>`;
@@ -20,9 +21,13 @@
 //!   VR's own entry in Revive's manifest, built by the helper around an existing game
 //!   executable; the licence patch only ever goes into the Meta library's Echo VR (found
 //!   from the same registry key, never from the client), from a DLL the helper holds
-//!   against writes while checking it is the one the app downloaded.
+//!   against writes while checking it is the one the app downloaded; repaired game files
+//!   only ever go into a folder holding Echo VR, and only files the build's checksums on
+//!   the release server list, with those checksums (held against writes from the check to
+//!   the copy), never its settings, and never through a link out of that folder.
 
 use std::io::{Read, Write};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -60,6 +65,14 @@ pub enum Request {
     /// Security's exclusions, so it stops taking nEVR's BugSplat64.dll away.
     ExcludeFromDefender {
         dir: String,
+    },
+    /// Put the game files fetched again into `staging` over the Echo VR in `game` (the
+    /// folder holding `bin/`): each one only if the build's checksums at `manifest_url`
+    /// list it, with that checksum.
+    RepairGameFiles {
+        game: String,
+        manifest_url: String,
+        staging: String,
     },
     Shutdown,
 }
@@ -156,7 +169,144 @@ pub fn handle(req: &Request) -> Reply {
                 Err(e) => Reply::Err(format!("{e:#}")),
             }
         }
+        Request::RepairGameFiles {
+            game,
+            manifest_url,
+            staging,
+        } => match repair_from_staging(game, manifest_url, staging) {
+            Ok(n) => {
+                tracing::info!("helper: repaired {n} game file(s) in {game}");
+                Reply::Ok
+            }
+            Err(e) => Reply::Err(format!("{e:#}")),
+        },
     }
+}
+
+/// The helper's repair: the build's checksums from the release server (its own fetch),
+/// then [`apply_staged`].
+fn repair_from_staging(game: &str, manifest_url: &str, staging: &str) -> Result<usize> {
+    let trusted =
+        manifest_url.starts_with("https://") && super::launcher::catalog::is_safe_url(manifest_url);
+    if !trusted {
+        bail!("refusing checksums from {manifest_url}");
+    }
+    let manifest = super::manifest::Manifest::fetch(manifest_url)?;
+    apply_staged(Path::new(game), &manifest, Path::new(staging))
+}
+
+/// Puts the files in `staging` (laid out as in the game folder) over the Echo VR in
+/// `game`, after checking them all: `game` holds the game's executable; each file is one
+/// `manifest` lists (not the game's settings, `_local/`, nor crash dumps, `_temp/`), with
+/// its checksum, read through a handle that denies writes until it is copied; and none
+/// lands outside `game` through a link. Nothing is written unless all of them pass. How
+/// many it put in place.
+fn apply_staged(
+    game: &Path,
+    manifest: &super::manifest::Manifest,
+    staging: &Path,
+) -> Result<usize> {
+    let game =
+        std::fs::canonicalize(game).with_context(|| format!("{} isn't there", game.display()))?;
+    let has_exe = super::paths::BIN_DIRS.iter().any(|dir| {
+        super::paths::GAME_EXES
+            .iter()
+            .any(|exe| game.join(dir).join(exe).is_file())
+    });
+    if !has_exe {
+        bail!("{} isn't an Echo VR folder", game.display());
+    }
+    let mut files = Vec::new();
+    staged_files(staging, "", &mut files)?;
+    let mut checked = Vec::new();
+    for rel in files {
+        let lower = rel.to_ascii_lowercase();
+        if !super::manifest::is_safe_path(&rel)
+            || lower.starts_with("_local/")
+            || lower.starts_with("_temp/")
+        {
+            bail!("refusing {rel}: not a game file");
+        }
+        let Some(want) = manifest
+            .adds()
+            .find(|e| e.path.eq_ignore_ascii_case(&rel))
+            .and_then(|e| e.sha256.clone())
+        else {
+            bail!("refusing {rel}: the build's checksums don't list it");
+        };
+        let mut f = open_locked(&staging.join(&rel).to_string_lossy())?;
+        let got = super::download::sha256_reader(&mut f)?;
+        if !got.eq_ignore_ascii_case(&want) {
+            bail!("refusing {rel}: it isn't the build's (sha256 {got})");
+        }
+        let target = game.join(&rel);
+        within(&game, &target)?;
+        checked.push((rel, f, target));
+    }
+    let n = checked.len();
+    for (rel, mut f, target) in checked {
+        use std::io::Seek;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+            within(&game, parent)?;
+        }
+        f.rewind()?;
+        let part = target.with_file_name(format!(
+            "{}.part",
+            target.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let copied =
+            std::fs::File::create(&part).and_then(|mut out| std::io::copy(&mut f, &mut out));
+        if let Err(e) = copied {
+            let _ = std::fs::remove_file(&part);
+            return Err(e).with_context(|| format!("write {}", part.display()));
+        }
+        std::fs::rename(&part, &target).with_context(|| {
+            let _ = std::fs::remove_file(&part);
+            format!("Couldn't replace {rel}. Please close Echo VR and try again.")
+        })?;
+    }
+    Ok(n)
+}
+
+/// The files under `dir` (paths relative to the staging folder, with `/`), refusing links.
+fn staged_files(dir: &Path, prefix: &str, out: &mut Vec<String>) -> Result<()> {
+    for entry in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let rel = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let kind = std::fs::symlink_metadata(entry.path())?.file_type();
+        if kind.is_symlink() {
+            bail!("refusing {rel}: a link");
+        } else if kind.is_dir() {
+            staged_files(&entry.path(), &rel, out)?;
+        } else {
+            out.push(rel);
+        }
+    }
+    Ok(())
+}
+
+/// That `path` (or, while it doesn't exist yet, its nearest folder that does) is inside
+/// `game` (resolved) once links are followed.
+fn within(game: &Path, path: &Path) -> Result<()> {
+    let existing = path
+        .ancestors()
+        .find(|p| p.exists())
+        .with_context(|| format!("{} has no folder", path.display()))?;
+    let real = std::fs::canonicalize(existing)?;
+    if !real.starts_with(game) {
+        bail!(
+            "refusing {}: it leads out of the game folder",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// `dir` when it is one of `bins` (the installed versions' bin folders), as it is on disk:
@@ -474,6 +624,26 @@ pub fn exclude_from_defender(
     }
 }
 
+/// Puts the game files fetched again into `staging` over the Echo VR in `game` through
+/// the helper (after `consent`), which checks them against the build's checksums at
+/// `manifest_url` itself: for a game folder only administrators may write.
+pub fn repair_game_files(
+    game: &std::path::Path,
+    manifest_url: &str,
+    staging: &std::path::Path,
+    consent: &mut dyn FnMut() -> bool,
+) -> Result<()> {
+    let req = Request::RepairGameFiles {
+        game: game.to_string_lossy().into(),
+        manifest_url: manifest_url.into(),
+        staging: staging.to_string_lossy().into(),
+    };
+    match broker::request(&req, consent)? {
+        Reply::Err(m) => bail!("{m}"),
+        _ => Ok(()),
+    }
+}
+
 const NEEDS_ADMIN: &str =
     "This folder needs administrator rights: run the launcher as administrator, or install Echo VR somewhere else";
 
@@ -773,6 +943,126 @@ pub fn helper_main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::manifest::Manifest;
+    use std::path::PathBuf;
+
+    /// A game folder with its exe, staging beside it, and the build's checksums for
+    /// `files` (path, content).
+    fn repair_rig(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, PathBuf, Manifest) {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(game.join("bin/win10")).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(game.join("bin/win10/echovr.exe"), "MZ").unwrap();
+        let mut text = String::from("# Archive: x.zip\n");
+        for (path, body) in files {
+            let sha = super::super::download::sha256_reader(&mut body.as_bytes()).unwrap();
+            text.push_str(&format!("add {path} {sha}\n"));
+        }
+        let m = Manifest::parse(&text, "https://release.echovr.de/x.manifest").unwrap();
+        (dir, game, staging, m)
+    }
+
+    fn stage(staging: &Path, path: &str, body: &str) {
+        let f = staging.join(path);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, body).unwrap();
+    }
+
+    const MANIFEST: &str = "_data/5932408047/rad15/win10/manifests/48037dc70b0ecab2";
+
+    #[test]
+    fn the_helper_repairs_only_the_builds_files() {
+        let files = [
+            (MANIFEST, "stock"),
+            ("_local/config.json", "{}"),
+            ("bin/win10/a.dll", "MZ a"),
+        ];
+        let (_dir, game, staging, m) = repair_rig(&files);
+        stage(&game, MANIFEST, "repacked");
+        stage(&staging, MANIFEST, "stock");
+        stage(&staging, "bin/win10/a.dll", "MZ a");
+        assert_eq!(apply_staged(&game, &m, &staging).unwrap(), 2);
+        assert_eq!(
+            std::fs::read_to_string(game.join(MANIFEST)).unwrap(),
+            "stock"
+        );
+        assert_eq!(
+            std::fs::read_to_string(game.join("bin/win10/a.dll")).unwrap(),
+            "MZ a"
+        );
+        assert!(!game.join(format!("{MANIFEST}.part")).exists());
+
+        // Any one file refused: nothing is written.
+        let refuse = |path: &str, body: &str, why: &str| {
+            stage(&game, MANIFEST, "repacked");
+            let _ = std::fs::remove_dir_all(&staging);
+            stage(&staging, MANIFEST, "stock");
+            stage(&staging, path, body);
+            let err = apply_staged(&game, &m, &staging).unwrap_err();
+            assert_eq!(
+                std::fs::read_to_string(game.join(MANIFEST)).unwrap(),
+                "repacked",
+                "{why}: {err:#}"
+            );
+        };
+        refuse("bin/win10/a.dll", "MZ evil", "another checksum");
+        refuse("bin/win10/b.dll", "MZ b", "a file the build doesn't list");
+        refuse("_local/config.json", "{}", "the game's settings");
+        refuse("bin/win10/a.dll.part", "x", "an unlisted name");
+
+        // A folder without Echo VR's executable.
+        std::fs::remove_file(game.join("bin/win10/echovr.exe")).unwrap();
+        let _ = std::fs::remove_dir_all(&staging);
+        stage(&staging, MANIFEST, "stock");
+        assert!(apply_staged(&game, &m, &staging).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_helper_follows_no_link() {
+        let (dir, game, staging, m) = repair_rig(&[(MANIFEST, "stock")]);
+        // A link in the staging folder.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("x"), "stock").unwrap();
+        stage(&staging, "_data/5932408047/rad15/win10/manifests/.keep", "");
+        std::fs::remove_file(staging.join("_data/5932408047/rad15/win10/manifests/.keep")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("x"), staging.join(MANIFEST)).unwrap();
+        assert!(apply_staged(&game, &m, &staging).is_err());
+        // A link in the game folder leading out of it.
+        let _ = std::fs::remove_dir_all(&staging);
+        stage(&staging, MANIFEST, "stock");
+        std::os::unix::fs::symlink(&elsewhere, game.join("_data")).unwrap();
+        assert!(apply_staged(&game, &m, &staging).is_err());
+        assert!(!elsewhere.join("5932408047").exists());
+    }
+
+    #[test]
+    fn a_repair_request_fits_the_pipe() {
+        let long = "C:\\".to_string() + &"x".repeat(1000);
+        let req = Request::RepairGameFiles {
+            game: long.clone(),
+            manifest_url: format!("https://release.echovr.de/{}", "y".repeat(1000)),
+            staging: long,
+        };
+        let mut buf = Vec::new();
+        write_msg(&mut buf, &req).unwrap();
+        assert!(buf.len() < MAX_MESSAGE as usize / 8);
+        assert_eq!(read_msg::<Request>(&mut buf.as_slice()).unwrap(), req);
+        // Checksums only from the release host.
+        for url in [
+            "http://release.echovr.de/x.manifest",
+            "https://evil.example/x.manifest",
+            "x.manifest",
+        ] {
+            assert!(
+                repair_from_staging("C:/game", url, "C:/s").is_err(),
+                "{url}"
+            );
+        }
+    }
 
     #[test]
     fn framing_round_trip() {
