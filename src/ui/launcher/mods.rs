@@ -117,6 +117,11 @@ impl Mods {
         self.catalog_at = Some(Instant::now());
     }
 
+    /// How many times the files changed (a check of them is due again after).
+    pub(super) fn generation(&self) -> u64 {
+        self.gen
+    }
+
     /// Something changed the files: read them again.
     pub(super) fn changed(&mut self) {
         self.gen += 1;
@@ -529,6 +534,37 @@ fn loader_card(
         && !view.loads_early
         && !view.repacked
         && !view.stray_dbgcore;
+    // A content pack kept off for changed game files: the repair.
+    let pack_repair = view.packs.iter().any(|p| p.record.enabled)
+        && view.enabled
+        && matches!(view.loader, Loader::Nevr { .. })
+        && view.repacked
+        && !view.stray_dbgcore;
+    if pack_repair {
+        let label = "Repair game files";
+        let bw = kit.button_width(label, None, BTN_H).max(dz(150.0));
+        right -= bw;
+        let busy = job_busy(d, v).or(d.files_in_use(v));
+        if kit
+            .button(
+                "mods-repair",
+                right,
+                by,
+                bw,
+                BTN_H,
+                Tone::Blue,
+                None,
+                label,
+                busy.is_none(),
+                busy.unwrap_or("Check every game file against the build's and download the changed ones again (settings and mods stay)"),
+            )
+            .clicked
+        {
+            let id = v.id.clone();
+            let ctx = kit.ctx();
+            super::versions::repair_game(d, &ctx, &id);
+        }
+    }
     if pack_waits {
         let label = "Channel…";
         let bw = kit.button_width(label, None, BTN_H).max(dz(150.0));
@@ -722,7 +758,7 @@ fn loader_text(view: &ModView) -> String {
     match &view.loader {
         Loader::Nevr { .. } if view.stray_dbgcore => "There is a dbgcore.dll beside the game (the old loader's place): nEVR won't start with it, so PLAY takes it out first.".into(),
         Loader::Nevr { .. } if pack.is_some() && view.repacked => format!(
-            "An older installer changed this version's game files (EchoCombat's install.bat, as a rule). {} needs them as they shipped, so it stays off: Install, then this version, checks and repairs them.",
+            "An older installer changed this version's game files (EchoCombat's install.bat, as a rule). {} needs them as they shipped, so it stays off: Repair game files checks them and downloads the changed ones again.",
             pack.unwrap_or_default()
         ),
         Loader::Nevr { .. } if pack.is_some() && !view.loads_early => format!(

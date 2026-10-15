@@ -36,6 +36,10 @@ const VD_SWITCH: &str = "vd-switch";
 const NEVR_BLOCKED: &str = "nevr-blocked";
 /// PLAY on Linux would add Echo VR to Steam (Steam restarts): asked once.
 const PREPARE_LINUX: &str = "prepare-linux";
+/// A content pack stays off for changed game files: repair them? (On its own.)
+const PACK_DATA: &str = "pack-data";
+/// The same at PLAY, which can also go on without the pack.
+const PACK_DATA_PLAY: &str = "pack-data-play";
 
 /// The info line's right limit (design pixels).
 const INFO_RIGHT: f32 = 1282.0;
@@ -117,6 +121,22 @@ pub(super) fn answers(d: &mut Dashboard, ctx: &egui::Context) {
         let lobby = d.pending_lobby.take();
         if answer.is_yes() {
             start(d, ctx, lobby);
+        }
+    }
+    if let Some(Answer::Button(0)) = d.dialogs.take(PACK_DATA) {
+        if let Some(id) = d.pack_repair.take() {
+            super::versions::repair_game(d, ctx, &id);
+        }
+    }
+    if let Some(answer) = d.dialogs.take(PACK_DATA_PLAY) {
+        let lobby = d.pending_lobby.take();
+        match (answer, d.pack_repair.take()) {
+            (Answer::Button(0), Some(id)) => super::versions::repair_game(d, ctx, &id),
+            (Answer::Button(1), Some(id)) => {
+                d.pack_play_without.insert(id);
+                try_start(d, ctx, lobby);
+            }
+            _ => {}
         }
     }
     if let Some(answer) = d.dialogs.take(NEVR_BLOCKED) {
@@ -1377,6 +1397,16 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
             return;
         }
     }
+    // A content pack that would stay off for changed game files: repair them first?
+    if let Target::Installed(v) = d.target() {
+        if !d.pack_play_without.contains(&v.id) {
+            if let Some((pack, _)) = crate::core::launcher::mods::pack_data_changed(&v) {
+                d.pending_lobby = lobby;
+                ask_pack_repair(d, &v.id, &pack, true);
+                return;
+            }
+        }
+    }
     // A version not installed here: the licence question first, once.
     let unpatched = matches!(d.target(), Target::Installed(v) if !v.patched);
     if d.state.owner.is_none() && unpatched && !d.demo {
@@ -1694,6 +1724,35 @@ pub(super) fn watch_login(d: &mut Dashboard, ctx: &egui::Context) {
     d.overlay = Some(setup::Overlay::LoginNotice(notice));
     ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
     ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+}
+
+/// Content pack `pack` of version `id` stays off: an older installer changed the game
+/// data it needs. Repair the game files? At PLAY (`at_play`) it can also start without
+/// the pack (answered in `answers`).
+pub(super) fn ask_pack_repair(d: &mut Dashboard, id: &str, pack: &str, at_play: bool) {
+    d.pack_repair = Some(id.to_string());
+    let body = format!(
+        "{pack} can't run on this copy of Echo VR: its game files were changed, usually by an older installer (such as {pack}'s own install.bat).\n\n\
+         Repair game files checks every game file against the build's and downloads only the changed ones again. Your settings stay, and so do your mods."
+    );
+    if at_play {
+        let without = format!("Play without {pack}");
+        d.dialogs.options(
+            PACK_DATA_PLAY,
+            "Repair the game files?",
+            &body,
+            DlgIcon::Warning,
+            &["Repair game files", &without, "Cancel"],
+        );
+    } else {
+        d.dialogs.options(
+            PACK_DATA,
+            "Repair the game files?",
+            &body,
+            DlgIcon::Warning,
+            &["Repair game files", "Not now"],
+        );
+    }
 }
 
 /// Echo VR can't start for its mod loader in version `id`'s folder (`lead`: what happened

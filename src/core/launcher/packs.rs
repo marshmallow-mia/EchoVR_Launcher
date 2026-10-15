@@ -260,6 +260,39 @@ pub fn changed_data(bin: &Path, content: &str) -> Option<String> {
         .map(|m| m.package.clone())
 }
 
+/// NvrContentOverlay's log, in its default folder (relative to `bin/win10`).
+const OVERLAY_LOG: &str = "plugin_logs/NvrContentOverlay/NvrContentOverlay.log";
+
+/// Why NvrContentOverlay served nothing at its last start, as its log says it (the line
+/// before "the game runs without the pack"), in words for the Mods page. `None`: it
+/// served the pack, or it never ran.
+pub fn overlay_refusal(bin: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(bin.join(OVERLAY_LOG)).ok()?;
+    overlay_refusal_in(&text)
+}
+
+/// Pure: [`overlay_refusal`] of the log `text`.
+fn overlay_refusal_in(text: &str) -> Option<String> {
+    // Each line: "[18:27:37 +394ms] what it says".
+    let said: Vec<&str> = text
+        .lines()
+        .map(|l| l.split_once("] ").map_or(l, |(_, rest)| rest).trim())
+        .collect();
+    let start = said
+        .iter()
+        .rposition(|l| l.starts_with("NvrContentOverlay "))?;
+    let last = &said[start..];
+    let gave_up = last
+        .iter()
+        .position(|l| *l == "the game runs without the pack")?;
+    let why = last.get(gave_up.checked_sub(1)?)?;
+    Some(if why.contains("the pack was built from") {
+        "it served nothing: the game's files aren't as they shipped (an older installer changed them). Repair game files puts them back.".into()
+    } else {
+        format!("it served nothing: {why}")
+    })
+}
+
 /// `path`'s sha256, kept while its size and time stay the same. `None`: it can't be read.
 fn cached_sha256(path: &Path) -> Option<String> {
     type Seen = (u64, std::time::SystemTime, String);
@@ -398,6 +431,28 @@ mod tests {
             b"..[NEVR.PLUGIN] early pass: %zu plugin(s) marked early; .."
         ));
         assert!(!loads_early(b"nEVR 4.0.1"));
+    }
+
+    #[test]
+    fn reads_why_the_overlay_served_nothing() {
+        let refused = "[18:27:36 +288ms] NvrContentOverlay 1.0.0, echocombat\n\
+            [18:27:37 +394ms] pack 'echocombat': the game's manifest 48037dc70b0ecab2 is not stock (sha256 a9), the pack was built from e2: not serving it (restore the stock game files)\n\
+            [18:27:37 +394ms] the game runs without the pack\n";
+        assert!(overlay_refusal_in(refused)
+            .unwrap()
+            .contains("aren't as they shipped"));
+        let changed = refused.replace(
+            "the game's manifest 48037dc70b0ecab2 is not stock (sha256 a9), the pack was built from e2: not serving it (restore the stock game files)",
+            "manifests/x is changed (sha256 1, want 2)",
+        );
+        assert_eq!(
+            overlay_refusal_in(&changed).as_deref(),
+            Some("it served nothing: pack 'echocombat': manifests/x is changed (sha256 1, want 2)")
+        );
+        // A later start that served it: nothing to say.
+        let served = format!("{refused}[19:00:00 +1ms] NvrContentOverlay 1.0.0, echocombat\n[19:00:00 +2ms] serving the pack\n");
+        assert_eq!(overlay_refusal_in(&served), None);
+        assert_eq!(overlay_refusal_in(""), None);
     }
 
     #[test]

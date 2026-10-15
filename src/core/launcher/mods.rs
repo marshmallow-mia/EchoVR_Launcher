@@ -847,6 +847,16 @@ pub fn read(v: &InstalledVersion) -> ModView {
     for p in plugins.iter_mut().filter(|p| p.present) {
         p.settings = plugin_settings::read(&dir, p, catalog.entry_for(&p.file));
     }
+    // The overlay failing says why in its own log, not in nEVR's.
+    if let Some(why) = packs::overlay_refusal(&bin) {
+        let overlay_failed = plugins.iter_mut().find(|p| {
+            p.file.eq_ignore_ascii_case(packs::OVERLAY_PLUGIN)
+                && p.status.as_ref().is_some_and(|s| !s.loaded())
+        });
+        if let Some(s) = overlay_failed.and_then(|p| p.status.as_mut()) {
+            s.error = why;
+        }
+    }
     let loads_early = loader == Loader::EchoRelay || packs::nevr_loads_early(&bin);
     ModView {
         enabled: overlay.enabled(),
@@ -872,6 +882,21 @@ pub fn read(v: &InstalledVersion) -> ModView {
             .find(|p| p.enabled)
             .is_some_and(|p| packs::changed_data(&bin, &p.content).is_some()),
     }
+}
+
+/// The pack that is on in `v` whose game data isn't as it shipped (an older installer
+/// repacked it, so it stays off): its name, and the manifest that changed. `None`: none,
+/// or mods are off.
+pub fn pack_data_changed(v: &InstalledVersion) -> Option<(String, String)> {
+    let overlay = Overlay::read(&choices_path(v));
+    if !overlay.enabled() {
+        return None;
+    }
+    let pack = overlay.packs().into_iter().find(|p| p.enabled)?;
+    if !pack_present(v, &pack) {
+        return None;
+    }
+    packs::changed_data(&v.bin_dir(), &pack.content).map(|m| (pack.name, m))
 }
 
 /// Whether pack `rec`'s plugins and content pack are all in `v`.

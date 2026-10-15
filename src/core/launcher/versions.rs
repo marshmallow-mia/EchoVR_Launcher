@@ -165,6 +165,37 @@ fn finish(
     })
 }
 
+/// Whether the copy whose install root is `root` is `entry`'s build: its executable is
+/// the one the build's checksums list, or the one its update (on the update channel in
+/// use) puts there (one file read, not the whole game). Without checksums on the server
+/// it can't be told: `false`.
+pub fn is_build(entry: &VersionEntry, root: &str) -> Result<bool> {
+    let Some(url) = &entry.files_manifest else {
+        return Ok(false);
+    };
+    let m = Manifest::fetch(url).context("Couldn't read the build's checksums from the server")?;
+    let exe = format!("bin/win10/{}", paths::DEFAULT_EXE);
+    let sha_of = |m: &Manifest, path: &str| {
+        m.adds()
+            .find(|e| e.path.eq_ignore_ascii_case(path))
+            .and_then(|e| e.sha256.clone())
+    };
+    let have = download::sha256_file(&Path::new(root).join(paths::ARENA_DIR).join(&exe)).ok();
+    let Some(have) = have else {
+        return Ok(false);
+    };
+    if sha_of(&m, &exe).is_some_and(|w| w.eq_ignore_ascii_case(&have)) {
+        return Ok(true);
+    }
+    // An update channel may bring an executable of its own.
+    let Some(update) = &entry.update_manifest else {
+        return Ok(false);
+    };
+    let (update, _) = pc_update::fetch_manifest(&pc_update::manifest_for(update))
+        .context("Couldn't read the update's checksums from the server")?;
+    Ok(sha_of(&update, paths::DEFAULT_EXE).is_some_and(|w| w.eq_ignore_ascii_case(&have)))
+}
+
 /// What refusing a copy elsewhere that is mostly another build than `entry` says.
 fn another_build(v: &InstalledVersion, entry: &VersionEntry) -> String {
     format!(
@@ -610,6 +641,63 @@ mod tests {
         assert_eq!(i.version.catalog_id.as_deref(), Some("pc-latest"));
         assert!(i.version.external && i.version.patched);
         assert_eq!(i.version.exe, None);
+    }
+
+    /// Serves `files` (path, body) on a local port; their URLs.
+    fn serve_files(files: Vec<(&'static str, String)>) -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr());
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let body = files
+                    .iter()
+                    .find(|(p, _)| req.url() == format!("/{p}"))
+                    .map(|(_, b)| b.clone());
+                let _ = match body {
+                    Some(b) => req.respond(tiny_http::Response::from_string(b)),
+                    None => req.respond(tiny_http::Response::empty(404)),
+                };
+            }
+        });
+        base
+    }
+
+    /// The live build is told by its executable: the build's, or the one an update
+    /// channel brings; anything else isn't it.
+    #[test]
+    fn tells_the_live_build_by_its_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = paths::normalize(&dir.path().to_string_lossy());
+        let bin = dir.path().join(paths::ARENA_DIR).join("bin/win10");
+        std::fs::create_dir_all(&bin).unwrap();
+        let sha = |b: &str| download::sha256_reader(&mut b.as_bytes()).unwrap();
+        let base = serve_files(vec![
+            (
+                "build.manifest",
+                format!(
+                    "# Archive: b.zip\n# Root: b/\nadd bin/win10/echovr.exe {}\n",
+                    sha("MZ build")
+                ),
+            ),
+            (
+                "update.manifest",
+                format!("add echovr.exe {}\n", sha("MZ channel")),
+            ),
+        ]);
+        let entry = VersionEntry {
+            id: "pc-latest".into(),
+            files_manifest: Some(format!("{base}/build.manifest")),
+            update_manifest: Some(format!("{base}/update.manifest")),
+            ..Default::default()
+        };
+        let exe = bin.join(paths::DEFAULT_EXE);
+        assert!(!is_build(&entry, &root).unwrap(), "no executable");
+        std::fs::write(&exe, "MZ build").unwrap();
+        assert!(is_build(&entry, &root).unwrap());
+        std::fs::write(&exe, "MZ channel").unwrap();
+        assert!(is_build(&entry, &root).unwrap());
+        std::fs::write(&exe, "MZ another build").unwrap();
+        assert!(!is_build(&entry, &root).unwrap());
     }
 
     /// A copy elsewhere that is mostly another build than the entry is refused, never

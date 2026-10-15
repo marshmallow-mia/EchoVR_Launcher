@@ -169,6 +169,56 @@ pub(super) fn adopt(
     job
 }
 
+/// Repairs version `id`'s game files (REINSTALL's check, the changed ones fetched again)
+/// without going to the Install page: for a content pack whose game data an older
+/// installer changed. A licence patch in it stays.
+pub(super) fn repair_game(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
+    let Some(v) = d.state.version(id).cloned() else {
+        return;
+    };
+    let Some(e) = d.entry_for(&v) else {
+        d.dialogs.error(
+            "Couldn't repair the game files",
+            "The launcher hasn't read its list of builds yet (is the internet connection up?). Try again in a moment, or use REINSTALL on the Install page.",
+            Default::default(),
+        );
+        return;
+    };
+    if let Some(why) = d.files_in_use(&v) {
+        d.notify(why);
+        return;
+    }
+    if let Some(busy) = d.busy_with(&res(&v.id, v.publisher_lock.is_some())) {
+        d.notify(&busy);
+        return;
+    }
+    let keep_patch = v.patched;
+    reinstall(d, ctx, e, v, keep_patch);
+}
+
+/// Copy elsewhere `id`, found to be `e`'s build (the live one), gets what an install
+/// gets: it counts as that build from now on (its update, REINSTALL, repairs), then its
+/// files are checked against the build's checksums and the broken ones fetched again
+/// (through the admin helper where the folder needs it), with its update. A licence patch
+/// in it stays; it keeps its name. While Echo VR runs from it or a job has it, only the
+/// first part: REINSTALL, or a content pack's question, does the rest.
+pub(super) fn check_existing(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry, id: &str) {
+    let Some(v) = d.state.versions.iter_mut().find(|v| v.id == id) else {
+        return;
+    };
+    v.catalog_id = Some(e.id.clone());
+    v.update_manifest = e.update_manifest.clone();
+    v.patched = crate::core::launcher::patch::is_applied(&v.bin_dir());
+    let v = v.clone();
+    d.save();
+    tracing::info!("{}: counts as {} now", v.id, e.id);
+    if d.files_in_use(&v).is_some() || d.busy_with(&res(&v.id, false)).is_some() {
+        return;
+    }
+    let keep_patch = v.patched;
+    reinstall(d, ctx, e, v, keep_patch);
+}
+
 /// Asks for the executable of an Echo VR copy already on this PC: its install root, or
 /// `None` (cancelled, or not Echo VR: said so).
 pub(super) fn choose_copy(d: &mut Dashboard) -> Option<String> {

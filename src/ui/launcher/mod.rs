@@ -242,6 +242,11 @@ enum Msg {
     /// A version's mod loader went or is blocked right after a job put it in place (its
     /// id, what happened).
     SlotGone(String, String),
+    /// A copy elsewhere (its id) is the live build: it gets what an install gets.
+    ExistingIsLive(String),
+    /// A version's content pack (its id, the pack's name) stays off: an older installer
+    /// changed the game data it needs.
+    PackDataChanged(String, String),
     FeedStatus(Option<feed::Servers>),
     FeedNews(Option<feed::News>),
     /// A feed image by file name (`None`: it couldn't be loaded).
@@ -756,6 +761,16 @@ pub struct Dashboard {
     pending_lobby: Option<play::Join>,
     /// The version whose mod loader the "Windows blocked" question is about.
     nevr_blocked: Option<String>,
+    /// Copies elsewhere looked at this run, whether they are the live build.
+    existing_checked: std::collections::HashSet<String>,
+    /// Versions whose content pack's game data was looked at, at that Mods generation.
+    pack_checked: HashMap<String, u64>,
+    /// Versions whose changed game data the player was told about this run.
+    pack_asked: std::collections::HashSet<String>,
+    /// Versions the player plays without their content pack this run (asked at PLAY).
+    pack_play_without: std::collections::HashSet<String>,
+    /// The version the game-files question is about.
+    pack_repair: Option<String>,
     /// PC or Quest, on the Play and the Install page alike.
     platform: Platform,
     quest_conn: QuestConn,
@@ -1141,6 +1156,104 @@ impl Dashboard {
             };
             tx.send(Msg::SlotGone(id, lead));
         });
+    }
+
+    /// The selected version's content pack: whether the game data it needs is as it
+    /// shipped, on a worker, again whenever the mods changed (a pack installed, a repair).
+    /// When not, the player is asked once a run whether to repair the game files.
+    fn check_pack_data_soon(&mut self, ctx: &egui::Context) {
+        let Target::Installed(v) = self.target() else {
+            return;
+        };
+        let gen = self.mods.generation();
+        if self.demo || v.publisher_lock.is_some() || self.pack_checked.get(&v.id) == Some(&gen) {
+            return;
+        }
+        self.pack_checked.insert(v.id.clone(), gen);
+        self.worker.spawn(ctx, move |tx| {
+            if let Some((pack, manifest)) = crate::core::launcher::mods::pack_data_changed(&v) {
+                tracing::warn!(
+                    "{}: {pack} stays off: the game's manifest {manifest} isn't as it shipped",
+                    v.id
+                );
+                tx.send(Msg::PackDataChanged(v.id.clone(), pack));
+            }
+        });
+    }
+
+    /// The catalogue entry `v` was installed from, or for a copy elsewhere that isn't
+    /// one yet, the live build's.
+    pub(super) fn entry_for(&self, v: &InstalledVersion) -> Option<VersionEntry> {
+        let from = v.catalog_id.as_deref().and_then(|id| {
+            self.catalog
+                .as_ref()?
+                .versions
+                .iter()
+                .find(|e| e.id == id)
+                .cloned()
+        });
+        from.or_else(|| {
+            (v.external && v.catalog_id.is_none() && v.publisher_lock.is_none())
+                .then(|| self.live_entry())
+                .flatten()
+        })
+    }
+
+    /// The live PC build's catalogue entry, once the catalogue is read.
+    fn live_entry(&self) -> Option<VersionEntry> {
+        use crate::core::launcher::catalog::Hosted;
+        self.catalog
+            .as_ref()?
+            .versions
+            .iter()
+            .find(|e| {
+                e.platform == Platform::Pc
+                    && e.hosted == Some(Hosted::Live)
+                    && e.files_manifest.is_some()
+            })
+            .cloned()
+    }
+
+    /// Copies elsewhere the launcher knows only by their folder (imported from the Meta
+    /// app, added by hand): once a run, on a worker, whether each is the live build. One
+    /// that is gets what a new install gets (`ExistingIsLive`): its files checked and
+    /// repaired, its update, and it counts as that build from then on.
+    fn check_existing_soon(&mut self, ctx: &egui::Context) {
+        if self.demo {
+            return;
+        }
+        let Some(entry) = self.live_entry() else {
+            return;
+        };
+        let due: Vec<InstalledVersion> = self
+            .state
+            .versions
+            .iter()
+            .filter(|v| v.external && v.catalog_id.is_none() && v.publisher_lock.is_none())
+            .filter(|v| !self.existing_checked.contains(&v.id) && v.present())
+            .cloned()
+            .collect();
+        for v in due {
+            self.existing_checked.insert(v.id.clone());
+            let entry = entry.clone();
+            self.worker.spawn(
+                ctx,
+                move |tx| match crate::core::launcher::versions::is_build(&entry, &v.root) {
+                    Ok(true) => {
+                        tracing::info!(
+                            "{}: {} is the live build: checking it as an install",
+                            v.id,
+                            v.root
+                        );
+                        tx.send(Msg::ExistingIsLive(v.id.clone()));
+                    }
+                    Ok(false) => {
+                        tracing::info!("{}: {} isn't the live build: left as it is", v.id, v.root)
+                    }
+                    Err(e) => tracing::warn!("{}: couldn't tell its build: {e:#}", v.id),
+                },
+            );
+        }
     }
 
     /// Revive (for SteamVR) is known not to be installed.
@@ -2227,6 +2340,8 @@ impl Dashboard {
                 self.launched = None;
             }
         }
+        self.check_existing_soon(ctx);
+        self.check_pack_data_soon(ctx);
         // A start's preparation kept the player's own config as .old: said once.
         for n in crate::core::launcher::mods::take_notices() {
             self.notify(&n);
@@ -2428,6 +2543,16 @@ impl Dashboard {
                     }
                 }
                 Msg::SlotGone(id, lead) => play::ask_nevr_blocked(self, &id, &lead),
+                Msg::PackDataChanged(id, pack) => {
+                    if self.pack_asked.insert(id.clone()) {
+                        play::ask_pack_repair(self, &id, &pack, false);
+                    }
+                }
+                Msg::ExistingIsLive(id) => {
+                    if let Some(e) = self.live_entry() {
+                        versions::check_existing(self, ctx, e, &id);
+                    }
+                }
                 Msg::LogsUploaded(r) => {
                     self.uploading_logs = false;
                     match r {
@@ -2690,6 +2815,8 @@ impl Dashboard {
             }
             JobResult::Reinstalled(mut r) => {
                 let name = r.version.name.clone();
+                // A content pack waiting for the game's files is looked at again.
+                self.mods.changed();
                 crate::core::updates::after_update(&mut r.version, r.update_failed.is_none());
                 self.updates.check_soon();
                 self.state.upsert(r.version);
