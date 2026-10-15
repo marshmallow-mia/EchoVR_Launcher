@@ -232,7 +232,7 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
 
     std::fs::create_dir_all(&job.dir).with_context(|| {
         format!(
-            "Couldn't create the folder {}.\nIt may need administrator rights -- pick a different folder or restart the installer as administrator.",
+            "Couldn't create the folder {}.\nWindows may let only administrators write there: choose another folder for your library (the folder line on the Install page).",
             job.dir.display()
         )
     })?;

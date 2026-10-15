@@ -48,18 +48,22 @@ pub enum Request {
         exe: Option<String>,
         args: String,
     },
-    /// Put the licence patch at this path, whose SHA-256 is this, into the Meta library's
-    /// Echo VR.
+    /// Put the licence patch at this path, whose SHA-256 is this, into an Echo VR: the
+    /// Meta library's (`bin: None`), or an installed version's bin folder.
     ApplyPatch {
         dll: String,
         sha256: String,
+        bin: Option<String>,
     },
-    /// Take the licence patch off the Meta library's Echo VR.
-    RemovePatch,
-    /// Put EchoXR (its pinned zip, at this path) into the Meta library's Echo VR, and have
-    /// it make its copy of the game there.
+    /// Take the licence patch off an Echo VR (as for `ApplyPatch`).
+    RemovePatch {
+        bin: Option<String>,
+    },
+    /// Put EchoXR (its pinned zip, at this path) into an Echo VR (as for `ApplyPatch`), and
+    /// have it make its copy of the game there.
     InstallEchoXr {
         zip: String,
+        bin: Option<String>,
     },
     /// Add this game folder (an installed version's bin folder, nothing else) to Windows
     /// Security's exclusions, so it stops taking nEVR's BugSplat64.dll away.
@@ -138,26 +142,24 @@ pub fn handle(req: &Request) -> Reply {
             Ok(()) => Reply::Ok,
             Err(e) => Reply::Err(format!("{e:#}")),
         },
-        Request::ApplyPatch { dll, sha256 } => {
-            match meta_base().and_then(|base| apply_meta_patch(&base, dll, sha256)) {
+        Request::ApplyPatch { dll, sha256, bin } => {
+            match target_bin(bin.as_deref()).and_then(|b| apply_patch_in(&b, dll, sha256)) {
                 Ok(()) => Reply::Ok,
                 Err(e) => Reply::Err(format!("{e:#}")),
             }
         }
-        Request::RemovePatch => match meta_base()
-            .and_then(|base| meta_bin_in(&base))
-            .and_then(|bin| super::launcher::patch::remove(&bin))
-        {
-            Ok(()) => Reply::Ok,
-            Err(e) => Reply::Err(format!("{e:#}")),
-        },
-        Request::InstallEchoXr { zip } => match meta_base()
-            .and_then(|base| meta_bin_in(&base))
-            .and_then(|bin| install_meta_echoxr(&bin, zip))
-        {
-            Ok(()) => Reply::Ok,
-            Err(e) => Reply::Err(format!("{e:#}")),
-        },
+        Request::RemovePatch { bin } => {
+            match target_bin(bin.as_deref()).and_then(|bin| super::launcher::patch::remove(&bin)) {
+                Ok(()) => Reply::Ok,
+                Err(e) => Reply::Err(format!("{e:#}")),
+            }
+        }
+        Request::InstallEchoXr { zip, bin } => {
+            match target_bin(bin.as_deref()).and_then(|bin| install_meta_echoxr(&bin, zip)) {
+                Ok(()) => Reply::Ok,
+                Err(e) => Reply::Err(format!("{e:#}")),
+            }
+        }
         Request::ExcludeFromDefender { dir } => {
             let bins: Vec<std::path::PathBuf> = super::launcher::store::LauncherState::load()
                 .versions
@@ -309,6 +311,28 @@ fn within(game: &Path, path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The Echo VR bin folder a request is about: the Meta library's (`None`, found from its
+/// administrator-only registry key), or `bin` when it is an installed version's (the
+/// launcher's own list) with the game's executable in it.
+fn target_bin(bin: Option<&str>) -> Result<std::path::PathBuf> {
+    let Some(bin) = bin else {
+        return meta_base().and_then(|base| meta_bin_in(&base));
+    };
+    let bins: Vec<std::path::PathBuf> = super::launcher::store::LauncherState::load()
+        .versions
+        .iter()
+        .map(|v| v.bin_dir())
+        .collect();
+    let dir = known_bin(bin, &bins)?;
+    if !super::paths::GAME_EXES
+        .iter()
+        .any(|e| dir.join(e).is_file())
+    {
+        bail!("{} holds no Echo VR", dir.display());
+    }
+    Ok(dir)
+}
+
 /// `dir` when it is one of `bins` (the installed versions' bin folders), as it is on disk:
 /// the helper adds no other folder to Windows Security's exclusions.
 fn known_bin(dir: &str, bins: &[std::path::PathBuf]) -> Result<std::path::PathBuf> {
@@ -400,12 +424,11 @@ fn meta_bin_in(base: &str) -> Result<std::path::PathBuf> {
     Ok(bin)
 }
 
-/// The helper's licence patch: the DLL at `dll` into the Meta library's Echo VR under
-/// `base`, if it is a DLL of a sane size named like the patch and hashes to `sha256` (what
-/// the app downloaded). The file is held against writes from the check to the copy.
-fn apply_meta_patch(base: &str, dll: &str, sha256: &str) -> Result<()> {
+/// The helper's licence patch: the DLL at `dll` into the Echo VR in `bin`, if it is a
+/// DLL of a sane size named like the patch and hashes to `sha256` (what the app
+/// downloaded). The file is held against writes from the check to the copy.
+fn apply_patch_in(bin: &Path, dll: &str, sha256: &str) -> Result<()> {
     use std::io::{Read, Seek};
-    let bin = meta_bin_in(base)?;
     let path = std::path::Path::new(dll);
     let named = path
         .file_name()
@@ -427,7 +450,7 @@ fn apply_meta_patch(base: &str, dll: &str, sha256: &str) -> Result<()> {
         bail!("refusing a licence patch that changed since it was downloaded");
     }
     f.rewind()?;
-    super::launcher::patch::install(&bin, &mut f)
+    super::launcher::patch::install(bin, &mut f)
 }
 
 /// Opens `path` for reading, denying writes to everyone else while it is open (Windows).
@@ -548,27 +571,32 @@ pub fn set_library_entry(
     }
 }
 
+/// How a request names the Echo VR in `bin`: none for the Meta library's (the helper
+/// finds that one itself), else the folder (one of the launcher's versions').
+fn bin_for_helper(bin: &std::path::Path) -> Option<String> {
+    (!is_meta_bin(bin)).then(|| bin.to_string_lossy().into_owned())
+}
+
 /// Puts the licence patch `dll` into the game's bin folder `bin`. When that needs
-/// administrator rights, the helper does it (after `consent`) for the Meta library's Echo
-/// VR; any other folder can't be patched without them.
+/// administrator rights, the helper does it (after `consent`).
 pub fn apply_patch(
     bin: &std::path::Path,
     dll: &std::path::Path,
     consent: &mut dyn FnMut() -> bool,
 ) -> Result<()> {
     match super::launcher::patch::apply(bin, dll) {
-        Err(e) if super::revive::needs_elevation(&e) && is_meta_bin(bin) => {
+        Err(e) if super::revive::needs_elevation(&e) => {
             tracing::info!("licence patch needs elevation ({e:#}); using the helper");
             let req = Request::ApplyPatch {
                 dll: dll.to_string_lossy().into(),
                 sha256: super::download::sha256_file(dll)?,
+                bin: bin_for_helper(bin),
             };
             match broker::request(&req, consent)? {
                 Reply::Err(m) => bail!("{m}"),
                 _ => Ok(()),
             }
         }
-        Err(e) if super::revive::needs_elevation(&e) => Err(e.context(NEEDS_ADMIN)),
         r => r,
     }
 }
@@ -576,35 +604,36 @@ pub fn apply_patch(
 /// Takes the licence patch off the game's bin folder `bin`, as [`apply_patch`] puts it on.
 pub fn remove_patch(bin: &std::path::Path, consent: &mut dyn FnMut() -> bool) -> Result<()> {
     match super::launcher::patch::remove(bin) {
-        Err(e) if super::revive::needs_elevation(&e) && is_meta_bin(bin) => {
+        Err(e) if super::revive::needs_elevation(&e) => {
             tracing::info!("removing the licence patch needs elevation ({e:#}); using the helper");
-            match broker::request(&Request::RemovePatch, consent)? {
-                Reply::Err(m) => bail!("{m}"),
-                _ => Ok(()),
-            }
-        }
-        Err(e) if super::revive::needs_elevation(&e) => Err(e.context(NEEDS_ADMIN)),
-        r => r,
-    }
-}
-
-/// Gets the game's bin folder `bin` ready for EchoXR: EchoXR in it (with its Platform SDK
-/// stand-in), and its copy of the game current. When that needs administrator rights, the
-/// helper does it (after `consent`) for the Meta library's Echo VR; any other folder can't
-/// without them.
-pub fn prepare_echoxr(bin: &std::path::Path, consent: &mut dyn FnMut() -> bool) -> Result<()> {
-    match super::echoxr::prepare(bin) {
-        Err(e) if super::revive::needs_elevation(&e) && is_meta_bin(bin) => {
-            tracing::info!("EchoXR needs elevation ({e:#}); using the helper");
-            let req = Request::InstallEchoXr {
-                zip: super::echoxr::zip_file().to_string_lossy().into(),
+            let req = Request::RemovePatch {
+                bin: bin_for_helper(bin),
             };
             match broker::request(&req, consent)? {
                 Reply::Err(m) => bail!("{m}"),
                 _ => Ok(()),
             }
         }
-        Err(e) if super::revive::needs_elevation(&e) => Err(e.context(NEEDS_ADMIN)),
+        r => r,
+    }
+}
+
+/// Gets the game's bin folder `bin` ready for EchoXR: EchoXR in it (with its Platform SDK
+/// stand-in), and its copy of the game current. When that needs administrator rights, the
+/// helper does it (after `consent`).
+pub fn prepare_echoxr(bin: &std::path::Path, consent: &mut dyn FnMut() -> bool) -> Result<()> {
+    match super::echoxr::prepare(bin) {
+        Err(e) if super::revive::needs_elevation(&e) => {
+            tracing::info!("EchoXR needs elevation ({e:#}); using the helper");
+            let req = Request::InstallEchoXr {
+                zip: super::echoxr::zip_file().to_string_lossy().into(),
+                bin: bin_for_helper(bin),
+            };
+            match broker::request(&req, consent)? {
+                Reply::Err(m) => bail!("{m}"),
+                _ => Ok(()),
+            }
+        }
         r => r,
     }
 }
@@ -643,9 +672,6 @@ pub fn repair_game_files(
         _ => Ok(()),
     }
 }
-
-const NEEDS_ADMIN: &str =
-    "This folder needs administrator rights: run the launcher as administrator, or install Echo VR somewhere else";
 
 /// Whether `bin` is the Meta library's Echo VR (the only folder the helper patches).
 fn is_meta_bin(bin: &std::path::Path) -> bool {
@@ -1170,23 +1196,33 @@ mod tests {
         let path = dll.to_string_lossy().into_owned();
 
         // Changed since the download, not a DLL, another name, a relative path.
-        assert!(apply_meta_patch(&base, &path, &sha(b"MZ other")).is_err());
+        assert!(meta_bin_in(&base)
+            .and_then(|b| apply_patch_in(&b, &path, &sha(b"MZ other")))
+            .is_err());
         let not_dll = dl.join("x/pnsovr.dll");
         std::fs::create_dir_all(not_dll.parent().unwrap()).unwrap();
         std::fs::write(&not_dll, b"#!/bin/sh").unwrap();
         let not_dll = not_dll.to_string_lossy().into_owned();
-        assert!(apply_meta_patch(&base, &not_dll, &sha(b"#!/bin/sh")).is_err());
+        assert!(meta_bin_in(&base)
+            .and_then(|b| apply_patch_in(&b, &not_dll, &sha(b"#!/bin/sh")))
+            .is_err());
         let other = dl.join("evil.dll");
         std::fs::write(&other, b"MZ patched").unwrap();
         let other = other.to_string_lossy().into_owned();
-        assert!(apply_meta_patch(&base, &other, &sha(b"MZ patched")).is_err());
-        assert!(apply_meta_patch(&base, "pnsovr.dll", &sha(b"MZ patched")).is_err());
+        assert!(meta_bin_in(&base)
+            .and_then(|b| apply_patch_in(&b, &other, &sha(b"MZ patched")))
+            .is_err());
+        assert!(meta_bin_in(&base)
+            .and_then(|b| apply_patch_in(&b, "pnsovr.dll", &sha(b"MZ patched")))
+            .is_err());
         assert_eq!(
             std::fs::read(bin.join("pnsovr.dll")).unwrap(),
             b"MZ original"
         );
 
-        apply_meta_patch(&base, &path, &sha(b"MZ patched")).unwrap();
+        meta_bin_in(&base)
+            .and_then(|b| apply_patch_in(&b, &path, &sha(b"MZ patched")))
+            .unwrap();
         assert_eq!(
             std::fs::read(bin.join("pnsovr.dll")).unwrap(),
             b"MZ patched"
@@ -1198,7 +1234,9 @@ mod tests {
 
         // No Echo VR in the library: nothing to patch.
         std::fs::remove_file(bin.join("echovr.exe")).unwrap();
-        assert!(apply_meta_patch(&base, &path, &sha(b"MZ patched")).is_err());
+        assert!(meta_bin_in(&base)
+            .and_then(|b| apply_patch_in(&b, &path, &sha(b"MZ patched")))
+            .is_err());
     }
 
     #[cfg(unix)]
