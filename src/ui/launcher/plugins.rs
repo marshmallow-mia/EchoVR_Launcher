@@ -2546,37 +2546,56 @@ fn installed_card(
     let side = dz(34.0);
     let more = kit.rect(x + w - pad - side + dz(6.0), y + pad - dz(4.0), side, side);
     let pin_r = more.translate(egui::vec2(-side - dz(4.0), 0.0));
-    let icon_button = |kit: &mut Kit, key: &str, r: egui::Rect, icon: Icon, bright: bool, tip: &str| {
-        let (resp, t, _) = kit.hot(key, r, true, tip);
-        if t > 0.01 {
-            kit.ui
-                .painter()
-                .rect_filled(r, dz(6.0), egui::Color32::from_white_alpha((24.0 * t) as u8));
-        }
-        let s = dz(24.0);
-        let rest = if bright {
-            egui::Color32::from_gray(225)
-        } else {
-            design::GREY
+    let icon_button =
+        |kit: &mut Kit, key: &str, r: egui::Rect, icon: Icon, bright: bool, tip: &str| {
+            let (resp, t, _) = kit.hot(key, r, true, tip);
+            if t > 0.01 {
+                kit.ui.painter().rect_filled(
+                    r,
+                    dz(6.0),
+                    egui::Color32::from_white_alpha((24.0 * t) as u8),
+                );
+            }
+            let s = dz(24.0);
+            let rest = if bright {
+                egui::Color32::from_gray(225)
+            } else {
+                design::GREY
+            };
+            icon_at(
+                kit.ui.painter(),
+                icon,
+                r.center() - egui::vec2(s, s) / 2.0,
+                s,
+                crate::ui::style::mix(rest, design::TEXT, t),
+            );
+            resp
         };
-        icon_at(
-            kit.ui.painter(),
-            icon,
-            r.center() - egui::vec2(s, s) / 2.0,
-            s,
-            crate::ui::style::mix(rest, design::TEXT, t),
-        );
-        resp
-    };
     let (pin_icon, pin_tip) = if pin {
         (Icon::Pinned, "In the rail: click to unpin it")
     } else {
         (Icon::Pin, "Pin it to the rail")
     };
-    if icon_button(kit, &format!("plugins-pin-{id}"), pin_r, pin_icon, pin, pin_tip).clicked {
+    if icon_button(
+        kit,
+        &format!("plugins-pin-{id}"),
+        pin_r,
+        pin_icon,
+        pin,
+        pin_tip,
+    )
+    .clicked
+    {
         set_pinned(d, &id, !pin);
     }
-    let more_resp = icon_button(kit, &format!("plugins-more-{id}"), more, Icon::More, true, "More");
+    let more_resp = icon_button(
+        kit,
+        &format!("plugins-more-{id}"),
+        more,
+        Icon::More,
+        true,
+        "More",
+    );
     if (more_resp.clicked && !(menu_was_open && d.plugins.card_menu.as_deref() == Some(&id)))
         || resp.secondary
     {
@@ -2716,17 +2735,22 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let wait = (!idle).then_some("Wait: a plugin is being installed or updated");
     let rows = [
         match &update {
-            Some(e) => MenuItem::row(&format!("Update to {}", e.version), "Get the catalogue's version")
-                .unless(wait),
+            Some(e) => MenuItem::row(
+                &format!("Update to {}", e.version),
+                "Get the catalogue's version",
+            )
+            .unless(wait),
             None => MenuItem::row("Update", "").unless(Some("It's up to date")),
         },
         if pin {
-            MenuItem::row("Unpin from the rail", "Its tab leaves the rail: open it from here")
+            MenuItem::row(
+                "Unpin from the rail",
+                "Its tab leaves the rail: open it from here",
+            )
         } else {
             MenuItem::row("Pin to the rail", "Its tab goes in the rail")
         },
-        MenuItem::row("Remove", "Remove it and its settings")
-            .unless(wait),
+        MenuItem::row("Remove", "Remove it and its settings").unless(wait),
         MenuItem::Divider,
         MenuItem::row("Homepage", "Its page in your browser")
             .unless(homepage.is_empty().then_some("It names no homepage")),
@@ -2777,9 +2801,18 @@ fn demo() -> PluginsUi {
     let mut catalog = PluginCatalog::builtin();
     // The library's other cards: the plugins there are, one from a dev folder.
     for (text, dev) in [
-        (include_str!("../../../docs/plugins/game-server/plugin.json"), false),
-        (include_str!("../../../docs/plugins/server-host/plugin.json"), false),
-        (include_str!("../../../docs/plugins/controllers/plugin.json"), true),
+        (
+            include_str!("../../../docs/plugins/game-server/plugin.json"),
+            false,
+        ),
+        (
+            include_str!("../../../docs/plugins/server-host/plugin.json"),
+            false,
+        ),
+        (
+            include_str!("../../../docs/plugins/controllers/plugin.json"),
+            true,
+        ),
     ] {
         if let Some(p) = core::read_description(text).0 {
             catalog.plugins.push(core::PluginEntry {
@@ -3051,7 +3084,14 @@ mod tests {
         let pinned = [3, 0, 1];
         assert_eq!(
             library_cards(&pinned, 4, 2, Filter::All),
-            [Installed(3), Installed(0), Installed(1), Installed(2), Offered(0), Offered(1)]
+            [
+                Installed(3),
+                Installed(0),
+                Installed(1),
+                Installed(2),
+                Offered(0),
+                Offered(1)
+            ]
         );
         assert_eq!(
             library_cards(&pinned, 4, 2, Filter::Installed),
@@ -3109,7 +3149,10 @@ mod tests {
         assert!(w >= dz(LIB_CARD_W));
         assert!((cols as f32 * w + (cols - 1) as f32 * dz(LIB_GAP) - normal).abs() < 0.01);
         assert_eq!(library_grid(10.0).0, 1);
-        assert!(library_grid(normal + 600.0).0 > 6, "a wider window, more columns");
+        assert!(
+            library_grid(normal + 600.0).0 > 6,
+            "a wider window, more columns"
+        );
     }
 
     /// The rail's plugin tabs: the player's order, then ones installed since; unpinned

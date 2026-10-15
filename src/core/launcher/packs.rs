@@ -23,8 +23,6 @@ use super::catalog;
 pub const OVERLAY_PLUGIN: &str = "NvrContentOverlay.dll";
 /// Where content packs go, beside `plugins/` in `bin/win10`.
 pub const CONTENT: &str = "content";
-/// The live build's data folder, relative to the game's folder.
-const DATA_DIR: &str = "_data/5932408047/rad15/win10";
 
 /// A catalogue entry's pack.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -211,28 +209,82 @@ fn game_dir(bin: &Path) -> Option<&Path> {
     bin.parent()?.parent()
 }
 
-/// Whether something repacked the game data of the game in `bin`: a manifest with its
-/// stock copy beside it (`.bak`), an old EchoCombat install's records, or script DLLs
-/// with their originals beside them. Content packs need the stock files (the overlay
-/// checks them and serves nothing otherwise): Install on that version checks and
-/// repairs them.
-pub fn repacked(bin: &Path) -> bool {
-    let manifests = game_dir(bin).map(|g| g.join(DATA_DIR).join("manifests"));
-    let any_in = |dir: Option<PathBuf>, f: &dyn Fn(&str) -> bool| {
-        dir.and_then(|d| std::fs::read_dir(d).ok())
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .any(|e| f(&e.file_name().to_string_lossy().to_ascii_lowercase()))
-    };
-    any_in(manifests, &|n| {
-        n.ends_with(".bak") || n.contains(".echocombat")
-    }) || any_in(Some(bin.join("scripts")), &|n| n.ends_with(".dll.orig"))
+/// What a content pack's `content.json` says about the game it was built from: its data
+/// folder and, per manifest it replaces, the stock manifest's sha256.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ContentJson {
+    data_dir: String,
+    manifests: Vec<StockManifest>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct StockManifest {
+    package: String,
+    stock_sha256: String,
+}
+
+/// Pure: a relative path of plain names (`/`), as the overlay takes them.
+fn is_plain_path(path: &str) -> bool {
+    !path.is_empty()
+        && path
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && c != ".." && !c.contains(['\\', ':']))
+}
+
+fn is_hex(s: &str, len: usize) -> bool {
+    s.len() == len && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// The game's manifest that content pack `content` in `bin` needs as it shipped and that
+/// isn't (its package id), as NvrContentOverlay checks it before serving the pack: an
+/// older installer repacked the game's data, and the overlay would serve nothing. `None`:
+/// all as shipped, or nothing to check (no readable `content.json`; the overlay says why).
+/// The manifests are hashed again only when their size or time changed.
+pub fn changed_data(bin: &Path, content: &str) -> Option<String> {
+    let text =
+        std::fs::read_to_string(bin.join(CONTENT).join(content).join("content.json")).ok()?;
+    let pack: ContentJson = serde_json::from_str(&text).ok()?;
+    if !is_plain_path(&pack.data_dir) {
+        return None;
+    }
+    let manifests = game_dir(bin)?.join(&pack.data_dir).join("manifests");
+    pack.manifests
+        .iter()
+        .filter(|m| is_hex(&m.package, 16) && is_hex(&m.stock_sha256, 64))
+        .find(|m| {
+            !cached_sha256(&manifests.join(&m.package))
+                .is_some_and(|h| h.eq_ignore_ascii_case(&m.stock_sha256))
+        })
+        .map(|m| m.package.clone())
+}
+
+/// `path`'s sha256, kept while its size and time stay the same. `None`: it can't be read.
+fn cached_sha256(path: &Path) -> Option<String> {
+    type Seen = (u64, std::time::SystemTime, String);
+    static SEEN: std::sync::Mutex<std::collections::BTreeMap<PathBuf, Seen>> =
+        std::sync::Mutex::new(std::collections::BTreeMap::new());
+    let meta = std::fs::metadata(path).ok()?;
+    let stamp = (meta.len(), meta.modified().ok()?);
+    if let Some((l, t, sha)) = SEEN.lock().unwrap_or_else(|e| e.into_inner()).get(path) {
+        if (*l, *t) == stamp {
+            return Some(sha.clone());
+        }
+    }
+    let sha = crate::core::download::sha256_file(path).ok()?;
+    SEEN.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), (stamp.0, stamp.1, sha.clone()));
+    Some(sha)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The live build's data folder, relative to the game's folder.
+    const DATA_DIR: &str = "_data/5932408047/rad15/win10";
     use std::io::Write;
 
     fn spec() -> PackSpec {
@@ -349,22 +401,47 @@ mod tests {
     }
 
     #[test]
-    fn sees_a_repacked_install() {
+    fn sees_game_data_that_isnt_as_it_shipped() {
         let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("ready-at-dawn-echo-arena/bin/win10");
-        let manifests = dir
-            .path()
-            .join("ready-at-dawn-echo-arena")
-            .join(DATA_DIR)
-            .join("manifests");
-        std::fs::create_dir_all(bin.join("scripts")).unwrap();
+        let game = dir.path().join("ready-at-dawn-echo-arena");
+        let bin = game.join("bin/win10");
+        let manifests = game.join(DATA_DIR).join("manifests");
+        let pack = bin.join(CONTENT).join("test");
+        std::fs::create_dir_all(&pack).unwrap();
         std::fs::create_dir_all(&manifests).unwrap();
-        std::fs::write(manifests.join("48037dc70b0ecab2"), b"m").unwrap();
-        assert!(!repacked(&bin));
-        std::fs::write(bin.join("scripts/0123456789abcdef.dll.orig"), b"o").unwrap();
-        assert!(repacked(&bin));
-        std::fs::remove_file(bin.join("scripts/0123456789abcdef.dll.orig")).unwrap();
-        std::fs::write(manifests.join("48037dc70b0ecab2.bak"), b"m").unwrap();
-        assert!(repacked(&bin));
+        let stock = manifests.join("48037dc70b0ecab2");
+        std::fs::write(&stock, b"stock").unwrap();
+        let sha = crate::core::download::sha256_file(&stock).unwrap();
+        let json = |data_dir: &str| {
+            format!(
+                r#"{{"format": 1, "id": "test", "data_dir": "{data_dir}",
+                    "manifests": [{{"package": "48037dc70b0ecab2", "stock_sha256": "{}"}}]}}"#,
+                sha.to_uppercase()
+            )
+        };
+        assert_eq!(
+            changed_data(&bin, "test"),
+            None,
+            "no content.json: nothing to check"
+        );
+        std::fs::write(pack.join("content.json"), json(DATA_DIR)).unwrap();
+        assert_eq!(changed_data(&bin, "test"), None);
+        // An old installer's stock copy beside it doesn't matter.
+        std::fs::write(manifests.join("48037dc70b0ecab2.bak"), b"stock").unwrap();
+        assert_eq!(changed_data(&bin, "test"), None);
+        // Repacked (another size, so the cache sees it).
+        std::fs::write(&stock, b"repacked").unwrap();
+        assert_eq!(
+            changed_data(&bin, "test").as_deref(),
+            Some("48037dc70b0ecab2")
+        );
+        std::fs::remove_file(&stock).unwrap();
+        assert_eq!(
+            changed_data(&bin, "test").as_deref(),
+            Some("48037dc70b0ecab2")
+        );
+        // A data folder climbing out isn't followed.
+        std::fs::write(pack.join("content.json"), json("../x")).unwrap();
+        assert_eq!(changed_data(&bin, "test"), None);
     }
 }

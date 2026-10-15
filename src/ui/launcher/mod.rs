@@ -3280,10 +3280,30 @@ impl Dashboard {
             scrolls: false,
         };
         let mut items = vec![
-            row(Page::Play, RailIcon::Image("icon_play.png", 24.0), lay.game[0], false),
-            row(Page::Install, RailIcon::Vector(Icon::Download, 30.0), lay.game[1], false),
-            row(Page::Mods, RailIcon::Vector(Icon::Mods, 30.0), lay.game[2], false),
-            row(Page::Servers, RailIcon::Vector(Icon::Globe, 33.0), lay.game[3], false),
+            row(
+                Page::Play,
+                RailIcon::Image("icon_play.png", 24.0),
+                lay.game[0],
+                false,
+            ),
+            row(
+                Page::Install,
+                RailIcon::Vector(Icon::Download, 30.0),
+                lay.game[1],
+                false,
+            ),
+            row(
+                Page::Mods,
+                RailIcon::Vector(Icon::Mods, 30.0),
+                lay.game[2],
+                false,
+            ),
+            row(
+                Page::Servers,
+                RailIcon::Vector(Icon::Globe, 33.0),
+                lay.game[3],
+                false,
+            ),
             row(
                 Page::EchoVrce,
                 RailIcon::Image("icon_echovrce.png", 30.0),
@@ -3323,7 +3343,11 @@ impl Dashboard {
         ));
         // Where a page shows in the rail: an unpinned or scrolled-away tab's under the
         // Plugins page.
-        let shows = |p: Page| items.iter().any(|r| r.page == p && (!r.scrolls || in_view(r.cy)));
+        let shows = |p: Page| {
+            items
+                .iter()
+                .any(|r| r.page == p && (!r.scrolls || in_view(r.cy)))
+        };
         let slot_of = |p: Page| match p {
             Page::Plugin(_) if !shows(p) => Page::Plugins,
             p => p,
@@ -3379,7 +3403,11 @@ impl Dashboard {
                 kit.ui.set_clip_rect(clip.intersect(area));
             }
             let selected = current == r.page;
-            let half = if r.small { RAIL_PITCH / 2.0 - 1.0 } else { 26.5 };
+            let half = if r.small {
+                RAIL_PITCH / 2.0 - 1.0
+            } else {
+                26.5
+            };
             // Unfolded, the whole row answers, the name as the icon.
             let mut name_hit = crate::ui::style::Resp::default();
             if let Some((edge, _)) = names {
@@ -3587,7 +3615,10 @@ impl Dashboard {
             MenuItem::row("Plugin details", "Its card on the Plugins page"),
         ];
         let x = kit.window().min.x + width + dz(8.0);
-        let y = kit.drect(Dr::new(0.0, cy - RAIL_PITCH / 2.0, 0.0, 0.0)).min.y;
+        let y = kit
+            .drect(Dr::new(0.0, cy - RAIL_PITCH / 2.0, 0.0, 0.0))
+            .min
+            .y;
         let anchor = egui::Rect::from_min_size(egui::pos2(x, y - 6.0), egui::vec2(280.0, 0.0));
         match kit.menu_at(RAIL_TAB_MENU, anchor, &rows) {
             Some(0) => plugins::set_pinned(self, &id, false),
@@ -4231,7 +4262,10 @@ mod tests {
                 let shown = l.area.1 - l.area.0;
                 assert!(shown >= 0.0);
                 let all = tabs as f32 * RAIL_PITCH;
-                assert!((shown + l.scroll_max - all).abs() < 1e-3, "{tabs}, {dy}: {l:?}");
+                assert!(
+                    (shown + l.scroll_max - all).abs() < 1e-3,
+                    "{tabs}, {dy}: {l:?}"
+                );
                 assert!((l.hub - l.area.1 - RAIL_PITCH / 2.0).abs() < 1e-3);
             }
         }

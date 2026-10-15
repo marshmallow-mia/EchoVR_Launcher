@@ -1148,7 +1148,8 @@ mod tests {
                 .map(|c| c.title.as_str())
                 .collect()
         };
-        let old = json!({"launcher": {"features": {"server": true, "echorelay": true, "host": true}}});
+        let old =
+            json!({"launcher": {"features": {"server": true, "echorelay": true, "host": true}}});
         assert_eq!(shown(&old), ["Needs a newer launcher", "How it works"]);
         let new = json!({"launcher": {"features": {"form": true, "presets": true}}});
         assert!(!shown(&new).contains(&"Needs a newer launcher"));

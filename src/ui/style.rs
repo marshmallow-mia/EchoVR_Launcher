@@ -289,7 +289,12 @@ pub fn icon_at(p: &egui::Painter, icon: Icon, o: Pos2, s: f32, c: Color32) {
         }
         Icon::Pin | Icon::Pinned => {
             // A pushpin, upright: its head, its body widening into a collar, the needle.
-            let head = [pt(0.38, 0.14), pt(0.62, 0.14), pt(0.62, 0.42), pt(0.38, 0.42)];
+            let head = [
+                pt(0.38, 0.14),
+                pt(0.62, 0.14),
+                pt(0.62, 0.42),
+                pt(0.38, 0.42),
+            ];
             let collar = [pt(0.38, 0.42), pt(0.62, 0.42), pt(0.78, 0.6), pt(0.22, 0.6)];
             if icon == Icon::Pinned {
                 for part in [head.to_vec(), collar.to_vec()] {

@@ -462,7 +462,12 @@ impl Kit<'_> {
         tip: &str,
     ) -> Resp {
         let sq = if small {
-            Dr::new(47.0 - RAIL_SMALL_SQ / 2.0, cy - RAIL_SMALL_SQ / 2.0, RAIL_SMALL_SQ, RAIL_SMALL_SQ)
+            Dr::new(
+                47.0 - RAIL_SMALL_SQ / 2.0,
+                cy - RAIL_SMALL_SQ / 2.0,
+                RAIL_SMALL_SQ,
+                RAIL_SMALL_SQ,
+            )
         } else {
             Dr::new(21.0, cy - 26.5, 52.0, 53.0)
         };

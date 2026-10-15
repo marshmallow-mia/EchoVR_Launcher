@@ -741,8 +741,8 @@ pub struct ModView {
     /// The loader in the slot loads plugins early (EchoLoader always does, nEVR from its
     /// early load pass on): content packs work.
     pub loads_early: bool,
-    /// Something repacked the game data (an old installer): content packs need the stock
-    /// files.
+    /// The game data the pack that is on needs as it shipped isn't (an older installer
+    /// repacked it): the pack stays off until the game files are repaired.
     pub repacked: bool,
 }
 
@@ -873,7 +873,11 @@ pub fn read(v: &InstalledVersion) -> ModView {
             })
             .collect(),
         loads_early,
-        repacked: packs::repacked(&bin),
+        repacked: overlay
+            .packs()
+            .iter()
+            .find(|p| p.enabled)
+            .is_some_and(|p| packs::changed_data(&bin, &p.content).is_some()),
     }
 }
 
@@ -1315,8 +1319,9 @@ fn config_lines(
 }
 
 /// The pack served at this start: the first one on, when its files are all there, the
-/// overlay plugin is there and its loader loads plugins early (EchoLoader, `echoloader`,
-/// always does; nEVR from its early load pass on). Otherwise none, logged.
+/// overlay plugin is there, its loader loads plugins early (EchoLoader, `echoloader`,
+/// always does; nEVR from its early load pass on) and the game data it replaces is as it
+/// shipped. Otherwise none, logged.
 fn served_pack(v: &InstalledVersion, overlay: &Overlay, echoloader: bool) -> Option<PackRecord> {
     let pack = overlay.packs().into_iter().find(|p| p.enabled)?;
     let bin = v.bin_dir();
@@ -1337,6 +1342,14 @@ fn served_pack(v: &InstalledVersion, overlay: &Overlay, echoloader: bool) -> Opt
             "{}: this nEVR can't load {} before the game reads its data: left out",
             pack.name,
             packs::OVERLAY_PLUGIN
+        );
+        return None;
+    }
+    // The overlay would refuse it, and the pack's plugins would run on stock data.
+    if let Some(manifest) = packs::changed_data(&bin, &pack.content) {
+        tracing::warn!(
+            "{}: the game's data isn't as it shipped (manifest {manifest}): left out; repairing the game files puts it back",
+            pack.name
         );
         return None;
     }
@@ -2717,6 +2730,51 @@ mod tests {
         prepare(&v, &Servers::default()).unwrap();
         assert!(!listed("NvrContentOverlay") && !listed("One.dll"));
         assert!(!read(&v).packs[0].present);
+    }
+
+    #[test]
+    fn serves_no_pack_on_game_data_an_old_installer_repacked() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        std::fs::write(
+            v.bin_dir().join(SLOT),
+            "MZ [NEVR.BOOT] plugin(s) marked early;  4.0.1 ",
+        )
+        .unwrap();
+        with_pack(&v);
+        let game = Path::new(&v.root).join(paths::ARENA_DIR);
+        let manifests = game.join("_data/5932408047/rad15/win10/manifests");
+        std::fs::create_dir_all(&manifests).unwrap();
+        let manifest = manifests.join("48037dc70b0ecab2");
+        std::fs::write(&manifest, "stock").unwrap();
+        let stock = download::sha256_file(&manifest).unwrap();
+        std::fs::write(
+            content_dir(&v, "test").join("content.json"),
+            format!(
+                r#"{{"data_dir": "_data/5932408047/rad15/win10",
+                    "manifests": [{{"package": "48037dc70b0ecab2", "stock_sha256": "{stock}"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
+        let listed = |name: &str| std::fs::read_to_string(&yaml).unwrap().contains(name);
+        prepare(&v, &Servers::default()).unwrap();
+        assert!(listed("NvrContentOverlay") && listed("One.dll"));
+        assert!(!read(&v).repacked);
+
+        // Repacked: neither the overlay (it would refuse) nor the pack's plugins (they
+        // would run on stock data).
+        std::fs::write(&manifest, "repacked by install.bat").unwrap();
+        prepare(&v, &Servers::default()).unwrap();
+        assert!(!listed("NvrContentOverlay") && !listed("One.dll") && !listed("Two.dll"));
+        assert!(read(&v).repacked);
+
+        // Repaired, with the old installer's .bak still beside it: served again.
+        std::fs::write(&manifest, "stock").unwrap();
+        std::fs::write(manifests.join("48037dc70b0ecab2.bak"), "stock").unwrap();
+        prepare(&v, &Servers::default()).unwrap();
+        assert!(listed("NvrContentOverlay") && listed("Two.dll"));
+        assert!(!read(&v).repacked);
     }
 
     #[test]
