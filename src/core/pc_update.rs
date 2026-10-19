@@ -77,21 +77,33 @@ pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
     let text = http::get_text(url)
         .with_context(|| format!("Could not download the update manifest ({url})"))?;
     let mut over = Vec::new();
-    if url == PC_MANIFEST_URL {
-        let channel = *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
-        for o in overlays(channel) {
-            let t = http::get_text_opt(o)
-                .with_context(|| format!("Could not download the channel's update ({o})"))?;
-            if let Some(t) = t {
-                over.push((*o, t));
-            }
+    for o in overlays_of(url) {
+        let t = http::get_text_opt(o)
+            .with_context(|| format!("Could not download the channel's update ({o})"))?;
+        if let Some(t) = t {
+            over.push((o, t));
         }
     }
     with_overlays(url, &text, &over)
 }
 
+/// The overlays the update at `url` gets: the followed channel's for the live PC update,
+/// none for any other.
+pub fn overlays_of(url: &str) -> Vec<&'static str> {
+    if url != PC_MANIFEST_URL {
+        return Vec::new();
+    }
+    let channel = *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
+    overlays(channel).to_vec()
+}
+
 /// Pure: `text` (the manifest at `url`) with the overlays `(url, text)` on top, in order.
-fn with_overlays(url: &str, text: &str, overlays: &[(&str, String)]) -> Result<(Manifest, String)> {
+/// The text is what [`fetch_manifest`] gives (and an update check hashes).
+pub(crate) fn with_overlays(
+    url: &str,
+    text: &str,
+    overlays: &[(&str, String)],
+) -> Result<(Manifest, String)> {
     let mut m = Manifest::parse(text, url)?;
     let mut all = text.to_string();
     for (o, t) in overlays {
@@ -287,6 +299,21 @@ pub fn apply_keeping(
 ) -> Result<()> {
     tracing::info!("UpdateService: downloading manifest {manifest_url}");
     let (manifest, text) = fetch_manifest(manifest_url)?;
+    apply_manifest(&manifest, &text, bin_path, skip, previous, cancel, status)
+}
+
+/// [`apply_keeping`] for a manifest at hand (`text`: what it was built from, recorded as
+/// the update's checksum): an earlier version from release.echovr.de's history too
+/// ([`super::launcher::history`]), whose files come by their checksums.
+pub fn apply_manifest(
+    manifest: &Manifest,
+    text: &str,
+    bin_path: &Path,
+    skip: &[&str],
+    previous: Option<&Path>,
+    cancel: &AtomicBool,
+    status: &mut dyn FnMut(String),
+) -> Result<()> {
     let dels: Vec<_> = manifest
         .dels()
         .filter(|e| !skipped(&e.path, skip))

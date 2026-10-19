@@ -1753,6 +1753,8 @@ impl Dashboard {
                     now: "nEVR 5.2.1".into(),
                     before: "nEVR 4.1.0".into(),
                     at: Some("2026-10-19T08:00:00Z".into()),
+                    server: false,
+                    size: None,
                 };
                 self.goback.ways = vec![
                     WayBack {
@@ -1761,6 +1763,8 @@ impl Dashboard {
                         now: "0.11.18".into(),
                         before: "0.11.17".into(),
                         at: None,
+                        server: true,
+                        size: None,
                     },
                     game.clone(),
                     WayBack {
@@ -1771,6 +1775,8 @@ impl Dashboard {
                         now: "0.3.0".into(),
                         before: "0.2.0".into(),
                         at: None,
+                        server: true,
+                        size: Some(2202),
                     },
                 ];
                 self.goback.pulled = vec![Affected {

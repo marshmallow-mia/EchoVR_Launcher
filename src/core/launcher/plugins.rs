@@ -536,6 +536,25 @@ pub fn go_back(root: &Path, id: &str) -> Result<String> {
     Ok(now.version)
 }
 
+/// Puts plugin `id` in `root` back to `e`, the version before from release.echovr.de's
+/// history (when no copy was kept): installed as an update is, the player's settings and
+/// presets kept. Returns the version it went back from (the one to hold).
+pub fn go_back_to(root: &Path, e: &PluginEntry, cancel: &AtomicBool) -> Result<String> {
+    let Some(now) = note_in(&root.join(&e.id)) else {
+        bail!("{} isn't installed.", e.name);
+    };
+    install_into(root, e, cancel, &mut |_| {})?;
+    // What the install kept is the newer version: not a way back.
+    let _ = std::fs::remove_dir_all(previous_dir(root, &e.id));
+    tracing::info!(
+        "plugin {}: back from {} to {} (from the history)",
+        e.id,
+        now.version,
+        e.version
+    );
+    Ok(now.version)
+}
+
 pub fn install(
     e: &PluginEntry,
     cancel: &AtomicBool,

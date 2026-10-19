@@ -1,13 +1,15 @@
 //! Where files on release.echovr.de are fetched from: the Bunny CDN (`cdn.echovr.de`, a copy
 //! of release.echovr.de that bunny.echo syncs every minute) first, release.echovr.de itself
-//! when the CDN fails or is behind.
+//! when the CDN fails or doesn't have the file yet.
 //!
-//! The CDN only ever serves a file whose SHA-256 the launcher knows beforehand, and the
-//! download is checked against it: a copy the sync hasn't replaced yet doesn't match and is
-//! taken from release.echovr.de instead. For the small files that name everything else (the
-//! catalogues, the update manifests, `SHA256SUMS`) the checksums come from
-//! release.echovr.de's `index.json`; the big files' checksums come from those. So the CDN
-//! can never hand out an older version than release.echovr.de has.
+//! The launcher asks the CDN only for a file whose SHA-256 it knows beforehand, and by that
+//! checksum: release.echovr.de keeps every public file under `store/sha256/<aa>/<sha>` too
+//! (`echo-cdn-index`), and such an address only ever holds that one file. So the CDN can't
+//! hand out an old copy, or one its cache mixed from two versions, and the download is still
+//! checked. For the small files that name everything else (the catalogues, the update
+//! manifests, `SHA256SUMS`) the checksums come from release.echovr.de's `index.json`; the
+//! big files' checksums come from those. The store keeps earlier versions too, so going
+//! back to one ([`super::launcher::history`]) works for everyone.
 //!
 //! When release.echovr.de can't be reached, the CDN's own copy of the index stands in, but
 //! never one older than an index already seen (its `serial`): a CDN that is behind then
@@ -29,6 +31,8 @@ pub const ORIGIN: &str = "https://release.echovr.de/";
 pub const CDN: &str = "https://cdn.echovr.de/";
 /// The checksums of the small files that name everything else, on [`ORIGIN`].
 const INDEX: &str = "index.json";
+/// Every public file by its checksum, on [`ORIGIN`] and [`CDN`]: `<STORE><aa>/<sha>`.
+const STORE: &str = "store/sha256/";
 /// Debug builds: another CDN (`http://127.0.0.1:8799/`, to try a CDN that is behind), or
 /// `off`.
 const CDN_ENV: &str = "ECHOVR_CDN";
@@ -129,11 +133,55 @@ fn cdn_path(url: &str) -> Option<&str> {
     (!ORIGIN_ONLY.iter().any(|p| path.starts_with(p))).then_some(path)
 }
 
-/// The CDN's copy of `url` (on release.echovr.de), when it may serve it. Only for a file
-/// whose checksum the caller checks.
-pub fn cdn_url(url: &str) -> Option<String> {
-    let path = cdn_path(url)?;
-    Some(format!("{}{path}", cdn_base()?))
+/// Pure: the address of the file with `sha` on `base` (the CDN, or release.echovr.de); it
+/// only ever holds that file.
+fn store_url(base: &str, sha: &str) -> Option<String> {
+    let sha = sha.to_ascii_lowercase();
+    (sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| format!("{base}{STORE}{}/{sha}", &sha[..2]))
+}
+
+/// Where the file `url` (on release.echovr.de) that must have `sha` can be had by its
+/// checksum, in order: the CDN's store, then release.echovr.de's. Empty for a file elsewhere
+/// or a live one. `url` itself comes after these (the caller's fallback).
+pub fn by_checksum(url: &str, sha: &str) -> Vec<String> {
+    if cdn_path(url).is_none() {
+        return Vec::new();
+    }
+    let mut out: Vec<String> = cdn_base()
+        .and_then(|cdn| store_url(&cdn, sha))
+        .into_iter()
+        .collect();
+    out.extend(store_url(ORIGIN, sha).filter(|u| u != url));
+    out
+}
+
+/// The address on release.echovr.de of the file with `sha`, for a version only the store
+/// still has (an earlier one, [`super::launcher::history`]).
+pub fn origin_store_url(sha: &str) -> Option<String> {
+    store_url(ORIGIN, sha)
+}
+
+/// The text with `sha` (an earlier update manifest) by its checksum: from the CDN's store,
+/// else release.echovr.de's, checked. `None`: release.echovr.de doesn't have it.
+pub fn stored_text(sha: &str) -> Result<Option<String>> {
+    let origin = store_url(ORIGIN, sha).ok_or_else(|| anyhow::anyhow!("not a checksum: {sha}"))?;
+    let mut tries = by_checksum(&origin, sha);
+    tries.push(origin);
+    let mut out = Ok(None);
+    for from in tries {
+        out = match super::http::raw_text(&from, Duration::from_secs(60)) {
+            Ok(Some(t)) if sha256_hex(t.as_bytes()).eq_ignore_ascii_case(sha) => {
+                return Ok(Some(t))
+            }
+            Ok(Some(_)) => {
+                tracing::warn!("sources: {from} isn't what its checksum says");
+                Ok(None)
+            }
+            other => other,
+        };
+    }
+    out
 }
 
 /// The SHA-256 release.echovr.de's index lists for `url` (the big files it lists too, such
@@ -210,8 +258,8 @@ fn note_serial(serial: u64) {
     }
 }
 
-/// Fetches the small text file `url` (`None`: not there, 404/410): from the CDN when it is
-/// a file release.echovr.de's index lists and the CDN's copy matches it, else from `url`
+/// Fetches the small text file `url` (`None`: not there, 404/410): from the CDN's store when
+/// it is a file release.echovr.de's index lists (and what comes matches), else from `url`
 /// itself. Any other URL is fetched as it is.
 pub fn text(url: &str, timeout: Duration) -> Result<Option<String>> {
     let fetch = |u: &str| super::http::raw_text(u, timeout);
@@ -230,14 +278,16 @@ fn text_with(
     fetch: &dyn Fn(&str) -> Result<Option<String>>,
 ) -> Result<Option<String>> {
     if let (Known::Index(i), Some(cdn)) = (known, cdn) {
-        if let Some(sha) = i.sha_of(path) {
-            let from = format!("{cdn}{path}");
+        if let Some((sha, from)) = i
+            .sha_of(path)
+            .and_then(|sha| Some((sha, store_url(cdn, sha)?)))
+        {
             match fetch(&from) {
                 Ok(Some(t)) if sha256_hex(t.as_bytes()).eq_ignore_ascii_case(sha) => {
                     return Ok(Some(t))
                 }
-                Ok(Some(_)) => tracing::info!(
-                    "sources: the CDN's {path} is behind release.echovr.de's; taking that"
+                Ok(Some(_)) => tracing::warn!(
+                    "sources: the CDN's {from} isn't what its checksum says; from release.echovr.de"
                 ),
                 Ok(None) => tracing::info!("sources: the CDN doesn't have {path} yet"),
                 Err(e) => tracing::info!("sources: CDN {path}: {e:#}"),
@@ -269,7 +319,11 @@ mod tests {
     }
 
     const MODS: &str = "https://release.echovr.de/launcher/mods.json";
-    const CDN_MODS: &str = "https://cdn.echovr.de/launcher/mods.json";
+
+    /// The CDN's store address of a file with this text.
+    fn cdn_of(text: &str) -> String {
+        store_url(CDN, &sha256_hex(text.as_bytes())).unwrap()
+    }
 
     /// A fake network: URL → body (`None`: 404), `Err` for an unreachable host.
     fn net<'a>(
@@ -293,7 +347,8 @@ mod tests {
     fn the_cdn_serves_a_file_that_matches_the_index() {
         let asked = RefCell::new(Vec::new());
         let k = known(index(5, &[("launcher/mods.json", "new")]));
-        let answers = [(CDN_MODS, Ok(Some("new"))), (MODS, Ok(Some("new")))];
+        let cdn = cdn_of("new");
+        let answers = [(cdn.as_str(), Ok(Some("new"))), (MODS, Ok(Some("new")))];
         let t = text_with(
             MODS,
             "launcher/mods.json",
@@ -302,15 +357,17 @@ mod tests {
             &net(&answers, &asked),
         );
         assert_eq!(t.unwrap().as_deref(), Some("new"));
-        assert_eq!(*asked.borrow(), [CDN_MODS]);
+        assert_eq!(*asked.borrow(), [cdn]);
     }
 
     #[test]
-    fn a_cdn_copy_that_is_behind_is_taken_from_release_instead() {
+    fn a_cdn_copy_that_isnt_the_file_is_taken_from_release_instead() {
         let k = known(index(5, &[("launcher/mods.json", "new")]));
-        for cdn in [Ok(Some("old")), Ok(None), Err(())] {
+        let addr = cdn_of("new");
+        // Mixed by the CDN's cache, not there yet, the CDN down.
+        for cdn in [Ok(Some("nld")), Ok(None), Err(())] {
             let asked = RefCell::new(Vec::new());
-            let answers = [(CDN_MODS, cdn), (MODS, Ok(Some("new")))];
+            let answers = [(addr.as_str(), cdn), (MODS, Ok(Some("new")))];
             let t = text_with(
                 MODS,
                 "launcher/mods.json",
@@ -319,14 +376,15 @@ mod tests {
                 &net(&answers, &asked),
             );
             assert_eq!(t.unwrap().as_deref(), Some("new"));
-            assert_eq!(*asked.borrow(), [CDN_MODS, MODS]);
+            assert_eq!(*asked.borrow(), [addr.clone(), MODS.to_string()]);
         }
     }
 
     #[test]
     fn without_an_index_entry_only_release_is_asked() {
         let asked = RefCell::new(Vec::new());
-        let answers = [(CDN_MODS, Ok(Some("old"))), (MODS, Ok(Some("new")))];
+        let old = cdn_of("old");
+        let answers = [(old.as_str(), Ok(Some("old"))), (MODS, Ok(Some("new")))];
         for k in [known(index(5, &[])), Known::None] {
             asked.borrow_mut().clear();
             let t = text_with(
@@ -352,7 +410,8 @@ mod tests {
         // Published between the index and the file: release.echovr.de is the truth.
         let asked = RefCell::new(Vec::new());
         let k = known(index(5, &[("launcher/mods.json", "new")]));
-        let answers = [(CDN_MODS, Ok(Some("old"))), (MODS, Ok(Some("newer")))];
+        let new = cdn_of("new");
+        let answers = [(new.as_str(), Ok(None)), (MODS, Ok(Some("newer")))];
         let t = text_with(
             MODS,
             "launcher/mods.json",
@@ -380,15 +439,27 @@ mod tests {
     }
 
     #[test]
-    fn the_cdn_serves_release_paths_only_and_never_the_live_ones() {
+    fn files_are_asked_for_by_checksum_and_never_the_live_ones() {
+        let sha = "AB".repeat(32);
+        let low = sha.to_lowercase();
         assert_eq!(
-            cdn_url("https://release.echovr.de/updates-nevr/BugSplat64.dll").as_deref(),
-            Some("https://cdn.echovr.de/updates-nevr/BugSplat64.dll")
+            by_checksum(
+                "https://release.echovr.de/updates-nevr/BugSplat64.dll",
+                &sha
+            ),
+            [
+                format!("https://cdn.echovr.de/store/sha256/ab/{low}"),
+                format!("https://release.echovr.de/store/sha256/ab/{low}"),
+            ]
         );
+        // An earlier version only the store has: its address is the fallback itself.
+        let stored = origin_store_url(&sha).unwrap();
         assert_eq!(
-            cdn_url("https://release.echovr.de/pc.zip").as_deref(),
-            Some("https://cdn.echovr.de/pc.zip")
+            by_checksum(&stored, &sha),
+            [format!("https://cdn.echovr.de/store/sha256/ab/{low}")]
         );
+        // Not a checksum: nothing by checksum.
+        assert!(by_checksum("https://release.echovr.de/pc.zip", "abc").is_empty());
         for url in [
             "https://release.echovr.de/launcher/logs",
             "https://release.echovr.de/launcher/dev/abc/mods.json",
@@ -403,7 +474,7 @@ mod tests {
             "https://evr.echo.taxi/pc.zip",
             "https://github.com/marshmallow-mia/EchoVR_Launcher/releases/download/v1/x.zip",
         ] {
-            assert_eq!(cdn_url(url), None, "{url}");
+            assert!(by_checksum(url, &sha).is_empty(), "{url}");
         }
     }
 

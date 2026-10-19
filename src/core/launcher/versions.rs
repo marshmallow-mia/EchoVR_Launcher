@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::{bail, Context, Result};
 
 use super::catalog::{Platform, VersionEntry};
+use super::history::{self, History};
 use super::store::InstalledVersion;
 use crate::core::download::{self, Progress};
 use crate::core::manifest::Manifest;
@@ -477,9 +478,10 @@ fn download_and_extract(
             Progress::Extracted => Step::Status("Extraction complete".into()),
         })
     })?;
-    if let Some(sha) = &entry.sha256 {
+    // The catalogue's checksum, else release.echovr.de's index's (the live build has none).
+    if let Some(sha) = download::expected_sha(&job) {
         on(Step::Status("Verifying download...".into()));
-        if !download::sha256_matches(&zip, sha) {
+        if !download::sha256_matches(&zip, &sha) {
             let _ = std::fs::remove_file(&zip);
             bail!("The downloaded game files are corrupt (checksum mismatch). Please try again.");
         }
@@ -548,11 +550,104 @@ pub fn previous_update(v: &InstalledVersion) -> Option<pc_update::Previous> {
     pc_update::Previous::read(&previous_update_dir(v))
 }
 
-/// Puts back what `v`'s last update replaced. Returns the sha256 of the update manifest it
-/// went back from (the one to hold).
-pub fn go_back(v: &InstalledVersion) -> Result<String> {
+/// A way back release.echovr.de's history has for `v`'s game update, when its last update
+/// kept no copy ([`previous_update`]): the versions it has now and goes back to.
+#[derive(Debug, Clone)]
+pub struct ServerBack {
+    pub now: String,
+    pub before: String,
+    /// When the version it goes back to came out (RFC 3339).
+    pub at: String,
+    /// The sha256 of the installed update's text (the one to hold).
+    from: String,
+    manifest: crate::core::manifest::Manifest,
+    text: String,
+}
+
+/// The way back `h` has for `v`'s game update (network for the manifests, then reads the
+/// files on disk: on a worker). The installed version is told by its files.
+pub fn server_back(v: &InstalledVersion, h: &History) -> Result<Option<ServerBack>> {
+    let Some(url) = manifest_url(v) else {
+        return Ok(None);
+    };
+    let states = history::timeline(h, &url, &pc_update::overlays_of(&url));
+    if states.len() < 2 {
+        return Ok(None);
+    }
+    let built = states
+        .iter()
+        .map(|s| history::manifest_of(&url, s, &history::text))
+        .collect::<Result<Vec<_>>>()?;
+    let bin = v.bin_dir();
+    let mut read = std::collections::HashMap::new();
+    let mut disk = |path: &str| -> Option<String> {
+        read.entry(path.to_lowercase())
+            .or_insert_with(|| download::sha256_file(&bin.join(path)).ok())
+            .clone()
+    };
+    let effects: Vec<_> = built.iter().map(|(m, _)| history::effect(m)).collect();
+    let on_disk: Vec<bool> = built
+        .iter()
+        .map(|(m, _)| history::on_disk(m, keep(v), &mut disk))
+        .collect();
+    let shas: Vec<String> = built
+        .iter()
+        .map(|(_, t)| pc_update::sha256_hex(t.as_bytes()))
+        .collect();
+    let Some((now, back)) =
+        history::step_back(&effects, &on_disk, &shas, v.manifest_sha256.as_deref())
+    else {
+        return Ok(None);
+    };
+    let (m_back, text) = built[back].clone();
+    Ok(Some(ServerBack {
+        now: history::label(&states[now]),
+        before: history::label(&states[back]),
+        at: states[back].at.clone(),
+        from: shas[now].clone(),
+        manifest: history::going_back(&built[now].0, m_back),
+        text,
+    }))
+}
+
+/// Puts back what `v`'s last update replaced, or (no copy kept) the version before from
+/// release.echovr.de's history. Returns the sha256 of the update manifest it went back from
+/// (the one to hold).
+pub fn go_back(
+    v: &InstalledVersion,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<String> {
     ensure_present(v)?;
-    Ok(pc_update::go_back(&previous_update_dir(v), &v.bin_dir())?.manifest_sha256)
+    if previous_update(v).is_some() {
+        return Ok(pc_update::go_back(&previous_update_dir(v), &v.bin_dir())?.manifest_sha256);
+    }
+    let h = History::load().ok_or_else(|| {
+        anyhow::anyhow!("The versions on release.echovr.de can't be read now. Please try again.")
+    })?;
+    let Some(b) = server_back(v, &h)? else {
+        bail!(
+            "There is no earlier version of {}'s update to go back to.",
+            v.name
+        );
+    };
+    on(Step::Status(format!("Going back to {}...", b.before)));
+    pc_update::apply_manifest(
+        &b.manifest,
+        &b.text,
+        &v.bin_dir(),
+        keep(v),
+        None,
+        cancel,
+        &mut |s| on(Step::Status(s)),
+    )?;
+    tracing::info!(
+        "{}: back from {} to {} (from the history)",
+        v.id,
+        b.now,
+        b.before
+    );
+    Ok(b.from)
 }
 
 /// Files of the update manifest that are missing or differ on disk.

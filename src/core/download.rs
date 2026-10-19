@@ -56,8 +56,8 @@ pub struct Job {
     /// Extract the zip into `dir` afterwards.
     pub extract: bool,
     /// The file's SHA-256 on release.echovr.de, when known (else release.echovr.de's index
-    /// may know it): then the CDN's copy is tried first, and kept only if it matches
-    /// ([`super::sources`]).
+    /// may know it): then it is fetched by that checksum first (the CDN's store, then
+    /// release.echovr.de's), and kept only if it matches ([`super::sources`]).
     pub sha256: Option<String>,
 }
 
@@ -230,16 +230,25 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
             .with_context(|| format!("couldn't delete the old {}", target.display()))?;
     }
 
-    // The CDN first, when it may serve the file; the mirrors (release.echovr.de and the
-    // bucket) when it can't, or its copy is behind.
-    let from_cdn = match cdn_url(job) {
-        Some((cdn, sha)) => {
-            tracing::info!("download {} -> {}", redact(&cdn), target.display());
-            from_cdn(&cdn, &sha, &target, cancel, on)?
+    // By checksum first, when the file's is known (the CDN's store, then release.echovr.de's);
+    // the mirrors (release.echovr.de and the bucket) by path when neither has it.
+    let mut done = false;
+    if let Some((addrs, sha)) = by_checksum(job) {
+        // A partial file 0.11.18 left from the CDN's plain copy (which could be behind).
+        let old = marker(&target, "cdn");
+        if old.exists() {
+            let _ = std::fs::remove_file(&target);
+            let _ = std::fs::remove_file(&old);
         }
-        None => false,
-    };
-    if !from_cdn {
+        for addr in &addrs {
+            tracing::info!("download {} -> {}", redact(addr), target.display());
+            if from_store(addr, &sha, &target, cancel, on)? {
+                done = true;
+                break;
+            }
+        }
+    }
+    if !done {
         let urls: Vec<String> = if job.use_mirror {
             on(Progress::Status("Preparing Download...".into()));
             ranked_mirrors()
@@ -251,10 +260,11 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
             vec![job.url.clone()]
         };
         tracing::info!("download {} -> {}", redact(&urls[0]), target.display());
-        // A partial file the CDN left isn't continued from another server.
-        if cdn_marker(&target).exists() {
+        // A partial file from a checksum address isn't continued by path (another version
+        // may be there).
+        if marker(&target, "store").exists() {
             let _ = std::fs::remove_file(&target);
-            let _ = std::fs::remove_file(cdn_marker(&target));
+            let _ = std::fs::remove_file(marker(&target, "store"));
         }
         from_first_that_has(&urls, |url, last| {
             fetch_from(url, &target, cancel, on, last)
@@ -269,9 +279,9 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
     Ok(target)
 }
 
-/// The CDN's copy of `job`'s file and the checksum it must have, when there is one.
-fn cdn_url(job: &Job) -> Option<(String, String)> {
-    let url = if job.use_mirror {
+/// `job`'s file on release.echovr.de (a mirror job's, there).
+fn origin_url(job: &Job) -> String {
+    if job.use_mirror {
         format!(
             "{}{}",
             super::sources::ORIGIN,
@@ -279,53 +289,62 @@ fn cdn_url(job: &Job) -> Option<(String, String)> {
         )
     } else {
         job.url.clone()
-    };
-    let cdn = super::sources::cdn_url(&url)?;
-    let sha = job
-        .sha256
-        .clone()
-        .filter(|s| !s.is_empty())
-        .or_else(|| super::sources::indexed_sha(&url))?;
-    Some((cdn, sha))
+    }
 }
 
-/// Marks a partial file as the CDN's while it is downloaded from there.
-fn cdn_marker(target: &Path) -> PathBuf {
+/// The SHA-256 `job`'s file must have: its own, else what release.echovr.de's index lists.
+pub fn expected_sha(job: &Job) -> Option<String> {
+    job.sha256
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| super::sources::indexed_sha(&origin_url(job)))
+}
+
+/// The addresses of `job`'s file by its checksum, and that checksum, when it is known.
+fn by_checksum(job: &Job) -> Option<(Vec<String>, String)> {
+    let sha = expected_sha(job)?;
+    let addrs = super::sources::by_checksum(&origin_url(job), &sha);
+    (!addrs.is_empty()).then_some((addrs, sha))
+}
+
+/// `target` with `.<what>` added: marks where a partial file came from.
+fn marker(target: &Path, what: &str) -> PathBuf {
     let mut name = target.file_name().unwrap_or_default().to_os_string();
-    name.push(".cdn");
+    name.push(format!(".{what}"));
     target.with_file_name(name)
 }
 
-/// Downloads `target` from the CDN (`url`) and checks it against `sha`: whether it is there
-/// now. Any failure but a cancel is `false` (the mirrors take over); a copy that doesn't
-/// match (the sync hasn't replaced it yet) is deleted.
-fn from_cdn(
+/// Downloads `target` from a checksum address (`url`) and checks it against `sha`: whether
+/// it is there now. Any failure but a cancel is `false` (the next address, then the mirrors
+/// take over); a file that doesn't match is deleted. A partial file stays marked as one from
+/// a checksum address: another such address may continue it (the same bytes), a mirror by
+/// path doesn't.
+fn from_store(
     url: &str,
     sha: &str,
     target: &Path,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Progress),
 ) -> Result<bool> {
-    let marker = cdn_marker(target);
-    let _ = std::fs::write(&marker, b"");
+    let mark = marker(target, "store");
+    let _ = std::fs::write(&mark, b"");
     match fetch_from(url, target, cancel, on, true) {
         Ok(()) => {
+            let _ = std::fs::remove_file(&mark);
             if sha256_matches(target, sha) {
-                let _ = std::fs::remove_file(&marker);
                 return Ok(true);
             }
-            tracing::info!(
-                "the CDN's {} is behind release.echovr.de's; from the mirrors",
+            tracing::warn!(
+                "{} isn't what its checksum says; trying the next server",
                 redact(url)
             );
             let _ = std::fs::remove_file(target);
-            let _ = std::fs::remove_file(&marker);
             Ok(false)
         }
         Err(e) if http::is_cancelled(&e) => Err(e),
         Err(e) => {
             tracing::info!(
-                "CDN download {} failed: {e:#}; from the mirrors",
+                "download {} failed: {e:#}; trying the next server",
                 redact(url)
             );
             Ok(false)
@@ -659,26 +678,26 @@ mod tests {
     }
 
     #[test]
-    fn the_cdn_copy_is_kept_only_when_it_matches() {
+    fn a_file_by_checksum_is_kept_only_when_it_matches() {
         use sha2::{Digest, Sha256};
         let sha = hex::encode(Sha256::digest(b"new"));
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("f.zip");
         let cancel = AtomicBool::new(false);
-        // Behind (the sync hasn't replaced it yet): deleted, the mirrors take over.
-        let url = serve(b"old", 2);
-        assert!(!from_cdn(&url, &sha, &target, &cancel, &mut |_| {}).unwrap());
-        assert!(!target.exists() && !cdn_marker(&target).exists());
-        // Current: kept, no marker left.
+        // Not the file (a cache that mixed two versions): deleted, the next server goes on.
+        let url = serve(b"nld", 2);
+        assert!(!from_store(&url, &sha, &target, &cancel, &mut |_| {}).unwrap());
+        assert!(!target.exists() && !marker(&target, "store").exists());
+        // The file: kept, no marker left.
         let url = serve(b"new", 2);
-        assert!(from_cdn(&url, &sha, &target, &cancel, &mut |_| {}).unwrap());
+        assert!(from_store(&url, &sha, &target, &cancel, &mut |_| {}).unwrap());
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
-        assert!(!cdn_marker(&target).exists());
-        // Unreachable: not an error, the mirrors take over; the partial file stays marked
-        // as the CDN's, so they start it again from zero.
+        assert!(!marker(&target, "store").exists());
+        // Unreachable: not an error, the next server goes on; the partial file stays marked
+        // as one from a checksum address, so a mirror by path starts it again from zero.
         std::fs::write(&target, b"ne").unwrap();
-        assert!(!from_cdn("http://127.0.0.1:1/f", &sha, &target, &cancel, &mut |_| {}).unwrap());
-        assert!(cdn_marker(&target).exists());
+        assert!(!from_store("http://127.0.0.1:1/f", &sha, &target, &cancel, &mut |_| {}).unwrap());
+        assert!(marker(&target, "store").exists());
     }
 
     /// Mirror probe, full download, then a resume of a truncated file (needs network).

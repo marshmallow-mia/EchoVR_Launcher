@@ -1988,6 +1988,49 @@ pub fn go_back(v: &InstalledVersion, file: &str) -> Result<String> {
     Ok(went_from)
 }
 
+/// The catalogue mods (and packs) installed in `v` without a version kept from before:
+/// (a plugin file of it, catalogue id, version, name), one per id.
+pub fn from_catalog_unkept(v: &InstalledVersion) -> Vec<(String, String, String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    Overlay::read(&choices_path(v))
+        .added()
+        .into_iter()
+        .filter_map(|a| {
+            let l = a.launcher.as_ref().filter(|l| !l.local)?;
+            let id = l.catalog_id.clone()?;
+            (previous_entry(v, &a.file).is_none() && seen.insert(id.clone()))
+                .then(|| (a.file.clone(), id, l.version.clone(), a.name.clone()))
+        })
+        .collect()
+}
+
+/// Puts mod (or pack) `e` into `v` in place of the newer version that has plugin `file`:
+/// `e` is the version before from release.echovr.de's history (when no copy was kept).
+/// Returns the version it went back from (the one to hold).
+pub fn go_back_to(
+    v: &InstalledVersion,
+    file: &str,
+    e: &ModEntry,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<String> {
+    let went_from = Overlay::read(&choices_path(v))
+        .added()
+        .into_iter()
+        .find(|a| a.file.eq_ignore_ascii_case(file))
+        .and_then(|a| a.launcher.map(|l| l.version))
+        .ok_or_else(|| anyhow::anyhow!("{file} isn't installed in {}.", v.name))?;
+    install(v, e, cancel, on)?;
+    // What the install kept is the newer version: not a way back.
+    let _ = std::fs::remove_dir_all(previous_dir(v).join(file));
+    tracing::info!(
+        "mods: {} back from {went_from} to {} (from the history)",
+        e.id,
+        e.version
+    );
+    Ok(went_from)
+}
+
 // ---- the mods catalogue (mods.json on release.echovr.de) ----
 
 /// A mod in the catalogue.

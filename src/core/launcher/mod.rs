@@ -10,6 +10,7 @@ pub mod game_sign_in;
 pub mod goback;
 pub mod graphics;
 pub mod headless;
+pub mod history;
 pub mod host;
 pub mod launch;
 pub mod login_watch;

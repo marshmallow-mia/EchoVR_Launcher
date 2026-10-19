@@ -25,6 +25,8 @@ const STORE_ASSETS_SUBDIR: &str =
     "CoreData\\Software\\StoreAssets\\ready-at-dawn-echo-arena_assets";
 pub const ARTWORK_ZIP_URL: &str =
     "https://release.echovr.de/stuff/patches/ready-at-dawn-echo-arena_assets.zip";
+/// Pinned: the artwork never changes, and so it comes by its checksum (the CDN first).
+const ARTWORK_ZIP_SHA256: &str = "c4978b0efda4a0bbcc4bfe85ab6aa22f06d60fec9ffa90c852af933410d20239";
 
 /// The directory if it contains ReviveInjector.exe, trailing separators trimmed.
 fn verify_revive_dir(dir: &str) -> Option<String> {
@@ -118,8 +120,12 @@ pub fn install_artwork(cancel: &AtomicBool) -> Result<()> {
     let dir = super::paths::downloads_dir().join("revive");
     std::fs::create_dir_all(&dir)?;
     let zip = dir.join(format!("{APP_ID}_assets.zip"));
-    super::http::download_to(ARTWORK_ZIP_URL, &zip, Some(cancel))
+    super::http::download_checked(ARTWORK_ZIP_URL, ARTWORK_ZIP_SHA256, &zip, Some(cancel))
         .context("Downloading the artwork failed")?;
+    if !super::download::sha256_matches(&zip, ARTWORK_ZIP_SHA256) {
+        let _ = std::fs::remove_file(&zip);
+        bail!("The artwork didn't download correctly (checksum mismatch). Please try again.");
+    }
     let dest = store_assets_dir();
     std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
     super::zip::extract(&zip, &dest, cancel)?;

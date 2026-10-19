@@ -96,11 +96,20 @@ fn fetch(
         extract: false,
         sha256: sha256.map(str::to_string),
     };
-    download::run(&job, cancel, &mut |p| match p {
+    let file = download::run(&job, cancel, &mut |p| match p {
         Progress::Percent(v) => on(Step::Percent(v)),
         Progress::Status(s) => on(Step::Status(s)),
         _ => {}
-    })
+    })?;
+    // Its checksum, else release.echovr.de's index's (the game data has none of its own).
+    if let Some(sha) = download::expected_sha(&job) {
+        on(Step::Status("Verifying the download...".into()));
+        if !download::sha256_matches(&file, &sha) {
+            let _ = std::fs::remove_file(&file);
+            bail!("The downloaded {name} is corrupt (checksum mismatch). Please try again.");
+        }
+    }
+    Ok(file)
 }
 
 /// Downloads the APK (stock or patched) and the game data, installs both over adb,
@@ -129,16 +138,6 @@ pub fn install(
             on(Step::Status("Downloading Echo VR...".into()));
             let sha = manifest.as_ref().and_then(|m| m.base_apk_sha.as_deref());
             let apk = fetch(&quest_file(&base), &base, true, false, sha, cancel, on)?;
-            if let Some(sha) = sha {
-                on(Step::Status("Verifying the download...".into()));
-                if !download::sha256_matches(&apk, sha) {
-                    let _ = std::fs::remove_file(&apk);
-                    return Err(anyhow!(
-                        "The downloaded APK is corrupt (checksum mismatch). Please try again."
-                    )
-                    .into());
-                }
-            }
             (apk, false)
         }
         ApkSource::Discord | ApkSource::Url(_) => {

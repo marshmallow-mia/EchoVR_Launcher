@@ -2,20 +2,26 @@
 //! something: the launcher, a version's game update (nEVR), a mod, a plugin.
 //!
 //! Each update keeps what it replaced (the game update in `_local/previous-update/`, a mod
-//! in `_local/previous-mods/`, a plugin as `.<id>.previous`; the launcher's releases stay
-//! on the download servers), so going back needs no network but for the launcher. The
-//! version gone back from is then held ([`LauncherState::holds`]): it isn't offered again,
-//! a newer one is. "Use newest" lets go of the hold.
+//! in `_local/previous-mods/`, a plugin as `.<id>.previous`), so going back right after an
+//! update needs no network. Without such a copy (installed after the update, or gone back
+//! once already) the version before comes from release.echovr.de's history
+//! ([`super::history`]), which keeps every version; the launcher's releases stay on the
+//! download servers anyway. The version gone back from is then held
+//! ([`LauncherState::holds`]): it isn't offered again, a newer one is. "Use newest" lets go
+//! of the hold.
 //!
 //! release.echovr.de can pull a version for everyone (`launcher/rollback.json`,
 //! [`Pulled`]): who has it is told, and offered the way back; with `auto`, the launcher goes
 //! back by itself.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::AtomicBool;
 
 use serde::Deserialize;
 
+use super::history::History;
 use super::store::{InstalledVersion, LauncherState};
+use super::versions::Step;
 
 /// Where the pulled versions are listed.
 pub const ROLLBACK_URL: &str = "https://release.echovr.de/launcher/rollback.json";
@@ -62,6 +68,10 @@ pub struct WayBack {
     pub before: String,
     /// When it was updated, for the game update (RFC 3339).
     pub at: Option<String>,
+    /// From release.echovr.de's history (a download), not a copy kept here.
+    pub server: bool,
+    /// What it downloads, when known.
+    pub size: Option<u64>,
 }
 
 /// Whether `found` (a version, or for the game its manifest's sha256) is the one held for
@@ -89,8 +99,13 @@ fn short(v: &str) -> &str {
     v.split(['+', '-']).next().unwrap_or(v)
 }
 
-/// Every way back there is now (file I/O: on a worker).
+/// Every way back there is now (file I/O and network: on a worker).
 pub fn ways_back(state: &LauncherState) -> Vec<WayBack> {
+    ways_with(state, History::load().as_ref())
+}
+
+/// [`ways_back`] given release.echovr.de's history (`None`: unreadable, kept copies only).
+fn ways_with(state: &LauncherState, h: Option<&History>) -> Vec<WayBack> {
     let mut out = Vec::new();
     let now = env!("CARGO_PKG_VERSION");
     // The version it updated from, else the release before it on the download servers.
@@ -110,36 +125,83 @@ pub fn ways_back(state: &LauncherState) -> Vec<WayBack> {
             now: now.into(),
             before,
             at: None,
+            server: true,
+            size: None,
         });
     }
     for v in state.versions.iter().filter(|v| v.present()) {
-        out.extend(of_version(v));
+        out.extend(of_version(v, h));
     }
-    for p in super::plugins::previous_in(&super::plugins::dir()) {
+    let root = super::plugins::dir();
+    let kept = super::plugins::previous_in(&root);
+    for p in &kept {
         out.push(WayBack {
-            part: Part::Plugin { id: p.id },
-            name: p.name,
-            now: p.now,
-            before: p.before,
+            part: Part::Plugin { id: p.id.clone() },
+            name: p.name.clone(),
+            now: p.now.clone(),
+            before: p.before.clone(),
             at: None,
+            server: false,
+            size: None,
         });
+    }
+    if let Some(h) = h {
+        for p in super::plugins::installed_in(&root) {
+            let Some(now) = p.from_catalog.as_deref() else {
+                continue;
+            };
+            if kept.iter().any(|k| k.id == p.page.id) {
+                continue;
+            }
+            if let Some(e) = h.plugin_before(&p.page.id, now) {
+                out.push(WayBack {
+                    part: Part::Plugin {
+                        id: p.page.id.clone(),
+                    },
+                    name: p.page.name.clone(),
+                    now: now.to_string(),
+                    before: e.version,
+                    at: None,
+                    server: true,
+                    size: e.size,
+                });
+            }
+        }
     }
     out
 }
 
-fn of_version(v: &InstalledVersion) -> Vec<WayBack> {
+fn of_version(v: &InstalledVersion, h: Option<&History>) -> Vec<WayBack> {
     let mut out = Vec::new();
+    let game = Part::Game {
+        version: v.id.clone(),
+    };
+    let name = format!("Game update ({})", v.name);
     if let Some(p) = super::versions::previous_update(v) {
         let (now, before) = game_labels(&p);
         out.push(WayBack {
-            part: Part::Game {
-                version: v.id.clone(),
-            },
-            name: format!("Game update ({})", v.name),
+            part: game,
+            name,
             now,
             before,
             at: p.at,
+            server: false,
+            size: None,
         });
+    } else if let Some(h) = h {
+        match super::versions::server_back(v, h) {
+            Ok(Some(b)) => out.push(WayBack {
+                part: game,
+                name,
+                now: b.now,
+                before: b.before,
+                at: Some(b.at),
+                server: true,
+                size: None,
+            }),
+            Ok(None) => {}
+            Err(e) => tracing::info!("go back: {}'s earlier updates: {e:#}", v.id),
+        }
     }
     for m in super::mods::previous(v) {
         out.push(WayBack {
@@ -155,15 +217,51 @@ fn of_version(v: &InstalledVersion) -> Vec<WayBack> {
             now: m.now,
             before: m.before,
             at: None,
+            server: false,
+            size: None,
         });
+    }
+    if let Some(h) = h {
+        for (file, id, now, name) in super::mods::from_catalog_unkept(v) {
+            if let Some(e) = h.mod_before(&id, &now) {
+                let size = e.size.or(e.pack.as_ref().and_then(|p| p.size));
+                let shown = if name.is_empty() {
+                    e.name.clone()
+                } else {
+                    name
+                };
+                out.push(WayBack {
+                    part: Part::Mod {
+                        version: v.id.clone(),
+                        file,
+                    },
+                    name: format!(
+                        "{} ({})",
+                        if shown.is_empty() { "Mod" } else { &shown },
+                        v.name
+                    ),
+                    now,
+                    before: e.version,
+                    at: None,
+                    server: true,
+                    size,
+                });
+            }
+        }
     }
     out
 }
 
 /// Goes back (a version's game update, a mod, a plugin; the launcher's is a job of its
-/// own, [`super::self_update::install`]). Returns the hold to note: the part's key and
-/// what it went back from.
-pub fn go_back(state: &LauncherState, part: &Part) -> anyhow::Result<(String, String)> {
+/// own, [`super::self_update::install`]): to the copy kept, else to the version before from
+/// release.echovr.de's history. Returns the hold to note: the part's key and what it went
+/// back from.
+pub fn go_back(
+    state: &LauncherState,
+    part: &Part,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> anyhow::Result<(String, String)> {
     let version = |id: &str| {
         state
             .versions
@@ -174,9 +272,54 @@ pub fn go_back(state: &LauncherState, part: &Part) -> anyhow::Result<(String, St
     };
     let from = match part {
         Part::Launcher => anyhow::bail!("The launcher goes back through its own update."),
-        Part::Game { version: id } => super::versions::go_back(&version(id)?)?,
-        Part::Mod { version: id, file } => super::mods::go_back(&version(id)?, file)?,
-        Part::Plugin { id } => super::plugins::go_back(&super::plugins::dir(), id)?,
+        Part::Game { version: id } => super::versions::go_back(&version(id)?, cancel, on)?,
+        Part::Mod { version: id, file } => {
+            let v = version(id)?;
+            if super::mods::previous(&v)
+                .iter()
+                .any(|p| p.file.eq_ignore_ascii_case(file))
+            {
+                super::mods::go_back(&v, file)?
+            } else {
+                let (_, cid, now, _) = super::mods::from_catalog_unkept(&v)
+                    .into_iter()
+                    .find(|(f, ..)| f.eq_ignore_ascii_case(file))
+                    .ok_or_else(|| anyhow::anyhow!("There is no earlier version of {file}."))?;
+                let e = History::load()
+                    .and_then(|h| h.mod_before(&cid, &now))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "There is no earlier version of {file} on release.echovr.de."
+                        )
+                    })?;
+                super::mods::go_back_to(&v, file, &e, cancel, on)?
+            }
+        }
+        Part::Plugin { id } => {
+            let root = super::plugins::dir();
+            if super::plugins::previous_in(&root)
+                .iter()
+                .any(|p| p.id == *id)
+            {
+                super::plugins::go_back(&root, id)?
+            } else {
+                let now = super::plugins::installed_in(&root)
+                    .into_iter()
+                    .find(|p| p.page.id == *id)
+                    .and_then(|p| p.from_catalog)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("That plugin isn't installed from the catalogue.")
+                    })?;
+                let e = History::load()
+                    .and_then(|h| h.plugin_before(id, &now))
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "There is no earlier version of this plugin on release.echovr.de."
+                        )
+                    })?;
+                super::plugins::go_back_to(&root, &e, cancel)?
+            }
+        }
     };
     Ok((part.key(), from))
 }
@@ -290,6 +433,8 @@ mod tests {
             now: now.into(),
             before: before.into(),
             at: None,
+            server: false,
+            size: None,
         }
     }
 

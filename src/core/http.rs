@@ -158,23 +158,24 @@ pub fn download_to(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Resul
     })
 }
 
-/// [`download_to`] for a file that must have `sha256`: from the CDN first when it has a copy
-/// of `url` and that copy matches, else from `url` (which the caller checks, as before).
+/// [`download_to`] for a file that must have `sha256`: by its checksum first (the CDN's
+/// store, then release.echovr.de's, [`super::sources::by_checksum`]), kept only when it
+/// matches; else from `url` (which the caller checks, as before).
 pub fn download_checked(
     url: &str,
     sha256: &str,
     dest: &Path,
     cancel: Option<&AtomicBool>,
 ) -> Result<()> {
-    if let Some(cdn) = super::sources::cdn_url(url).filter(|_| !sha256.is_empty()) {
-        match download_to(&cdn, dest, cancel) {
+    for from in super::sources::by_checksum(url, sha256) {
+        match download_to(&from, dest, cancel) {
             Ok(()) if super::download::sha256_matches(dest, sha256) => return Ok(()),
-            Ok(()) => tracing::info!(
-                "the CDN's {} is behind; from release.echovr.de",
+            Ok(()) => tracing::warn!(
+                "{} from {from} isn't what its checksum says; trying the next server",
                 file_of(url)
             ),
             Err(e) if is_cancelled(&e) => return Err(e),
-            Err(e) => tracing::info!("CDN {}: {e:#}; from release.echovr.de", file_of(url)),
+            Err(e) => tracing::info!("{} by checksum: {e:#}", file_of(url)),
         }
         let _ = std::fs::remove_file(dest);
     }

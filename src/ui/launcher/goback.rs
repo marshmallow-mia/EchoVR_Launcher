@@ -142,7 +142,7 @@ fn run(d: &mut Dashboard, ctx: &egui::Context, w: WayBack) {
         res,
         &title,
         "Putting the version before back...",
-        move |_cancel, _on| match core::go_back(&state, &w.part) {
+        move |cancel, on| match core::go_back(&state, &w.part, cancel, on) {
             Ok((key, from)) => JobResult::WentBack {
                 key,
                 from,
@@ -266,7 +266,7 @@ pub(super) fn card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                 x,
                 ry,
                 cw,
-                "Nothing to go back to: no update since this launcher keeps what updates replace.",
+                "Nothing to go back to: no part has an earlier version (or release.echovr.de can't be reached now).",
                 15.0,
                 design::GREY,
                 0.0,
@@ -278,7 +278,15 @@ pub(super) fn card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             k.put(x, ry, name);
             let note = pulled.iter().find(|a| a.way.part == way.part);
             let mut sub = format!("Now {} · goes back to {}", way.now, way.before);
-            if let Some(at) = way.at.as_deref().and_then(|a| a.get(..10)) {
+            // A kept copy goes back at once (since the update of that day); one from the
+            // history downloads.
+            if way.server && way.part != Part::Launcher {
+                sub.push_str(&match way.size {
+                    Some(n) if n >= 1_000_000 => format!(" · downloads {:.1} MB", n as f64 / 1e6),
+                    Some(n) => format!(" · downloads {} KB", n.div_ceil(1000)),
+                    None => " · downloads it again".into(),
+                });
+            } else if let Some(at) = way.at.as_deref().and_then(|a| a.get(..10)) {
                 sub.push_str(&format!(" · updated {at}"));
             }
             let (sub, color) = match note {

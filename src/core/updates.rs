@@ -194,7 +194,13 @@ fn pulled(state: &LauncherState) -> Vec<goback::Affected> {
     goback::affected(
         &rollback,
         &ways,
-        &|id| Some(versions::previous_update(version(id)?)?.manifest_sha256),
+        // The update it has: the one its kept copy came from, else the one last seen.
+        &|id| {
+            let v = version(id)?;
+            versions::previous_update(v)
+                .map(|p| p.manifest_sha256)
+                .or_else(|| v.manifest_sha256.clone())
+        },
         &|id, file| {
             mods::read(version(id)?)
                 .plugins
