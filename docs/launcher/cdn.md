@@ -93,8 +93,9 @@ plugin had, oldest first; their files stay in the store:
   at each point in time, the same text the launcher hashed then. Which one is installed is
   told by the files on disk; the way back is the last version before it that changes a
   file. Files the newer version added are deleted.
-- Mods, packs and plugins go back to the entry listed before the installed version (none
-  for a version the history doesn't know, such as a local build).
+- Mods, packs and plugins go back to the entry listed before the installed version; from a
+  version the history doesn't know (a dev folder's build), to the newest published one
+  older than it. A plugin you put there yourself (not from a catalogue) has none.
 - Going back from the history keeps no copy of the newer version: "Use newest" downloads it
   as an update.
 

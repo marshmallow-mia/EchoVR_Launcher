@@ -83,7 +83,8 @@ pub fn prepare(state: &LauncherState, v: &InstalledVersion) -> Result<(), Failed
             .map_err(fail(Part::EchoRelay))?;
         mods::before_echorelay_start(v, hands).map_err(fail(Part::EchoRelayMods))?;
     } else {
-        mods::before_start(v, hands, &mods::Servers::of(state)).map_err(fail(Part::Mods))?;
+        mods::before_start(v, hands, &mods::Servers::of(state), &state.holds)
+            .map_err(fail(Part::Mods))?;
     }
     // nEVR's log filter, from the Logs menu's choice (where nEVR is in place).
     if mods::nevr_in(&v.bin_dir()) {

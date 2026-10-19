@@ -107,6 +107,8 @@ impl History {
 }
 
 /// Pure: the last complete entry before the last one with `version`, with another version.
+/// For a version the history doesn't know (a dev folder's build): the newest complete one
+/// older than it, never a newer one.
 fn before<T: DeserializeOwned + Clone>(
     list: &[Value],
     version: &str,
@@ -120,7 +122,17 @@ fn before<T: DeserializeOwned + Clone>(
             Some((e, l.incomplete))
         })
         .collect();
-    let now = parsed.iter().rposition(|(e, _)| version_of(e) == version)?;
+    let Some(now) = parsed.iter().rposition(|(e, _)| version_of(e) == version) else {
+        let complete = || parsed.iter().filter(|(_, incomplete)| !incomplete);
+        let older = super::update_check::newest_below(
+            complete().map(|(e, _)| version_of(e).as_str()),
+            version,
+        )?;
+        return complete()
+            .rev()
+            .find(|(e, _)| *version_of(e) == older)
+            .map(|(e, _)| e.clone());
+    };
     parsed[..now]
         .iter()
         .rev()
@@ -547,8 +559,11 @@ mod tests {
             format!("https://release.echovr.de/store/sha256/aa/{}", sha("a"))
         );
         assert!(h.mod_before("gpu", "1.0.0").is_none());
-        // A version the history doesn't know (a local build): nothing.
-        assert!(h.mod_before("gpu", "9").is_none());
+        // A version the history doesn't know (a dev folder's build): the newest complete
+        // one older than it, never a newer one.
+        assert_eq!(h.mod_before("gpu", "1.2.1").unwrap().version, "1.2.0");
+        assert_eq!(h.mod_before("gpu", "1.1.5").unwrap().version, "1.0.0");
+        assert!(h.mod_before("gpu", "0.9.0").is_none());
         // A download elsewhere stays where it is.
         let p = h.plugin_before("lobbies", "0.1.2").unwrap();
         assert_eq!(

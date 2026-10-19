@@ -1070,7 +1070,12 @@ pub fn take_notices() -> Vec<String> {
 /// (the old loader's place, which nEVR won't start beside), keeps the game's own
 /// `_local/config.json` as `config.json.old` (nEVR's built-in one, with friends and
 /// parties, applies) and writes `config.yaml`. Without nEVR there is nothing to do.
-pub fn before_start(v: &InstalledVersion, hands: bool, servers: &Servers) -> Result<()> {
+pub fn before_start(
+    v: &InstalledVersion,
+    hands: bool,
+    servers: &Servers,
+    holds: &BTreeMap<String, String>,
+) -> Result<()> {
     let bin = v.bin_dir();
     // After playing on an EchoRelay server: nEVR back in its place first.
     if super::relay::leave_live(v)? {
@@ -1110,15 +1115,21 @@ pub fn before_start(v: &InstalledVersion, hands: bool, servers: &Servers) -> Res
         tracing::warn!("hand tracking: {e:#}");
     }
     // What the game needs from the catalogue (it doesn't come with the update): in place.
-    if let Err(e) = ensure_required(v, &ModCatalog::cached()) {
+    if let Err(e) = ensure_required(v, &ModCatalog::cached(), holds) {
         tracing::warn!("required mods: {e:#}");
     }
     prepare(v, servers)
 }
 
 /// Installs the catalogue's required mods that don't come with the community update (a
-/// file `v` lacks, or one that isn't the catalogue's version), as the Mods page would.
-pub fn ensure_required(v: &InstalledVersion, catalog: &ModCatalog) -> Result<()> {
+/// file `v` lacks, or one that isn't the catalogue's version), as the Mods page would. One
+/// the player went back from (`holds`, [`super::goback`]) stays at the version gone back
+/// to while its file is there.
+pub fn ensure_required(
+    v: &InstalledVersion,
+    catalog: &ModCatalog,
+    holds: &BTreeMap<String, String>,
+) -> Result<()> {
     let plugins = v.bin_dir().join(PLUGINS);
     for e in catalog
         .mods
@@ -1129,6 +1140,18 @@ pub fn ensure_required(v: &InstalledVersion, catalog: &ModCatalog) -> Result<()>
             continue;
         };
         if download::sha256_matches(&plugins.join(&e.file), sha) {
+            continue;
+        }
+        let part = super::goback::Part::Mod {
+            version: v.id.clone(),
+            file: e.file.clone(),
+        };
+        if plugins.join(&e.file).is_file() && super::goback::held(holds, &part, &e.version) {
+            tracing::info!(
+                "{} {} is held (gone back from): left as it is",
+                e.name,
+                e.version
+            );
             continue;
         }
         tracing::info!("{} is required: installing {}", e.name, e.version);
@@ -2688,6 +2711,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_required_mod_gone_back_from_stays_where_it_went() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        let file = "NvrGpuRating.dll";
+        std::fs::create_dir_all(plugins_dir(&v)).unwrap();
+        std::fs::write(plugins_dir(&v).join(file), "MZ 1.0.0").unwrap();
+        let catalog = ModCatalog {
+            mods: vec![ModEntry {
+                id: "gpu-rating".into(),
+                name: "GPU Rating".into(),
+                version: "1.0.1".into(),
+                file: file.into(),
+                // Never asked: nothing may be downloaded while it is held.
+                url: "http://127.0.0.1:1/NvrGpuRating.dll".into(),
+                sha256: Some("a".repeat(64)),
+                required: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut holds = BTreeMap::new();
+        holds.insert(
+            format!("mod:{}:nvrgpurating.dll", v.id),
+            "1.0.1".to_string(),
+        );
+        ensure_required(&v, &catalog, &holds).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(plugins_dir(&v).join(file)).unwrap(),
+            "MZ 1.0.0"
+        );
+        // Not held: the catalogue's version is installed (here: tried, and the server is down).
+        assert!(ensure_required(&v, &catalog, &BTreeMap::new()).is_err());
+        // Held but missing: the game needs it, so it is installed anyway.
+        std::fs::remove_file(plugins_dir(&v).join(file)).unwrap();
+        assert!(ensure_required(&v, &catalog, &holds).is_err());
+    }
+
+    #[test]
     fn writes_nevrs_list_before_a_start() {
         let dir = tempfile::tempdir().unwrap();
         let v = live(dir.path());
@@ -2695,7 +2756,7 @@ pub(crate) mod tests {
         let yaml = nevr::local_dir(&v).join(nevr::CONFIG);
         // The old loader's place: nEVR won't start beside it, so it goes.
         std::fs::write(bin.join("dbgcore.dll"), "MZ EchoLoader 1").unwrap();
-        before_start(&v, false, &Servers::default()).unwrap();
+        before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
         assert!(!bin.join("dbgcore.dll").exists());
         assert!(bin.join("plugins/dbgcore.dll").exists());
         let text = std::fs::read_to_string(&yaml).unwrap();
@@ -2758,7 +2819,7 @@ pub(crate) mod tests {
         // Without nEVR, nothing is written.
         std::fs::write(bin.join(SLOT), "MZ stock").unwrap();
         std::fs::remove_file(&yaml).unwrap();
-        before_start(&v, false, &Servers::default()).unwrap();
+        before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
         assert!(!yaml.exists());
     }
 
@@ -3224,7 +3285,7 @@ pub(crate) mod tests {
         std::fs::write(local.join(nevr::CONFIG), own).unwrap();
         std::fs::write(local.join(nevr::GAME_CONFIG), "{\"fov\": 90}").unwrap();
         take_notices();
-        before_start(&v, false, &Servers::default()).unwrap();
+        before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
         let yaml = std::fs::read_to_string(local.join(nevr::CONFIG)).unwrap();
         assert!(yaml.contains("\"NvrContentOverlay.dll\"") && yaml.contains("\"One.dll\""));
         assert!(!yaml.contains("Music"));
@@ -3237,7 +3298,7 @@ pub(crate) mod tests {
         let notices = take_notices();
         assert_eq!(notices.len(), 2, "{notices:?}");
         // The next start has nothing to move and says nothing.
-        before_start(&v, false, &Servers::default()).unwrap();
+        before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
         assert!(take_notices().is_empty());
     }
 
