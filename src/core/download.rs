@@ -363,12 +363,15 @@ fn fetch_from(
     may_restart: bool,
 ) -> Result<()> {
     http::block_on(async {
-        let head = http::client()
+        let head = http::client_for(url)
             .head(url)
             .timeout(Duration::from_secs(30))
             .send()
             .await
-            .map_err(|e| anyhow!("{NETWORK_ERROR} (ERR1)\n\n{e}"))?;
+            .map_err(|e| {
+                super::sources::failed_request(url, &e);
+                anyhow!("{NETWORK_ERROR} (ERR1)\n\n{e}")
+            })?;
         if matches!(head.status().as_u16(), 404 | 410) {
             return Err(NotOnServer(head.status().as_u16()).into());
         }
@@ -400,7 +403,7 @@ fn fetch_from(
             None => 0,
         };
 
-        let mut req = http::client().get(url);
+        let mut req = http::client_for(url).get(url);
         if offset > 0 {
             tracing::info!(
                 "resuming {} at {offset} of {} bytes",
@@ -409,10 +412,10 @@ fn fetch_from(
             );
             req = req.header(reqwest::header::RANGE, format!("bytes={offset}-"));
         }
-        let mut resp = req
-            .send()
-            .await
-            .map_err(|e| anyhow!("{NETWORK_ERROR} (ERR2)\n\n{e}"))?;
+        let mut resp = req.send().await.map_err(|e| {
+            super::sources::failed_request(url, &e);
+            anyhow!("{NETWORK_ERROR} (ERR2)\n\n{e}")
+        })?;
         match resp.status().as_u16() {
             206 if offset > 0 => {
                 let range = resp

@@ -62,7 +62,11 @@ pub fn catalog_url(code: &str, name: &str) -> String {
 /// (`files/x.dll`) inside `code`'s folder, an absolute one only when it is in there too.
 /// `None` for anything else, so a dev folder can't point the launcher elsewhere.
 pub fn resolve(code: &str, url: &str) -> Option<String> {
-    let base = folder(code);
+    resolve_in(&folder(code), url)
+}
+
+/// Pure: [`resolve`] in the folder at `base` (with a trailing slash).
+pub fn resolve_in(base: &str, url: &str) -> Option<String> {
     let full = if url.contains("://") {
         url.to_string()
     } else {
@@ -71,7 +75,7 @@ pub fn resolve(code: &str, url: &str) -> Option<String> {
         }
         format!("{base}{url}")
     };
-    let inside = full.strip_prefix(&base)?;
+    let inside = full.strip_prefix(base)?;
     (crate::core::manifest::is_safe_path(inside) && !inside.contains('?') && !inside.contains('#'))
         .then_some(full)
 }

@@ -421,10 +421,22 @@ impl Checksums {
             bail!("The build's checksums on the server don't name its archive");
         };
         let n = bad.len();
-        let direct =
-            remote_zip::extract_members(&url, root, bad, &self.game, cancel, &mut |i, path| {
-                on(Step::Status(format!("Repairing {}/{n}: {path}", i + 1)))
-            });
+        // By the archive's checksum (from the CDN), where its manifest or the index has it.
+        let sha = self
+            .manifest
+            .archive_sha
+            .clone()
+            .or_else(|| crate::core::sources::indexed_sha(&url));
+        let sha = sha.as_deref();
+        let direct = remote_zip::extract_members(
+            &url,
+            sha,
+            root,
+            bad,
+            &self.game,
+            cancel,
+            &mut |i, path| on(Step::Status(format!("Repairing {}/{n}: {path}", i + 1))),
+        );
         match direct {
             Err(e) if cfg!(windows) && crate::core::revive::needs_elevation(&e) => {
                 tracing::info!("repair needs elevation ({e:#}); using the helper");
@@ -432,6 +444,7 @@ impl Checksums {
                 let _ = std::fs::remove_dir_all(&staging);
                 let staged = remote_zip::extract_members(
                     &url,
+                    sha,
                     root,
                     bad,
                     &staging,
@@ -882,7 +895,8 @@ mod tests {
                 e.exe.as_deref().unwrap_or(paths::DEFAULT_EXE)
             );
             assert!(m.adds().any(|a| a.path == exe), "{exe} in {}", e.id);
-            let reader = remote_zip::RangeReader::open(&url, &cancel).unwrap();
+            let reader =
+                remote_zip::RangeReader::open_any(std::slice::from_ref(&url), &cancel).unwrap();
             let mut zip = zip::ZipArchive::new(reader).unwrap();
             assert!(zip.by_name(&format!("{root}{exe}")).is_ok(), "{}", e.id);
             if e.id == "pc-halloween-2017" {
@@ -891,6 +905,7 @@ mod tests {
                 let dir = tempfile::tempdir().unwrap();
                 remote_zip::extract_members(
                     &url,
+                    m.archive_sha.as_deref(),
                     &root,
                     &members,
                     dir.path(),

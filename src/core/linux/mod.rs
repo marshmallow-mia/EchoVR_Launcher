@@ -507,7 +507,6 @@ pub fn play_from_steam(ask: &crate::core::launcher::headless::Ask) -> i32 {
     // The folder as this start needs it (the launcher's window keeps it so; started from
     // Steam alone, this may be the first time): an event build's classic lobbies, the live
     // build's EchoRelay server or its mods and server (nEVR), EchoXR.
-    let hands = !event && profile.hands(state.echoxr_hands);
     let this_start = LauncherState {
         profile: profile.clone(),
         ..state.clone()
@@ -581,8 +580,7 @@ pub fn play_from_steam(ask: &crate::core::launcher::headless::Ask) -> i32 {
             )
         })
         .flatten();
-    // EchoXR Hands: its OpenXR layer in the game's loader (in VR only).
-    let result = echoxr::game_command(&steam_root, &v.bin_dir(), v.exe_name(), &args, start, hands)
+    let result = echoxr::game_command(&steam_root, &v.bin_dir(), v.exe_name(), &args, start)
         .and_then(|mut c| {
             tracing::info!("--play: {c:?}");
             // Proton's and the game's own output (OpenXR's warnings among it), for this run.

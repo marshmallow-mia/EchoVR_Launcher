@@ -39,18 +39,31 @@ pub fn block_on<F: Future>(f: F) -> F::Output {
 
 pub fn client() -> &'static Client {
     static CLIENT: OnceLock<Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        #[cfg(not(any(windows, target_os = "macos")))]
-        {
-            let _ = rustls::crypto::ring::default_provider().install_default();
-        }
-        Client::builder()
-            .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(20))
-            .read_timeout(STALL_TIMEOUT)
-            .build()
-            .expect("HTTP client")
-    })
+    CLIENT.get_or_init(|| build(Duration::from_secs(20)))
+}
+
+/// The client for `url`: one to the CDN gives up on a connection sooner, as
+/// release.echovr.de is there to fall back on ([`super::sources`]).
+pub fn client_for(url: &str) -> &'static Client {
+    static CDN: OnceLock<Client> = OnceLock::new();
+    if super::sources::is_cdn(url) {
+        CDN.get_or_init(|| build(super::sources::CDN_CONNECT_TIMEOUT))
+    } else {
+        client()
+    }
+}
+
+fn build(connect_timeout: Duration) -> Client {
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(connect_timeout)
+        .read_timeout(STALL_TIMEOUT)
+        .build()
+        .expect("HTTP client")
 }
 
 /// Error for a transfer the user cancelled. Callers check for it with `is_cancelled`.
@@ -104,19 +117,38 @@ pub fn get_text_opt(url: &str) -> Result<Option<String>> {
 
 /// [`get_text_opt`] from exactly `url`, within `timeout`.
 pub(crate) fn raw_text(url: &str, timeout: Duration) -> Result<Option<String>> {
-    block_on(async {
-        let resp = client()
+    Ok(dated_text(url, timeout)?.map(|(t, _)| t))
+}
+
+/// [`raw_text`], with the time the server says it sent it (its `Date`), if it says.
+pub(crate) fn dated_text(
+    url: &str,
+    timeout: Duration,
+) -> Result<Option<(String, Option<time::OffsetDateTime>)>> {
+    let got = block_on(async {
+        let resp = client_for(url)
             .get(url)
             .timeout(timeout)
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
+        let date = resp
+            .headers()
+            .get(reqwest::header::DATE)
+            .and_then(|d| d.to_str().ok())
+            .and_then(|d| {
+                time::OffsetDateTime::parse(d, &time::format_description::well_known::Rfc2822).ok()
+            });
         match resp.status().as_u16() {
             404 | 410 => Ok(None),
-            s if (200..300).contains(&s) => Ok(Some(resp.text().await?)),
+            s if (200..300).contains(&s) => Ok(Some((resp.text().await?, date))),
             _ => bail!("GET {url}: server responded with {}", resp.status()),
         }
-    })
+    });
+    if let Err(e) = &got {
+        super::sources::failed(url, e);
+    }
+    got
 }
 
 /// Fetches a small binary resource (feed images) in full.
@@ -137,9 +169,17 @@ pub fn get_bytes(url: &str) -> Result<Vec<u8>> {
 
 /// Streams a URL straight to `dest`. For small update files; no progress reporting.
 pub fn download_to(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
+    let done = download_to_inner(url, dest, cancel);
+    if let Err(e) = &done {
+        super::sources::failed(url, e);
+    }
+    done
+}
+
+fn download_to_inner(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     use std::io::Write;
     block_on(async {
-        let mut resp = client()
+        let mut resp = client_for(url)
             .get(url)
             .send()
             .await

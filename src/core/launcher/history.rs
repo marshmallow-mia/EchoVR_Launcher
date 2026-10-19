@@ -5,6 +5,10 @@
 //! update): [`super::goback`] takes a kept copy first, else this.
 //!
 //! An entry whose files aren't all in the store is `incomplete` and never offered.
+//!
+//! With a dev code set, the dev folder's own `history.json` (the same format, its URLs
+//! relative to the folder) comes in too: a tester goes back from one dev build to the one
+//! before it, and from the first to the published one before that.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -61,27 +65,54 @@ impl History {
         Ok(serde_json::from_str(text)?)
     }
 
-    /// The published history (`None`: not there, or not readable now), kept a minute.
+    /// The published history, with the dev folder's of the dev code in use (`None`: not
+    /// there, or not readable now), kept a minute.
     pub fn load() -> Option<History> {
-        static CACHE: Mutex<Option<(Instant, Option<History>)>> = Mutex::new(None);
+        type Kept = (Instant, Option<String>, Option<History>);
+        static CACHE: Mutex<Option<Kept>> = Mutex::new(None);
+        let code = super::dev_code::current();
         let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, h)) = cache.as_ref() {
-            if at.elapsed() < KEEP_FOR {
+        if let Some((at, c, h)) = cache.as_ref() {
+            if at.elapsed() < KEEP_FOR && *c == code {
                 return h.clone();
             }
         }
-        let h = match crate::core::http::get_text_opt(HISTORY_URL) {
-            Ok(Some(t)) => History::parse(&t)
-                .map_err(|e| tracing::warn!("history.json unreadable: {e:#}"))
-                .ok(),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::info!("history.json unavailable: {e:#}");
-                None
+        let mut h = read(HISTORY_URL, "history.json");
+        if let Some(code) = &code {
+            let folder = super::dev_code::folder(code);
+            if let Some(dev) = read(
+                &format!("{folder}history.json"),
+                "the dev folder's history.json",
+            ) {
+                h.get_or_insert_with(History::default)
+                    .merge_dev(dev, &folder);
             }
-        };
-        *cache = Some((Instant::now(), h.clone()));
+        }
+        *cache = Some((Instant::now(), code, h.clone()));
         h
+    }
+
+    /// Pure: a dev folder's history (at `folder`, with a trailing slash) into this one: each
+    /// id's versions from both, by when they came out. Its URLs, relative to the folder, are
+    /// made whole (and so go to the store, [`from_store`]); an entry with one out of the
+    /// folder is left out, as the dev catalogue's own reader does.
+    pub fn merge_dev(&mut self, dev: History, folder: &str) {
+        for (mine, theirs) in [(&mut self.mods, dev.mods), (&mut self.plugins, dev.plugins)] {
+            for (id, entries) in theirs {
+                let list = mine.entry(id).or_default();
+                list.extend(entries.into_iter().filter_map(|mut e| {
+                    let pack_ok = e.get_mut("pack").is_none_or(|p| whole_url(p, folder));
+                    (whole_url(&mut e, folder) && pack_ok).then_some(e)
+                }));
+                let at = |e: &Value| {
+                    e.get("at")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                list.sort_by_key(at);
+            }
+        }
     }
 
     /// The version listed before `version` of mod (or pack) `id`, ready to install from the
@@ -138,6 +169,36 @@ fn before<T: DeserializeOwned + Clone>(
         .rev()
         .find(|(e, incomplete)| !incomplete && version_of(e) != version)
         .map(|(e, _)| e.clone())
+}
+
+/// Fetches and reads a history (`None`: not there, or not readable now; `what` for the log).
+fn read(url: &str, what: &str) -> Option<History> {
+    match crate::core::http::get_text_opt(url) {
+        Ok(Some(t)) => History::parse(&t)
+            .map_err(|e| tracing::warn!("{what} unreadable: {e:#}"))
+            .ok(),
+        Ok(None) => None,
+        Err(e) => {
+            let e = super::dev_code::redact(&format!("{e:#}"));
+            tracing::info!("{what} unavailable: {e}");
+            None
+        }
+    }
+}
+
+/// Pure: an entry's `url` relative to a dev folder (`files/x.zip`) as a whole one in it;
+/// whether it is in the folder (an entry without one is too).
+fn whole_url(e: &mut Value, folder: &str) -> bool {
+    let Some(url) = e.get("url").and_then(Value::as_str) else {
+        return true;
+    };
+    match super::dev_code::resolve_in(folder, url) {
+        Some(whole) => {
+            e["url"] = Value::String(whole);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Pure: `url` (on release.echovr.de) as its store address, which keeps an earlier version
@@ -570,5 +631,45 @@ mod tests {
             (p.version.as_str(), p.url.as_str()),
             ("0.1.1", "https://github.com/x/y.zip")
         );
+    }
+
+    #[test]
+    fn a_dev_folder_goes_back_through_its_own_builds_then_the_published_ones() {
+        let sha = |c: &str| c.repeat(64);
+        let mut h = History::parse(&format!(
+            r#"{{"mods":{{"gpu":[
+                {{"id":"gpu","version":"1.0.0","file":"G.dll","url":"https://release.echovr.de/launcher/mods/G-1.0.0.dll","sha256":"{a}","at":"2026-10-07T19:09:00+00:00"}}]}}}}"#,
+            a = sha("a"),
+        ))
+        .unwrap();
+        let dev = History::parse(&format!(
+            r#"{{"mods":{{
+                "gpu":[{{"id":"gpu","version":"1.0.1-test","file":"G.dll","url":"files/G-1.0.1-test.dll","sha256":"{b}","at":"2026-10-19T12:00:00+00:00"}}],
+                "combat":[
+                  {{"id":"combat","version":"1.1.7","file":"C.zip","url":"files/C-1.1.7.zip","sha256":"{c}","at":"2026-10-18T10:00:00+00:00"}},
+                  {{"id":"combat","version":"1.1.8","file":"C.zip","url":"files/C-1.1.8.zip","sha256":"{d}","at":"2026-10-19T10:00:00+00:00"}},
+                  {{"id":"combat","version":"1.1.9","file":"C.zip","url":"../../evil.zip","sha256":"{e}","at":"2026-10-19T11:00:00+00:00"}}]}},
+              "plugins":{{"server":[{{"id":"server","version":"0.2.1","url":"files/s.zip","sha256":"{a}","at":"2026-10-19T10:00:00+00:00"}}]}}}}"#,
+            b = sha("b"),
+            c = sha("c"),
+            d = sha("d"),
+            e = sha("e"),
+            a = sha("a"),
+        ))
+        .unwrap();
+        h.merge_dev(dev, "https://release.echovr.de/launcher/dev/abc/");
+        // A dev build before the next one, from the store (the folder may not have it any more).
+        let m = h.mod_before("combat", "1.1.8").unwrap();
+        assert_eq!(m.version, "1.1.7");
+        assert_eq!(
+            m.url,
+            format!("https://release.echovr.de/store/sha256/cc/{}", sha("c"))
+        );
+        // The first dev build: back to the published version.
+        let m = h.mod_before("gpu", "1.0.1-test").unwrap();
+        assert_eq!(m.version, "1.0.0");
+        assert_eq!(h.plugins["server"].len(), 1);
+        // An entry with a URL out of the folder is left out.
+        assert_eq!(h.mods["combat"].len(), 2);
     }
 }

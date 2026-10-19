@@ -1616,11 +1616,12 @@ fn echoxr_detail(linux: bool) -> String {
 /// EchoXR Hands' line under its name.
 fn hands_detail() -> String {
     use crate::core::echoxr_hands as hands;
-    format!(
-        "v{}  ·  by {}  ·  your own fingers, from OpenXR hand tracking (SteamVR, WiVRn)",
-        hands::VERSION,
-        hands::AUTHORS
-    )
+    let what = if hands::ON_THIS_OS {
+        "your own fingers, from OpenXR hand tracking (SteamVR, Virtual Desktop)"
+    } else {
+        hands::OFF_ON_LINUX
+    };
+    format!("v{}  ·  by {}  ·  {what}", hands::VERSION, hands::AUTHORS)
 }
 
 /// EchoXR Hands' row, while it is on (installed): what nEVR did with its plugin, finger
@@ -1641,7 +1642,11 @@ fn hands_row(
     let bin = v.bin_dir();
     let name = "EchoXR Hands";
     let busy = busy(d, v);
-    let tip = "Your own fingers on Echo VR's hands, from your headset's hand tracking (Remove takes it out)";
+    let tip = if linux {
+        hands::OFF_ON_LINUX
+    } else {
+        "Your own fingers on Echo VR's hands, from your headset's hand tracking (Remove takes it out)"
+    };
     let key = |what: &str| format!("mods-vr-{what}-hands");
     let mut a = Actions::new(x, y, w);
     let installed = d.demo || hands::installed_in(&bin);
@@ -1696,7 +1701,7 @@ fn hands_row(
     let tags = [
         Some(("VR", design::BLUE)),
         Some(("Needs EchoXR", design::SUBTLE)),
-        linux.then_some(("Experimental", design::QUEST_WARN)),
+        linux.then_some(("Off on Linux", design::QUEST_WARN)),
     ];
     name_tags(k, x, &a, name, tags.into_iter().flatten());
     let g = detail_lines(k, &hands_detail(), w);
@@ -2388,7 +2393,11 @@ impl Extra<'_> {
             Extra::Hands => ModEntry {
                 id: "echoxr-hands".into(),
                 name: "EchoXR Hands".into(),
-                summary: "Your own fingers on Echo VR's hands, from your headset's hand tracking (SteamVR, WiVRn). It needs EchoXR: getting it turns EchoXR on.".into(),
+                summary: if crate::core::echoxr_hands::ON_THIS_OS {
+                    "Your own fingers on Echo VR's hands, from your headset's hand tracking (SteamVR, Virtual Desktop). It needs EchoXR: getting it turns EchoXR on.".into()
+                } else {
+                    format!("{}. Your own fingers on Echo VR's hands, from your headset's hand tracking, on Windows.", crate::core::echoxr_hands::OFF_ON_LINUX)
+                },
                 author: crate::core::echoxr_hands::AUTHORS.into(),
                 version: crate::core::echoxr_hands::VERSION.into(),
                 homepage: "https://github.com/EchoTools/EchoXR-Hands".into(),

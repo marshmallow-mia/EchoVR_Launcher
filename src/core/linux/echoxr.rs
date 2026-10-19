@@ -458,7 +458,6 @@ pub fn game_command(
     exe: &str,
     args: &[String],
     start: Start,
-    hands: bool,
 ) -> Result<std::process::Command> {
     let game_root = bin
         .ancestors()
@@ -521,16 +520,9 @@ pub fn game_command(
         } else {
             tracing::warn!("--play: {} isn't running", xr.name());
         }
-        if hands {
-            // EchoXR Hands' OpenXR layer, in the game's loader (paths as the game sees them).
-            let drives = drives();
-            let env = crate::core::echoxr_hands::layer_env(bin, |p| {
-                let p = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-                wine_path(&drives, &p)
-            });
-            tracing::info!("--play: hand tracking layer {env:?}");
-            c.envs(env);
-        }
+        // No EchoXR Hands layer here: its variables reach the Linux OpenXR loader behind
+        // wineopenxr too (also through any child the game starts), which can't find the
+        // layer and refuses the session (xrCreateInstance -36, EchoXR exits with 5).
     }
     Ok(c)
 }

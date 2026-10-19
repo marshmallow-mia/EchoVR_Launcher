@@ -1,19 +1,25 @@
 //! Where files on release.echovr.de are fetched from: the Bunny CDN (`cdn.echovr.de`, a copy
 //! of release.echovr.de that bunny.echo syncs every minute) first, release.echovr.de itself
-//! when the CDN fails or doesn't have the file yet.
+//! only when the CDN fails, is behind, or doesn't have the file yet.
 //!
-//! The launcher asks the CDN only for a file whose SHA-256 it knows beforehand, and by that
-//! checksum: release.echovr.de keeps every public file under `store/sha256/<aa>/<sha>` too
-//! (`echo-cdn-index`), and such an address only ever holds that one file. So the CDN can't
-//! hand out an old copy, or one its cache mixed from two versions, and the download is still
-//! checked. For the small files that name everything else (the catalogues, the update
-//! manifests, `SHA256SUMS`) the checksums come from release.echovr.de's `index.json`; the
-//! big files' checksums come from those. The store keeps earlier versions too, so going
-//! back to one ([`super::launcher::history`]) works for everyone.
+//! The launcher asks the CDN for a file by its SHA-256: release.echovr.de keeps every public
+//! file under `store/sha256/<aa>/<sha>` too (`echo-cdn-index`), and such an address only ever
+//! holds that one file. So the CDN can't hand out an old copy, or one its cache mixed from two
+//! versions, and the download is still checked. The checksums of the small files that name
+//! everything else (the catalogues, the update manifests, `SHA256SUMS`) come from an
+//! `index.json`; the big files' checksums come from those. The store keeps earlier versions
+//! too, so going back to one ([`super::launcher::history`]) works for everyone.
 //!
-//! When release.echovr.de can't be reached, the CDN's own copy of the index stands in, but
-//! never one older than an index already seen (its `serial`): a CDN that is behind then
-//! leaves the launcher where it was rather than taking it back.
+//! The index itself comes from the CDN as well, unless
+//! - it is older than an index already seen (its `serial`): the CDN is behind;
+//! - echo-cdn-index last `checked` it more than [`STALE`] before the CDN sent it: the sync to
+//!   the CDN has stopped;
+//!
+//! then release.echovr.de's is used. A dev folder (`launcher/dev/<code>/`) has an index of its
+//! own, for its catalogues and files, read the same way.
+//!
+//! A CDN that can't be reached (no connection, a timeout) is left out for [`CDN_PAUSE`]: until
+//! then everything comes straight from release.echovr.de.
 //!
 //! URLs stay release.echovr.de's everywhere else (catalogues, allowed hosts, update
 //! manifests); only the fetch is redirected here.
@@ -24,12 +30,14 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::Deserialize;
+use time::OffsetDateTime;
 
 /// release.echovr.de: the source of truth, and the fallback.
 pub const ORIGIN: &str = "https://release.echovr.de/";
 /// The Bunny pull zone in front of the synced copy of [`ORIGIN`].
 pub const CDN: &str = "https://cdn.echovr.de/";
-/// The checksums of the small files that name everything else, on [`ORIGIN`].
+/// The checksums of the small files that name everything else (and in each dev folder, of
+/// everything in it).
 const INDEX: &str = "index.json";
 /// Every public file by its checksum, on [`ORIGIN`] and [`CDN`]: `<STORE><aa>/<sha>`.
 const STORE: &str = "store/sha256/";
@@ -40,25 +48,36 @@ const CDN_ENV: &str = "ECHOVR_CDN";
 /// 30 seconds, a full check reads a few files at once.
 const INDEX_FOR: Duration = Duration::from_secs(20);
 const INDEX_TIMEOUT: Duration = Duration::from_secs(10);
+/// An index on the CDN that echo-cdn-index checked longer ago than this (it does at least
+/// every 5 minutes): the sync to the CDN has stopped.
+const STALE: Duration = Duration::from_secs(20 * 60);
+/// How long a connection to the CDN may take: release.echovr.de is there to fall back on.
+pub const CDN_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the CDN is left out after it couldn't be reached.
+const CDN_PAUSE: Duration = Duration::from_secs(10 * 60);
 
-/// Paths the CDN never serves: uploads, the dev folders (rewritten by their developers at
-/// any time, codes in the path), the live feed (not synced) and the index itself.
-const ORIGIN_ONLY: [&str; 8] = [
+/// Paths the CDN never serves: uploads, the live feed (not synced), stats and the index
+/// itself (the main one is read here, not as a file).
+const ORIGIN_ONLY: [&str; 6] = [
     "launcher/logs",
-    "launcher/dev/",
     "launcher/feed/",
     "quest/launcher/logs",
-    "quest/launcher/dev/",
     "quest/launcher/feed/",
     "stats",
     INDEX,
 ];
+/// Where the dev folders are, each with an index of its own.
+const DEV_ROOTS: [&str; 2] = ["launcher/dev/", "quest/launcher/dev/"];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Index {
     /// Raised whenever any listed file changes.
     pub serial: u64,
-    /// Path on [`ORIGIN`] (no leading slash) → lowercase SHA-256.
+    /// When echo-cdn-index last looked (RFC 3339), changed or not.
+    #[serde(default)]
+    pub checked: Option<String>,
+    /// Path on [`ORIGIN`] (no leading slash; in a dev folder's, inside the folder) →
+    /// lowercase SHA-256.
     #[serde(default)]
     pub files: HashMap<String, String>,
 }
@@ -73,40 +92,60 @@ impl Index {
     fn sha_of(&self, path: &str) -> Option<&str> {
         self.files.get(path).map(String::as_str)
     }
+
+    /// Whether the sync to the CDN has stopped: echo-cdn-index checked this copy more than
+    /// [`STALE`] before the CDN sent it (`sent`). One that doesn't say when is taken for
+    /// stale too.
+    fn stale(&self, sent: OffsetDateTime) -> bool {
+        let checked = self.checked.as_deref().and_then(|c| {
+            OffsetDateTime::parse(c, &time::format_description::well_known::Rfc3339).ok()
+        });
+        checked.is_none_or(|c| sent - c > STALE)
+    }
 }
 
 /// The index a fetch goes by.
 #[derive(Debug, Clone)]
 enum Known {
-    /// release.echovr.de's, or the CDN's when release.echovr.de can't be reached and it isn't
-    /// older than one seen before.
+    /// The CDN's, or release.echovr.de's when the CDN's can't be used.
     Index(Arc<Index>),
     /// No usable index (none published, or only an older one on the CDN): release.echovr.de
     /// only, as before the CDN.
     None,
 }
 
-/// Pure: the index to go by, from release.echovr.de's (`origin`), else the CDN's, given the
-/// highest serial seen so far.
-fn pick(origin: Option<Index>, cdn: impl FnOnce() -> Option<Index>, seen: u64) -> Known {
-    if let Some(i) = origin {
-        return Known::Index(Arc::new(i));
-    }
-    match cdn() {
-        Some(i) if i.serial >= seen => Known::Index(Arc::new(i)),
-        Some(i) => {
+/// Pure: the index to go by. The CDN's (with when the CDN sent it), unless it is older than
+/// the highest serial `seen` or stale; then release.echovr.de's (`origin`). A stale CDN copy
+/// is still better than none when release.echovr.de can't be reached either.
+fn pick(
+    cdn: Option<(Index, OffsetDateTime)>,
+    origin: impl FnOnce() -> Option<Index>,
+    seen: u64,
+) -> Known {
+    let mut stale = None;
+    match cdn {
+        Some((i, _)) if i.serial < seen => tracing::warn!(
+            "sources: the CDN's index (serial {}) is older than one seen ({seen}); from release.echovr.de",
+            i.serial
+        ),
+        Some((i, sent)) if i.stale(sent) => {
             tracing::warn!(
-                "sources: the CDN's index (serial {}) is older than one seen ({seen}); release.echovr.de only",
-                i.serial
+                "sources: the CDN's index was last checked {}; from release.echovr.de",
+                i.checked.as_deref().unwrap_or("never")
             );
-            Known::None
+            stale = Some(i);
         }
+        Some((i, _)) => return Known::Index(Arc::new(i)),
+        None => {}
+    }
+    match origin().or(stale) {
+        Some(i) => Known::Index(Arc::new(i)),
         None => Known::None,
     }
 }
 
-/// The CDN base in use, or `None` when it is switched off (debug builds only).
-fn cdn_base() -> Option<String> {
+/// The CDN base configured: [`CDN`], or in debug builds another one or none.
+fn configured_cdn() -> Option<String> {
     if cfg!(debug_assertions) {
         if let Ok(v) = std::env::var(CDN_ENV) {
             let v = v.trim();
@@ -123,6 +162,53 @@ fn cdn_base() -> Option<String> {
     Some(CDN.to_string())
 }
 
+/// When the CDN couldn't be reached last, while that is less than [`CDN_PAUSE`] ago.
+static CDN_DOWN: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// The CDN base in use: `None` when it is switched off, or left out for now because it
+/// couldn't be reached.
+fn cdn_base() -> Option<String> {
+    let mut down = CDN_DOWN.lock().unwrap_or_else(|p| p.into_inner());
+    match *down {
+        Some(at) if at.elapsed() < CDN_PAUSE => return None,
+        Some(_) => {
+            tracing::info!("sources: trying the CDN again");
+            *down = None;
+        }
+        None => {}
+    }
+    configured_cdn()
+}
+
+/// Whether `url` is on the CDN.
+pub fn is_cdn(url: &str) -> bool {
+    configured_cdn().is_some_and(|b| url.starts_with(&b))
+}
+
+/// A request to `url` failed with `e`: one to the CDN that got no answer at all (no
+/// connection, a timeout) leaves the CDN out for [`CDN_PAUSE`]. A 404 or a wrong file
+/// doesn't: the CDN is there, release.echovr.de stands in for that one file.
+pub fn failed(url: &str, e: &anyhow::Error) {
+    if let Some(r) = e.chain().find_map(|c| c.downcast_ref::<reqwest::Error>()) {
+        failed_request(url, r);
+    }
+}
+
+/// [`failed`] with the request's own error.
+pub fn failed_request(url: &str, e: &reqwest::Error) {
+    if !(e.is_connect() || e.is_timeout()) || !is_cdn(url) {
+        return;
+    }
+    let mut down = CDN_DOWN.lock().unwrap_or_else(|p| p.into_inner());
+    if down.is_none() {
+        tracing::warn!(
+            "sources: the CDN can't be reached ({e}); release.echovr.de only for {} minutes",
+            CDN_PAUSE.as_secs() / 60
+        );
+    }
+    *down = Some(Instant::now());
+}
+
 /// Pure: `url`'s path on release.echovr.de (no leading slash), when it is a plain file
 /// there the CDN may serve.
 fn cdn_path(url: &str) -> Option<&str> {
@@ -131,6 +217,19 @@ fn cdn_path(url: &str) -> Option<&str> {
         return None;
     }
     (!ORIGIN_ONLY.iter().any(|p| path.starts_with(p))).then_some(path)
+}
+
+/// Pure: which index lists `path`: (the folder it is in, with a trailing slash, or "" for
+/// the main one; `path` inside that folder).
+fn index_of(path: &str) -> (&str, &str) {
+    for root in DEV_ROOTS {
+        if let Some(rest) = path.strip_prefix(root) {
+            if let Some(i) = rest.find('/').filter(|i| *i > 0) {
+                return path.split_at(root.len() + i + 1);
+            }
+        }
+    }
+    ("", path)
 }
 
 /// Pure: the address of the file with `sha` on `base` (the CDN, or release.echovr.de); it
@@ -184,46 +283,56 @@ pub fn stored_text(sha: &str) -> Result<Option<String>> {
     out
 }
 
-/// The SHA-256 release.echovr.de's index lists for `url` (the big files it lists too, such
-/// as the game's zip).
+/// The SHA-256 an index lists for `url` (the big files it lists too, such as the game's
+/// zip; in a dev folder, everything in it).
 pub fn indexed_sha(url: &str) -> Option<String> {
-    let path = cdn_path(url)?;
-    match index() {
+    let (folder, path) = index_of(cdn_path(url)?);
+    match index(folder) {
         Known::Index(i) => i.sha_of(path).map(str::to_string),
         Known::None => None,
     }
 }
 
-static INDEX_CACHE: Mutex<Option<(Instant, Known)>> = Mutex::new(None);
+/// Each folder's index ("" for the main one) as last read.
+static INDEX_CACHE: Mutex<Option<HashMap<String, (Instant, Known)>>> = Mutex::new(None);
 
-/// The index to go by: release.echovr.de's, else the CDN's (not older than one seen), kept
-/// for [`INDEX_FOR`].
-fn index() -> Known {
+/// `text` without dev codes, for logs.
+fn redact(text: &str) -> String {
+    super::launcher::dev_code::redact(text)
+}
+
+/// The index of `folder` ("" for the main one, else a dev folder's path with a trailing
+/// slash) to go by: the CDN's, else release.echovr.de's ([`pick`]), kept for [`INDEX_FOR`].
+fn index(folder: &str) -> Known {
     let mut cache = INDEX_CACHE.lock().unwrap_or_else(|p| p.into_inner());
-    if let Some((at, known)) = cache.as_ref() {
+    let cache = cache.get_or_insert_with(HashMap::new);
+    if let Some((at, known)) = cache.get(folder) {
         if at.elapsed() < INDEX_FOR {
             return known.clone();
         }
     }
     let read = |url: &str| {
-        super::http::raw_text(url, INDEX_TIMEOUT)
-            .map_err(|e| tracing::info!("sources: {url}: {e:#}"))
+        super::http::dated_text(url, INDEX_TIMEOUT)
+            .map_err(|e| tracing::info!("sources: {}: {}", redact(url), redact(&format!("{e:#}"))))
             .ok()
             .flatten()
-            .and_then(|t| Index::parse(&t))
+            .and_then(|(t, sent)| Some((Index::parse(&t)?, sent)))
     };
-    let seen = seen_serial();
+    let seen = seen_serial(folder);
     let known = pick(
-        read(&format!("{ORIGIN}{INDEX}")),
-        || cdn_base().and_then(|b| read(&format!("{b}{INDEX}"))),
+        cdn_base().and_then(|b| {
+            let (i, sent) = read(&format!("{b}{folder}{INDEX}"))?;
+            Some((i, sent.unwrap_or_else(OffsetDateTime::now_utc)))
+        }),
+        || read(&format!("{ORIGIN}{folder}{INDEX}")).map(|(i, _)| i),
         seen,
     );
     if let Known::Index(i) = &known {
         if i.serial > seen {
-            note_serial(i.serial);
+            note_serial(folder, i.serial);
         }
     }
-    *cache = Some((Instant::now(), known.clone()));
+    cache.insert(folder.to_string(), (Instant::now(), known.clone()));
     known
 }
 
@@ -234,42 +343,67 @@ fn serial_path() -> std::path::PathBuf {
 #[derive(serde::Serialize, Deserialize, Default)]
 struct Seen {
     serial: u64,
+    /// Each dev folder's, by a hash of its path (never the code itself).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    folders: HashMap<String, u64>,
 }
 
-/// The highest index serial this launcher has seen (0: none yet).
-fn seen_serial() -> u64 {
-    if cfg!(test) {
-        return 0;
-    }
+/// Pure: the key of `folder`'s serial in [`Seen::folders`].
+fn folder_key(folder: &str) -> String {
+    sha256_hex(folder.as_bytes())[..16].to_string()
+}
+
+fn read_seen() -> Seen {
     std::fs::read_to_string(serial_path())
         .ok()
         .and_then(|t| serde_json::from_str::<Seen>(&t).ok())
-        .map(|s| s.serial)
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
-fn note_serial(serial: u64) {
+/// The highest serial of `folder`'s index this launcher has seen (0: none yet).
+fn seen_serial(folder: &str) -> u64 {
+    if cfg!(test) {
+        return 0;
+    }
+    let seen = read_seen();
+    if folder.is_empty() {
+        seen.serial
+    } else {
+        seen.folders.get(&folder_key(folder)).copied().unwrap_or(0)
+    }
+}
+
+fn note_serial(folder: &str, serial: u64) {
     if cfg!(test) {
         return;
     }
+    let mut seen = read_seen();
+    if folder.is_empty() {
+        seen.serial = serial;
+    } else {
+        seen.folders.insert(folder_key(folder), serial);
+    }
     let _ = std::fs::create_dir_all(super::paths::data_dir());
-    if let Ok(t) = serde_json::to_string(&Seen { serial }) {
+    if let Ok(t) = serde_json::to_string(&seen) {
         let _ = std::fs::write(serial_path(), t);
     }
 }
 
 /// Fetches the small text file `url` (`None`: not there, 404/410): from the CDN's store when
-/// it is a file release.echovr.de's index lists (and what comes matches), else from `url`
-/// itself. Any other URL is fetched as it is.
+/// it is a file an index lists (and what comes matches), else from `url` itself. Any other
+/// URL is fetched as it is.
 pub fn text(url: &str, timeout: Duration) -> Result<Option<String>> {
     let fetch = |u: &str| super::http::raw_text(u, timeout);
     match cdn_path(url) {
-        Some(path) => text_with(url, path, &index(), cdn_base().as_deref(), &fetch),
+        Some(path) => {
+            let (folder, inside) = index_of(path);
+            text_with(url, inside, &index(folder), cdn_base().as_deref(), &fetch)
+        }
         None => fetch(url),
     }
 }
 
-/// Pure but for `fetch`: [`text`] given the index and CDN base.
+/// Pure but for `fetch`: [`text`] given the index (`path` as it lists it) and CDN base.
 fn text_with(
     url: &str,
     path: &str,
@@ -289,8 +423,8 @@ fn text_with(
                 Ok(Some(_)) => tracing::warn!(
                     "sources: the CDN's {from} isn't what its checksum says; from release.echovr.de"
                 ),
-                Ok(None) => tracing::info!("sources: the CDN doesn't have {path} yet"),
-                Err(e) => tracing::info!("sources: CDN {path}: {e:#}"),
+                Ok(None) => tracing::info!("sources: the CDN doesn't have {} yet", redact(url)),
+                Err(e) => tracing::info!("sources: CDN {}: {e:#}", redact(url)),
             }
         }
     }
@@ -311,6 +445,7 @@ mod tests {
     fn index(serial: u64, files: &[(&str, &str)]) -> Index {
         Index {
             serial,
+            checked: Some("2026-10-19T12:00:00+00:00".into()),
             files: files
                 .iter()
                 .map(|(p, t)| (p.to_string(), sha256_hex(t.as_bytes())))
@@ -422,20 +557,118 @@ mod tests {
         assert_eq!(t.unwrap().as_deref(), Some("newer"));
     }
 
+    /// When the CDN sent an index checked at 12:00, `minutes` later.
+    fn sent(minutes: i64) -> OffsetDateTime {
+        OffsetDateTime::parse(
+            "2026-10-19T12:00:00+00:00",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap()
+            + time::Duration::minutes(minutes)
+    }
+
     #[test]
-    fn the_cdn_index_stands_in_only_when_not_older_than_one_seen() {
+    fn the_cdn_index_is_used_unless_it_is_behind_or_stale() {
         let got = |k: Known| match k {
             Known::Index(i) => Some(i.serial),
             Known::None => None,
         };
-        // release.echovr.de's always wins, and the CDN isn't asked.
-        let k = pick(Some(index(3, &[])), || panic!("CDN asked"), 9);
-        assert_eq!(got(k), Some(3));
-        // release.echovr.de unreachable: the CDN's, if it is as new as the last seen.
-        assert_eq!(got(pick(None, || Some(index(9, &[])), 9)), Some(9));
-        assert_eq!(got(pick(None, || Some(index(10, &[])), 9)), Some(10));
-        assert_eq!(got(pick(None, || Some(index(8, &[])), 9)), None);
+        // The CDN's, as new as the last seen or newer: release.echovr.de isn't asked.
+        let k = pick(
+            Some((index(9, &[]), sent(1))),
+            || panic!("release asked"),
+            9,
+        );
+        assert_eq!(got(k), Some(9));
+        assert_eq!(
+            got(pick(Some((index(10, &[]), sent(19))), || None, 9)),
+            Some(10)
+        );
+        // Behind: release.echovr.de's (the truth, whatever its serial); none, if it can't
+        // be reached either.
+        assert_eq!(
+            got(pick(
+                Some((index(8, &[]), sent(1))),
+                || Some(index(7, &[])),
+                9
+            )),
+            Some(7)
+        );
+        assert_eq!(got(pick(Some((index(8, &[]), sent(1))), || None, 9)), None);
+        // Stale (the sync stopped): release.echovr.de's; the CDN's when it can't be reached.
+        assert_eq!(
+            got(pick(
+                Some((index(9, &[]), sent(21))),
+                || Some(index(12, &[])),
+                9
+            )),
+            Some(12)
+        );
+        assert_eq!(
+            got(pick(Some((index(9, &[]), sent(21))), || None, 9)),
+            Some(9)
+        );
+        let mut unsaid = index(9, &[]);
+        unsaid.checked = None;
+        assert_eq!(
+            got(pick(Some((unsaid, sent(0))), || Some(index(11, &[])), 9)),
+            Some(11)
+        );
+        // The CDN can't be reached: release.echovr.de's.
+        assert_eq!(got(pick(None, || Some(index(3, &[])), 9)), Some(3));
         assert_eq!(got(pick(None, || None, 9)), None);
+    }
+
+    #[test]
+    fn a_dev_folder_has_an_index_of_its_own() {
+        assert_eq!(index_of("launcher/mods.json"), ("", "launcher/mods.json"));
+        assert_eq!(
+            index_of("launcher/dev/abc/files/C-1.1.8.zip"),
+            ("launcher/dev/abc/", "files/C-1.1.8.zip")
+        );
+        assert_eq!(
+            index_of("quest/launcher/dev/q1/versions.json"),
+            ("quest/launcher/dev/q1/", "versions.json")
+        );
+        // Not inside a folder.
+        assert_eq!(index_of("launcher/dev/x"), ("", "launcher/dev/x"));
+        assert_eq!(index_of("launcher/dev//x"), ("", "launcher/dev//x"));
+        // Its serial is kept under a hash, never the code.
+        let key = folder_key("launcher/dev/mysecretcode/");
+        assert_eq!(key.len(), 16);
+        assert!(!key.contains("mysecret"));
+        // Its catalogue by checksum, as the folder's index names it.
+        let asked = RefCell::new(Vec::new());
+        let url = "https://release.echovr.de/launcher/dev/abc/mods.json";
+        let k = known(index(2, &[("mods.json", "dev")]));
+        let addr = cdn_of("dev");
+        let answers = [(addr.as_str(), Ok(Some("dev"))), (url, Ok(Some("dev")))];
+        let t = text_with(url, "mods.json", &k, Some(CDN), &net(&answers, &asked));
+        assert_eq!(t.unwrap().as_deref(), Some("dev"));
+        assert_eq!(*asked.borrow(), [addr]);
+    }
+
+    #[test]
+    fn a_cdn_that_cant_be_reached_is_told_from_one_that_answers() {
+        let refused = crate::core::http::block_on(async {
+            reqwest::Client::new()
+                .get("http://127.0.0.1:1/x")
+                .send()
+                .await
+                .unwrap_err()
+        });
+        assert!(refused.is_connect());
+        let e = anyhow::Error::new(refused).context("GET x");
+        assert!(e
+            .chain()
+            .find_map(|c| c.downcast_ref::<reqwest::Error>())
+            .is_some_and(|r| r.is_connect()));
+        // Requests elsewhere never pause the CDN.
+        assert!(!is_cdn("http://127.0.0.1:1/x"));
+        assert!(!is_cdn("https://release.echovr.de/store/sha256/ab/x"));
+        assert!(
+            is_cdn("https://cdn.echovr.de/store/sha256/ab/x") || std::env::var(CDN_ENV).is_ok()
+        );
     }
 
     #[test]
@@ -458,13 +691,21 @@ mod tests {
             by_checksum(&stored, &sha),
             [format!("https://cdn.echovr.de/store/sha256/ab/{low}")]
         );
+        // A dev folder's file too (the store holds those as well).
+        assert_eq!(
+            by_checksum(
+                "https://release.echovr.de/launcher/dev/abc/files/C.zip",
+                &sha
+            )
+            .len(),
+            2
+        );
         // Not a checksum: nothing by checksum.
         assert!(by_checksum("https://release.echovr.de/pc.zip", "abc").is_empty());
         for url in [
             "https://release.echovr.de/launcher/logs",
-            "https://release.echovr.de/launcher/dev/abc/mods.json",
             "https://release.echovr.de/launcher/feed/servers.json",
-            "https://release.echovr.de/quest/launcher/dev/abc/versions.json",
+            "https://release.echovr.de/quest/launcher/feed/servers.json",
             "https://release.echovr.de/stats/",
             "https://release.echovr.de/index.json",
             "https://release.echovr.de/pc.zip?x=1",
@@ -484,7 +725,7 @@ mod tests {
     #[test]
     #[ignore]
     fn live_files_match_the_index() {
-        let Known::Index(i) = super::index() else {
+        let Known::Index(i) = super::index("") else {
             panic!("no index on release.echovr.de");
         };
         for path in [
@@ -545,9 +786,21 @@ mod tests {
 
     #[test]
     fn index_format() {
-        let i = Index::parse(r#"{"schema":1,"serial":42,"files":{"launcher/mods.json":"AB"}}"#)
+        let i = Index::parse(r#"{"schema":1,"serial":42,"checked":"2026-10-19T17:00:00+00:00","files":{"launcher/mods.json":"AB"}}"#)
             .unwrap();
         assert_eq!(i.serial, 42);
+        let at = |t: &str| {
+            OffsetDateTime::parse(t, &time::format_description::well_known::Rfc3339).unwrap()
+        };
+        assert!(!i.stale(at("2026-10-19T17:19:00+00:00")));
+        assert!(i.stale(at("2026-10-19T17:21:00+00:00")));
+        // The CDN's Date header.
+        let date = OffsetDateTime::parse(
+            "Mon, 19 Oct 2026 17:05:00 GMT",
+            &time::format_description::well_known::Rfc2822,
+        )
+        .unwrap();
+        assert!(!i.stale(date));
         assert_eq!(i.sha_of("launcher/mods.json"), Some("AB"));
         assert!(Index::parse("not json").is_none());
     }
