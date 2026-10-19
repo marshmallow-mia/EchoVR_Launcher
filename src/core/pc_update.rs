@@ -31,6 +31,11 @@ pub const ALPHA_OVERLAY: &str = "https://release.echovr.de/updates-nevr-alpha/up
 /// Where the update channels were read before; installs keep such a URL.
 const FILES_UPDATES: &str = "https://files.echovr.de/updates/";
 const RELEASE_UPDATES: &str = "https://release.echovr.de/updates/";
+/// The Quest update, as installs and catalogues may have noted it before the Quest tree.
+const OLD_QUEST_MANIFESTS: [&str; 2] = [
+    "https://files.echovr.de/updates/quest/update.manifest",
+    "https://release.echovr.de/updates/quest/update.manifest",
+];
 /// The PC channel without nEVR, as installs may have noted it (either host).
 const OLD_PC_MANIFESTS: [&str; 2] = [
     "https://files.echovr.de/updates/update.manifest",
@@ -162,9 +167,11 @@ fn pick_channel(env: Option<&str>, config: Option<&str>) -> Option<(String, &'st
 /// `url`, or for the live PC update the channel [`channel_override`] names.
 pub fn manifest_for(url: &str) -> String {
     // The PC channel without nEVR: the launcher's live one now has it. Any other
-    // files.echovr.de update channel (the Quest's) is read from the mirror.
+    // files.echovr.de update channel is read from the mirror; the Quest's from its tree.
     let moved = if OLD_PC_MANIFESTS.contains(&url) {
         Some(PC_MANIFEST_URL.to_string())
+    } else if OLD_QUEST_MANIFESTS.contains(&url) {
+        Some(super::quest_update::QUEST_MANIFEST_URL.to_string())
     } else {
         url.strip_prefix(FILES_UPDATES)
             .map(|rest| format!("{RELEASE_UPDATES}{rest}"))
@@ -334,10 +341,13 @@ mod tests {
             assert_eq!(manifest_for(old), PC_MANIFEST_URL);
         }
         assert!(PC_MANIFEST_URL.contains("/updates-nevr/"));
-        assert_eq!(
-            manifest_for("https://files.echovr.de/updates/quest/update.manifest"),
-            "https://release.echovr.de/updates/quest/update.manifest"
-        );
+        // The Quest's, from either host: the Quest tree's.
+        for old in OLD_QUEST_MANIFESTS {
+            assert_eq!(
+                manifest_for(old),
+                "https://release.echovr.de/quest/updates/update.manifest"
+            );
+        }
         assert_eq!(
             manifest_for("https://release.echovr.de/halloween2017.zip.manifest"),
             "https://release.echovr.de/halloween2017.zip.manifest"

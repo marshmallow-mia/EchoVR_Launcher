@@ -18,6 +18,14 @@ use crate::core::{paths, quest_install};
 /// versions catalogue names none.
 pub const FALLBACK_APK: &str = "echo_quest_27-08-2026.001.apk";
 pub const DATA_ZIP: &str = "_data.zip";
+/// Where the mirrors keep the Quest's APK and data (the names above, the manifest's
+/// `BASE_APK`): release.echovr.de's Quest tree.
+const QUEST_DIR: &str = "quest/";
+
+/// The download of a Quest game file named `name`, from the mirrors.
+fn quest_file(name: &str) -> String {
+    format!("{QUEST_DIR}{name}")
+}
 
 /// Where the Quest APK comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,7 +125,7 @@ pub fn install(
     let (apk, patched) = match source {
         ApkSource::Stock => {
             on(Step::Status("Downloading Echo VR...".into()));
-            let apk = fetch(&base, &base, true, false, cancel, on)?;
+            let apk = fetch(&quest_file(&base), &base, true, false, cancel, on)?;
             if let Some(sha) = manifest.as_ref().and_then(|m| m.base_apk_sha.as_deref()) {
                 on(Step::Status("Verifying the download...".into()));
                 if !download::sha256_matches(&apk, sha) {
@@ -145,7 +153,7 @@ pub fn install(
         }
     };
     on(Step::Status("Downloading the game data...".into()));
-    fetch(DATA_ZIP, DATA_ZIP, true, false, cancel, on)?;
+    fetch(&quest_file(DATA_ZIP), DATA_ZIP, true, false, cancel, on)?;
 
     let apk_file = apk
         .file_name()
@@ -359,6 +367,15 @@ mod tests {
             "echo_quest_27-08-2026.001.patched.apk"
         );
         assert_ne!(patched_name(FALLBACK_APK), FALLBACK_APK);
+    }
+
+    #[test]
+    fn game_files_come_from_the_quest_tree() {
+        assert_eq!(
+            quest_file(FALLBACK_APK),
+            "quest/echo_quest_27-08-2026.001.apk"
+        );
+        assert_eq!(quest_file(DATA_ZIP), "quest/_data.zip");
     }
 
     #[test]

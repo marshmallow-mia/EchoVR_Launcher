@@ -18,8 +18,9 @@ use super::http::{self, Cancelled};
 use super::manifest::Manifest;
 use super::quest_install::with_reconnect;
 
-/// The Quest update, mirrored from files.echovr.de as the PC's (`pc_update::PC_MANIFEST_URL`).
-pub const QUEST_MANIFEST_URL: &str = "https://release.echovr.de/updates/quest/update.manifest";
+/// The Quest update, mirrored from files.echovr.de as the PC's (`pc_update::PC_MANIFEST_URL`),
+/// in release.echovr.de's Quest tree: the PC layout under `/quest/`.
+pub const QUEST_MANIFEST_URL: &str = "https://release.echovr.de/quest/updates/update.manifest";
 
 pub fn marker_path() -> String {
     format!("/sdcard/Android/media/{PACKAGE}/.echo_installer_version")

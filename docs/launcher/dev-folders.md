@@ -99,3 +99,18 @@ you press **Use code**, every 30 seconds while the launcher is open (every 15 mi
 tray while it is closed), and when **Refresh** on the Plugins or Mods page is pressed. A new version is then offered as an update, and a plugin your folder
 lists for the first time is announced (status bar, and a desktop notification). Keep the code to yourself: anyone with it can
 download what's in your folder.
+
+### Quest dev folders
+
+The Quest installer has dev folders of its own, at
+`https://release.echovr.de/quest/launcher/dev/<code>/`, with the same files (`mods.json`,
+`plugins.json`, `files/`). They have their own codes, 10 characters (`abcde-fghij`) to type
+on a headset, and their own logins
+(`sftp -P 2999 qdev-<name>@168.119.2.94`): a launcher dev code opens no Quest folder, and a
+Quest code opens no launcher folder. The launcher doesn't read Quest dev folders.
+
+Besides `mods.json` and `plugins.json`, a Quest folder has `versions.json`: test builds, as there
+is no Quest mod loader yet. It lists apps side by side, each with its own Android `package`, its
+APK (`url`, `sha256`) and optional data (`data_url`, `data_sha256`, `data_target`), for example
+Echo VR and EchoCombat. An entry with a published `id` (`quest-latest`) replaces that build for
+whoever uses the code. Upload the files into `files/` first and `versions.json` last.

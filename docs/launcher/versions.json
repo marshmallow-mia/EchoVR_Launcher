@@ -99,7 +99,7 @@
       "platform": "quest",
       "url": "echo_quest_27-08-2026.001.apk",
       "data_url": "_data.zip",
-      "update_manifest": "https://release.echovr.de/updates/quest/update.manifest",
+      "update_manifest": "https://release.echovr.de/quest/updates/update.manifest",
       "notes": "Installed over USB from the Quest side of Play."
     }
   ]
