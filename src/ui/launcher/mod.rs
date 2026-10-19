@@ -4,6 +4,7 @@
 
 mod echovrce;
 mod friends;
+mod goback;
 mod hero;
 mod install;
 mod install_panel;
@@ -228,6 +229,13 @@ enum JobResult {
     Removed(String),
     /// The launcher's new version is in place: start it (the executable) and end this one.
     LauncherUpdated(PathBuf),
+    /// Went back to the version before an update: the part's hold key, the version it
+    /// went back from, and what to say.
+    WentBack {
+        key: String,
+        from: String,
+        text: String,
+    },
 }
 
 enum Msg {
@@ -296,6 +304,8 @@ enum Msg {
     /// A version's mods, read (for the Mods page's read number `gen`).
     ModView(u64, String, crate::core::launcher::mods::ModView),
     ModCatalog(crate::core::launcher::mods::ModCatalog),
+    /// Every way back to the version before an update, read again.
+    WaysBack(Vec<crate::core::launcher::goback::WayBack>),
 }
 
 /// Whether a newer launcher is out (Settings shows it, the rail marks it).
@@ -488,6 +498,8 @@ enum JobKind {
     Remove,
     /// Updating the launcher itself.
     LauncherUpdate,
+    /// Going back to the version before an update (a game update, a mod, a plugin).
+    GoBack,
 }
 
 /// What a job changes: an action waits only for the jobs on the same thing, so a game
@@ -583,6 +595,8 @@ pub enum SnapVariant {
     LogsSent,
     /// Settings: the credits.
     Credits,
+    /// Settings: going back, with a pulled game update, a plugin and a version skipped.
+    GoBack,
     /// Settings: Advanced settings, on beta, with a beta out.
     AdvancedSettings,
     /// Play while the launcher follows beta: the chip in the status bar.
@@ -871,6 +885,8 @@ pub struct Dashboard {
     /// Snapshots: the copies found.
     snap_found: Vec<String>,
     launcher_update: LauncherUpdate,
+    /// Going back to the version before an update ([`goback`]).
+    goback: goback::GoBack,
     /// The updates Play's update button started that wait for the job before them.
     update_queue: Vec<QueuedUpdate>,
     /// What the uninstall card asked to remove, until its confirmation is answered.
@@ -963,6 +979,7 @@ impl Dashboard {
             self.save();
         }
         self.check_launcher_update(ctx);
+        goback::refresh(self, ctx);
         // The tray looks for updates while the window is closed (and starts at login if
         // its autostart entry is still there).
         if !self.demo {
@@ -1326,13 +1343,19 @@ impl Dashboard {
             return;
         };
         let v = r.version.clone();
+        self.goback.launcher_back = false;
+        self.install_launcher(ctx, v, "Updating the launcher to");
+    }
+
+    /// Installs launcher `v` (newer, or the one to go back to) and restarts into it.
+    fn install_launcher(&mut self, ctx: &egui::Context, v: String, title: &str) {
         let tray = self.state.tray && !self.demo;
         self.start_job(
             ctx,
             JobKind::LauncherUpdate,
             LAUNCHER_JOB,
             vec![Res::All],
-            &format!("Updating the launcher to {v}"),
+            &format!("{title} {v}"),
             "Downloading...",
             move |cancel, on| match crate::core::launcher::self_update::install(&v, cancel, on) {
                 Ok(exe) => JobResult::LauncherUpdated(exe),
@@ -1495,6 +1518,9 @@ impl Dashboard {
             [] => {}
             [one] => self.notify(&one.text()),
             more => self.notify(&format!("{} updates available", more.len())),
+        }
+        if !check.catalogs_only {
+            self.goback.pulled = check.pulled.clone();
         }
         if check.catalogs_only {
             // The launcher's and the games' stay as the last full check found them.
@@ -1716,6 +1742,52 @@ impl Dashboard {
             Some(SnapVariant::ModsLocked) => {}
             Some(SnapVariant::Credits) => {
                 self.overlay = Some(setup::Overlay::Credits { scroll: 0.0 })
+            }
+            Some(SnapVariant::GoBack) => {
+                use crate::core::launcher::goback::{Affected, Part, WayBack};
+                let game = WayBack {
+                    part: Part::Game {
+                        version: "pc-latest".into(),
+                    },
+                    name: "Game update (Echo VR)".into(),
+                    now: "nEVR 5.2.1".into(),
+                    before: "nEVR 4.1.0".into(),
+                    at: Some("2026-10-19T08:00:00Z".into()),
+                };
+                self.goback.ways = vec![
+                    WayBack {
+                        part: Part::Launcher,
+                        name: "Echo VR Launcher".into(),
+                        now: "0.11.18".into(),
+                        before: "0.11.17".into(),
+                        at: None,
+                    },
+                    game.clone(),
+                    WayBack {
+                        part: Part::Plugin {
+                            id: "game-server".into(),
+                        },
+                        name: "Server host".into(),
+                        now: "0.3.0".into(),
+                        before: "0.2.0".into(),
+                        at: None,
+                    },
+                ];
+                self.goback.pulled = vec![Affected {
+                    way: game,
+                    note: "Echo VR closes at the loading screen on some PCs.".into(),
+                    auto: false,
+                }];
+                self.goback.told = self
+                    .goback
+                    .pulled
+                    .iter()
+                    .map(|a| format!("{}={}", a.way.part.key(), a.way.now))
+                    .collect();
+                self.state
+                    .holds
+                    .insert("mod:pc-latest:nvrgpurating.dll".into(), "1.1.0".into());
+                self.overlay = Some(setup::Overlay::GoBack { scroll: 0.0 })
             }
             Some(SnapVariant::AdvancedSettings) => {
                 self.state.launcher_channel = update_check::Channel::Beta;
@@ -2577,7 +2649,18 @@ impl Dashboard {
                 // A channel picked since then gets its own answer.
                 Msg::LauncherUpdate(channel, _) if channel != self.state.launcher_channel => {}
                 Msg::LauncherUpdate(_, r) => {
+                    let held = |v: &str| {
+                        crate::core::launcher::goback::held(
+                            &self.state.holds,
+                            &crate::core::launcher::goback::Part::Launcher,
+                            v,
+                        )
+                    };
                     self.launcher_update = match r {
+                        // The one gone back from: not offered.
+                        Ok(Some(release)) if !release.back && held(&release.version) => {
+                            LauncherUpdate::Latest
+                        }
                         Ok(Some(release)) => LauncherUpdate::Available(release),
                         Ok(None) => LauncherUpdate::Latest,
                         Err(e) => {
@@ -2589,6 +2672,7 @@ impl Dashboard {
                 Msg::Updates(check) => self.updates_done(check),
                 Msg::ModView(gen, id, view) => self.mods.read_done(gen, id, view),
                 Msg::ModCatalog(c) => self.mods.catalog_done(c),
+                Msg::WaysBack(ways) => self.goback.ways = ways,
                 Msg::Revive(dir) => self.revive.done((), dir),
                 Msg::DevCode(status) => self.dev_status = status,
                 Msg::EchoXr(ready) => self.echoxr.done((), ready),
@@ -2854,6 +2938,7 @@ impl Dashboard {
                 self.check_slot_soon(ctx, id);
                 self.updates.check_soon();
                 self.mods.changed();
+                goback::refresh(self, ctx);
                 self.update_note.insert(id.to_string(), "Up to date".into());
                 self.notify("Echo VR is up to date");
             }
@@ -2914,7 +2999,11 @@ impl Dashboard {
                     self.notify(&format!("{} is removed", v.name));
                 }
             }
+            JobResult::WentBack { key, from, text } => {
+                goback::went_back(self, ctx, key, from, &text);
+            }
             JobResult::ModsChanged(notice) => {
+                goback::refresh(self, ctx);
                 self.mods.changed();
                 self.notify(&notice);
                 self.updates.check_soon();
@@ -2947,6 +3036,10 @@ impl Dashboard {
                 }
             }
             JobResult::LauncherUpdated(exe) => {
+                // This version is the one to go back to (not after going back itself).
+                if !self.goback.launcher_back {
+                    self.state.launcher_previous = Some(env!("CARGO_PKG_VERSION").into());
+                }
                 // The new one starts (it waits for this one to end), the old tray goes.
                 self.save();
                 crate::core::tray::quit();
@@ -3165,6 +3258,7 @@ impl Dashboard {
         }
         versions::handle_answers(self, &ctx);
         settings::uninstall_answers(self, &ctx);
+        goback::answers(self, &ctx);
         play::answers(self, &ctx);
         // The page right of the unfolded rail: laid out that much narrower (as for a
         // narrower window), at the same height.

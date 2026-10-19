@@ -925,7 +925,7 @@ fn plugins_card(
                                 .and_then(|c| c.entry_for(&p.file))
                                 .map(|m| m.author.clone())
                                 .filter(|a| !a.is_empty()),
-                            update: update_for(p, d.mods.catalog.as_ref()),
+                            update: unheld_update(d, &v.id, p),
                             editable,
                             locked,
                             current,
@@ -1021,6 +1021,16 @@ fn update_for(p: &Plugin, c: Option<&ModCatalog>) -> Option<ModEntry> {
     c?.entry_for(&p.file)
         .filter(|m| m.downloadable() && m.version != *version)
         .cloned()
+}
+
+/// [`update_for`], unless it's the version the player went back from in version `vid`.
+fn unheld_update(d: &Dashboard, vid: &str, p: &Plugin) -> Option<ModEntry> {
+    let part = crate::core::launcher::goback::Part::Mod {
+        version: vid.to_string(),
+        file: p.file.clone(),
+    };
+    update_for(p, d.mods.catalog.as_ref())
+        .filter(|m| !crate::core::launcher::goback::held(&d.state.holds, &part, &m.version))
 }
 
 /// Which VR parts are installed, so listed with the plugins: EchoXR while it's how VR
@@ -1207,6 +1217,25 @@ fn plugin_row(
         ) {
             let ctx = k.ui.ctx().clone();
             get(d, &ctx, v, m);
+        }
+    }
+    // Right after an update: the version before, kept.
+    let part = crate::core::launcher::goback::Part::Mod {
+        version: v.id.clone(),
+        file: p.file.clone(),
+    };
+    if let Some(w) = super::goback::way_of(d, &part).cloned() {
+        let tip = format!("Put back {} (it loads at the next start)", w.before);
+        if a.button(
+            k,
+            &key("back"),
+            Tone::Dark,
+            None,
+            "Go back",
+            editable && busy.is_none(),
+            busy.unwrap_or(&tip),
+        ) {
+            super::goback::ask(d, w);
         }
     }
     if p.removable() {

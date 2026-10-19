@@ -434,7 +434,7 @@ pub fn apply(
             let local = staging.join("file.tmp");
             let url = manifest.url_for(e);
             tracing::info!("downloading {}", redact(&url));
-            http::download_to(&url, &local, Some(cancel))
+            http::download_checked(&url, sha, &local, Some(cancel))
                 .with_context(|| format!("Downloading {} failed", e.path))?;
             if !sha256_matches(&local, sha) {
                 return Err(UiError::new(

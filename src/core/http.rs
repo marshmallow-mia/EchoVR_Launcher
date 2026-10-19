@@ -89,29 +89,25 @@ pub async fn next_chunk(
     }
 }
 
-/// Fetches a small text resource (manifests) in full.
+/// Fetches a small text resource (manifests) in full. One on release.echovr.de may come
+/// from the CDN, checked ([`super::sources::text`]).
 pub fn get_text(url: &str) -> Result<String> {
-    block_on(async {
-        let resp = client()
-            .get(url)
-            .timeout(Duration::from_secs(60))
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?;
-        if !resp.status().is_success() {
-            bail!("GET {url}: server responded with {}", resp.status());
-        }
-        Ok(resp.text().await?)
-    })
+    super::sources::text(url, Duration::from_secs(60))?
+        .ok_or_else(|| anyhow!("GET {url}: server responded with 404 Not Found"))
 }
 
 /// [`get_text`], but a resource that isn't there (404 or 410) is `None` instead of an error:
 /// for optional files such as a channel's overlay.
 pub fn get_text_opt(url: &str) -> Result<Option<String>> {
+    super::sources::text(url, Duration::from_secs(60))
+}
+
+/// [`get_text_opt`] from exactly `url`, within `timeout`.
+pub(crate) fn raw_text(url: &str, timeout: Duration) -> Result<Option<String>> {
     block_on(async {
         let resp = client()
             .get(url)
-            .timeout(Duration::from_secs(60))
+            .timeout(timeout)
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
@@ -160,6 +156,33 @@ pub fn download_to(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Resul
         f.sync_all().ok();
         Ok(())
     })
+}
+
+/// [`download_to`] for a file that must have `sha256`: from the CDN first when it has a copy
+/// of `url` and that copy matches, else from `url` (which the caller checks, as before).
+pub fn download_checked(
+    url: &str,
+    sha256: &str,
+    dest: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
+    if let Some(cdn) = super::sources::cdn_url(url).filter(|_| !sha256.is_empty()) {
+        match download_to(&cdn, dest, cancel) {
+            Ok(()) if super::download::sha256_matches(dest, sha256) => return Ok(()),
+            Ok(()) => tracing::info!(
+                "the CDN's {} is behind; from release.echovr.de",
+                file_of(url)
+            ),
+            Err(e) if is_cancelled(&e) => return Err(e),
+            Err(e) => tracing::info!("CDN {}: {e:#}; from release.echovr.de", file_of(url)),
+        }
+        let _ = std::fs::remove_file(dest);
+    }
+    download_to(url, dest, cancel)
+}
+
+fn file_of(url: &str) -> &str {
+    url.rsplit('/').next().unwrap_or(url)
 }
 
 /// POSTs JSON and returns (status, body).

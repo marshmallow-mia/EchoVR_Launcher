@@ -80,6 +80,7 @@ pub fn fetch(
         use_mirror: false,
         fresh: true,
         extract: false,
+        sha256: None,
     };
     download::run(&job, cancel, &mut |p| {
         if let download::Progress::Percent(v) = p {

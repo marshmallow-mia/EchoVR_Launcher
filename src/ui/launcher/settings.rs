@@ -1045,12 +1045,14 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             "Asks first, and says which logs go and what they contain",
         )
     };
+    // Two side by side: upload logs, and go back to the version before an update.
+    let half = (w - dz(14.0)) / 2.0;
     if kit
         .button(
             "upload-logs",
             x,
             y,
-            w,
+            half,
             BTN_H,
             Tone::Panel,
             Some(Icon::Info),
@@ -1061,6 +1063,23 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         .clicked
     {
         ask_upload(d);
+    }
+    if kit
+        .button(
+            "go-back",
+            x + w - half,
+            y,
+            half,
+            BTN_H,
+            Tone::Panel,
+            Some(Icon::Refresh),
+            "Go back",
+            true,
+            "An update broke something? Put back the version before: the launcher, a game update, a mod or a plugin",
+        )
+        .clicked
+    {
+        super::goback::open(d, ctx);
     }
     y += BTN_H + dz(14.0);
     if kit

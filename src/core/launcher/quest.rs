@@ -83,6 +83,7 @@ fn fetch(
     name: &str,
     mirror: bool,
     fresh: bool,
+    sha256: Option<&str>,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
 ) -> Result<PathBuf> {
@@ -93,6 +94,7 @@ fn fetch(
         use_mirror: mirror,
         fresh,
         extract: false,
+        sha256: sha256.map(str::to_string),
     };
     download::run(&job, cancel, &mut |p| match p {
         Progress::Percent(v) => on(Step::Percent(v)),
@@ -125,8 +127,9 @@ pub fn install(
     let (apk, patched) = match source {
         ApkSource::Stock => {
             on(Step::Status("Downloading Echo VR...".into()));
-            let apk = fetch(&quest_file(&base), &base, true, false, cancel, on)?;
-            if let Some(sha) = manifest.as_ref().and_then(|m| m.base_apk_sha.as_deref()) {
+            let sha = manifest.as_ref().and_then(|m| m.base_apk_sha.as_deref());
+            let apk = fetch(&quest_file(&base), &base, true, false, sha, cancel, on)?;
+            if let Some(sha) = sha {
                 on(Step::Status("Verifying the download...".into()));
                 if !download::sha256_matches(&apk, sha) {
                     let _ = std::fs::remove_file(&apk);
@@ -147,13 +150,21 @@ pub fn install(
             };
             on(Step::Status("Downloading your patched APK...".into()));
             (
-                fetch(&url, &patched_name(&base), false, true, cancel, on)?,
+                fetch(&url, &patched_name(&base), false, true, None, cancel, on)?,
                 true,
             )
         }
     };
     on(Step::Status("Downloading the game data...".into()));
-    fetch(&quest_file(DATA_ZIP), DATA_ZIP, true, false, cancel, on)?;
+    fetch(
+        &quest_file(DATA_ZIP),
+        DATA_ZIP,
+        true,
+        false,
+        None,
+        cancel,
+        on,
+    )?;
 
     let apk_file = apk
         .file_name()

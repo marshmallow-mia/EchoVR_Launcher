@@ -1613,6 +1613,7 @@ pub fn install(
         },
     )?;
     on(Step::Status(format!("Installing {}...", e.name)));
+    keep_previous(v, &e.file, &e.version);
     place(v, &file, &e.file)?;
     let _ = std::fs::remove_file(&file);
     edit_overlay(v, |o| {
@@ -1859,9 +1860,132 @@ pub fn remove(v: &InstalledVersion, file: &str) -> Result<()> {
         }
         Err(e) => return Err(anyhow::Error::from(e).context(format!("delete {}", path.display()))),
     }
+    let _ = std::fs::remove_dir_all(previous_dir(v).join(file));
     edit_overlay(v, |o| {
         o.remove_added(file);
     })
+}
+
+// ---- going back to the version before an update ----
+
+/// Where the mods replaced by an update are kept (`_local/previous-mods/<file>/`): the file
+/// and what the launcher had noted on it.
+fn previous_dir(v: &InstalledVersion) -> PathBuf {
+    nevr::local_dir(v).join("previous-mods")
+}
+
+const PREVIOUS_ENTRY: &str = "entry.json";
+
+/// Before mod `file` is replaced by version `version` from the catalogue: the version the
+/// launcher installed before is kept, with its entry, for [`go_back`].
+fn keep_previous(v: &InstalledVersion, file: &str, version: &str) {
+    let Some(old) = Overlay::read(&choices_path(v))
+        .added()
+        .into_iter()
+        .find(|a| a.file.eq_ignore_ascii_case(file))
+        .filter(|a| {
+            a.launcher
+                .as_ref()
+                .is_some_and(|l| !l.local && l.version != version)
+        })
+    else {
+        return;
+    };
+    let path = plugins_dir(v).join(file);
+    if !old
+        .sha256
+        .as_deref()
+        .is_some_and(|s| download::sha256_matches(&path, s))
+    {
+        return;
+    }
+    let dir = previous_dir(v).join(file);
+    let _ = std::fs::remove_dir_all(&dir);
+    let kept = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::copy(&path, dir.join(file)).map(|_| ()))
+        .map_err(anyhow::Error::from)
+        .and_then(|()| {
+            let mut o = Overlay::default();
+            o.add(&old);
+            o.write(&dir.join(PREVIOUS_ENTRY))
+        });
+    if let Err(e) = kept {
+        tracing::warn!("mods: couldn't keep {file} for going back: {e:#}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A mod that can go back to the version it had before its last update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Previous {
+    pub file: String,
+    pub name: String,
+    /// The version it has now, and the one it goes back to.
+    pub now: String,
+    pub before: String,
+}
+
+fn previous_entry(v: &InstalledVersion, file: &str) -> Option<Entry> {
+    let dir = previous_dir(v).join(file);
+    let e = Overlay::read(&dir.join(PREVIOUS_ENTRY))
+        .added()
+        .into_iter()
+        .next()?;
+    let sha = e.sha256.as_deref()?;
+    download::sha256_matches(&dir.join(file), sha).then_some(e)
+}
+
+/// `v`'s mods with a version kept from before their last update.
+pub fn previous(v: &InstalledVersion) -> Vec<Previous> {
+    let now = Overlay::read(&choices_path(v)).added();
+    std::fs::read_dir(previous_dir(v))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|d| {
+            let file = d.file_name().to_string_lossy().to_string();
+            let before = previous_entry(v, &file)?;
+            let cur = now.iter().find(|a| a.file.eq_ignore_ascii_case(&file))?;
+            let (b, n) = (before.launcher.as_ref()?, cur.launcher.as_ref()?);
+            (b.version != n.version && !n.local).then(|| Previous {
+                file: cur.file.clone(),
+                name: cur.name.clone(),
+                now: n.version.clone(),
+                before: b.version.clone(),
+            })
+        })
+        .collect()
+}
+
+/// Puts mod `file` of `v` back to the version kept from before its last update (its
+/// switch and settings stay as they are now). Returns the version it went back from (the
+/// one to hold).
+pub fn go_back(v: &InstalledVersion, file: &str) -> Result<String> {
+    let Some(before) = previous_entry(v, file) else {
+        bail!("There is no earlier version of {file} to go back to.");
+    };
+    let now = Overlay::read(&choices_path(v))
+        .added()
+        .into_iter()
+        .find(|a| a.file.eq_ignore_ascii_case(file))
+        .ok_or_else(|| anyhow::anyhow!("{file} isn't installed in {}.", v.name))?;
+    let dir = previous_dir(v).join(file);
+    place(v, &dir.join(file), &now.file)?;
+    let went_from = now
+        .launcher
+        .as_ref()
+        .map(|l| l.version.clone())
+        .unwrap_or_default();
+    edit_overlay(v, |o| {
+        o.add(&Entry {
+            sha256: before.sha256.clone(),
+            launcher: before.launcher.clone(),
+            ..now
+        })
+    })?;
+    let _ = std::fs::remove_dir_all(&dir);
+    tracing::info!("mods: {file} back from {went_from} to the version before");
+    Ok(went_from)
 }
 
 // ---- the mods catalogue (mods.json on release.echovr.de) ----
@@ -2465,6 +2589,59 @@ pub(crate) mod tests {
             root: paths::normalize(&root.to_string_lossy()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_mod_update_keeps_the_version_before_to_go_back_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        let file = "CombatStats.dll";
+        let put = |body: &str, version: &str| {
+            let src = dir.path().join("download.dll");
+            std::fs::write(&src, body).unwrap();
+            keep_previous(&v, file, version);
+            place(&v, &src, file).unwrap();
+            let sha = download::sha256_file(&src).unwrap();
+            edit_overlay(&v, |o| {
+                o.add(&Entry {
+                    file: file.into(),
+                    name: "Combat stats".into(),
+                    enabled: true,
+                    sha256: Some(sha),
+                    launcher: Some(Added {
+                        catalog_id: Some("combat-stats".into()),
+                        version: version.into(),
+                        local: false,
+                    }),
+                    ..Entry::default()
+                })
+            })
+            .unwrap();
+        };
+        put("MZ one", "1.0.0");
+        assert!(previous(&v).is_empty());
+        put("MZ two", "1.1.0");
+        let p = previous(&v);
+        assert_eq!(p.len(), 1);
+        assert_eq!(
+            (p[0].now.as_str(), p[0].before.as_str()),
+            ("1.1.0", "1.0.0")
+        );
+        // Turned off since: it stays off.
+        set_plugin_enabled(&v, file, false).unwrap();
+        assert_eq!(go_back(&v, file).unwrap(), "1.1.0");
+        let target = plugins_dir(&v).join(file);
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "MZ one");
+        let now = Overlay::read(&choices_path(&v)).added();
+        let e = now.iter().find(|a| a.file == file).unwrap();
+        assert_eq!(e.launcher.as_ref().unwrap().version, "1.0.0");
+        assert_eq!(
+            e.sha256.as_deref(),
+            Some(download::sha256_file(&target).unwrap().as_str())
+        );
+        assert!(!e.enabled);
+        assert!(previous(&v).is_empty());
+        assert!(go_back(&v, file).is_err());
     }
 
     #[test]

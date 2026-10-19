@@ -637,6 +637,7 @@ pub(super) fn job_state(job: &JobView) -> String {
         JobKind::Licence => "Licence patch".into(),
         JobKind::Uninstall => "Uninstalling".into(),
         JobKind::Remove => "Removing".into(),
+        JobKind::GoBack => "Going back".into(),
         JobKind::Revive | JobKind::QuestUpdate | JobKind::Mods | JobKind::LauncherUpdate => {
             job.title.clone()
         }
@@ -722,7 +723,13 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
             Update::Pc(v) => {
                 let plugins =
                     (d.updates.plugins_for(&v.id) > 0).then(|| QueuedUpdate::Plugins(v.id.clone()));
-                if crate::core::launcher::versions::has_updates(&v) {
+                let held = d.state.holds.contains_key(&format!("game:{}", v.id));
+                if held {
+                    // Gone back from its update: only a newer one is offered; this button
+                    // doesn't bring the one gone back from again.
+                    d.updates.check_soon();
+                    d.notify("Kept at the update before: Settings → Go back → Use newest gets the newest");
+                } else if crate::core::launcher::versions::has_updates(&v) {
                     versions::update(d, ctx, *v);
                 }
                 d.queue_updates(ctx, plugins.into_iter().chain(launcher).collect());

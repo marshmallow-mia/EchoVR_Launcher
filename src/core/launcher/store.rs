@@ -262,6 +262,11 @@ pub struct LauncherState {
     /// A developer's dev code (Advanced settings): their unpublished mods and plugins are
     /// listed too ([`super::dev_code`]).
     pub dev_code: Option<String>,
+    /// Versions the player went back from ([`super::goback`]): part → the version (for the
+    /// game, its update manifest's sha256) that isn't offered again. A newer one is.
+    pub holds: std::collections::BTreeMap<String, String>,
+    /// The launcher's version before it last updated itself: where it can go back to.
+    pub launcher_previous: Option<String>,
 }
 
 /// The server a content pack plays on instead of EchoVRCE (Settings), and your account
@@ -388,6 +393,8 @@ impl Default for LauncherState {
             plugins_seen: None,
             launcher_channel: Channel::Main,
             dev_code: None,
+            holds: Default::default(),
+            launcher_previous: None,
         }
     }
 }

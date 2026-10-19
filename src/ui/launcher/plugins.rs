@@ -10,6 +10,7 @@ use serde_json::{json, Map, Value};
 use super::plugin_form::{self, FormState};
 use super::{empty_state, hero, panel, play, Dashboard, Page};
 use crate::core::launcher::echoxr_settings;
+use crate::core::launcher::goback::{self, Part};
 use crate::core::launcher::plugin_page::{
     self as pp, Block, Button, Card, Method, PluginPage, Request, Step, Tone as TextTone,
 };
@@ -260,6 +261,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     Err(e) => d.dialogs.error("Plugins", &e, Default::default()),
                 }
                 reread(d, ctx);
+                super::goback::refresh(d, ctx);
             }
         }
     }
@@ -2289,7 +2291,7 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
         return offered_info(&core::PluginEntry::default());
     };
     let catalog = d.plugins.catalog.clone().unwrap_or_default();
-    let update = core::update_for(p, &catalog).is_some();
+    let update = update_of(d, p, &catalog).is_some();
     let mut meta = Vec::new();
     if !p.page.version.is_empty() {
         meta.push(format!("v{}", p.page.version));
@@ -2521,7 +2523,7 @@ fn installed_card(
         return;
     };
     let catalog = d.plugins.catalog.clone().unwrap_or_default();
-    let update = core::update_for(&p, &catalog).cloned();
+    let update = update_of(d, &p, &catalog).cloned();
     let id = p.page.id.clone();
     let pin = is_pinned(d, &id);
     let busy = d.plugins.busy.clone();
@@ -2727,12 +2729,13 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         return;
     };
     let catalog = d.plugins.catalog.clone().unwrap_or_default();
-    let update = core::update_for(&p, &catalog).cloned();
+    let update = update_of(d, &p, &catalog).cloned();
     let entry = catalog.plugins.iter().find(|e| e.id == id).cloned();
     let homepage = entry.map(|e| e.homepage).unwrap_or_default();
     let pin = is_pinned(d, &id);
     let idle = d.plugins.busy.is_none();
     let wait = (!idle).then_some("Wait: a plugin is being installed or updated");
+    let back = super::goback::way_of(d, &Part::Plugin { id: id.clone() }).cloned();
     let rows = [
         match &update {
             Some(e) => MenuItem::row(
@@ -2741,6 +2744,15 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             )
             .unless(wait),
             None => MenuItem::row("Update", "").unless(Some("It's up to date")),
+        },
+        match &back {
+            Some(w) => MenuItem::row(
+                &format!("Go back to {}", w.before),
+                "Put back the version it had before its last update",
+            )
+            .unless(wait),
+            None => MenuItem::row("Go back", "")
+                .unless(Some("No earlier version kept: it wasn't updated since")),
         },
         if pin {
             MenuItem::row(
@@ -2763,8 +2775,13 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 get(d, ctx, e, "Plugin updated");
             }
         }
-        Some(1) => set_pinned(d, &id, !pin),
-        Some(2) => {
+        Some(1) => {
+            if let Some(w) = back {
+                super::goback::ask(d, w);
+            }
+        }
+        Some(2) => set_pinned(d, &id, !pin),
+        Some(3) => {
             d.plugins.remove_asked = Some(id.clone());
             d.dialogs.confirm_danger(
                 REMOVE_KEY,
@@ -2773,12 +2790,24 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 "Remove",
             );
         }
-        Some(4) => crate::core::platform::open_url(&homepage),
+        Some(5) => crate::core::platform::open_url(&homepage),
         _ => {}
     }
     if !kit.menu_open(CARD_MENU) {
         d.plugins.card_menu = None;
     }
+}
+
+/// The catalogue's other version of `p`, unless it's the one the player went back from.
+fn update_of<'a>(
+    d: &Dashboard,
+    p: &core::Installed,
+    catalog: &'a core::PluginCatalog,
+) -> Option<&'a core::PluginEntry> {
+    let part = Part::Plugin {
+        id: p.page.id.clone(),
+    };
+    core::update_for(p, catalog).filter(|e| !goback::held(&d.state.holds, &part, &e.version))
 }
 
 fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str) {

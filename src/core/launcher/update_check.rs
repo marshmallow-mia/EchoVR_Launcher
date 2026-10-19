@@ -167,6 +167,17 @@ pub fn running_channel() -> Channel {
     Version::parse(env!("CARGO_PKG_VERSION")).map_or(Channel::Main, Version::channel)
 }
 
+/// The newest of `versions` older than `current`, on the channel `current` is from or a
+/// steadier one: where going back leads when nothing noted the version before.
+pub fn newest_below<'a>(versions: impl Iterator<Item = &'a str>, current: &str) -> Option<String> {
+    let cur = Version::parse(current)?;
+    versions
+        .filter_map(|v| Some((Version::parse(v)?, v)))
+        .filter(|(v, _)| *v < cur && v.channel() <= cur.channel())
+        .max_by_key(|(v, _)| *v)
+        .map(|(_, v)| v.to_string())
+}
+
 /// `candidate` is a newer version than `current` (missing parts count as 0).
 #[cfg(test)]
 fn is_newer(candidate: &str, current: &str) -> bool {

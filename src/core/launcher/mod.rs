@@ -7,6 +7,7 @@ pub mod echoxr_settings;
 pub mod feed;
 pub mod game;
 pub mod game_sign_in;
+pub mod goback;
 pub mod graphics;
 pub mod headless;
 pub mod host;

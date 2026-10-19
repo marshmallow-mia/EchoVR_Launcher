@@ -134,6 +134,7 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("settings_logs_sent", Page::Settings, SnapVariant::LogsSent),
         ("settings_credits", Page::Settings, SnapVariant::Credits),
+        ("settings_go_back", Page::Settings, SnapVariant::GoBack),
         (
             "settings_advanced",
             Page::Settings,

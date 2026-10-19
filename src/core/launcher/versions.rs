@@ -467,6 +467,7 @@ fn download_and_extract(
         use_mirror: entry.uses_mirror(),
         fresh: false,
         extract: false,
+        sha256: entry.sha256.clone(),
     };
     let zip = download::run(&job, cancel, &mut |p| {
         on(match p {
@@ -526,9 +527,32 @@ fn keep(v: &InstalledVersion) -> &'static [&'static str] {
 pub fn update(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
     ensure_present(v)?;
     let url = manifest_url(v).ok_or_else(|| no_updates(v))?;
-    pc_update::apply_skipping(&url, &v.bin_dir(), keep(v), cancel, &mut |s| {
-        on(Step::Status(s))
-    })
+    let previous = previous_update_dir(v);
+    pc_update::apply_keeping(
+        &url,
+        &v.bin_dir(),
+        keep(v),
+        Some(&previous),
+        cancel,
+        &mut |s| on(Step::Status(s)),
+    )
+}
+
+/// Where `v`'s last update kept the files it replaced (`_local/previous-update/`).
+fn previous_update_dir(v: &InstalledVersion) -> PathBuf {
+    super::nevr::local_dir(v).join("previous-update")
+}
+
+/// What `v`'s last update kept for going back, if anything.
+pub fn previous_update(v: &InstalledVersion) -> Option<pc_update::Previous> {
+    pc_update::Previous::read(&previous_update_dir(v))
+}
+
+/// Puts back what `v`'s last update replaced. Returns the sha256 of the update manifest it
+/// went back from (the one to hold).
+pub fn go_back(v: &InstalledVersion) -> Result<String> {
+    ensure_present(v)?;
+    Ok(pc_update::go_back(&previous_update_dir(v), &v.bin_dir())?.manifest_sha256)
 }
 
 /// Files of the update manifest that are missing or differ on disk.

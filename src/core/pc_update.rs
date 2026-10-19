@@ -244,8 +244,49 @@ pub fn apply_skipping(
     cancel: &AtomicBool,
     status: &mut dyn FnMut(String),
 ) -> Result<()> {
+    apply_keeping(manifest_url, bin_path, skip, None, cancel, status)
+}
+
+/// What an update put aside in its `previous` folder ([`apply_keeping`]), to go back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Previous {
+    /// The sha256 of the update manifest (with the channel's overlays) it brought: going
+    /// back holds that one ([`crate::core::updates`] doesn't offer it again).
+    pub manifest_sha256: String,
+    /// nEVR's version before and after, when the update changed it.
+    pub nevr_from: Option<String>,
+    pub nevr_to: Option<String>,
+    /// When (RFC 3339).
+    pub at: Option<String>,
+    /// Files it replaced or deleted: kept under `files/`.
+    pub replaced: Vec<String>,
+    /// Files it added that weren't there: deleted again.
+    pub added: Vec<String>,
+}
+
+pub const PREVIOUS_RECORD: &str = "previous.json";
+const PREVIOUS_FILES: &str = "files";
+
+impl Previous {
+    pub fn read(dir: &Path) -> Option<Previous> {
+        let t = std::fs::read_to_string(dir.join(PREVIOUS_RECORD)).ok()?;
+        serde_json::from_str(&t).ok()
+    }
+}
+
+/// [`apply_skipping`], keeping what it replaces or deletes in `previous` (one update back,
+/// written only when the update changes a file) so that [`go_back`] can put it back.
+pub fn apply_keeping(
+    manifest_url: &str,
+    bin_path: &Path,
+    skip: &[&str],
+    previous: Option<&Path>,
+    cancel: &AtomicBool,
+    status: &mut dyn FnMut(String),
+) -> Result<()> {
     tracing::info!("UpdateService: downloading manifest {manifest_url}");
-    let (manifest, _) = fetch_manifest(manifest_url)?;
+    let (manifest, text) = fetch_manifest(manifest_url)?;
     let dels: Vec<_> = manifest
         .dels()
         .filter(|e| !skipped(&e.path, skip))
@@ -256,75 +297,241 @@ pub fn apply_skipping(
         .collect();
     let total = dels.len() + adds.len();
     let mut current = 0;
-
-    for e in &dels {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(Cancelled.into());
-        }
-        current += 1;
-        status(format!(
-            "Updating {current}/{total}: deleting {}...",
-            e.path
-        ));
-        let target = bin_path.join(&e.path);
-        match std::fs::remove_file(&target) {
-            Ok(()) => tracing::info!("UpdateService: deleted {}", e.path),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) if is_locked(&err) => {
-                return Err(UpdateError::FileInUse {
-                    path: e.path.clone(),
-                    source: err,
-                }
-                .into())
-            }
-            Err(err) => return Err(anyhow!(err).context(format!("delete {}", target.display()))),
-        }
+    // What this update puts aside: gathered beside the last one, which it replaces once
+    // something has changed.
+    let mut kept = previous.map(|dir| Keeping {
+        new: dir.with_extension("new"),
+        record: Previous {
+            manifest_sha256: sha256_hex(text.as_bytes()),
+            nevr_from: nevr_version(&bin_path.join(super::launcher::mods::SLOT)),
+            at: time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .ok(),
+            ..Previous::default()
+        },
+        dir: dir.to_path_buf(),
+    });
+    if let Some(k) = &kept {
+        let _ = std::fs::remove_dir_all(&k.new);
     }
 
-    for e in &adds {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(Cancelled.into());
-        }
-        current += 1;
-        status(format!("Updating {current}/{total}: {}...", e.path));
-        let target = bin_path.join(&e.path);
-        let sha = e.sha256.as_deref().unwrap_or_default();
-        if target.exists() && sha256_matches(&target, sha) {
-            tracing::info!("UpdateService: skipping {} (already up to date)", e.path);
-            continue;
-        }
-
-        let parent = target.parent().unwrap_or(bin_path);
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-        // Stage next to the target so the final rename never crosses filesystems.
-        let staged = parent.join(format!(".{}.download", file_name(&e.path)));
-        let url = manifest.url_for(e);
-        tracing::info!("UpdateService: downloading {}", redact(&url));
-        let result = http::download_to(&url, &staged, Some(cancel)).and_then(|()| {
-            if !sha256_matches(&staged, sha) {
-                return Err(UpdateError::HashMismatch(e.path.clone()).into());
+    let result = (|| -> Result<()> {
+        for e in &dels {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(Cancelled.into());
             }
-            std::fs::rename(&staged, &target).map_err(|err| {
-                if is_locked(&err) {
-                    UpdateError::FileInUse {
+            current += 1;
+            status(format!(
+                "Updating {current}/{total}: deleting {}...",
+                e.path
+            ));
+            let target = bin_path.join(&e.path);
+            let gone = match &mut kept {
+                Some(k) if target.exists() => k.put_aside(&e.path, &target),
+                _ => std::fs::remove_file(&target),
+            };
+            match gone {
+                Ok(()) => tracing::info!("UpdateService: deleted {}", e.path),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) if is_locked(&err) => {
+                    return Err(UpdateError::FileInUse {
                         path: e.path.clone(),
                         source: err,
                     }
-                    .into()
-                } else {
-                    anyhow!(err).context(format!("replace {}", target.display()))
+                    .into())
                 }
-            })
-        });
-        if result.is_err() {
-            let _ = std::fs::remove_file(&staged);
+                Err(err) => {
+                    return Err(anyhow!(err).context(format!("delete {}", target.display())))
+                }
+            }
         }
-        result?;
-        tracing::info!("UpdateService: placed {}", e.path);
-    }
 
+        for e in &adds {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(Cancelled.into());
+            }
+            current += 1;
+            status(format!("Updating {current}/{total}: {}...", e.path));
+            let target = bin_path.join(&e.path);
+            let sha = e.sha256.as_deref().unwrap_or_default();
+            if target.exists() && sha256_matches(&target, sha) {
+                tracing::info!("UpdateService: skipping {} (already up to date)", e.path);
+                continue;
+            }
+
+            let parent = target.parent().unwrap_or(bin_path);
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+            // Stage next to the target so the final rename never crosses filesystems.
+            let staged = parent.join(format!(".{}.download", file_name(&e.path)));
+            let url = manifest.url_for(e);
+            tracing::info!("UpdateService: downloading {}", redact(&url));
+            let result = http::download_checked(&url, sha, &staged, Some(cancel)).and_then(|()| {
+                if !sha256_matches(&staged, sha) {
+                    return Err(UpdateError::HashMismatch(e.path.clone()).into());
+                }
+                let locked = |err: std::io::Error| -> anyhow::Error {
+                    if is_locked(&err) {
+                        UpdateError::FileInUse {
+                            path: e.path.clone(),
+                            source: err,
+                        }
+                        .into()
+                    } else {
+                        anyhow!(err).context(format!("replace {}", target.display()))
+                    }
+                };
+                match &mut kept {
+                    Some(k) if target.exists() => {
+                        k.put_aside(&e.path, &target).map_err(locked)?;
+                        std::fs::rename(&staged, &target).map_err(|err| {
+                            // Put the old one back where it was.
+                            k.take_back(&e.path, &target);
+                            locked(err)
+                        })
+                    }
+                    Some(k) => {
+                        std::fs::rename(&staged, &target).map_err(locked)?;
+                        k.record.added.push(e.path.clone());
+                        Ok(())
+                    }
+                    None => std::fs::rename(&staged, &target).map_err(locked),
+                }
+            });
+            if result.is_err() {
+                let _ = std::fs::remove_file(&staged);
+            }
+            result?;
+            tracing::info!("UpdateService: placed {}", e.path);
+        }
+        Ok(())
+    })();
+
+    // Whatever changed (even before a failure) is what going back undoes.
+    if let Some(mut k) = kept {
+        if !k.record.replaced.is_empty() || !k.record.added.is_empty() {
+            k.record.nevr_to = nevr_version(&bin_path.join(super::launcher::mods::SLOT));
+            if let Err(e) = k.finish() {
+                tracing::warn!("UpdateService: couldn't keep the previous files: {e:#}");
+            }
+        } else {
+            let _ = std::fs::remove_dir_all(&k.new);
+        }
+    }
+    result?;
     tracing::info!("UpdateService: update complete");
     Ok(())
+}
+
+/// The files an update puts aside while it runs ([`apply_keeping`]).
+struct Keeping {
+    dir: std::path::PathBuf,
+    new: std::path::PathBuf,
+    record: Previous,
+}
+
+impl Keeping {
+    fn kept(&self, path: &str) -> std::path::PathBuf {
+        self.new.join(PREVIOUS_FILES).join(path)
+    }
+
+    /// Moves `target` (manifest path `path`) aside.
+    fn put_aside(&mut self, path: &str, target: &Path) -> std::io::Result<()> {
+        let to = self.kept(path);
+        if let Some(dir) = to.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::rename(target, &to).or_else(|e| {
+            // Another drive (a game folder linked elsewhere): a copy, then the delete.
+            if is_locked(&e) {
+                return Err(e);
+            }
+            std::fs::copy(target, &to)?;
+            std::fs::remove_file(target)
+        })?;
+        self.record.replaced.push(path.to_string());
+        Ok(())
+    }
+
+    fn take_back(&mut self, path: &str, target: &Path) {
+        if std::fs::rename(self.kept(path), target).is_ok() {
+            self.record.replaced.retain(|p| p != path);
+        }
+    }
+
+    /// Replaces the last update's folder with this one's.
+    fn finish(self) -> Result<()> {
+        write_json(&self.new.join(PREVIOUS_RECORD), &self.record)?;
+        let _ = std::fs::remove_dir_all(&self.dir);
+        std::fs::rename(&self.new, &self.dir)
+            .with_context(|| format!("rename to {}", self.dir.display()))
+    }
+}
+
+fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(value)?)
+        .with_context(|| format!("write {}", path.display()))
+}
+
+fn nevr_version(dll: &Path) -> Option<String> {
+    super::launcher::nevr::version_in(&std::fs::read(dll).ok()?)
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// Puts back what the last update kept in `previous` ([`apply_keeping`]) into `bin_path`:
+/// the files it replaced or deleted, and deletes the ones it added. The folder is gone
+/// afterwards. Returns its record.
+pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
+    let record = Previous::read(previous)
+        .ok_or_else(|| anyhow!("There is no earlier update to go back to."))?;
+    let files = previous.join(PREVIOUS_FILES);
+    // Everything first checked, so a running game stops it before anything moved.
+    for p in record.replaced.iter().chain(&record.added) {
+        let target = bin_path.join(p);
+        if target.exists() {
+            if let Err(err) = std::fs::OpenOptions::new().write(true).open(&target) {
+                if is_locked(&err) {
+                    return Err(UpdateError::FileInUse {
+                        path: p.clone(),
+                        source: err,
+                    }
+                    .into());
+                }
+            }
+        }
+    }
+    for p in &record.added {
+        match std::fs::remove_file(bin_path.join(p)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(anyhow!(e).context(format!("delete {p}")))
+            }
+            _ => {}
+        }
+    }
+    for p in &record.replaced {
+        let target = bin_path.join(p);
+        if let Some(dir) = target.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let from = files.join(p);
+        std::fs::rename(&from, &target)
+            .or_else(|_| std::fs::copy(&from, &target).map(|_| ()))
+            .with_context(|| format!("put back {p}"))?;
+    }
+    let _ = std::fs::remove_dir_all(previous);
+    tracing::info!(
+        "UpdateService: went back ({} files put back, {} removed)",
+        record.replaced.len(),
+        record.added.len()
+    );
+    Ok(record)
 }
 
 fn file_name(path: &str) -> &str {
@@ -333,6 +540,73 @@ fn file_name(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn going_back_puts_back_what_an_update_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let previous = dir.path().join("_local/previous-update");
+        std::fs::create_dir_all(bin.join("plugins")).unwrap();
+        std::fs::write(bin.join("BugSplat64.dll"), "old nevr").unwrap();
+        std::fs::write(bin.join("plugins/Gone.dll"), "deleted by the update").unwrap();
+        // What apply_keeping does: one replaced, one deleted, one new.
+        let mut k = Keeping {
+            dir: previous.clone(),
+            new: previous.with_extension("new"),
+            record: Previous {
+                manifest_sha256: "abc".into(),
+                ..Previous::default()
+            },
+        };
+        k.put_aside("BugSplat64.dll", &bin.join("BugSplat64.dll"))
+            .unwrap();
+        std::fs::write(bin.join("BugSplat64.dll"), "new nevr").unwrap();
+        k.put_aside("plugins/Gone.dll", &bin.join("plugins/Gone.dll"))
+            .unwrap();
+        std::fs::write(bin.join("plugins/New.dll"), "new").unwrap();
+        k.record.added.push("plugins/New.dll".into());
+        k.finish().unwrap();
+        assert!(!previous.with_extension("new").exists());
+        assert_eq!(Previous::read(&previous).unwrap().replaced.len(), 2);
+
+        let r = go_back(&previous, &bin).unwrap();
+        assert_eq!(r.manifest_sha256, "abc");
+        assert_eq!(
+            std::fs::read_to_string(bin.join("BugSplat64.dll")).unwrap(),
+            "old nevr"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin.join("plugins/Gone.dll")).unwrap(),
+            "deleted by the update"
+        );
+        assert!(!bin.join("plugins/New.dll").exists());
+        assert!(!previous.exists());
+        assert!(go_back(&previous, &bin).is_err());
+    }
+
+    #[test]
+    fn a_new_update_replaces_what_the_last_one_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let previous = dir.path().join("previous-update");
+        std::fs::create_dir_all(&bin).unwrap();
+        for (body, sha) in [("one", "1"), ("two", "2")] {
+            std::fs::write(bin.join("a.dll"), body).unwrap();
+            let mut k = Keeping {
+                dir: previous.clone(),
+                new: previous.with_extension("new"),
+                record: Previous {
+                    manifest_sha256: sha.into(),
+                    ..Previous::default()
+                },
+            };
+            k.put_aside("a.dll", &bin.join("a.dll")).unwrap();
+            std::fs::write(bin.join("a.dll"), "next").unwrap();
+            k.finish().unwrap();
+        }
+        assert_eq!(Previous::read(&previous).unwrap().manifest_sha256, "2");
+        go_back(&previous, &bin).unwrap();
+        assert_eq!(std::fs::read_to_string(bin.join("a.dll")).unwrap(), "two");
+    }
 
     #[test]
     fn reads_files_echovr_channels_from_the_mirror() {

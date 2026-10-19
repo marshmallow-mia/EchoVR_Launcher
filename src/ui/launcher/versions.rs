@@ -41,6 +41,10 @@ pub(super) fn job_err(e: anyhow::Error, title: &str) -> JobResult {
 
 pub(super) fn update(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
     let id = v.id.clone();
+    // Asked for: the newest, also when it was gone back from.
+    if d.state.holds.remove(&format!("game:{id}")).is_some() {
+        d.save();
+    }
     d.start_job(
         ctx,
         JobKind::Update,
@@ -404,6 +408,7 @@ pub(super) fn manage_menu(
     let ok = d.demo || v.present();
     enum Act {
         Update,
+        GoBack,
         Verify,
         Open,
         Shortcut,
@@ -425,6 +430,25 @@ pub(super) fn manage_menu(
         menu.push((
             MenuItem::row("Update", "Download any changed game files").unless(changes),
             Some(Act::Update),
+        ));
+        let back = super::goback::way_of(
+            d,
+            &crate::core::launcher::goback::Part::Game {
+                version: v.id.clone(),
+            },
+        );
+        menu.push((
+            match back {
+                Some(w) => MenuItem::row(
+                    &format!("Go back to {}", w.before),
+                    "Put back the files the last update replaced",
+                )
+                .unless(changes),
+                None => MenuItem::row("Go back", "").unless(Some(
+                    "No earlier files kept: no update since this launcher keeps them",
+                )),
+            },
+            Some(Act::GoBack),
         ));
         menu.push((
             MenuItem::row(
@@ -506,6 +530,14 @@ pub(super) fn manage_menu(
     // Rows that can't be used now are off (their tip says why): a pick is always allowed.
     match picked {
         Some(Act::Update) => update(d, ctx, v.clone()),
+        Some(Act::GoBack) => {
+            let part = crate::core::launcher::goback::Part::Game {
+                version: v.id.clone(),
+            };
+            if let Some(w) = super::goback::way_of(d, &part).cloned() {
+                super::goback::ask(d, w);
+            }
+        }
         Some(Act::Verify) => verify(d, ctx, v.clone()),
         Some(Act::Shortcut) => setup::shortcut(d, &v.id),
         Some(Act::Patch) => d.overlay = Some(setup::licence(&v.id)),

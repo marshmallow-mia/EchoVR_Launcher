@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+use super::launcher::goback::{self, Part};
 use super::launcher::mods::{self, ModCatalog, Source};
 use super::launcher::plugins::{self as launcher_plugins, Installed, PluginCatalog};
 use super::launcher::store::{InstalledVersion, LauncherState};
@@ -129,6 +130,8 @@ pub struct Check {
     pub plugins_listed: Vec<String>,
     /// The launcher channel its launcher finding is from.
     pub launcher_channel: update_check::Channel,
+    /// Versions this launcher has that release.echovr.de pulled (full checks only).
+    pub pulled: Vec<goback::Affected>,
 }
 
 /// Debug builds: `ECHOVR_FAKE_UPDATE=1` makes every Echo VR that gets updates look
@@ -175,7 +178,62 @@ pub fn check(state: &LauncherState) -> Check {
         }
     }
     catalogs(state, &mut out);
+    out.findings.retain(|f| !held(state, f));
+    out.pulled = pulled(state);
     out
+}
+
+/// The versions this launcher has that release.echovr.de pulled, with their ways back.
+fn pulled(state: &LauncherState) -> Vec<goback::Affected> {
+    let rollback = goback::Rollback::load();
+    if rollback.pulled.is_empty() {
+        return Vec::new();
+    }
+    let ways = goback::ways_back(state);
+    let version = |id: &str| state.versions.iter().find(|v| v.id == id);
+    goback::affected(
+        &rollback,
+        &ways,
+        &|id| Some(versions::previous_update(version(id)?)?.manifest_sha256),
+        &|id, file| {
+            mods::read(version(id)?)
+                .plugins
+                .into_iter()
+                .find(|p| p.file.eq_ignore_ascii_case(file))
+                .and_then(|p| match p.source {
+                    Source::Catalog { id, .. } => Some(id),
+                    _ => None,
+                })
+        },
+    )
+}
+
+/// Whether `f` is the version the player went back from ([`goback`]): not offered again.
+fn held(state: &LauncherState, f: &Finding) -> bool {
+    let (part, found) = match f {
+        Finding::Launcher { version, .. } => (Part::Launcher, version),
+        Finding::Game { id, hash, .. } => (
+            Part::Game {
+                version: id.clone(),
+            },
+            hash,
+        ),
+        Finding::Plugin {
+            version_id,
+            file,
+            to,
+            ..
+        } => (
+            Part::Mod {
+                version: version_id.clone(),
+                file: file.clone(),
+            },
+            to,
+        ),
+        Finding::LauncherPlugin { id, to, .. } => (Part::Plugin { id: id.clone() }, to),
+        Finding::NewPlugin { .. } => return false,
+    };
+    goback::held(&state.holds, &part, found)
 }
 
 /// Reads only the mods and plugins catalogues (network; a second or two): what the open
@@ -187,6 +245,7 @@ pub fn check_catalogs(state: &LauncherState) -> Check {
         ..Check::default()
     };
     catalogs(state, &mut out);
+    out.findings.retain(|f| !held(state, f));
     out
 }
 
@@ -339,6 +398,14 @@ pub fn after_update(v: &mut InstalledVersion, ok: bool) {
 /// The recorded manifest of a version whose last update failed: no manifest has it.
 const FAILED: &str = "update-failed";
 
+/// What going back from `v`'s last update leaves for the next check: its files aren't
+/// any manifest's, so the update is out again (unless held, [`goback`]).
+pub fn after_going_back(v: &mut InstalledVersion) {
+    v.manifest_sha256 = Some(WENT_BACK.into());
+}
+
+const WENT_BACK: &str = "went-back";
+
 // ---- announcing each finding once ----
 
 fn notified_file() -> PathBuf {
@@ -442,6 +509,22 @@ mod tests {
         assert_eq!(game_state(Some("AB"), "ab", false), GameState::Current);
         assert_eq!(game_state(Some("ab"), "cd", false), GameState::Outdated);
         assert_eq!(game_state(Some(FAILED), "cd", false), GameState::Outdated);
+        // Gone back from an update: the update is out again, unless held.
+        let mut v = InstalledVersion::default();
+        after_going_back(&mut v);
+        assert_eq!(
+            game_state(v.manifest_sha256.as_deref(), "cd", false),
+            GameState::Outdated
+        );
+        let mut state = LauncherState::default();
+        let f = Finding::Game {
+            id: "pc-latest".into(),
+            name: "Echo VR".into(),
+            hash: "cd".into(),
+        };
+        assert!(!held(&state, &f));
+        state.holds.insert("game:pc-latest".into(), "cd".into());
+        assert!(held(&state, &f));
         assert_eq!(game_state(Some("ab"), "ab", true), GameState::Outdated);
 
         let mut state = LauncherState::default();

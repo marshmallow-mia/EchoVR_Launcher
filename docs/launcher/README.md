@@ -9,7 +9,8 @@ Rules the launcher enforces (see `src/core/launcher/catalog.rs`):
   name inside the library, so it must never change for a published version.
 - `url` / `data_url`: either a path relative to the download mirrors
   (`release.echovr.de` / `evr.echo.taxi`, the fastest is picked, and the other is asked
-  when it doesn't have the file), or an absolute `https://` URL on one of those hosts or `release.echovr.de` (the event
+  when it doesn't have the file; the CDN before both when the checksum is known, see
+  [cdn.md](cdn.md)), or an absolute `https://` URL on one of those hosts or `release.echovr.de` (the event
   builds, `pc.zip` and their manifests).
   An empty `url` lists a build that can't be downloaded yet: INSTALL says so.
   A Quest build (`"platform": "quest"`) names its APK by file name only: it and `_data.zip`

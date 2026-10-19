@@ -76,6 +76,37 @@ pub fn supported() -> bool {
     asset("0").is_some() && (executable().is_some() || appimage().is_some())
 }
 
+/// The release before `current` the download servers have for this system (its file in
+/// `SHA256SUMS`): where going back leads when the launcher didn't note the version it
+/// updated from (an update by a launcher before 0.11.18).
+pub fn previous_release(current: &str) -> Option<String> {
+    let sums = http::get_text(&format!("{MIRROR}/{SUMS}")).ok()?;
+    previous_in(&sums, current, appimage().is_some())
+}
+
+/// Pure: [`previous_release`] from `sums`.
+fn previous_in(sums: &str, current: &str, appimage: bool) -> Option<String> {
+    let versions: Vec<String> = sums
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1))
+        .map(|f| f.trim_start_matches('*'))
+        .filter_map(|f| {
+            let v = f.strip_prefix("Echo_VR_Launcher-")?;
+            let wanted = |v: &str| {
+                if appimage {
+                    appimage_asset(v)
+                } else {
+                    asset(v).unwrap_or_default()
+                }
+            };
+            // The version is what's left once this system's ending is taken off.
+            let (v, _) = v.rsplit_once(if appimage { "-x86_64" } else { "-" })?;
+            (wanted(v) == f).then(|| v.to_string())
+        })
+        .collect();
+    super::update_check::newest_below(versions.iter().map(String::as_str), current)
+}
+
 /// Pure: the checksum `sums` (as `sha256sum` writes it) gives for `name`.
 fn sum_for(sums: &str, name: &str) -> Option<String> {
     sums.lines().find_map(|line| {
@@ -482,6 +513,37 @@ pub(super) fn check_on_mirror(v: &str, dir: &Path, with_appimage: bool) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_release_before_is_the_newest_older_one_for_this_system() {
+        let sums = "\
+aa  Echo_VR_Launcher-0.11.16-windows.zip
+aa  Echo_VR_Launcher-0.11.16-linux.zip
+aa  Echo_VR_Launcher-0.11.16-x86_64.AppImage
+aa  Echo_VR_Launcher-0.11.17-beta.1-windows.zip
+aa  Echo_VR_Launcher-0.11.17-beta.1-linux.zip
+aa  Echo_VR_Launcher-0.11.17-windows-setup.exe
+aa  Echo_VR_Launcher-0.11.17-linux.tar.gz
+aa  Echo_VR_Launcher-0.11.18-windows.zip
+aa  Echo_VR_Launcher-0.11.18-linux.zip
+";
+        if cfg!(any(windows, target_os = "linux")) {
+            // 0.11.17 has no zip here, and a beta isn't main's way back.
+            assert_eq!(
+                previous_in(sums, "0.11.18", false).as_deref(),
+                Some("0.11.16")
+            );
+            assert_eq!(
+                previous_in(sums, "0.11.18-beta.2", false).as_deref(),
+                Some("0.11.17-beta.1")
+            );
+            assert_eq!(previous_in(sums, "0.11.16", false), None);
+        }
+        assert_eq!(
+            previous_in(sums, "0.11.18", true).as_deref(),
+            Some("0.11.16")
+        );
+    }
 
     #[test]
     fn checksums_by_name() {

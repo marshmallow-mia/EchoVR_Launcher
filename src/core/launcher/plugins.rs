@@ -443,11 +443,97 @@ pub fn unpack(root: &Path, e: &PluginEntry, zip: &Path, cancel: &AtomicBool) -> 
     };
     std::fs::write(staged.join(INSTALLED), serde_json::to_string(&note)?)?;
     if dest.exists() {
-        std::fs::remove_dir_all(&dest).with_context(|| format!("remove {}", dest.display()))?;
+        // Another version the launcher installed is kept for going back ([`go_back`]).
+        let previous = previous_dir(root, &e.id);
+        let _ = std::fs::remove_dir_all(&previous);
+        let other = note_in(&dest).is_some_and(|n| n.version != e.version);
+        if !(other && std::fs::rename(&dest, &previous).is_ok()) {
+            std::fs::remove_dir_all(&dest).with_context(|| format!("remove {}", dest.display()))?;
+        }
     }
     std::fs::rename(&staged, &dest).with_context(|| format!("move {} into place", e.name))?;
     tracing::info!("plugin {} {} installed", e.id, e.version);
     Ok(())
+}
+
+fn note_in(folder: &Path) -> Option<InstalledNote> {
+    let t = std::fs::read_to_string(folder.join(INSTALLED)).ok()?;
+    serde_json::from_str(&t).ok()
+}
+
+/// Where the version of plugin `id` before its last update is kept.
+fn previous_dir(root: &Path, id: &str) -> PathBuf {
+    root.join(format!(".{id}.previous"))
+}
+
+/// A plugin that can go back to the version it had before its last update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Previous {
+    pub id: String,
+    pub name: String,
+    /// The version it has now, and the one it goes back to.
+    pub now: String,
+    pub before: String,
+}
+
+/// The plugins in `root` with a version kept from before their last update.
+pub fn previous_in(root: &Path) -> Vec<Previous> {
+    installed_in(root)
+        .into_iter()
+        .filter_map(|p| {
+            let before = note_in(&previous_dir(root, &p.page.id))?.version;
+            let now = p.from_catalog?;
+            (before != now).then(|| Previous {
+                id: p.page.id.clone(),
+                name: p.page.name.clone(),
+                now,
+                before,
+            })
+        })
+        .collect()
+}
+
+/// Puts plugin `id` in `root` back to the version kept from before its last update; the
+/// player's settings and presets stay as they are now. Returns the version it went back
+/// from (the one to hold).
+pub fn go_back(root: &Path, id: &str) -> Result<String> {
+    if !catalog::is_safe_id(id) {
+        bail!("invalid plugin id {id:?}");
+    }
+    let dest = root.join(id);
+    let previous = previous_dir(root, id);
+    let (Some(now), Some(_)) = (note_in(&dest), note_in(&previous)) else {
+        bail!("There is no earlier version of this plugin to go back to.");
+    };
+    if let Some(p) = read_one(&dest) {
+        let kept = p
+            .page
+            .settings
+            .as_ref()
+            .map(plugin_settings::store_files)
+            .unwrap_or_default()
+            .into_iter()
+            .chain([super::presets::PRESETS_FILE.to_string()]);
+        for f in kept {
+            let cur = dest.join(&f);
+            if cur.is_file() {
+                std::fs::copy(&cur, previous.join(&f))?;
+            }
+        }
+    }
+    let leaving = root.join(format!(".{id}.leaving"));
+    let _ = std::fs::remove_dir_all(&leaving);
+    std::fs::rename(&dest, &leaving).with_context(|| format!("move {} aside", dest.display()))?;
+    if let Err(e) = std::fs::rename(&previous, &dest) {
+        let _ = std::fs::rename(&leaving, &dest);
+        return Err(anyhow::Error::from(e).context(format!("put back {}", dest.display())));
+    }
+    let _ = std::fs::remove_dir_all(&leaving);
+    tracing::info!(
+        "plugin {id}: back from {} to the version before",
+        now.version
+    );
+    Ok(now.version)
 }
 
 pub fn install(
@@ -467,6 +553,7 @@ pub fn remove_from(root: &Path, id: &str) -> Result<()> {
     if d.exists() {
         std::fs::remove_dir_all(&d).with_context(|| format!("remove {}", d.display()))?;
     }
+    let _ = std::fs::remove_dir_all(previous_dir(root, id));
     Ok(())
 }
 
@@ -572,6 +659,72 @@ mod tests {
 
         remove_from(root.path(), "event-lobbies").unwrap();
         assert!(installed_in(root.path()).is_empty());
+    }
+
+    #[test]
+    fn an_update_keeps_the_version_before_to_go_back_to() {
+        let root = tempfile::tempdir().unwrap();
+        let no = AtomicBool::new(false);
+        let v1 = zip_with(&[("plugin.json", DESC), ("app.txt", "one")]);
+        unpack(
+            root.path(),
+            &entry("event-lobbies", "0.1.0"),
+            v1.path(),
+            &no,
+        )
+        .unwrap();
+        // Nothing before the first install.
+        assert!(previous_in(root.path()).is_empty());
+        assert!(go_back(root.path(), "event-lobbies").is_err());
+        let v2 = zip_with(&[("plugin.json", DESC), ("app.txt", "two")]);
+        unpack(
+            root.path(),
+            &entry("event-lobbies", "0.2.0"),
+            v2.path(),
+            &no,
+        )
+        .unwrap();
+        let prev = previous_in(root.path());
+        assert_eq!(prev.len(), 1);
+        assert_eq!(
+            (prev[0].now.as_str(), prev[0].before.as_str()),
+            ("0.2.0", "0.1.0")
+        );
+        // The settings set since stay.
+        write_settings(
+            &installed_in(root.path())[0],
+            &[("name".into(), "Bob".into())],
+        )
+        .unwrap();
+        assert_eq!(go_back(root.path(), "event-lobbies").unwrap(), "0.2.0");
+        let all = installed_in(root.path());
+        assert_eq!(all[0].from_catalog.as_deref(), Some("0.1.0"));
+        assert_eq!(
+            std::fs::read_to_string(all[0].dir.join("app.txt")).unwrap(),
+            "one"
+        );
+        assert_eq!(settings_values(&all[0])["name"], "Bob");
+        // Only one step back.
+        assert!(previous_in(root.path()).is_empty());
+        // Reinstalling the same version keeps nothing to go back to.
+        unpack(
+            root.path(),
+            &entry("event-lobbies", "0.1.0"),
+            v1.path(),
+            &no,
+        )
+        .unwrap();
+        assert!(previous_in(root.path()).is_empty());
+        // Removing it takes the kept version too.
+        unpack(
+            root.path(),
+            &entry("event-lobbies", "0.2.0"),
+            v2.path(),
+            &no,
+        )
+        .unwrap();
+        remove_from(root.path(), "event-lobbies").unwrap();
+        assert!(!previous_dir(root.path(), "event-lobbies").exists());
     }
 
     #[test]

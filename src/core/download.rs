@@ -55,6 +55,10 @@ pub struct Job {
     pub fresh: bool,
     /// Extract the zip into `dir` afterwards.
     pub extract: bool,
+    /// The file's SHA-256 on release.echovr.de, when known (else release.echovr.de's index
+    /// may know it): then the CDN's copy is tried first, and kept only if it matches
+    /// ([`super::sources`]).
+    pub sha256: Option<String>,
 }
 
 impl Job {
@@ -214,22 +218,6 @@ pub fn content_range_matches(content_range: Option<&str>, offset: u64) -> bool {
 
 /// Runs the job on the calling (worker) thread.
 pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Result<PathBuf> {
-    let urls: Vec<String> = if job.use_mirror {
-        on(Progress::Status("Preparing Download...".into()));
-        ranked_mirrors()
-            .context(NETWORK_ERROR)?
-            .into_iter()
-            .map(|m| format!("{m}{}", job.url.trim_start_matches('/')))
-            .collect()
-    } else {
-        vec![job.url.clone()]
-    };
-    tracing::info!(
-        "download {} -> {}",
-        redact(&urls[0]),
-        job.target().display()
-    );
-
     std::fs::create_dir_all(&job.dir).with_context(|| {
         format!(
             "Couldn't create the folder {}.\nWindows may let only administrators write there: choose another folder for your library (the folder line on the Install page).",
@@ -242,9 +230,36 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
             .with_context(|| format!("couldn't delete the old {}", target.display()))?;
     }
 
-    from_first_that_has(&urls, |url, last| {
-        fetch_from(url, &target, cancel, on, last)
-    })?;
+    // The CDN first, when it may serve the file; the mirrors (release.echovr.de and the
+    // bucket) when it can't, or its copy is behind.
+    let from_cdn = match cdn_url(job) {
+        Some((cdn, sha)) => {
+            tracing::info!("download {} -> {}", redact(&cdn), target.display());
+            from_cdn(&cdn, &sha, &target, cancel, on)?
+        }
+        None => false,
+    };
+    if !from_cdn {
+        let urls: Vec<String> = if job.use_mirror {
+            on(Progress::Status("Preparing Download...".into()));
+            ranked_mirrors()
+                .context(NETWORK_ERROR)?
+                .into_iter()
+                .map(|m| format!("{m}{}", job.url.trim_start_matches('/')))
+                .collect()
+        } else {
+            vec![job.url.clone()]
+        };
+        tracing::info!("download {} -> {}", redact(&urls[0]), target.display());
+        // A partial file the CDN left isn't continued from another server.
+        if cdn_marker(&target).exists() {
+            let _ = std::fs::remove_file(&target);
+            let _ = std::fs::remove_file(cdn_marker(&target));
+        }
+        from_first_that_has(&urls, |url, last| {
+            fetch_from(url, &target, cancel, on, last)
+        })?;
+    }
 
     if job.extract {
         on(Progress::Extracting);
@@ -252,6 +267,70 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
         on(Progress::Extracted);
     }
     Ok(target)
+}
+
+/// The CDN's copy of `job`'s file and the checksum it must have, when there is one.
+fn cdn_url(job: &Job) -> Option<(String, String)> {
+    let url = if job.use_mirror {
+        format!(
+            "{}{}",
+            super::sources::ORIGIN,
+            job.url.trim_start_matches('/')
+        )
+    } else {
+        job.url.clone()
+    };
+    let cdn = super::sources::cdn_url(&url)?;
+    let sha = job
+        .sha256
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| super::sources::indexed_sha(&url))?;
+    Some((cdn, sha))
+}
+
+/// Marks a partial file as the CDN's while it is downloaded from there.
+fn cdn_marker(target: &Path) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(".cdn");
+    target.with_file_name(name)
+}
+
+/// Downloads `target` from the CDN (`url`) and checks it against `sha`: whether it is there
+/// now. Any failure but a cancel is `false` (the mirrors take over); a copy that doesn't
+/// match (the sync hasn't replaced it yet) is deleted.
+fn from_cdn(
+    url: &str,
+    sha: &str,
+    target: &Path,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Progress),
+) -> Result<bool> {
+    let marker = cdn_marker(target);
+    let _ = std::fs::write(&marker, b"");
+    match fetch_from(url, target, cancel, on, true) {
+        Ok(()) => {
+            if sha256_matches(target, sha) {
+                let _ = std::fs::remove_file(&marker);
+                return Ok(true);
+            }
+            tracing::info!(
+                "the CDN's {} is behind release.echovr.de's; from the mirrors",
+                redact(url)
+            );
+            let _ = std::fs::remove_file(target);
+            let _ = std::fs::remove_file(&marker);
+            Ok(false)
+        }
+        Err(e) if http::is_cancelled(&e) => Err(e),
+        Err(e) => {
+            tracing::info!(
+                "CDN download {} failed: {e:#}; from the mirrors",
+                redact(url)
+            );
+            Ok(false)
+        }
+    }
 }
 
 /// Downloads `url` to `target`, resuming a partial file when the server supports it.
@@ -432,6 +511,7 @@ pub fn fetch_pinned(
         use_mirror: !url.contains("://"),
         fresh: false,
         extract: false,
+        sha256: Some(sha256.into()),
     };
     let file = run(&job, cancel, on)?;
     if !sha256_matches(&file, sha256) {
@@ -545,6 +625,60 @@ mod tests {
         assert!(!content_range_matches(Some("bytes 0-99/100"), 40));
         assert!(!content_range_matches(None, 40));
         assert!(!content_range_matches(Some("garbage"), 40));
+    }
+
+    /// A one-file server on localhost answering every request with `body` (HEAD and GET,
+    /// ranges ignored), for as many requests as `n`.
+    fn serve(body: &'static [u8], n: usize) -> String {
+        use std::io::{BufRead, BufReader};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for s in l.incoming().take(n) {
+                let mut s = s.unwrap();
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut first = String::new();
+                r.read_line(&mut first).unwrap();
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).unwrap() == 0 || h == "\r\n" {
+                        break;
+                    }
+                }
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                s.write_all(head.as_bytes()).unwrap();
+                if !first.starts_with("HEAD") {
+                    s.write_all(body).unwrap();
+                }
+            }
+        });
+        format!("http://{addr}/f")
+    }
+
+    #[test]
+    fn the_cdn_copy_is_kept_only_when_it_matches() {
+        use sha2::{Digest, Sha256};
+        let sha = hex::encode(Sha256::digest(b"new"));
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("f.zip");
+        let cancel = AtomicBool::new(false);
+        // Behind (the sync hasn't replaced it yet): deleted, the mirrors take over.
+        let url = serve(b"old", 2);
+        assert!(!from_cdn(&url, &sha, &target, &cancel, &mut |_| {}).unwrap());
+        assert!(!target.exists() && !cdn_marker(&target).exists());
+        // Current: kept, no marker left.
+        let url = serve(b"new", 2);
+        assert!(from_cdn(&url, &sha, &target, &cancel, &mut |_| {}).unwrap());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert!(!cdn_marker(&target).exists());
+        // Unreachable: not an error, the mirrors take over; the partial file stays marked
+        // as the CDN's, so they start it again from zero.
+        std::fs::write(&target, b"ne").unwrap();
+        assert!(!from_cdn("http://127.0.0.1:1/f", &sha, &target, &cancel, &mut |_| {}).unwrap());
+        assert!(cdn_marker(&target).exists());
     }
 
     /// Mirror probe, full download, then a resume of a truncated file (needs network).

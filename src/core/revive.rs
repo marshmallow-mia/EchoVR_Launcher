@@ -79,6 +79,7 @@ pub fn download_installer(
         use_mirror: false,
         fresh: false,
         extract: false,
+        sha256: None,
     };
     let path = super::download::run(&job, cancel, on)?;
     if !super::download::sha256_matches(&path, REVIVE_INSTALLER_SHA256) {
