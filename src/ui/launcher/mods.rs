@@ -1555,7 +1555,23 @@ fn detail(p: &Plugin) -> String {
     if let Some(e) = error {
         return format!("{}  ·  {e}", p.file);
     }
-    let version = (!p.version.is_empty()).then(|| format!("v{}", p.version));
+    // The version nEVR read at the last start, else the one installed from the catalogue.
+    let version = match (&p.source, p.version.is_empty()) {
+        (_, false) => Some(format!("v{}", p.version)),
+        (Source::Catalog { version, .. }, true) if !version.is_empty() => {
+            Some(format!("v{version}"))
+        }
+        _ => None,
+    }
+    .map(|v| {
+        let pre = crate::core::semver::Version::parse(v.trim_start_matches('v'))
+            .is_some_and(|x| x.is_prerelease());
+        if pre {
+            format!("{v} (prerelease)")
+        } else {
+            v
+        }
+    });
     let pack = p.pack.as_ref().map(|n| format!("part of {n}"));
     [version, Some(p.file.clone()), pack]
         .into_iter()
@@ -3287,7 +3303,15 @@ fn meta(m: &ModEntry) -> String {
         }
     });
     let caps = (!m.capabilities.is_empty()).then(|| m.capabilities.join(", ").replace('-', " "));
-    [author, size, caps]
+    // What kind of version it is, first: the tag beside the name may not fit.
+    let kind = if m.prerelease {
+        Some("prerelease".to_string())
+    } else if m.unlisted {
+        Some("unlisted".to_string())
+    } else {
+        None
+    };
+    [kind, author, size, caps]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()

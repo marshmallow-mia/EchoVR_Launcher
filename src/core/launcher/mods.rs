@@ -1265,9 +1265,17 @@ fn apply_blocks_with(
             block.note.clone()
         };
         let blocked = |ver: &str| rollback.block_for(Some(&id), &a.file, ver, None).is_some();
-        let kept = previous(v)
-            .into_iter()
-            .find(|p| p.file.eq_ignore_ascii_case(&a.file) && !blocked(&p.before));
+        // A kept copy only when it is older (going back never means a newer prerelease).
+        let older = |ver: &str| match (
+            crate::core::semver::Version::parse(ver),
+            crate::core::semver::Version::parse(&l.version),
+        ) {
+            (Some(k), Some(now)) => k < now,
+            _ => true,
+        };
+        let kept = previous(v).into_iter().find(|p| {
+            p.file.eq_ignore_ascii_case(&a.file) && !blocked(&p.before) && older(&p.before)
+        });
         let went = match kept {
             Some(_) => go_back(v, &a.file)
                 .map_err(|e| tracing::warn!("{name}: going back: {e:#}"))
@@ -1678,6 +1686,13 @@ fn config_lines(
     let on: BTreeMap<String, String> = all
         .iter()
         .filter(|q| q.present && q.enabled && (mods_on || q.required))
+        // A blocked one stays out: it isn't there for those that need it.
+        .filter(|q| match &q.source {
+            Source::Catalog { id, version } => rollback
+                .block_for(Some(id), &q.file, version, None)
+                .is_none(),
+            _ => true,
+        })
         .filter_map(|q| match &q.source {
             Source::Catalog { id, version } => Some((id.clone(), version.clone())),
             _ => None,
@@ -3646,6 +3661,10 @@ pub(crate) mod tests {
         let (lines, left) = lines_and_reasons(&v, &blocked);
         assert!(!lines.contains(&"Base.dll".to_string()));
         assert_eq!(left["Base.dll"], "Blocked: crashes");
+        assert!(
+            left["Needy.dll"].starts_with("Waiting for base"),
+            "{left:?}"
+        );
         // With base out, rival has nothing to conflict with.
         assert!(lines.contains(&"Rival.dll".to_string()), "{left:?}");
 
