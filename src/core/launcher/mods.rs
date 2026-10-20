@@ -1224,14 +1224,16 @@ fn say(text: String) {
 /// is none it stays out of the start ([`config_lines`] leaves it out); a block that removes
 /// sets its file aside too ([`QUARANTINE`]). A pack's plugins only stay out.
 pub fn apply_blocks(v: &InstalledVersion, rollback: &super::goback::Rollback) {
-    apply_blocks_with(v, rollback, &super::history::History::load)
+    apply_blocks_with(v, rollback, &super::history::History::load, &say)
 }
 
-/// [`apply_blocks`] with the history from `history` (read only when a block needs it).
+/// [`apply_blocks`] with the history from `history` (read only when a block needs it),
+/// telling the player through `say`.
 fn apply_blocks_with(
     v: &InstalledVersion,
     rollback: &super::goback::Rollback,
     history: &dyn Fn() -> Option<super::history::History>,
+    say: &dyn Fn(String),
 ) {
     if rollback.blocked.is_empty() {
         return;
@@ -3676,13 +3678,15 @@ pub(crate) mod tests {
             blocked: vec![block("bad", "remove"), block("meh", "off")],
             ..Default::default()
         };
-        apply_blocks_with(&v, &rollback, &|| None);
+        let said = std::cell::RefCell::new(Vec::new());
+        apply_blocks_with(&v, &rollback, &|| None, &|t| said.borrow_mut().push(t));
         // Removed: out of plugins/, noted, and back with Restore.
         assert!(!v.bin_dir().join("plugins/Bad.dll").exists());
         let q = Overlay::read(&choices_path(&v)).quarantined();
         assert_eq!(q["Bad.dll"].note, "malware");
         assert!(v.bin_dir().join("plugins/Meh.dll").exists());
-        assert!(take_notices().iter().any(|n| n.contains("set aside")));
+        assert!(said.borrow().iter().any(|n| n.contains("set aside")));
+        assert!(said.borrow().iter().any(|n| n.contains("stays off")));
         restore_quarantined(&v, "Bad.dll").unwrap();
         assert!(v.bin_dir().join("plugins/Bad.dll").exists());
         assert!(Overlay::read(&choices_path(&v)).quarantined().is_empty());
@@ -3725,7 +3729,7 @@ pub(crate) mod tests {
             }],
             ..Default::default()
         };
-        apply_blocks_with(&v, &rollback, &|| None);
+        apply_blocks_with(&v, &rollback, &|| None, &|_| {});
         let version = Overlay::read(&choices_path(&v)).added()[0]
             .launcher
             .clone()
