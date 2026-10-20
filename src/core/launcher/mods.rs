@@ -1705,6 +1705,20 @@ fn config_lines(
             _ => None,
         })
         .collect();
+    // Installed mods that are blocked (by id): who needs them waits, and says why.
+    let blocked_ids: BTreeSet<String> = all
+        .iter()
+        .filter_map(|q| match &q.source {
+            Source::Catalog { id, version }
+                if rollback
+                    .block_for(Some(id), &q.file, version, None)
+                    .is_some() =>
+            {
+                Some(id.clone())
+            }
+            _ => None,
+        })
+        .collect();
     let noted = |file: &str| {
         added
             .iter()
@@ -1777,6 +1791,9 @@ fn config_lines(
                     .mods
                     .iter()
                     .find_map(|dep| match on.get(&dep.id) {
+                        None if blocked_ids.contains(&dep.id) => {
+                            Some(format!("Waiting for {}, which is blocked", dep.id))
+                        }
                         None => Some(format!("Waiting for {}: install it and turn it on", dep.id)),
                         Some(have)
                             if !dep.version.is_empty()
