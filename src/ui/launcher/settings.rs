@@ -1533,17 +1533,28 @@ pub(super) fn ask_upload(d: &mut Dashboard) {
             // Signed in, with the session due for renewal: renewed first.
             tracing::info!("logs: the EchoVRCE session is due, renewing it first");
             d.vrce.check_soon();
+            let what = if d.report.take().is_some() {
+                "report the mod"
+            } else {
+                "upload your logs"
+            };
             d.dialogs.info(
                 "Renewing your EchoVRCE sign-in",
-                "Your EchoVRCE session is being renewed: upload your logs again in a moment.",
+                &format!("Your EchoVRCE session is being renewed: {what} again in a moment."),
             );
             return;
         }
         tracing::info!("logs: not signed in with EchoVRCE, can't upload");
         d.page = super::Page::EchoVrce;
+        // A report waits for nothing: it's made again once signed in.
+        let again = if d.report.take().is_some() {
+            "report the mod again from its More menu on the Mods page"
+        } else {
+            "upload them again from Settings"
+        };
         d.dialogs.info(
             "Sign in with EchoVRCE first",
-            "Logs can be uploaded by players signed in with EchoVRCE: sign in here, then upload them again from Settings.",
+            &format!("Logs can be uploaded by players signed in with EchoVRCE: sign in here, then {again}."),
         );
         return;
     }
