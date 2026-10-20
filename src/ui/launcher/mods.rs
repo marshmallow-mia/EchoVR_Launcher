@@ -57,6 +57,7 @@ const CATALOG_RETRY: Duration = Duration::from_secs(5 * 60);
 const ADD_KEY: &str = "mods-add-dll";
 const REMOVE_KEY: &str = "mods-remove";
 const NEEDS_KEY: &str = "mods-needs";
+const CRASH_KEY: &str = "mods-crash";
 
 /// The page's own state.
 #[derive(Default)]
@@ -78,6 +79,8 @@ pub(super) struct Mods {
     removing: Option<String>,
     /// A mod to install with the mods it needs, which "Install them too?" asks about.
     needs: Option<(ModEntry, Vec<ModEntry>)>,
+    /// The version and mods "The game closed right after starting" asks about.
+    crash: Option<(InstalledVersion, Vec<String>)>,
 }
 
 struct Editing {
@@ -243,7 +246,68 @@ fn refresh_catalog(d: &mut Dashboard, ctx: &egui::Context) {
 }
 
 /// The answers to this page's dialogs.
+/// Echo VR of version `v` ended after `ran`: noted, and when it ended early twice since mods
+/// changed, the player is asked about those mods. Nothing is turned off without a click.
+pub(super) fn game_ended(d: &mut Dashboard, v: &InstalledVersion, ran: std::time::Duration) {
+    if d.demo {
+        return;
+    }
+    if let Err(e) = mods::record_run(v, ran) {
+        tracing::warn!("mods: the start not noted: {e:#}");
+        return;
+    }
+    let required: Vec<String> = mods::read(v)
+        .plugins
+        .iter()
+        .filter(|p| p.required)
+        .map(|p| p.file.to_ascii_lowercase())
+        .collect();
+    let suspects: Vec<String> = mods::crash_suspects(v)
+        .into_iter()
+        .filter(|f| !required.contains(&f.to_ascii_lowercase()))
+        .collect();
+    if suspects.is_empty() || d.dialogs.is_open() {
+        return;
+    }
+    let names = suspects.join(", ");
+    d.mods.crash = Some((v.clone(), suspects.clone()));
+    d.dialogs.options(
+        CRASH_KEY,
+        "Echo VR closed right after starting",
+        &format!(
+            "{} closed within a minute and a half twice since {names} changed. Start without {}? (The Mods page turns {} back on; Go back there puts the version before back.)",
+            v.name,
+            if suspects.len() == 1 { "it" } else { "them" },
+            if suspects.len() == 1 { "it" } else { "them" },
+        ),
+        DlgIcon::Warning,
+        &[if suspects.len() == 1 { "Start without it" } else { "Start without them" }, "Keep them"],
+    );
+}
+
 fn answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if let Some(a) = d.dialogs.take(CRASH_KEY) {
+        if let Some((v, files)) = d.mods.crash.take() {
+            let off = a.is_yes();
+            run(d, ctx, &v, "Mods after early ends", move |v, _, _| {
+                if off {
+                    for f in &files {
+                        mods::set_plugin_enabled(v, f, false)?;
+                    }
+                }
+                mods::forget_runs(v)?;
+                Ok(if off {
+                    format!(
+                        "{} {} off for the next start",
+                        files.join(", "),
+                        if files.len() == 1 { "is" } else { "are" }
+                    )
+                } else {
+                    "The mods stay on".to_string()
+                })
+            });
+        }
+    }
     if let Some(a) = d.dialogs.take(NEEDS_KEY) {
         let needs = d.mods.needs.take();
         if let (Some((entry, first)), true, Some(v)) = (needs, a.is_yes(), version(d)) {
@@ -962,11 +1026,11 @@ fn plugins_card(
                                     (q.note.clone(), !still)
                                 }),
                             not_listed: match &p.source {
-                                Source::Catalog { id, .. } => d
-                                    .mods
-                                    .catalog
-                                    .as_ref()
-                                    .is_some_and(|c| !c.builtin && !c.mods.iter().any(|m| m.id == *id)),
+                                Source::Catalog { id, .. } => {
+                                    d.mods.catalog.as_ref().is_some_and(|c| {
+                                        !c.builtin && !c.mods.iter().any(|m| m.id == *id)
+                                    })
+                                }
                                 _ => false,
                             },
                         };
@@ -1081,18 +1145,47 @@ pub(super) fn unlisted_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
         0.0,
     );
     let fy = y + th + dz(20.0);
-    k.field("unlisted-id", input, x, fy, cw, BTN_H, "my-cool-mod", false, "The mod's id");
+    k.field(
+        "unlisted-id",
+        input,
+        x,
+        fy,
+        cw,
+        BTN_H,
+        "my-cool-mod",
+        false,
+        "The mod's id",
+    );
     let id = input.trim().to_ascii_lowercase();
     let valid = crate::core::launcher::catalog::is_safe_id(&id);
     let have = d.state.unlisted_mods.contains(&id);
     if let Some(n) = note.clone() {
-        k.caps_text(x, fy + BTN_H + dz(12.0), cw, &n, 16.0, design::QUEST_WARN, 0.0);
+        k.caps_text(
+            x,
+            fy + BTN_H + dz(12.0),
+            cw,
+            &n,
+            16.0,
+            design::QUEST_WARN,
+            0.0,
+        );
     }
     let by = bottom - BTN_H;
     let cw2 = k.button_width("Cancel", None, BTN_H).max(110.0);
     let aw = k.button_width("Add", None, BTN_H).max(120.0);
-    if k.button("unlisted-cancel", x + cw - cw2, by, cw2, BTN_H, Tone::Dark, None, "Cancel", true, "")
-        .clicked
+    if k.button(
+        "unlisted-cancel",
+        x + cw - cw2,
+        by,
+        cw2,
+        BTN_H,
+        Tone::Dark,
+        None,
+        "Cancel",
+        true,
+        "",
+    )
+    .clicked
         || k.key(egui::Key::Escape)
     {
         d.overlay = None;
@@ -1164,13 +1257,29 @@ enum ModChoice {
     Homepage(String),
     /// An unlisted mod leaves More mods (what's installed stays).
     Forget,
+    /// Report it to the moderators, with the logs: `id@version`, its name.
+    Report(String, String),
 }
 
 /// A mod's ⋯ menu (catalogue id `id`): its prereleases, where it comes from when several
 /// places have it, its homepage; each row with what picking it does. Empty when there's
 /// nothing to choose.
-fn mod_menu(d: &Dashboard, id: &str) -> (Vec<MenuItem>, Vec<ModChoice>) {
-    let rows = mod_menu_rows(d, id);
+fn mod_menu(
+    d: &Dashboard,
+    id: &str,
+    installed: Option<(&str, &str)>,
+) -> (Vec<MenuItem>, Vec<ModChoice>) {
+    let mut rows = mod_menu_rows(d, id);
+    // Installed: it can be reported, with this launcher's logs.
+    if let Some((version, name)) = installed {
+        if !rows.is_empty() {
+            rows.push((MenuItem::Divider, ModChoice::Homepage(String::new())));
+        }
+        rows.push((
+            MenuItem::row("Report this mod", "Tell the moderators about a problem with it, with your logs (needs the EchoVRCE sign-in)"),
+            ModChoice::Report(format!("{id}@{version}"), name.to_string()),
+        ));
+    }
     rows.into_iter().unzip()
 }
 
@@ -1189,7 +1298,8 @@ fn mod_menu_rows(d: &Dashboard, id: &str) -> Vec<(MenuItem, ModChoice)> {
                 detail_color: design::GREY,
                 checked: on,
                 tip: if on {
-                    "Only stable versions again (a prerelease installed offers Switch to stable)".into()
+                    "Only stable versions again (a prerelease installed offers Switch to stable)"
+                        .into()
                 } else {
                     "Offer this mod's prereleases too: test versions, which may break".into()
                 },
@@ -1206,8 +1316,17 @@ fn mod_menu_rows(d: &Dashboard, id: &str) -> Vec<(MenuItem, ModChoice)> {
             let label = if tag == "catalogue" {
                 "Published version".to_string()
             } else {
-                let code = d.state.dev_codes.iter().find(|c| dev_code::source_tag(c) == *tag);
-                let n = d.state.dev_codes.iter().position(|c| Some(c) == code).map_or(0, |n| n + 1);
+                let code = d
+                    .state
+                    .dev_codes
+                    .iter()
+                    .find(|c| dev_code::source_tag(c) == *tag);
+                let n = d
+                    .state
+                    .dev_codes
+                    .iter()
+                    .position(|c| Some(c) == code)
+                    .map_or(0, |n| n + 1);
                 code.and_then(|c| dev_code::channel_name(c))
                     .map(|name| format!("Dev: {name}"))
                     .unwrap_or_else(|| format!("Dev channel {n}"))
@@ -1243,12 +1362,20 @@ fn mod_menu_rows(d: &Dashboard, id: &str) -> Vec<(MenuItem, ModChoice)> {
             ModChoice::Forget,
         ));
     }
-    let homepage = c.mods.iter().find(|m| m.id == id).map(|m| m.homepage.clone()).unwrap_or_default();
+    let homepage = c
+        .mods
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.homepage.clone())
+        .unwrap_or_default();
     if !homepage.is_empty() {
         if !out.is_empty() {
             out.push((MenuItem::Divider, ModChoice::Homepage(String::new())));
         }
-        out.push((MenuItem::row("Homepage", "Its page in your browser"), ModChoice::Homepage(homepage)));
+        out.push((
+            MenuItem::row("Homepage", "Its page in your browser"),
+            ModChoice::Homepage(homepage),
+        ));
     }
     out
 }
@@ -1268,6 +1395,11 @@ fn apply_mod_choice(d: &mut Dashboard, id: &str, choice: Option<ModChoice>) {
         }
         Some(ModChoice::Homepage(url)) if !url.is_empty() => return platform::open_url(&url),
         Some(ModChoice::Forget) => d.state.unlisted_mods.retain(|u| u != id),
+        Some(ModChoice::Report(what, name)) => {
+            d.report = Some((what, name));
+            d.report_note.clear();
+            return super::settings::ask_upload(d);
+        }
         _ => return,
     }
     d.save();
@@ -1449,8 +1581,8 @@ fn plugin_row(
     let key = |what: &str| format!("mods-{what}-{}", p.file);
     // Right to left: More, Update, Remove, Options, the state chip.
     let mut a = Actions::new(x, y, w);
-    if let Source::Catalog { id, .. } = &p.source {
-        let (items, choices) = mod_menu(d, id);
+    if let Source::Catalog { id, version } = &p.source {
+        let (items, choices) = mod_menu(d, id, Some((version, &look.name)));
         if !items.is_empty() {
             if let Some(i) = a.menu(k, &key("more"), &items, "This mod's own choices") {
                 apply_mod_choice(d, id, choices.into_iter().nth(i));
@@ -1460,7 +1592,10 @@ fn plugin_row(
     if let Some((m, offer)) = &look.update {
         let stable = *offer == catalogue::Offer::ToStable;
         let ready_tip = if stable {
-            format!("Back to {} {}, the newest stable version (it loads at the next start)", m.name, m.version)
+            format!(
+                "Back to {} {}, the newest stable version (it loads at the next start)",
+                m.name, m.version
+            )
         } else {
             "Download its new version (it loads at the next start)".to_string()
         };
@@ -1529,7 +1664,10 @@ fn plugin_row(
                     let also = if needed_by.is_empty() {
                         String::new()
                     } else {
-                        format!(" {} need it: they wait for it at every start then.", needed_by.join(", "))
+                        format!(
+                            " {} need it: they wait for it at every start then.",
+                            needed_by.join(", ")
+                        )
                     };
                     (
                         "Remove mod",
@@ -1653,7 +1791,9 @@ fn plugin_row(
         Source::Shipped if !p.verified => ("Unverified", design::QUEST_WARN),
         Source::Shipped => ("Community update", design::SUBTLE),
         // From the dev folder of a dev code in Advanced settings, not published.
-        Source::Catalog { id, .. } if listed(id).is_some_and(|(dev, _)| dev) => ("Dev", design::RIM_BOTTOM),
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(dev, _)| dev) => {
+            ("Dev", design::RIM_BOTTOM)
+        }
         Source::Catalog { id, .. } if listed(id).is_some_and(|(_, unlisted)| unlisted) => {
             ("Unlisted", design::BLUE)
         }
@@ -1673,7 +1813,11 @@ fn plugin_row(
     let line = match (&look.quarantined, &look.left_out) {
         (Some((note, lifted)), _) => format!(
             "Set aside: blocked ({note}){}",
-            if *lifted { "  ·  the block is lifted: Restore puts it back" } else { "" }
+            if *lifted {
+                "  ·  the block is lifted: Restore puts it back"
+            } else {
+                ""
+            }
         ),
         (None, Some(why)) => format!("{}  ·  {why}", p.file),
         _ => plugin_detail(p, look.author.as_deref()),
@@ -1741,7 +1885,16 @@ impl Actions {
         let bh = dz(ROW_BTN_H);
         let bw = (k.button_width("More", None, bh) + bh).max(dz(100.0));
         self.right -= bw;
-        let picked = k.menu_button(key, "More", items, self.right, self.cy - bh / 2.0, bw, bh, tip);
+        let picked = k.menu_button(
+            key,
+            "More",
+            items,
+            self.right,
+            self.cy - bh / 2.0,
+            bw,
+            bh,
+            tip,
+        );
         self.right -= dz(ACTION_GAP);
         picked
     }
@@ -2961,9 +3114,20 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntr
     if !missing.is_empty() {
         let found: Vec<ModEntry> = missing
             .iter()
-            .filter_map(|dep| catalog.mods.iter().find(|e| e.id == dep.id && e.downloadable()).cloned())
+            .filter_map(|dep| {
+                catalog
+                    .mods
+                    .iter()
+                    .find(|e| e.id == dep.id && e.downloadable())
+                    .cloned()
+            })
             .collect();
-        let names = |list: &[ModEntry]| list.iter().map(|e| e.name.clone()).collect::<Vec<_>>().join(", ");
+        let names = |list: &[ModEntry]| {
+            list.iter()
+                .map(|e| e.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let absent: Vec<String> = missing
             .iter()
             .filter(|dep| !found.iter().any(|e| e.id == dep.id))
@@ -2976,7 +3140,11 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntr
         if !absent.is_empty() {
             text.push_str(&format!(
                 "{}{}, which the catalogue doesn't have: {} waits for it at every start.",
-                if found.is_empty() { "" } else { " It also needs " },
+                if found.is_empty() {
+                    ""
+                } else {
+                    " It also needs "
+                },
                 absent.join(", "),
                 m.name
             ));
@@ -2995,7 +3163,13 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntr
 }
 
 /// Installs `entry` into `v`, the mods it needs (`first`) before it.
-fn install_with(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, entry: ModEntry, first: Vec<ModEntry>) {
+fn install_with(
+    d: &mut Dashboard,
+    ctx: &egui::Context,
+    v: &InstalledVersion,
+    entry: ModEntry,
+    first: Vec<ModEntry>,
+) {
     let title = format!("Installing {}", entry.name);
     run(d, ctx, v, &title, move |v, cancel, on| {
         for dep in &first {
@@ -3201,12 +3375,21 @@ fn entry(
         k.chip(right, y + (bh - dz(27.0)) / 2.0, chip, design::QUEST_OFF);
     }
     if let Extra::Mod(_) = e {
-        let (items, choices) = mod_menu(d, &m.id);
+        let (items, choices) = mod_menu(d, &m.id, None);
         if !items.is_empty() {
             let mw = (k.button_width("More", None, bh) + bh).max(dz(100.0));
             right -= mw + dz(ACTION_GAP);
             let key = format!("mods-entry-more-{}", m.id);
-            if let Some(i) = k.menu_button(&key, "More", &items, right, y, mw, bh, "This mod's own choices") {
+            if let Some(i) = k.menu_button(
+                &key,
+                "More",
+                &items,
+                right,
+                y,
+                mw,
+                bh,
+                "This mod's own choices",
+            ) {
                 apply_mod_choice(d, &m.id, choices.into_iter().nth(i));
             }
         }
@@ -3241,7 +3424,13 @@ fn entry(
             };
             if let Some((tag, color)) = tag {
                 if vx + gw + dz(14.0) + k.dot_tag_width(tag, 12.0) < right - dz(14.0) {
-                    k.dot_tag(vx + gw + dz(14.0), nr.center().y - k.origin.y, tag, 12.0, color);
+                    k.dot_tag(
+                        vx + gw + dz(14.0),
+                        nr.center().y - k.origin.y,
+                        tag,
+                        12.0,
+                        color,
+                    );
                 }
             }
         }

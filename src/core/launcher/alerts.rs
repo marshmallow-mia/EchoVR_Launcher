@@ -22,7 +22,13 @@ use crate::core::semver;
 pub const URL: &str = "https://release.echovr.de/launcher/feed/alerts.json";
 
 /// The sites an alert may link to (and their subdomains).
-const LINK_HOSTS: [&str; 5] = ["echovr.de", "echovrce.com", "github.com", "discord.gg", "discord.com"];
+const LINK_HOSTS: [&str; 5] = [
+    "echovr.de",
+    "echovrce.com",
+    "github.com",
+    "discord.gg",
+    "discord.com",
+];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -96,13 +102,18 @@ impl Alert {
 
     /// The player may dismiss it.
     pub fn can_dismiss(&self) -> bool {
-        self.dismissible.unwrap_or(self.severity() != Severity::Critical)
+        self.dismissible
+            .unwrap_or(self.severity() != Severity::Critical)
     }
 
     /// The link to show, if it goes to an allowed site.
     pub fn link(&self) -> Option<(&str, &str)> {
         link_ok(&self.link_url).then(|| {
-            let label = if self.link_label.trim().is_empty() { "More" } else { self.link_label.as_str() };
+            let label = if self.link_label.trim().is_empty() {
+                "More"
+            } else {
+                self.link_label.as_str()
+            };
             (label, self.link_url.as_str())
         })
     }
@@ -111,18 +122,20 @@ impl Alert {
     pub fn applies(&self, here: &Here, now: OffsetDateTime) -> bool {
         let t = &self.target;
         let at = |s: &Option<String>| {
-            s.as_deref()
-                .and_then(|s| OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok())
+            s.as_deref().and_then(|s| {
+                OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+            })
         };
         if self.id.is_empty() || self.title.trim().is_empty() {
             return false;
         }
-        if at(&self.starts).is_some_and(|s| now < s) || at(&self.expires).is_some_and(|e| now >= e) {
+        if at(&self.starts).is_some_and(|s| now < s) || at(&self.expires).is_some_and(|e| now >= e)
+        {
             return false;
         }
-        (t.platforms.is_empty() || t.platforms.iter().any(|p| *p == here.platform))
+        (t.platforms.is_empty() || t.platforms.contains(&here.platform))
             && (t.launcher.trim().is_empty() || semver::in_range(&here.launcher, &t.launcher, true))
-            && (t.channels.is_empty() || t.channels.iter().any(|c| *c == here.channel))
+            && (t.channels.is_empty() || t.channels.contains(&here.channel))
             && (t.mods.is_empty()
                 || t.mods.iter().any(|m| {
                     here.mods.iter().any(|(id, version)| {
@@ -131,7 +144,8 @@ impl Alert {
                                 || semver::in_range(version, &m.versions, true))
                     })
                 }))
-            && (t.dev_channels.is_empty() || t.dev_channels.iter().any(|c| here.dev_channels.contains(c)))
+            && (t.dev_channels.is_empty()
+                || t.dev_channels.iter().any(|c| here.dev_channels.contains(c)))
     }
 }
 
@@ -141,7 +155,10 @@ pub fn link_ok(url: &str) -> bool {
         return false;
     };
     let host = u.host_str().unwrap_or_default().to_ascii_lowercase();
-    u.scheme() == "https" && LINK_HOSTS.iter().any(|h| host == *h || host.ends_with(&format!(".{h}")))
+    u.scheme() == "https"
+        && LINK_HOSTS
+            .iter()
+            .any(|h| host == *h || host.ends_with(&format!(".{h}")))
 }
 
 /// Pure: the alerts in `text`; one that doesn't read right is left out.
@@ -152,7 +169,12 @@ pub fn parse(text: &str) -> Vec<Alert> {
         alerts: Vec<serde_json::Value>,
     }
     serde_json::from_str::<Raw>(text)
-        .map(|r| r.alerts.into_iter().filter_map(|a| serde_json::from_value(a).ok()).collect())
+        .map(|r| {
+            r.alerts
+                .into_iter()
+                .filter_map(|a| serde_json::from_value(a).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -167,11 +189,22 @@ pub fn here(state: &LauncherState) -> Here {
         }
     }
     Here {
-        platform: if cfg!(windows) { "windows" } else if cfg!(target_os = "linux") { "linux" } else { "macos" }.into(),
+        platform: if cfg!(windows) {
+            "windows"
+        } else if cfg!(target_os = "linux") {
+            "linux"
+        } else {
+            "macos"
+        }
+        .into(),
         launcher: env!("CARGO_PKG_VERSION").into(),
         channel: state.launcher_channel.name().into(),
         mods: mods.into_iter().collect(),
-        dev_channels: state.dev_codes.iter().filter_map(|c| super::dev_code::channel_name(c)).collect(),
+        dev_channels: state
+            .dev_codes
+            .iter()
+            .filter_map(|c| super::dev_code::channel_name(c))
+            .collect(),
     }
 }
 
@@ -190,7 +223,10 @@ pub fn fetch(state: &LauncherState) -> Vec<Alert> {
     }
     let here = here(state);
     let now = OffsetDateTime::now_utc();
-    alerts.into_iter().filter(|a| a.applies(&here, now)).collect()
+    alerts
+        .into_iter()
+        .filter(|a| a.applies(&here, now))
+        .collect()
 }
 
 /// Of `alerts`, the warnings and critical ones not announced on the desktop yet, now
@@ -233,7 +269,10 @@ pub fn plain(md: &str) -> String {
     while let Some(i) = rest.find('[') {
         out.push_str(&rest[..i]);
         let after = &rest[i + 1..];
-        match after.find("](").and_then(|j| after[j..].find(')').map(|k| (j, j + k))) {
+        match after
+            .find("](")
+            .and_then(|j| after[j..].find(')').map(|k| (j, j + k)))
+        {
             Some((j, end)) => {
                 out.push_str(&after[..j]);
                 rest = &after[end + 1..];
@@ -246,7 +285,10 @@ pub fn plain(md: &str) -> String {
     }
     out.push_str(rest);
     out.lines()
-        .map(|l| l.trim_start_matches(['#', '>', ' ']).replace(['*', '`', '_'], ""))
+        .map(|l| {
+            l.trim_start_matches(['#', '>', ' '])
+                .replace(['*', '`', '_'], "")
+        })
         .collect::<Vec<_>>()
         .join("\n")
         .trim()
@@ -279,12 +321,21 @@ mod tests {
     fn targets() {
         let now = OffsetDateTime::now_utc();
         assert!(alert("{}", "").applies(&here(), now));
-        assert!(alert(r#"{"platforms": ["linux"], "channels": ["alpha", "beta"]}"#, "").applies(&here(), now));
+        assert!(alert(
+            r#"{"platforms": ["linux"], "channels": ["alpha", "beta"]}"#,
+            ""
+        )
+        .applies(&here(), now));
         assert!(!alert(r#"{"platforms": ["windows"]}"#, "").applies(&here(), now));
         assert!(alert(r#"{"launcher": ">=0.13.0-alpha.1"}"#, "").applies(&here(), now));
         assert!(!alert(r#"{"launcher": "<0.12.0"}"#, "").applies(&here(), now));
-        assert!(alert(r#"{"mods": [{"id": "cool", "versions": "<1.2.0"}]}"#, "").applies(&here(), now));
-        assert!(!alert(r#"{"mods": [{"id": "cool", "versions": ">=1.2.0"}]}"#, "").applies(&here(), now));
+        assert!(
+            alert(r#"{"mods": [{"id": "cool", "versions": "<1.2.0"}]}"#, "").applies(&here(), now)
+        );
+        assert!(
+            !alert(r#"{"mods": [{"id": "cool", "versions": ">=1.2.0"}]}"#, "")
+                .applies(&here(), now)
+        );
         assert!(!alert(r#"{"mods": [{"id": "other"}]}"#, "").applies(&here(), now));
         assert!(alert(r#"{"dev_channels": ["mia"]}"#, "").applies(&here(), now));
         assert!(!alert(r#"{"dev_channels": ["cat"]}"#, "").applies(&here(), now));
@@ -295,8 +346,11 @@ mod tests {
         let now = OffsetDateTime::now_utc();
         assert!(!alert("{}", r#", "expires": "2000-01-01T00:00:00Z""#).applies(&here(), now));
         assert!(!alert("{}", r#", "starts": "2999-01-01T00:00:00Z""#).applies(&here(), now));
-        assert!(alert("{}", r#", "starts": "2000-01-01T00:00:00Z", "expires": "2999-01-01T00:00:00Z""#)
-            .applies(&here(), now));
+        assert!(alert(
+            "{}",
+            r#", "starts": "2000-01-01T00:00:00Z", "expires": "2999-01-01T00:00:00Z""#
+        )
+        .applies(&here(), now));
     }
 
     #[test]
@@ -306,10 +360,14 @@ mod tests {
         assert!(!link_ok("http://github.com/x"));
         assert!(!link_ok("https://github.com.evil.example/x"));
         assert!(!link_ok("https://evil.example/?github.com"));
-        let critical = parse(r#"{"alerts": [{"id": "c", "severity": "critical", "title": "T"}]}"#).remove(0);
+        let critical =
+            parse(r#"{"alerts": [{"id": "c", "severity": "critical", "title": "T"}]}"#).remove(0);
         assert!(!critical.can_dismiss());
         assert!(alert("{}", "").can_dismiss());
-        assert_eq!(plain("**Remove** [cool](https://x.y/z) now\n# Why"), "Remove cool now\nWhy");
+        assert_eq!(
+            plain("**Remove** [cool](https://x.y/z) now\n# Why"),
+            "Remove cool now\nWhy"
+        );
         let bad_link = alert("{}", r#", "link_url": "https://evil.example""#);
         assert_eq!(bad_link.link(), None);
         assert!(parse("not json").is_empty());

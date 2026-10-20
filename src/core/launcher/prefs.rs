@@ -30,5 +30,9 @@ pub fn set(state: &super::store::LauncherState) {
 
 /// The per-mod choices in use (none before launcher.json was read, and in tests).
 pub fn get() -> ModPrefs {
-    PREFS.lock().unwrap_or_else(|p| p.into_inner()).clone().unwrap_or_default()
+    PREFS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .unwrap_or_default()
 }

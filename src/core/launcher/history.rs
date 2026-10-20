@@ -131,14 +131,23 @@ impl History {
     /// The newest complete version of mod `id` older than `version` that `ok` takes (not
     /// blocked), ready to install from the store. Versions that aren't semantic versions
     /// aren't considered.
-    pub fn mod_newest_below(&self, id: &str, version: &str, ok: impl Fn(&str) -> bool) -> Option<ModEntry> {
+    pub fn mod_newest_below(
+        &self,
+        id: &str,
+        version: &str,
+        ok: impl Fn(&str) -> bool,
+    ) -> Option<ModEntry> {
         use crate::core::semver::Version;
         let below = Version::parse(version)?;
         let mut e: ModEntry = self
             .mods
             .get(id)?
             .iter()
-            .filter(|v| !serde_json::from_value::<Listed>((*v).clone()).unwrap_or_default().incomplete)
+            .filter(|v| {
+                !serde_json::from_value::<Listed>((*v).clone())
+                    .unwrap_or_default()
+                    .incomplete
+            })
             .filter_map(|v| serde_json::from_value::<ModEntry>(v.clone()).ok())
             .filter_map(|e| Some((Version::parse(&e.version)?, e)))
             .filter(|(v, e)| *v < below && ok(&e.version))

@@ -113,7 +113,8 @@ impl CatalogueMod {
     /// The version to offer: the newest one that isn't blocked and is a semantic version,
     /// a prerelease only with `prereleases`.
     pub fn choose(&self, prereleases: bool) -> Option<&CatalogueVersion> {
-        self.offered(prereleases).max_by(|a, b| version(a).cmp(&version(b)))
+        self.offered(prereleases)
+            .max_by(|a, b| version(a).cmp(&version(b)))
     }
 
     /// Whether it has a prerelease that isn't blocked (⋯ → Prereleases is offered then).
@@ -147,9 +148,14 @@ pub enum Offer {
 
 /// Pure: see [`Offer`].
 pub fn offer(installed: &str, offered: &str) -> Option<Offer> {
-    match (semver::Version::parse(installed), semver::Version::parse(offered)) {
+    match (
+        semver::Version::parse(installed),
+        semver::Version::parse(offered),
+    ) {
         (Some(i), Some(o)) if o > i => Some(Offer::Update),
-        (Some(i), Some(o)) if i.is_prerelease() && !o.is_prerelease() && o != i => Some(Offer::ToStable),
+        (Some(i), Some(o)) if i.is_prerelease() && !o.is_prerelease() && o != i => {
+            Some(Offer::ToStable)
+        }
         (Some(_), Some(_)) => None,
         _ => (installed != offered).then_some(Offer::Update),
     }
@@ -167,7 +173,11 @@ mod tests {
                     "url": "https://release.echovr.de/launcher/mods/Cool-{version}.dll", "sha256": "{sha}",
                     "prerelease": {pre}, "requires": {{"nevr": ">=4.1.0", "mods": [{{"id": "base", "version": ">=1.0.0"}}]}},
                     "conflicts": ["other"]{}}}"#,
-                if blocked { r#", "blocked": {"action": "off", "note": "broken"}"# } else { "" }
+                if blocked {
+                    r#", "blocked": {"action": "off", "note": "broken"}"#
+                } else {
+                    ""
+                }
             )
         };
         Catalogue::parse(&format!(

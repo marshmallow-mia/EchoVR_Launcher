@@ -48,7 +48,13 @@ impl Version {
     /// Pure: `text` as a semantic version, or `None` (no `v` in front, no leading zeros).
     pub fn parse(text: &str) -> Option<Version> {
         let text = match text.split_once('+') {
-            Some((v, build)) if build.split('.').all(|i| !i.is_empty() && i.chars().all(ident_char)) => v,
+            Some((v, build))
+                if build
+                    .split('.')
+                    .all(|i| !i.is_empty() && i.chars().all(ident_char)) =>
+            {
+                v
+            }
             Some(_) => return None,
             None => text,
         };
@@ -76,7 +82,12 @@ impl Version {
                 })
                 .collect::<Option<Vec<_>>>()?,
         };
-        Some(Version { major, minor, patch, pre })
+        Some(Version {
+            major,
+            minor,
+            patch,
+            pre,
+        })
     }
 
     /// Whether it has a prerelease part (`1.2.0-beta.1`).
@@ -91,11 +102,13 @@ impl Version {
 
 impl Ord for Version {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.core().cmp(&other.core()).then_with(|| match (self.pre.is_empty(), other.pre.is_empty()) {
-            (true, true) => Ordering::Equal,
-            (true, false) => Ordering::Greater,
-            (false, true) => Ordering::Less,
-            (false, false) => self.pre.cmp(&other.pre),
+        self.core().cmp(&other.core()).then_with(|| {
+            match (self.pre.is_empty(), other.pre.is_empty()) {
+                (true, true) => Ordering::Equal,
+                (true, false) => Ordering::Greater,
+                (false, true) => Ordering::Less,
+                (false, false) => self.pre.cmp(&other.pre),
+            }
         })
     }
 }
@@ -112,23 +125,27 @@ fn ident_char(c: char) -> bool {
 
 /// A number without leading zeros.
 fn number(s: &str) -> Option<u64> {
-    if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit()) || (s.len() > 1 && s.starts_with('0')) {
+    if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit()) || (s.len() > 1 && s.starts_with('0'))
+    {
         return None;
     }
     s.parse().ok()
 }
 
 /// Pure: whether `a` is a newer version than `b`. False when either isn't a semantic version.
+#[cfg(test)]
 pub fn newer(a: &str, b: &str) -> bool {
     matches!((Version::parse(a), Version::parse(b)), (Some(a), Some(b)) if a > b)
 }
 
 /// Pure: whether `a` and `b` are the same version (build metadata aside).
+#[cfg(test)]
 pub fn same(a: &str, b: &str) -> bool {
     matches!((Version::parse(a), Version::parse(b)), (Some(a), Some(b)) if a == b)
 }
 
 /// Pure: whether the range `range` is well-formed.
+#[cfg(test)]
 pub fn valid_range(range: &str) -> bool {
     let range = range.trim();
     range == "*"
@@ -137,7 +154,10 @@ pub fn valid_range(range: &str) -> bool {
 }
 
 fn comparator(part: &str) -> Option<(&str, Version)> {
-    let op = [">=", "<=", ">", "<", "=", "^", "~"].into_iter().find(|op| part.starts_with(op)).unwrap_or("");
+    let op = [">=", "<=", ">", "<", "=", "^", "~"]
+        .into_iter()
+        .find(|op| part.starts_with(op))
+        .unwrap_or("");
     Some((op, Version::parse(&part[op.len()..])?))
 }
 
@@ -206,7 +226,11 @@ mod tests {
             "1.1.0",
             "2.0.0",
         ];
-        let mut shuffled: Vec<Version> = order.iter().rev().map(|v| Version::parse(v).unwrap()).collect();
+        let mut shuffled: Vec<Version> = order
+            .iter()
+            .rev()
+            .map(|v| Version::parse(v).unwrap())
+            .collect();
         shuffled.sort();
         let sorted: Vec<Version> = order.iter().map(|v| Version::parse(v).unwrap()).collect();
         assert_eq!(shuffled, sorted);
@@ -222,7 +246,17 @@ mod tests {
 
     #[test]
     fn refuses_what_isnt_semver() {
-        for bad in ["1.0", "v1.0.0", "01.0.0", "1.0.0-01", "1.0.0-", "1.0.0+", "1.0.0-a..b", "1.2.3.4", ""] {
+        for bad in [
+            "1.0",
+            "v1.0.0",
+            "01.0.0",
+            "1.0.0-01",
+            "1.0.0-",
+            "1.0.0+",
+            "1.0.0-a..b",
+            "1.2.3.4",
+            "",
+        ] {
             assert!(Version::parse(bad).is_none(), "{bad}");
         }
     }
@@ -255,7 +289,15 @@ mod tests {
 
     #[test]
     fn valid_ranges() {
-        for good in ["*", "all", ">=1.0.0", ">=4.1.0 <6.0.0", "^1.2.0", "~0.1.0", "1.2.3-rc.1"] {
+        for good in [
+            "*",
+            "all",
+            ">=1.0.0",
+            ">=4.1.0 <6.0.0",
+            "^1.2.0",
+            "~0.1.0",
+            "1.2.3-rc.1",
+        ] {
             assert!(valid_range(good), "{good}");
         }
         for bad in ["", ">= 1.0.0", "4.1", "latest"] {

@@ -877,6 +877,8 @@ pub struct Dashboard {
     applied_variant: Option<Option<SnapVariant>>,
     /// When the game was first seen running.
     game_since: Option<std::time::Instant>,
+    /// The version that run is of (for the crash safety net: [`mods::game_ended`]).
+    game_version: Option<String>,
     /// The Quest was checked quietly once already.
     quest_auto_checked: bool,
     /// A full-window card on top (the install questions, the licence patch, joining…).
@@ -908,6 +910,10 @@ pub struct Dashboard {
     deleting_cache: bool,
     /// The logs are on their way to the upload service.
     uploading_logs: bool,
+    /// "Report this mod" (Mods page): the mod (`id@version`, its name), and what the player
+    /// writes happened; the next log upload is that report.
+    report: Option<(String, String)>,
+    report_note: String,
     /// The logs "Upload logs" asked about.
     upload_sources: Vec<crate::core::logs::Source>,
     feed: Feed,
@@ -3285,8 +3291,20 @@ impl Dashboard {
         }
         // Track how long the game has been running.
         match (self.game().is_running(), self.game_since) {
-            (true, None) => self.game_since = Some(std::time::Instant::now()),
-            (false, Some(_)) => self.game_since = None,
+            (true, None) => {
+                self.game_since = Some(std::time::Instant::now());
+                self.game_version = self.running_version().map(|v| v.id.clone());
+            }
+            (false, Some(since)) => {
+                self.game_since = None;
+                if let Some(v) = self
+                    .game_version
+                    .take()
+                    .and_then(|id| self.state.version(&id).cloned())
+                {
+                    mods::game_ended(self, &v, since.elapsed());
+                }
+            }
             _ => {}
         }
 

@@ -30,6 +30,7 @@ pub fn normalize(input: &str) -> Option<String> {
 }
 
 /// Pure: `code` as people type and read it, in groups of five ("abcde-fghij-...").
+#[cfg(test)]
 pub fn display(code: &str) -> String {
     code.as_bytes()
         .chunks(5)
@@ -63,7 +64,10 @@ pub fn codes() -> Vec<String> {
 /// `mod_sources`, an install's `from`): `dev:<12 hex of its sha256>`, as [`cache_name`].
 pub fn source_tag(code: &str) -> String {
     use sha2::{Digest, Sha256};
-    format!("dev:{}", &hex::encode(Sha256::digest(code.as_bytes()))[..12])
+    format!(
+        "dev:{}",
+        &hex::encode(Sha256::digest(code.as_bytes()))[..12]
+    )
 }
 
 /// Pure: `code`'s folder, with a trailing slash.
@@ -183,8 +187,15 @@ impl Status {
         match self {
             Status::Off => "Not checked yet.".into(),
             Status::Checking => "Checking the code...".into(),
-            Status::NotFound => "No dev folder has this code (or it needs a sign-in this launcher can't do yet).".into(),
-            Status::Found { mods, plugins, name } => format!(
+            Status::NotFound => {
+                "No dev folder has this code (or it needs a sign-in this launcher can't do yet)."
+                    .into()
+            }
+            Status::Found {
+                mods,
+                plugins,
+                name,
+            } => format!(
                 "{}: {mods} {}, {plugins} {}.",
                 name.as_deref().unwrap_or("Dev folder"),
                 if *mods == 1 { "mod" } else { "mods" },
@@ -207,7 +218,10 @@ pub fn cache_name(code: &str, name: &str) -> String {
 /// [`kept`]) or, when the server can't be asked, the one kept last. A code whose folder has
 /// no such catalogue is left out.
 pub fn load(name: &str) -> Vec<(String, String)> {
-    codes().into_iter().filter_map(|code| load_one(&code, name)).collect()
+    codes()
+        .into_iter()
+        .filter_map(|code| load_one(&code, name))
+        .collect()
 }
 
 fn load_one(code: &str, name: &str) -> Option<(String, String)> {
@@ -231,7 +245,10 @@ fn load_one(code: &str, name: &str) -> Option<(String, String)> {
 
 /// The dev catalogue `name` of every code in use as kept last (no network), in their order.
 pub fn kept(name: &str) -> Vec<(String, String)> {
-    codes().into_iter().filter_map(|code| kept_one(&code, name)).collect()
+    codes()
+        .into_iter()
+        .filter_map(|code| kept_one(&code, name))
+        .collect()
 }
 
 fn kept_one(code: &str, name: &str) -> Option<(String, String)> {
@@ -239,7 +256,9 @@ fn kept_one(code: &str, name: &str) -> Option<(String, String)> {
         return None;
     }
     let path = crate::core::paths::data_dir().join(cache_name(code, name));
-    std::fs::read_to_string(path).ok().map(|t| (code.to_string(), t))
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|t| (code.to_string(), t))
 }
 
 /// The channel name `code`'s folder gives itself (`channel.json`), as kept last (no
@@ -408,7 +427,10 @@ mod tests {
         assert_eq!(source_tag(CODE).len(), 16);
         assert_ne!(source_tag(CODE), source_tag(&other));
         assert!(source_tag(CODE).starts_with("dev:"));
-        assert_eq!(parse_channel(r#"{"name": " cat "}"#).as_deref(), Some("cat"));
+        assert_eq!(
+            parse_channel(r#"{"name": " cat "}"#).as_deref(),
+            Some("cat")
+        );
         assert_eq!(parse_channel(r#"{"name": ""}"#), None);
         assert_eq!(parse_channel("nope"), None);
     }
@@ -417,7 +439,10 @@ mod tests {
     fn hides_every_code_in_use() {
         let other = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
         set_all(&[CODE.into(), other.into()]);
-        assert_eq!(redact(&format!("{CODE} and {}", display(other))), "*** and ***");
+        assert_eq!(
+            redact(&format!("{CODE} and {}", display(other))),
+            "*** and ***"
+        );
         set_all(&[]);
     }
 }

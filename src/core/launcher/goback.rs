@@ -449,8 +449,16 @@ impl Rollback {
     }
 
     /// The block that covers mod `id` in `file` at `version`, if any ([`Block::covers`]).
-    pub fn block_for(&self, id: Option<&str>, file: &str, version: &str, sha: Option<&str>) -> Option<&Block> {
-        self.blocked.iter().find(|b| b.covers(id, file, version, sha))
+    pub fn block_for(
+        &self,
+        id: Option<&str>,
+        file: &str,
+        version: &str,
+        sha: Option<&str>,
+    ) -> Option<&Block> {
+        self.blocked
+            .iter()
+            .find(|b| b.covers(id, file, version, sha))
     }
 }
 

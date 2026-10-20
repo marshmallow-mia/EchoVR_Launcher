@@ -491,7 +491,11 @@ impl LauncherState {
         }
         // A launcher before 0.13 kept one code, and drops `dev_codes` when it saves.
         if self.dev_codes.is_empty() {
-            self.dev_codes.extend(self.dev_code.as_deref().and_then(super::dev_code::normalize));
+            self.dev_codes.extend(
+                self.dev_code
+                    .as_deref()
+                    .and_then(super::dev_code::normalize),
+            );
         }
         self.dev_codes = super::dev_code::normalize_all(&self.dev_codes);
         self.dev_code = self.dev_codes.first().cloned();
@@ -723,16 +727,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("launcher.json");
         // A 0.12 launcher.json: one code, as typed.
-        std::fs::write(&f, r#"{"schema":3,"dev_code":"abcde-fghij-klmno-pqrst-uvwxy-z"}"#).unwrap();
+        std::fs::write(
+            &f,
+            r#"{"schema":3,"dev_code":"abcde-fghij-klmno-pqrst-uvwxy-z"}"#,
+        )
+        .unwrap();
         let mut s = LauncherState::load_from(&f);
         assert_eq!(s.dev_codes, vec![A.to_string()]);
         assert!(s.add_dev_code(&B.to_uppercase()));
         assert!(!s.add_dev_code(B));
-        s.mod_sources.insert("x".into(), super::super::dev_code::source_tag(B));
+        s.mod_sources
+            .insert("x".into(), super::super::dev_code::source_tag(B));
         s.mod_sources.insert("y".into(), "catalogue".into());
         s.save_to(&f).unwrap();
         // 0.12 reads `dev_code`: the first one.
-        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
         assert_eq!(raw["dev_code"], A);
         let mut back = LauncherState::load_from(&f);
         assert_eq!(back.dev_codes, vec![A.to_string(), B.to_string()]);

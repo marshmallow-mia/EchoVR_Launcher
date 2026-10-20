@@ -341,13 +341,15 @@ impl PluginCatalog {
     pub fn load() -> PluginCatalog {
         let devs = super::dev_code::load("plugins")
             .into_iter()
-            .filter_map(|(code, text)| match PluginCatalog::parse_dev(&text, &code) {
-                Ok(d) => Some(d),
-                Err(e) => {
-                    tracing::warn!("dev plugins catalogue unreadable: {e:#}");
-                    None
-                }
-            })
+            .filter_map(
+                |(code, text)| match PluginCatalog::parse_dev(&text, &code) {
+                    Ok(d) => Some(d),
+                    Err(e) => {
+                        tracing::warn!("dev plugins catalogue unreadable: {e:#}");
+                        None
+                    }
+                },
+            )
             .collect();
         PluginCatalog::load_main().with_devs(devs)
     }

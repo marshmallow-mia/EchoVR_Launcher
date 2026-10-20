@@ -292,6 +292,23 @@ impl Overlay {
         o.as_object_mut().expect("an object")
     }
 
+    /// How the last starts went since a mod changed ([`record_run`]).
+    pub fn runs(&self) -> Runs {
+        self.0
+            .get(RUNS)
+            .and_then(|r| serde_json::from_value(r.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    fn set_runs(&mut self, r: &Runs) {
+        if *r == Runs::default() {
+            self.0.remove(RUNS);
+        } else {
+            self.0
+                .insert(RUNS.into(), serde_json::to_value(r).unwrap_or_default());
+        }
+    }
+
     /// The files set aside because they were blocked ([`apply_blocks`]): file → what.
     pub fn quarantined(&self) -> BTreeMap<String, Quarantined> {
         self.0
@@ -314,7 +331,10 @@ impl Overlay {
         if all.is_empty() {
             self.0.remove(QUARANTINE);
         } else {
-            self.0.insert(QUARANTINE.into(), serde_json::to_value(all).unwrap_or_default());
+            self.0.insert(
+                QUARANTINE.into(),
+                serde_json::to_value(all).unwrap_or_default(),
+            );
         }
     }
 
@@ -336,8 +356,13 @@ impl Overlay {
             })
     }
 
-    /// Adds `e` (or replaces the entry of its file).
+    /// Adds `e` (or replaces the entry of its file): a mod changed, for [`record_run`].
     pub fn add(&mut self, e: &Entry) {
+        let mut runs = self.runs();
+        if !runs.changed.iter().any(|f| f.eq_ignore_ascii_case(&e.file)) {
+            runs.changed.push(e.file.clone());
+        }
+        self.set_runs(&runs);
         let mut o = Map::new();
         o.insert("file".into(), e.file.clone().into());
         if !e.name.is_empty() {
@@ -1185,7 +1210,11 @@ pub fn before_start(
 /// Says `text` once per launcher run in the status bar ([`take_notices`]).
 fn say(text: String) {
     static SAID: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
-    if SAID.lock().unwrap_or_else(|e| e.into_inner()).insert(text.clone()) {
+    if SAID
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(text.clone())
+    {
         NOTICES.lock().unwrap_or_else(|e| e.into_inner()).push(text);
     }
 }
@@ -1216,25 +1245,38 @@ fn apply_blocks_with(
         let Some(id) = l.catalog_id.clone() else {
             continue;
         };
-        let Some(block) = rollback.block_for(Some(&id), &a.file, &l.version, a.sha256.as_deref()) else {
+        let Some(block) = rollback.block_for(Some(&id), &a.file, &l.version, a.sha256.as_deref())
+        else {
             continue;
         };
         if !plugins_dir(v).join(&a.file).is_file() {
             continue;
         }
-        let name = if a.name.is_empty() { id.clone() } else { a.name.clone() };
-        let note = if block.note.is_empty() { "a serious problem".to_string() } else { block.note.clone() };
+        let name = if a.name.is_empty() {
+            id.clone()
+        } else {
+            a.name.clone()
+        };
+        let note = if block.note.is_empty() {
+            "a serious problem".to_string()
+        } else {
+            block.note.clone()
+        };
         let blocked = |ver: &str| rollback.block_for(Some(&id), &a.file, ver, None).is_some();
         let kept = previous(v)
             .into_iter()
             .find(|p| p.file.eq_ignore_ascii_case(&a.file) && !blocked(&p.before));
         let went = match kept {
-            Some(_) => go_back(v, &a.file).map_err(|e| tracing::warn!("{name}: going back: {e:#}")).ok(),
+            Some(_) => go_back(v, &a.file)
+                .map_err(|e| tracing::warn!("{name}: going back: {e:#}"))
+                .ok(),
             None => history()
                 .and_then(|h| h.mod_newest_below(&id, &l.version, |ver| !blocked(ver)))
                 .and_then(|e| {
                     go_back_to(v, &a.file, &e, &AtomicBool::new(false), &mut |_| {})
-                        .map_err(|err| tracing::warn!("{name}: going back to {}: {err:#}", e.version))
+                        .map_err(|err| {
+                            tracing::warn!("{name}: going back to {}: {err:#}", e.version)
+                        })
                         .ok()
                         .map(|_| e.version)
                 }),
@@ -1248,13 +1290,22 @@ fn apply_blocks_with(
                     .and_then(|x| x.launcher.map(|l| l.version))
                     .unwrap_or_default();
                 tracing::info!("{name} {} is blocked ({note}): back to {now}", l.version);
-                say(format!("{name} {} is blocked ({note}): back to {now}", l.version));
+                say(format!(
+                    "{name} {} is blocked ({note}): back to {now}",
+                    l.version
+                ));
             }
             None if block.removes() => match quarantine(v, &a.file, &id, &l.version, &note) {
-                Ok(()) => say(format!("{name} {} is blocked ({note}): its file is set aside", l.version)),
+                Ok(()) => say(format!(
+                    "{name} {} is blocked ({note}): its file is set aside",
+                    l.version
+                )),
                 Err(e) => tracing::warn!("{name}: setting it aside: {e:#}"),
             },
-            None => say(format!("{name} {} is blocked ({note}): it stays off", l.version)),
+            None => say(format!(
+                "{name} {} is blocked ({note}): it stays off",
+                l.version
+            )),
         }
     }
 }
@@ -1279,6 +1330,50 @@ pub fn nevr_version(v: &InstalledVersion) -> Option<String> {
     nevr::version_in(&bytes)
 }
 
+/// The overlay's key for [`Runs`].
+const RUNS: &str = "runs";
+
+/// A start that ends sooner than this after Echo VR came up counts as ending early.
+pub const EARLY_EXIT: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// The mods changed since `v` last ran longer than [`EARLY_EXIT`], and how many starts
+/// since ended early: twice, and the Mods page asks about those mods.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Runs {
+    pub changed: Vec<String>,
+    pub early: u32,
+}
+
+/// Notes how long a start of `v` ran: an early end after a mod changed counts, a longer
+/// run means the changes are fine.
+pub fn record_run(v: &InstalledVersion, ran: std::time::Duration) -> Result<()> {
+    edit_overlay(v, |o| {
+        let mut r = o.runs();
+        if ran >= EARLY_EXIT {
+            r = Runs::default();
+        } else if !r.changed.is_empty() {
+            r.early += 1;
+        }
+        o.set_runs(&r);
+    })
+}
+
+/// The mods `v`'s starts kept ending early since (files): twice or more, after they changed.
+pub fn crash_suspects(v: &InstalledVersion) -> Vec<String> {
+    let r = Overlay::read(&choices_path(v)).runs();
+    if r.early >= 2 {
+        r.changed
+    } else {
+        Vec::new()
+    }
+}
+
+/// The player looked at the suspects and keeps them: counted afresh from the next change.
+pub fn forget_runs(v: &InstalledVersion) -> Result<()> {
+    edit_overlay(v, |o| o.set_runs(&Runs::default()))
+}
+
 /// Where a blocked mod's file is set aside: `_local/quarantine/<file>`.
 pub const QUARANTINE: &str = "quarantine";
 
@@ -1292,7 +1387,10 @@ pub struct Quarantined {
 }
 
 fn quarantine_dir(v: &InstalledVersion) -> PathBuf {
-    choices_path(v).parent().map(|p| p.join(QUARANTINE)).unwrap_or_default()
+    choices_path(v)
+        .parent()
+        .map(|p| p.join(QUARANTINE))
+        .unwrap_or_default()
 }
 
 /// Moves `file` out of `v`'s plugins into the quarantine, noted in the overlay.
@@ -1316,7 +1414,8 @@ fn quarantine(v: &InstalledVersion, file: &str, id: &str, version: &str, note: &
 /// Puts a quarantined `file` back (Mods page → Restore, once its block is lifted).
 pub fn restore_quarantined(v: &InstalledVersion, file: &str) -> Result<()> {
     let from = quarantine_dir(v).join(file);
-    std::fs::rename(&from, plugins_dir(v).join(file)).with_context(|| format!("put {file} back"))?;
+    std::fs::rename(&from, plugins_dir(v).join(file))
+        .with_context(|| format!("put {file} back"))?;
     edit_overlay(v, |o| o.set_quarantined(file, None))
 }
 
@@ -1436,7 +1535,10 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
         served.as_ref(),
         &super::goback::Rollback::cached(),
     );
-    if let Err(e) = write_json(&left_out_path(v), &serde_json::to_value(&left).unwrap_or_default()) {
+    if let Err(e) = write_json(
+        &left_out_path(v),
+        &serde_json::to_value(&left).unwrap_or_default(),
+    ) {
         tracing::warn!("why plugins were left out not kept: {e:#}");
     }
     nevr::write_config(v, &lines, local, backend.as_ref())
@@ -1626,28 +1728,40 @@ fn config_lines(
         if let Some(want) = &pinned {
             let have = download::sha256_file(&plugins_dir(v).join(&p.file)).unwrap_or_default();
             if !have.eq_ignore_ascii_case(want) {
-                leave(&p.file, "Its file changed since it was installed: install or add it again".into());
+                leave(
+                    &p.file,
+                    "Its file changed since it was installed: install or add it again".into(),
+                );
                 continue;
             }
         }
         if let Source::Catalog { id, version } = &p.source {
             if let Some(b) = rollback.block_for(Some(id), &p.file, version, pinned.as_deref()) {
-                let note = if b.note.is_empty() { "a serious problem" } else { &b.note };
+                let note = if b.note.is_empty() {
+                    "a serious problem"
+                } else {
+                    &b.note
+                };
                 leave(&p.file, format!("Blocked: {note}"));
                 continue;
             }
             // What it needs on beside it; never something it conflicts with.
             let n = noted(&p.file);
             if p.enabled && mods_on {
-                let missing = n.requires.mods.iter().find_map(|dep| match on.get(&dep.id) {
-                    None => Some(format!("Waiting for {}: install it and turn it on", dep.id)),
-                    Some(have) if !dep.version.is_empty()
-                        && !crate::core::semver::in_range(have, &dep.version, false) =>
-                    {
-                        Some(format!("Needs {} {} (it has {have})", dep.id, dep.version))
-                    }
-                    Some(_) => None,
-                });
+                let missing = n
+                    .requires
+                    .mods
+                    .iter()
+                    .find_map(|dep| match on.get(&dep.id) {
+                        None => Some(format!("Waiting for {}: install it and turn it on", dep.id)),
+                        Some(have)
+                            if !dep.version.is_empty()
+                                && !crate::core::semver::in_range(have, &dep.version, false) =>
+                        {
+                            Some(format!("Needs {} {} (it has {have})", dep.id, dep.version))
+                        }
+                        Some(_) => None,
+                    });
                 if let Some(why) = missing {
                     leave(&p.file, why);
                     continue;
@@ -1656,7 +1770,10 @@ fn config_lines(
                     n.conflicts.iter().any(|c| c == other) || theirs.iter().any(|c| c == id)
                 });
                 if let Some((other, _)) = clash {
-                    leave(&p.file, format!("Conflicts with {other}, which loads first"));
+                    leave(
+                        &p.file,
+                        format!("Conflicts with {other}, which loads first"),
+                    );
                     continue;
                 }
                 listed_ids.push((id.clone(), n.conflicts.clone()));
@@ -2531,6 +2648,7 @@ impl ModCatalog {
 
     /// `dev`'s entries over these: a published entry with a dev entry's id or file gives
     /// way to it; the dev entries come first.
+    #[cfg(test)]
     pub fn with_dev(self, dev: ModCatalog) -> ModCatalog {
         self.with_devs(vec![dev], &Default::default())
     }
@@ -2556,7 +2674,11 @@ impl ModCatalog {
             }
         }
         // The source asked for, when it has the id.
-        let wanted = |id: &str| sources.get(id).filter(|s| choices.get(id).is_some_and(|c| c.contains(s)));
+        let wanted = |id: &str| {
+            sources
+                .get(id)
+                .filter(|s| choices.get(id).is_some_and(|c| c.contains(s)))
+        };
         let mut kept: Vec<ModEntry> = Vec::new();
         for m in dev {
             let fits = wanted(&m.id).is_none_or(|w| *w == source_of(&m));
@@ -2626,7 +2748,10 @@ impl ModCatalog {
                 (o.id == e.id && own(o))
                     || (o.id != e.id && !e.file.is_empty() && o.file.eq_ignore_ascii_case(&e.file))
             }) {
-                tracing::warn!("catalogue: {} clashes with the launcher's own mods, left out", e.id);
+                tracing::warn!(
+                    "catalogue: {} clashes with the launcher's own mods, left out",
+                    e.id
+                );
                 continue;
             }
             match self.mods.iter_mut().find(|o| o.id == e.id) {
@@ -2664,14 +2789,20 @@ impl ModCatalog {
             std::fs::read_to_string(path).ok()
         };
         let mut mods = read(URL, "catalogue.json")
-            .and_then(|t| Catalogue::parse(&t).map_err(|e| tracing::warn!("catalogue.json unreadable: {e:#}")).ok())?
+            .and_then(|t| {
+                Catalogue::parse(&t)
+                    .map_err(|e| tracing::warn!("catalogue.json unreadable: {e:#}"))
+                    .ok()
+            })?
             .mods;
         for id in super::prefs::get().unlisted {
             if !super::catalog::is_safe_id(&id) {
                 continue;
             }
             let file = format!("unlisted-{id}.json");
-            if let Some(c) = read(&format!("{UNLISTED}{id}.json"), &file).and_then(|t| Catalogue::parse(&t).ok()) {
+            if let Some(c) =
+                read(&format!("{UNLISTED}{id}.json"), &file).and_then(|t| Catalogue::parse(&t).ok())
+            {
                 mods.extend(c.mods.into_iter().filter(|m| m.id == id));
             }
         }
@@ -2713,7 +2844,8 @@ impl ModCatalog {
                 ModCatalog::cached_main()
             }
         };
-        main.plus_catalogue(true).plus_dev(super::dev_code::load("mods"))
+        main.plus_catalogue(true)
+            .plus_dev(super::dev_code::load("mods"))
     }
 
     fn cache_path() -> PathBuf {
@@ -2841,14 +2973,30 @@ pub(crate) mod tests {
             B,
         )
         .unwrap();
-        let version_of = |c: &ModCatalog| c.mods.iter().find(|m| m.id == "gpu-rating").unwrap().version.clone();
-        let published = ModCatalog::builtin().mods.iter().find(|m| m.id == "gpu-rating").unwrap().version.clone();
+        let version_of = |c: &ModCatalog| {
+            c.mods
+                .iter()
+                .find(|m| m.id == "gpu-rating")
+                .unwrap()
+                .version
+                .clone()
+        };
+        let published = ModCatalog::builtin()
+            .mods
+            .iter()
+            .find(|m| m.id == "gpu-rating")
+            .unwrap()
+            .version
+            .clone();
 
         // No choice: the first code's.
         let both = ModCatalog::builtin().with_devs(vec![a.clone(), b.clone()], &Default::default());
         assert_eq!(version_of(&both), "2.0.0-a");
         assert_eq!(both.mods.iter().filter(|m| m.id == "gpu-rating").count(), 1);
-        assert!(both.mods.iter().any(|m| m.id == "b-only" && m.source == source_tag(B)));
+        assert!(both
+            .mods
+            .iter()
+            .any(|m| m.id == "b-only" && m.source == source_tag(B)));
         assert_eq!(
             both.choices["gpu-rating"],
             vec![source_tag(A), source_tag(B), "catalogue".to_string()]
@@ -2865,11 +3013,21 @@ pub(crate) mod tests {
         sources.insert("gpu-rating".to_string(), "catalogue".to_string());
         let published_kept = ModCatalog::builtin().with_devs(vec![a.clone(), b.clone()], &sources);
         assert_eq!(version_of(&published_kept), published);
-        assert!(!published_kept.mods.iter().find(|m| m.id == "gpu-rating").unwrap().dev);
+        assert!(
+            !published_kept
+                .mods
+                .iter()
+                .find(|m| m.id == "gpu-rating")
+                .unwrap()
+                .dev
+        );
 
         // A choice naming a source that doesn't have the id (a removed code) is ignored.
         sources.insert("gpu-rating".to_string(), "dev:000000000000".to_string());
-        assert_eq!(version_of(&ModCatalog::builtin().with_devs(vec![a, b], &sources)), "2.0.0-a");
+        assert_eq!(
+            version_of(&ModCatalog::builtin().with_devs(vec![a, b], &sources)),
+            "2.0.0-a"
+        );
     }
 
     #[test]
@@ -2893,7 +3051,13 @@ pub(crate) mod tests {
             v("cool", "Cool.dll", "1.0.0", false, ""),
             v("gpu-rating", "NvrGpuRating.dll", "9.0.0", false, ""),
             v("thief", "NvrAssetPatches.dll", "1.0.0", false, ""),
-            v("sneaky", "Sneaky.dll", "1.0.0", false, r#", "required": true, "shipped": false"#)
+            v(
+                "sneaky",
+                "Sneaky.dll",
+                "1.0.0",
+                false,
+                r#", "required": true, "shipped": false"#
+            )
         ))
         .unwrap();
         let none = std::collections::BTreeSet::new();
@@ -3403,9 +3567,13 @@ pub(crate) mod tests {
         .unwrap();
     }
 
-    fn lines_and_reasons(v: &InstalledVersion, rollback: &super::super::goback::Rollback) -> (Vec<String>, BTreeMap<String, String>) {
+    fn lines_and_reasons(
+        v: &InstalledVersion,
+        rollback: &super::super::goback::Rollback,
+    ) -> (Vec<String>, BTreeMap<String, String>) {
         let overlay = Overlay::read(&choices_path(v));
-        let (lines, left) = config_lines(v, &overlay, &ModCatalog::builtin(), false, None, rollback);
+        let (lines, left) =
+            config_lines(v, &overlay, &ModCatalog::builtin(), false, None, rollback);
         (
             lines.into_iter().map(|l| l.file).collect(),
             left.into_iter().map(|l| (l.file, l.reason)).collect(),
@@ -3427,7 +3595,10 @@ pub(crate) mod tests {
             Added {
                 requires: Requires {
                     nevr: None,
-                    mods: vec![Dependency { id: "base".into(), version: ">=1.2.0".into() }],
+                    mods: vec![Dependency {
+                        id: "base".into(),
+                        version: ">=1.2.0".into(),
+                    }],
                 },
                 ..Default::default()
             },
@@ -3437,13 +3608,22 @@ pub(crate) mod tests {
             "rival",
             "Rival.dll",
             "1.0.0",
-            Added { conflicts: vec!["base".into()], ..Default::default() },
+            Added {
+                conflicts: vec!["base".into()],
+                ..Default::default()
+            },
         );
         let none = Rollback::default();
         let (lines, left) = lines_and_reasons(&v, &none);
         assert!(lines.contains(&"Base.dll".to_string()));
-        assert!(left["Needy.dll"].starts_with("Needs base >=1.2.0"), "{left:?}");
-        assert!(left["Rival.dll"].starts_with("Conflicts with base"), "{left:?}");
+        assert!(
+            left["Needy.dll"].starts_with("Needs base >=1.2.0"),
+            "{left:?}"
+        );
+        assert!(
+            left["Rival.dll"].starts_with("Conflicts with base"),
+            "{left:?}"
+        );
 
         // A block keeps it out, and with it the one that needs it.
         let blocked = Rollback {
@@ -3504,6 +3684,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn two_early_ends_after_a_change_name_the_changed_mods() {
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        // Nothing changed: early ends say nothing.
+        record_run(&v, Duration::from_secs(5)).unwrap();
+        record_run(&v, Duration::from_secs(5)).unwrap();
+        assert!(crash_suspects(&v).is_empty());
+        put_catalogue_mod(&v, "cool", "Cool.dll", "1.0.0", Added::default());
+        record_run(&v, Duration::from_secs(5)).unwrap();
+        assert!(crash_suspects(&v).is_empty());
+        record_run(&v, Duration::from_secs(10)).unwrap();
+        assert_eq!(crash_suspects(&v), vec!["Cool.dll".to_string()]);
+        // A long run says the change is fine.
+        record_run(&v, Duration::from_secs(600)).unwrap();
+        assert!(crash_suspects(&v).is_empty());
+        assert_eq!(Overlay::read(&choices_path(&v)).runs(), Runs::default());
+    }
+
+    #[test]
     fn a_blocked_mod_goes_back_to_its_kept_version() {
         use super::super::goback::{Block, Rollback};
         let dir = tempfile::tempdir().unwrap();
@@ -3521,9 +3721,17 @@ pub(crate) mod tests {
             ..Default::default()
         };
         apply_blocks_with(&v, &rollback, &|| None);
-        let version = Overlay::read(&choices_path(&v)).added()[0].launcher.clone().unwrap().version;
+        let version = Overlay::read(&choices_path(&v)).added()[0]
+            .launcher
+            .clone()
+            .unwrap()
+            .version;
         assert_eq!(version, "1.0.0");
-        assert!(std::fs::read_to_string(v.bin_dir().join("plugins/Cool.dll")).unwrap().contains("1.0.0"));
+        assert!(
+            std::fs::read_to_string(v.bin_dir().join("plugins/Cool.dll"))
+                .unwrap()
+                .contains("1.0.0")
+        );
     }
 
     #[test]

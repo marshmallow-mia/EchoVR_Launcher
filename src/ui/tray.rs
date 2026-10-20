@@ -62,7 +62,11 @@ fn checker(status: impl Fn(String) + Send + 'static) {
                 }
                 // Warnings and critical alerts: on the desktop once each, also while closed.
                 if let Some(alerts) = &check.alerts {
-                    let unseen: Vec<_> = alerts.iter().filter(|a| !state.alerts_seen.contains(&a.id)).cloned().collect();
+                    let unseen: Vec<_> = alerts
+                        .iter()
+                        .filter(|a| !state.alerts_seen.contains(&a.id))
+                        .cloned()
+                        .collect();
                     alerts::notify_desktop(&alerts::not_yet_notified(&unseen));
                 }
                 status(status_text(&check.findings));

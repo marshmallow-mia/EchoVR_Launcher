@@ -1307,7 +1307,15 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
         };
         // Never the whole code on screen: its first five characters say which one it is.
         let shown = format!("{}-…", &code[..5]);
-        k.caps_text(x, ry + dz(4.0), w - rm_w - dz(12.0), &shown, 14.0, design::TEXT, 0.0);
+        k.caps_text(
+            x,
+            ry + dz(4.0),
+            w - rm_w - dz(12.0),
+            &shown,
+            14.0,
+            design::TEXT,
+            0.0,
+        );
         let line_h = k.caps_text(
             x,
             ry + dz(24.0),
@@ -1340,7 +1348,9 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
     }
     let typed = dev_code::normalize(&d.dev_code_field);
     let wrong = !d.dev_code_field.trim().is_empty() && typed.is_none();
-    let have = typed.as_ref().is_some_and(|t| d.state.dev_codes.contains(t));
+    let have = typed
+        .as_ref()
+        .is_some_and(|t| d.state.dev_codes.contains(t));
     let add_w = k.button_width("Add code", None, BTN_H).max(130.0);
     k.secret_field(
         "dev-code",
@@ -1390,7 +1400,15 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
             0.0,
         );
     } else if d.state.dev_codes.is_empty() {
-        k.caps_text(x, ry, w, "No dev codes: only published mods and plugins.", 14.0, design::GREY, 0.0);
+        k.caps_text(
+            x,
+            ry,
+            w,
+            "No dev codes: only published mods and plugins.",
+            14.0,
+            design::GREY,
+            0.0,
+        );
     }
 }
 
@@ -1556,13 +1574,46 @@ const UPLOAD_ROWS: [logs::Kind; 5] = [
 /// UPLOAD LOGS: a check for each kind of log found (all on), what goes, and what that
 /// shares.
 pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    if !matches!(d.overlay, Some(setup::Overlay::UploadLogs { .. })) {
+        return;
+    }
+    let (w, h) = (
+        dz(1000.0),
+        dz(if d.report.is_some() { 680.0 } else { 580.0 }),
+    );
+    let title = match &d.report {
+        Some((_, name)) => format!("Report {name}"),
+        None => "Upload logs".to_string(),
+    };
+    let (x, y, cw, bottom) = setup::card(k, w, h, &title);
+    let mut ry = y;
+    if d.report.is_some() {
+        ry += k.caps_text(
+            x,
+            ry,
+            cw,
+            "What happened? A crash, something it does that it shouldn't, something suspicious: the moderators get it with your logs.",
+            17.0,
+            design::BODY,
+            0.0,
+        ) + dz(12.0);
+        k.field(
+            "report-note",
+            &mut d.report_note,
+            x,
+            ry,
+            cw,
+            BTN_H,
+            "What happened",
+            false,
+            "A few words for the moderators",
+        );
+        ry += BTN_H + dz(18.0);
+    }
     let sources = &d.upload_sources;
     let Some(setup::Overlay::UploadLogs { off }) = &mut d.overlay else {
         return;
     };
-    let (w, h) = (dz(1000.0), dz(580.0));
-    let (x, y, cw, bottom) = setup::card(k, w, h, "Upload logs");
-    let mut ry = y;
     ry += k.caps_text(
         x,
         ry,
@@ -1642,6 +1693,8 @@ pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     {
         d.overlay = None;
         d.upload_sources.clear();
+        d.report = None;
+        d.report_note.clear();
         return;
     }
     if k.button(
@@ -1874,12 +1927,17 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
     d.uploading_logs = true;
     d.notify("Uploading your logs…");
     let sources = std::mem::take(&mut d.upload_sources);
+    let report = d
+        .report
+        .take()
+        .map(|(what, _)| (what, std::mem::take(&mut d.report_note)));
     tracing::info!("logs: uploading {} log(s)", sources.len());
     let versions = d.state.versions.clone();
     d.worker.spawn(ctx, move |tx| {
         let who = logs::Uploader {
             token,
             oid: logs::find_oid(&versions),
+            report,
         };
         let r = logs::bundle(&sources)
             .and_then(|b| logs::upload(b, &who))

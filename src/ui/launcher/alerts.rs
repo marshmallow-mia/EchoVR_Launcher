@@ -40,7 +40,11 @@ pub(super) fn strip(d: &mut Dashboard, kit: &mut Kit, x: f32, right: f32, cy: f3
         let g = kit.spaced_galley("×", design::din(16.0), design::TEXT, 0.0, false);
         let gx = end - g.size().x;
         let gr = kit.put(gx, cy - g.size().y / 2.0, g);
-        if kit.hot("alert-dismiss", gr.expand(dz(6.0)), true, "Dismiss it").0.clicked {
+        if kit
+            .hot("alert-dismiss", gr.expand(dz(6.0)), true, "Dismiss it")
+            .0
+            .clicked
+        {
             d.state.alerts_seen.insert(a.id.clone());
             d.save();
             d.alerts.retain(|x| x.id != a.id);
@@ -51,7 +55,10 @@ pub(super) fn strip(d: &mut Dashboard, kit: &mut Kit, x: f32, right: f32, cy: f3
     let more = kit.spaced_galley("MORE", design::din(12.5), design::TEXT, dz(0.5), true);
     let mx = end - more.size().x;
     let mr = kit.put(mx, cy - more.size().y / 2.0, more);
-    let clicked_more = kit.hot("alert-more", mr.expand(dz(6.0)), true, "Read all of it").0.clicked;
+    let clicked_more = kit
+        .hot("alert-more", mr.expand(dz(6.0)), true, "Read all of it")
+        .0
+        .clicked;
     let title = kit.spaced_fit(
         &a.title.to_uppercase(),
         design::din(13.0),
@@ -64,10 +71,19 @@ pub(super) fn strip(d: &mut Dashboard, kit: &mut Kit, x: f32, right: f32, cy: f3
     let tr = kit.put(x + dz(12.0), ty, title);
     let clicked_title = kit.hot("alert-title", tr, true, "Read all of it").0.clicked;
     if clicked_more || clicked_title {
-        let buttons: &[&str] = if a.link().is_some() { &["Open link", "Close"] } else { &["Close"] };
-        let text = format!("{}\n\n{}", crate::core::launcher::alerts::plain(&a.body), a.link().map(|(_, u)| u).unwrap_or(""));
+        let buttons: &[&str] = if a.link().is_some() {
+            &["Open link", "Close"]
+        } else {
+            &["Close"]
+        };
+        let text = format!(
+            "{}\n\n{}",
+            crate::core::launcher::alerts::plain(&a.body),
+            a.link().map(|(_, u)| u).unwrap_or("")
+        );
         d.alert_open = Some(a.clone());
-        d.dialogs.options(MORE_KEY, &a.title, text.trim(), DlgIcon::Warning, buttons);
+        d.dialogs
+            .options(MORE_KEY, &a.title, text.trim(), DlgIcon::Warning, buttons);
     }
     true
 }
@@ -109,10 +125,23 @@ pub(super) fn card(d: &mut Dashboard, k: &mut Kit) {
         dash_bullets: true,
     };
     let by = bottom - BTN_H;
-    k.clipped(x, y, cw, by - dz(16.0) - y, |k| markdown::draw(k, x, y, cw, &a.body, &look));
+    k.clipped(x, y, cw, by - dz(16.0) - y, |k| {
+        markdown::draw(k, x, y, cw, &a.body, &look)
+    });
     let read_w = k.button_width("I've read it", None, BTN_H).max(170.0);
-    if k.button("alert-read", x + cw - read_w, by, read_w, BTN_H, Tone::Go, None, "I've read it", true, "")
-        .clicked
+    if k.button(
+        "alert-read",
+        x + cw - read_w,
+        by,
+        read_w,
+        BTN_H,
+        Tone::Go,
+        None,
+        "I've read it",
+        true,
+        "",
+    )
+    .clicked
     {
         d.alerts_read.insert(a.id.clone());
         if a.can_dismiss() {
@@ -125,8 +154,19 @@ pub(super) fn card(d: &mut Dashboard, k: &mut Kit) {
     }
     if let Some((label, url)) = a.link() {
         let lw = k.button_width(label, None, BTN_H).max(140.0);
-        if k.button("alert-link", x + cw - read_w - dz(10.0) - lw, by, lw, BTN_H, Tone::Dark, None, label, true, url)
-            .clicked
+        if k.button(
+            "alert-link",
+            x + cw - read_w - dz(10.0) - lw,
+            by,
+            lw,
+            BTN_H,
+            Tone::Dark,
+            None,
+            label,
+            true,
+            url,
+        )
+        .clicked
         {
             crate::core::platform::open_url(url);
         }

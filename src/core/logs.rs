@@ -580,6 +580,9 @@ pub fn find_oid(versions: &[InstalledVersion]) -> Option<String> {
 pub struct Uploader {
     pub token: String,
     pub oid: Option<String>,
+    /// A mod report ("Report this mod"): the mod (`id@version`) and what the player says
+    /// happened. The moderators' post names it.
+    pub report: Option<(String, String)>,
 }
 
 /// Sends `bundle`; the reference the service gives it, or what went wrong in plain words.
@@ -594,6 +597,13 @@ pub fn upload(bundle: Vec<u8>, who: &Uploader) -> Result<String> {
             .header("Authorization", format!("Bearer {}", who.token));
         if let Some(oid) = &who.oid {
             req = req.header("X-Echo-OID", oid);
+        }
+        if let Some((what, note)) = &who.report {
+            let enc =
+                |t: &str| url::form_urlencoded::byte_serialize(t.as_bytes()).collect::<String>();
+            req = req.header("X-Report-Mod", enc(what));
+            let note: String = note.chars().take(500).collect();
+            req = req.header("X-Report-Note", enc(&note));
         }
         let resp = req
             .body(bundle)
@@ -801,6 +811,7 @@ mod tests {
         let who = Uploader {
             token: "dev".into(),
             oid: Some("OVR-ORG-123".into()),
+            report: None,
         };
         let code = upload(bundle(&sources).unwrap(), &who).unwrap();
         assert_eq!(code.len(), 8, "{code}");
