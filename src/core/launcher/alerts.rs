@@ -210,7 +210,10 @@ pub fn here(state: &LauncherState) -> Here {
 
 /// The alerts for this launcher now (network): none when the file isn't there or can't be read.
 pub fn fetch(state: &LauncherState) -> Vec<Alert> {
-    let alerts = match crate::core::http::get_text_opt(URL) {
+    let got = super::test_feed::read("alerts.json")
+        .map(Ok)
+        .unwrap_or_else(|| crate::core::http::get_text_opt(URL));
+    let alerts = match got {
         Ok(Some(t)) => parse(&t),
         Ok(None) => Vec::new(),
         Err(e) => {

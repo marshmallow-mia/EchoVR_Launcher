@@ -411,7 +411,10 @@ impl Rollback {
     /// last). Kept for [`Rollback::cached`].
     pub fn load() -> Rollback {
         let path = crate::core::paths::data_dir().join("rollback.json");
-        match crate::core::http::get_text_opt(ROLLBACK_URL) {
+        let got = super::test_feed::read("rollback.json")
+            .map(Ok)
+            .unwrap_or_else(|| crate::core::http::get_text_opt(ROLLBACK_URL));
+        match got {
             Ok(Some(t)) => match Rollback::parse(&t) {
                 Ok(r) => {
                     let _ = std::fs::create_dir_all(crate::core::paths::data_dir());

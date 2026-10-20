@@ -2772,6 +2772,11 @@ impl ModCatalog {
         }
         let read = |url: &str, file: &str| -> Option<String> {
             let path = paths::data_dir().join(file);
+            if let Some(test) = super::test_feed::read(
+                url.trim_start_matches("https://release.echovr.de/launcher/"),
+            ) {
+                return test;
+            }
             if fresh {
                 match crate::core::http::get_text_opt(url) {
                     Ok(Some(t)) => {

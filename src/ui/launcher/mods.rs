@@ -1215,7 +1215,10 @@ pub(super) fn unlisted_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
         *note = Some("Looking it up…".into());
         let url = format!("{}{id}.json", crate::core::launcher::catalogue::UNLISTED);
         d.worker.spawn(ctx, move |tx| {
-            let found = crate::core::http::get_text_opt(&url)
+            let test = crate::core::launcher::test_feed::read(&format!("unlisted/{id}.json"));
+            let found = test
+                .map(Ok)
+                .unwrap_or_else(|| crate::core::http::get_text_opt(&url))
                 .map(|t| t.is_some())
                 .map_err(|e| format!("{e:#}"));
             tx.send(Msg::UnlistedChecked(id, found))
