@@ -108,12 +108,14 @@ impl LaunchProfile {
 
     /// Whether hand tracking (`wanted`: EchoXR Hands is on) plays along with a start
     /// like this: in VR through EchoXR, whose OpenXR session its layer reads the fingers
-    /// in. Not on Linux for now ([`crate::core::echoxr_hands::ON_THIS_OS`]).
+    /// in. On Linux that's SteamVR or WiVRn; on Windows, a start through EchoXR.
     pub fn hands(&self, wanted: bool) -> bool {
+        let linux = cfg!(target_os = "linux");
         wanted
-            && crate::core::echoxr_hands::ON_THIS_OS
             && match self.runtime {
-                Runtime::Revive | Runtime::VirtualDesktop => self.through_echoxr(),
+                Runtime::Revive => linux || self.through_echoxr(),
+                Runtime::Wivrn => linux,
+                Runtime::VirtualDesktop => !linux && self.through_echoxr(),
                 _ => false,
             }
     }
@@ -698,18 +700,16 @@ mod tests {
             steamvr_via: SteamVrVia::EchoXr,
             ..Default::default()
         };
-        // Never on Linux for now: its layer kept VR from starting there.
-        let windows = !cfg!(target_os = "linux");
-        assert_eq!(p.hands(true), windows);
+        assert!(p.hands(true));
         assert!(!p.hands(false));
         p.runtime = Runtime::Flat;
         assert!(!p.hands(true));
-        // WiVRn (Linux only) and SteamVR through Revive: not through EchoXR on Windows.
+        // WiVRn and SteamVR through Revive: only on Linux, where EchoXR plays both.
         p.runtime = Runtime::Wivrn;
-        assert!(!p.hands(true));
+        assert_eq!(p.hands(true), cfg!(target_os = "linux"));
         p.runtime = Runtime::Revive;
         p.steamvr_via = SteamVrVia::Revive;
-        assert!(!p.hands(true));
+        assert_eq!(p.hands(true), cfg!(target_os = "linux"));
         // Virtual Desktop through EchoXR (SteamVR or VD's OpenXR): on Windows.
         p.runtime = Runtime::VirtualDesktop;
         assert!(!p.hands(true), "through Meta's runtime");

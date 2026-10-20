@@ -3,15 +3,11 @@
 //! game's `bin/win10/EchoXR/Hands`: an OpenXR API layer (`layer/`) that reads your fingers in
 //! the game's own OpenXR session, and the nEVR plugin. The launcher puts the plugin into
 //! `plugins/`, where nEVR loads it like the update's plugins, takes it out again when hand
-//! tracking is off, and enables the layer for each start ([`layer_env`]). Its settings
+//! tracking is off, and enables the layer for each start ([`layer_env`]; on Linux an implicit
+//! layer in the prefix's registry, see `linux::echoxr::hands_layer`). Its settings
 //! (`EchoXRHands.txt`) show on the Mods page from a description
 //! (docs/plugins/echoxr-hands.plugin.json, see [`super::launcher::plugin_settings`]).
-//! It plays with EchoXR, on every runtime with hand tracking (SteamVR, Virtual Desktop).
-//!
-//! Not on Linux for now ([`ON_THIS_OS`]): the layer's variables reach the Linux OpenXR loader
-//! behind wineopenxr as well (Wine builds a child's Linux environment from the Windows one,
-//! so they can't be kept to the game's side), which can't find the layer and refuses the
-//! session: `xrCreateInstance` -36 (XR_ERROR_API_LAYER_NOT_PRESENT), EchoXR exits with 5.
+//! It plays with EchoXR, on every runtime with hand tracking (SteamVR, WiVRn, Virtual Desktop).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -26,11 +22,6 @@ pub const VERSION: &str = "0.4.0";
 const ZIP: &str = "EchoXR-Hands-v0.4.0-nevr.zip";
 const URL: &str = "https://release.echovr.de/launcher/plugins/EchoXR-Hands-v0.4.0-nevr.zip";
 const SHA256: &str = "5871538e6b2bd8832a13c9acd648bc5faaee4f52665ae1bf97050ba35f0807a6";
-/// Whether hand tracking plays here: not on Linux for now (see above).
-pub const ON_THIS_OS: bool = !cfg!(target_os = "linux");
-/// What the Mods page says about it on Linux.
-pub const OFF_ON_LINUX: &str =
-    "Hand tracking is off on Linux for now (its layer kept VR from starting)";
 /// Who made it, as the Mods page credits it.
 pub const AUTHORS: &str = "heisthecat31";
 /// The plugin, as nEVR loads it from `plugins/`.
@@ -43,6 +34,8 @@ const PACKAGED_PLUGIN: &str = "plugin";
 /// The OpenXR API layer's folder (its DLL and manifest) and name.
 const LAYER_DIR: &str = "EchoXR/Hands/layer";
 const LAYER_NAME: &str = "XR_APILAYER_ECHOTOOLS_echoxr_hands";
+/// Its manifest in that folder (with a `disable_environment`, so it can be implicit too).
+pub const LAYER_MANIFEST: &str = "XrApiLayer_EchoXR_Hands.json";
 
 fn zip_path() -> PathBuf {
     paths::data_dir().join("echoxr-hands").join(ZIP)
@@ -59,6 +52,11 @@ pub fn layer_env(bin: &Path, windows_path: impl Fn(&Path) -> String) -> [(String
         ),
         ("XR_ENABLE_API_LAYERS".into(), LAYER_NAME.into()),
     ]
+}
+
+/// The layer's manifest in `bin`.
+pub fn layer_manifest(bin: &Path) -> PathBuf {
+    bin.join(LAYER_DIR).join(LAYER_MANIFEST)
 }
 
 /// Whether the package is downloaded (and still the pinned one).

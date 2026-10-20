@@ -121,7 +121,9 @@ Windows Security**.
 marshmallow-mia). It needs EchoXR (getting it turns EchoXR on): its OpenXR layer reads your
 fingers from the runtime's hand tracking in Echo VR's own session, so it plays on SteamVR and
 on WiVRn. The launcher puts its nEVR plugin into the game's `plugins` folder and enables the
-layer for each start (`XR_API_LAYER_PATH`, `XR_ENABLE_API_LAYERS`). Finger sharing starts
+layer for each start: on Windows through `XR_API_LAYER_PATH` and `XR_ENABLE_API_LAYERS`, on
+Linux as an implicit layer in the Wine prefix's registry (since 0.12.1; the variables would
+reach the Linux OpenXR loader behind wineopenxr too, which refused VR with them). Finger sharing starts
 off: on, it sends your display name and your match's player names to its relay, so others
 running it see your fingers.
 

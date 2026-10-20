@@ -458,6 +458,7 @@ pub fn game_command(
     exe: &str,
     args: &[String],
     start: Start,
+    hands: bool,
 ) -> Result<std::process::Command> {
     let game_root = bin
         .ancestors()
@@ -484,6 +485,10 @@ pub fn game_command(
     }
     if xr.is_some() {
         echoxr::refresh_openxr_exe(bin)?;
+    }
+    // EchoXR Hands' OpenXR layer: in VR with hand tracking on, else none.
+    if let Err(e) = hands_layer(steam_root, (hands && xr.is_some()).then_some(bin)) {
+        tracing::warn!("--play: hand tracking layer: {e:#}");
     }
     let mut rw = format!("{}:{}", game_root.display(), prefix().display());
     if let Ok(more) = std::env::var("PRESSURE_VESSEL_FILESYSTEMS_RW") {
@@ -520,16 +525,130 @@ pub fn game_command(
         } else {
             tracing::warn!("--play: {} isn't running", xr.name());
         }
-        // No EchoXR Hands layer here: its variables reach the Linux OpenXR loader behind
-        // wineopenxr too (also through any child the game starts), which can't find the
-        // layer and refuses the session (xrCreateInstance -36, EchoXR exits with 5).
     }
     Ok(c)
+}
+
+/// Where the OpenXR loader finds implicit API layers: a value per manifest, 0 = on (under
+/// HKEY_LOCAL_MACHINE, as the prefix's `system.reg` has it).
+const IMPLICIT_LAYERS: &str = r"Software\Khronos\OpenXR\1\ApiLayers\Implicit";
+
+/// EchoXR Hands' OpenXR layer for the game's loader alone: an implicit layer in the prefix's
+/// registry, `bin`'s manifest (`None`: none). Not the layer variables Windows has
+/// ([`crate::core::echoxr_hands::layer_env`]): those reach the Linux OpenXR loader behind
+/// wineopenxr too (Wine builds a child's Linux environment from the Windows one), which
+/// can't find the layer and refuses the session (`xrCreateInstance` -36, EchoXR exits with
+/// 5). Only the game's loader reads the registry. Runs `reg` only when something changes.
+fn hands_layer(steam_root: &Path, bin: Option<&Path>) -> Result<()> {
+    let want = bin
+        .map(crate::core::echoxr_hands::layer_manifest)
+        .filter(|m| {
+            let there = m.is_file();
+            if !there {
+                tracing::warn!("--play: no hand tracking layer at {}", m.display());
+            }
+            there
+        })
+        .map(|m| {
+            let m = std::fs::canonicalize(&m).unwrap_or(m);
+            wine_path(&drives(), &m)
+        });
+    let reg = std::fs::read_to_string(prefix().join("system.reg")).unwrap_or_default();
+    let have = hands_layers_in(&reg);
+    let key = format!(r"HKLM\{IMPLICIT_LAYERS}");
+    for old in have.iter().filter(|h| Some(*h) != want.as_ref()) {
+        tracing::info!("--play: hand tracking layer off ({old})");
+        proton(
+            steam_root,
+            "runinprefix",
+            &["reg.exe", "delete", &key, "/v", old, "/f"],
+        )?;
+    }
+    if let Some(want) = want.filter(|w| !have.contains(w)) {
+        tracing::info!("--play: hand tracking layer {want}");
+        proton(
+            steam_root,
+            "runinprefix",
+            &[
+                "reg.exe",
+                "add",
+                &key,
+                "/v",
+                &want,
+                "/t",
+                "REG_DWORD",
+                "/d",
+                "0",
+                "/f",
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Pure: the EchoXR Hands manifests among the implicit layers in `reg` (a Wine registry
+/// file's text), as Windows paths.
+fn hands_layers_in(reg: &str) -> Vec<String> {
+    let header = format!("[{}]", IMPLICIT_LAYERS.replace('\\', r"\\"));
+    let manifest = crate::core::echoxr_hands::LAYER_MANIFEST.to_ascii_lowercase();
+    let mut inside = false;
+    let mut found = Vec::new();
+    for line in reg.lines() {
+        if line.starts_with('[') {
+            inside = line
+                .get(..header.len())
+                .is_some_and(|h| h.eq_ignore_ascii_case(&header));
+            continue;
+        }
+        let Some(rest) = line.strip_prefix('"').filter(|_| inside) else {
+            continue;
+        };
+        // The value's name, up to its closing quote (`\\` and `\"` escaped).
+        let (mut name, mut chars) = (String::new(), rest.chars());
+        while let Some(ch) = chars.next() {
+            match ch {
+                '"' => break,
+                '\\' => name.extend(chars.next()),
+                ch => name.push(ch),
+            }
+        }
+        if name.to_ascii_lowercase().ends_with(&manifest) {
+            found.push(name);
+        }
+    }
+    found
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_the_hands_layer_among_the_implicit_ones() {
+        let reg = r#"WINE REGISTRY Version 2
+;; All keys relative to \\Machine
+
+[Software\\Khronos\\OpenXR\\1] 1760000000
+#time=1dc4
+"ActiveRuntime"="C:\\openxr\\wineopenxr64.json"
+
+[Software\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit] 1760000000
+#time=1dc4
+"X:\\E\\bin\\win10\\EchoXR\\Hands\\layer\\XrApiLayer_EchoXR_Hands.json"=dword:00000000
+"C:\\other\\layer.json"=dword:00000000
+
+[Software\\Khronos\\OpenXR\\1\\ApiLayers\\Implicit\\More] 1760000000
+"Z:\\old\\XrApiLayer_EchoXR_Hands.json"=dword:00000000
+
+[Software\\Other] 1760000000
+"Z:\\x\\XrApiLayer_EchoXR_Hands.json"=dword:00000000
+"#;
+        assert_eq!(
+            hands_layers_in(reg),
+            vec![r"X:\E\bin\win10\EchoXR\Hands\layer\XrApiLayer_EchoXR_Hands.json".to_string()]
+        );
+        assert!(hands_layers_in("").is_empty());
+    }
 
     #[test]
     fn writes_paths_as_wine_shows_them() {
