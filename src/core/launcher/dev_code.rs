@@ -1,11 +1,11 @@
-//! A dev code (Advanced settings): a developer's own, unpublished mods and launcher plugins.
+//! Dev codes (Advanced settings): developers' own, unpublished mods and launcher plugins.
 //!
 //! Each developer gets a code and a folder on release.echovr.de,
 //! `launcher/dev/<code>/`, with a `mods.json` and a `plugins.json` like the published
-//! catalogues and the files they list. With the code set, the
-//! launcher lists that folder's entries too, over published ones with the same id. The
-//! code is the only thing that keeps the folder private: 26 base32 characters (130 bits),
-//! never logged.
+//! catalogues and the files they list. With codes set, the launcher lists their folders'
+//! entries too, over published ones with the same id (the first code's over a later one's).
+//! A code is 26 base32 characters (130 bits), never logged. A folder may also have a
+//! `channel.json` (`{"name": "…"}`, root's) naming the channel.
 
 use std::sync::Mutex;
 
@@ -14,8 +14,8 @@ pub const DEV_ROOT: &str = "https://release.echovr.de/launcher/dev/";
 /// A code's length, without the dashes it's shown with.
 pub const CODE_LEN: usize = 26;
 
-/// The code launcher.json has, as the settings were last loaded or saved ([`set`]).
-static CODE: Mutex<Option<String>> = Mutex::new(None);
+/// The codes launcher.json has, as the settings were last loaded or saved ([`set_all`]).
+static CODES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// Pure: `input` as a code (dashes and spaces dropped, lowercase), if it is one: 26
 /// characters of base32 (a-z, 2-7).
@@ -38,14 +38,32 @@ pub fn display(code: &str) -> String {
         .join("-")
 }
 
-/// Takes launcher.json's dev code; called whenever the settings are loaded or saved.
-pub fn set(code: Option<&str>) {
-    *CODE.lock().unwrap_or_else(|p| p.into_inner()) = code.and_then(normalize);
+/// Pure: `codes` normalized, without the ones that aren't codes and without repeats, in order.
+pub fn normalize_all(codes: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for c in codes.iter().filter_map(|c| normalize(c)) {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out
 }
 
-/// The dev code in use, if any.
-pub fn current() -> Option<String> {
-    CODE.lock().unwrap_or_else(|p| p.into_inner()).clone()
+/// Takes launcher.json's dev codes; called whenever the settings are loaded or saved.
+pub fn set_all(codes: &[String]) {
+    *CODES.lock().unwrap_or_else(|p| p.into_inner()) = normalize_all(codes);
+}
+
+/// The dev codes in use, in their order.
+pub fn codes() -> Vec<String> {
+    CODES.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
+/// Pure: how a mod's source names `code` without giving it away (launcher.json's
+/// `mod_sources`, an install's `from`): `dev:<12 hex of its sha256>`, as [`cache_name`].
+pub fn source_tag(code: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("dev:{}", &hex::encode(Sha256::digest(code.as_bytes()))[..12])
 }
 
 /// Pure: `code`'s folder, with a trailing slash.
@@ -98,10 +116,7 @@ pub fn redact(text: &str) -> String {
         rest = &rest[end..];
     }
     out.push_str(rest);
-    match current() {
-        Some(code) => hide(&out, &code),
-        None => out,
-    }
+    codes().iter().fold(out, |text, code| hide(&text, code))
 }
 
 /// Pure: `text` with `code` as `***` wherever it is: in any case, and with dashes or
@@ -141,18 +156,23 @@ fn hide(text: &str, code: &str) -> String {
     out
 }
 
-/// What the dev folder of the code in use held when last read (for Advanced settings).
+/// What a code's dev folder held when last read (for Advanced settings).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Status {
-    /// No code set.
+    /// Not looked at.
     #[default]
     Off,
     /// Not read yet.
     Checking,
     /// No folder for this code.
     NotFound,
-    /// The folder's catalogues: how many mods and plugins they list.
-    Found { mods: usize, plugins: usize },
+    /// The folder's catalogues: how many mods and plugins they list, and the channel's name
+    /// (its `channel.json`).
+    Found {
+        mods: usize,
+        plugins: usize,
+        name: Option<String>,
+    },
     /// The server couldn't be asked (the message, without the code).
     Failed(String),
 }
@@ -161,11 +181,12 @@ impl Status {
     /// The line Advanced settings shows.
     pub fn line(&self) -> String {
         match self {
-            Status::Off => "No dev code: only published mods and plugins.".into(),
+            Status::Off => "Not checked yet.".into(),
             Status::Checking => "Checking the code...".into(),
-            Status::NotFound => "No dev folder has this code.".into(),
-            Status::Found { mods, plugins } => format!(
-                "Your dev folder: {mods} {}, {plugins} {}.",
+            Status::NotFound => "No dev folder has this code (or it needs a sign-in this launcher can't do yet).".into(),
+            Status::Found { mods, plugins, name } => format!(
+                "{}: {mods} {}, {plugins} {}.",
+                name.as_deref().unwrap_or("Dev folder"),
                 if *mods == 1 { "mod" } else { "mods" },
                 if *plugins == 1 { "plugin" } else { "plugins" }
             ),
@@ -182,17 +203,20 @@ pub fn cache_name(code: &str, name: &str) -> String {
     format!("{name}-dev-{}.json", &hash[..12])
 }
 
-/// The dev catalogue `name` of the code in use, fresh (kept for [`kept`]) or, when the
-/// server can't be asked, the one kept last: `None` without a code or without such a
-/// catalogue in its folder.
-pub fn load(name: &str) -> Option<(String, String)> {
-    let code = current()?;
-    let path = crate::core::paths::data_dir().join(cache_name(&code, name));
-    match fetch(&code, &format!("{name}.json")) {
+/// The dev catalogue `name` of every code in use, in their order: each fresh (kept for
+/// [`kept`]) or, when the server can't be asked, the one kept last. A code whose folder has
+/// no such catalogue is left out.
+pub fn load(name: &str) -> Vec<(String, String)> {
+    codes().into_iter().filter_map(|code| load_one(&code, name)).collect()
+}
+
+fn load_one(code: &str, name: &str) -> Option<(String, String)> {
+    let path = crate::core::paths::data_dir().join(cache_name(code, name));
+    match fetch(code, &format!("{name}.json")) {
         Ok(Some(text)) => {
             let _ = std::fs::create_dir_all(crate::core::paths::data_dir());
             let _ = std::fs::write(&path, &text);
-            Some((code, text))
+            Some((code.to_string(), text))
         }
         Ok(None) => {
             let _ = std::fs::remove_file(&path);
@@ -200,19 +224,35 @@ pub fn load(name: &str) -> Option<(String, String)> {
         }
         Err(e) => {
             tracing::info!("dev {name} catalogue unavailable ({e:#}); using the last one kept");
-            kept(name)
+            kept_one(code, name)
         }
     }
 }
 
-/// The dev catalogue `name` of the code in use as kept last (no network).
-pub fn kept(name: &str) -> Option<(String, String)> {
+/// The dev catalogue `name` of every code in use as kept last (no network), in their order.
+pub fn kept(name: &str) -> Vec<(String, String)> {
+    codes().into_iter().filter_map(|code| kept_one(&code, name)).collect()
+}
+
+fn kept_one(code: &str, name: &str) -> Option<(String, String)> {
     if cfg!(test) {
         return None;
     }
-    let code = current()?;
-    let path = crate::core::paths::data_dir().join(cache_name(&code, name));
-    std::fs::read_to_string(path).ok().map(|t| (code, t))
+    let path = crate::core::paths::data_dir().join(cache_name(code, name));
+    std::fs::read_to_string(path).ok().map(|t| (code.to_string(), t))
+}
+
+/// The channel name `code`'s folder gives itself (`channel.json`), as kept last (no
+/// network; [`check`] keeps it).
+pub fn channel_name(code: &str) -> Option<String> {
+    kept_one(code, "channel").and_then(|(_, t)| parse_channel(&t))
+}
+
+/// Pure: the `name` in a `channel.json`.
+fn parse_channel(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let name = v.get("name")?.as_str()?.trim();
+    (!name.is_empty() && name.len() <= 64).then(|| name.to_string())
 }
 
 /// Fetches `code`'s catalogue `name`: `Ok(None)` when its folder has none (or there's no
@@ -235,7 +275,9 @@ pub fn check(code: &str) -> Status {
     if mods.is_none() && plugins.is_none() {
         return Status::NotFound;
     }
+    let name = load_one(code, "channel").and_then(|(_, t)| parse_channel(&t));
     Status::Found {
+        name,
         mods: mods
             .and_then(|t| super::mods::ModCatalog::parse_dev(&t, code).ok())
             .map_or(0, |c| c.mods.len()),
@@ -339,11 +381,43 @@ mod tests {
         assert_eq!(
             Status::Found {
                 mods: 1,
-                plugins: 2
+                plugins: 2,
+                name: None
             }
             .line(),
-            "Your dev folder: 1 mod, 2 plugins."
+            "Dev folder: 1 mod, 2 plugins."
         );
-        assert_eq!(Status::NotFound.line(), "No dev folder has this code.");
+        assert_eq!(
+            Status::Found {
+                mods: 0,
+                plugins: 1,
+                name: Some("cat's channel".into())
+            }
+            .line(),
+            "cat's channel: 0 mods, 1 plugin."
+        );
+    }
+
+    #[test]
+    fn several_codes() {
+        let other = "bbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        assert_eq!(
+            normalize_all(&[display(CODE), "junk".into(), CODE.into(), other.clone()]),
+            vec![CODE.to_string(), other.clone()]
+        );
+        assert_eq!(source_tag(CODE).len(), 16);
+        assert_ne!(source_tag(CODE), source_tag(&other));
+        assert!(source_tag(CODE).starts_with("dev:"));
+        assert_eq!(parse_channel(r#"{"name": " cat "}"#).as_deref(), Some("cat"));
+        assert_eq!(parse_channel(r#"{"name": ""}"#), None);
+        assert_eq!(parse_channel("nope"), None);
+    }
+
+    #[test]
+    fn hides_every_code_in_use() {
+        let other = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+        set_all(&[CODE.into(), other.into()]);
+        assert_eq!(redact(&format!("{CODE} and {}", display(other))), "*** and ***");
+        set_all(&[]);
     }
 }

@@ -318,8 +318,10 @@ pub(super) fn catalog_done(d: &mut Dashboard, c: PluginCatalog) {
     d.plugins.catalog = Some(c);
     d.plugins.catalog_at = Some(std::time::Instant::now());
     d.plugins.loading = false;
-    if d.dev_status != crate::core::launcher::dev_code::Status::Checking {
-        d.dev_status = crate::core::launcher::dev_code::Status::Off;
+    for status in d.dev_statuses.values_mut() {
+        if *status != crate::core::launcher::dev_code::Status::Checking {
+            *status = crate::core::launcher::dev_code::Status::Off;
+        }
     }
 }
 

@@ -1275,14 +1275,13 @@ fn update_action(d: &mut Dashboard, ctx: &egui::Context) {
     }
 }
 
-/// ADVANCED SETTINGS: the launcher's update channel (main, beta or alpha), with what the
-/// update check says on it and its update.
-/// Advanced settings' right column: a developer's dev code, which lists the unpublished
-/// mods and plugins of their dev folder too (`core::launcher::dev_code`).
+/// Advanced settings' right column: developers' dev codes, which list the unpublished mods
+/// and plugins of their dev folders too (`core::launcher::dev_code`). One line per code
+/// (its channel and what it holds, Remove), then a field to add another.
 fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, y: f32, w: f32) {
     use crate::core::launcher::dev_code::{self, Status};
-    // Said when the card opens with a code set.
-    d.check_dev_code(ctx);
+    // Said when the card opens with codes set.
+    d.check_dev_codes(ctx);
     let mut ry = y;
     k.caption(x, ry, "DEV MODS AND PLUGINS");
     ry += dz(34.0);
@@ -1290,55 +1289,37 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
         x,
         ry,
         w,
-        "For mod and plugin makers: with your dev code, the launcher also lists what's in \
-         your dev folder on release.echovr.de, before it's published. Only whoever has the \
-         code sees it.",
+        "For mod and plugin makers and their testers: with a dev code, the launcher also \
+         lists what's in that dev folder on release.echovr.de, before it's published. Only \
+         whoever has the code sees it.",
         16.0,
         design::BODY,
         0.0,
-    ) + dz(18.0);
-    let typed = dev_code::normalize(&d.dev_code_field);
-    let wrong = !d.dev_code_field.trim().is_empty() && typed.is_none();
-    k.secret_field(
-        "dev-code",
-        &mut d.dev_code_field,
-        x,
-        ry,
-        w,
-        BTN_H,
-        "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x",
-        wrong,
-        "Your dev code, as you got it (dashes and spaces don't matter)",
-    );
-    ry += BTN_H + dz(12.0);
-    let set = d.state.dev_code.as_deref().and_then(dev_code::normalize);
-    let use_w = k.button_width("Use code", None, BTN_H).max(140.0);
-    let can_use = typed.is_some() && typed != set;
-    if k.button(
-        "dev-code-use",
-        x,
-        ry,
-        use_w,
-        BTN_H,
-        Tone::Go,
-        None,
-        "Use code",
-        can_use,
-        if can_use {
-            "List your dev folder's mods and plugins too"
-        } else {
-            "Type or paste a dev code first"
-        },
-    )
-    .clicked
-    {
-        d.set_dev_code(ctx, typed.clone());
-    }
-    if set.is_some() {
-        let rm_w = k.button_width("Remove", None, BTN_H).max(120.0);
+    ) + dz(14.0);
+    let rm_w = k.button_width("Remove", None, BTN_H).max(110.0);
+    let mut remove = None;
+    for (i, code) in d.state.dev_codes.clone().iter().enumerate() {
+        let status = d.dev_statuses.get(code).cloned().unwrap_or_default();
+        let color = match status {
+            Status::NotFound | Status::Failed(_) => design::QUEST_WARN,
+            Status::Found { .. } => design::BODY,
+            _ => design::GREY,
+        };
+        // Never the whole code on screen: its first five characters say which one it is.
+        let shown = format!("{}-…", &code[..5]);
+        k.caps_text(x, ry + dz(4.0), w - rm_w - dz(12.0), &shown, 14.0, design::TEXT, 0.0);
+        let line_h = k.caps_text(
+            x,
+            ry + dz(24.0),
+            w - rm_w - dz(12.0),
+            &status.line(),
+            14.0,
+            color,
+            0.0,
+        );
         if k.button(
-            "dev-code-remove",
-            x + use_w + dz(12.0),
+            &format!("dev-code-remove-{i}"),
+            x + w - rm_w,
             ry,
             rm_w,
             BTN_H,
@@ -1346,28 +1327,71 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
             None,
             "Remove",
             true,
-            "Only published mods and plugins again",
+            "This dev folder's mods and plugins aren't listed any more (installed ones stay)",
         )
         .clicked
         {
-            d.set_dev_code(ctx, None);
+            remove = Some(code.clone());
+        }
+        ry += (dz(24.0) + line_h).max(BTN_H) + dz(12.0);
+    }
+    if let Some(code) = remove {
+        d.remove_dev_code(ctx, &code);
+    }
+    let typed = dev_code::normalize(&d.dev_code_field);
+    let wrong = !d.dev_code_field.trim().is_empty() && typed.is_none();
+    let have = typed.as_ref().is_some_and(|t| d.state.dev_codes.contains(t));
+    let add_w = k.button_width("Add code", None, BTN_H).max(130.0);
+    k.secret_field(
+        "dev-code",
+        &mut d.dev_code_field,
+        x,
+        ry,
+        w - add_w - dz(12.0),
+        BTN_H,
+        "xxxxx-xxxxx-xxxxx-xxxxx-xxxxx-x",
+        wrong,
+        "A dev code, as you got it (dashes and spaces don't matter)",
+    );
+    let can_add = typed.is_some() && !have;
+    if k.button(
+        "dev-code-add",
+        x + w - add_w,
+        ry,
+        add_w,
+        BTN_H,
+        Tone::Go,
+        None,
+        "Add code",
+        can_add,
+        if have {
+            "That code is in the list already"
+        } else if can_add {
+            "List that dev folder's mods and plugins too"
+        } else {
+            "Type or paste a dev code first"
+        },
+    )
+    .clicked
+    {
+        if let Some(code) = typed {
+            d.add_dev_code(ctx, &code);
         }
     }
-    ry += BTN_H + dz(14.0);
-    let (line, color) = if wrong {
-        (
-            "That isn't a dev code: 26 letters and digits from 2 to 7.".to_string(),
+    ry += BTN_H + dz(10.0);
+    if wrong {
+        k.caps_text(
+            x,
+            ry,
+            w,
+            "That isn't a dev code: 26 letters and digits from 2 to 7.",
+            14.0,
             design::QUEST_WARN,
-        )
-    } else {
-        let color = match d.dev_status {
-            Status::NotFound | Status::Failed(_) => design::QUEST_WARN,
-            Status::Found { .. } => design::BODY,
-            _ => design::GREY,
-        };
-        (d.dev_status.line(), color)
-    };
-    k.caps_text(x, ry, w, &line, 14.0, color, 0.0);
+            0.0,
+        );
+    } else if d.state.dev_codes.is_empty() {
+        k.caps_text(x, ry, w, "No dev codes: only published mods and plugins.", 14.0, design::GREY, 0.0);
+    }
 }
 
 pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {

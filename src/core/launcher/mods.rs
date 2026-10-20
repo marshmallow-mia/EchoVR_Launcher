@@ -2089,9 +2089,13 @@ pub struct ModEntry {
     /// A content pack (plugins and game data in one zip: [`super::packs`]); `file`,
     /// `url` and `sha256` are then empty.
     pub pack: Option<PackSpec>,
-    /// From the dev folder of the dev code in use ([`super::dev_code`]), not published.
+    /// From the dev folder of a dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
+    /// Where it came from: empty for the published catalogue, a dev code's
+    /// [`super::dev_code::source_tag`] for its dev folder.
+    #[serde(skip)]
+    pub source: String,
 }
 
 impl ModEntry {
@@ -2132,6 +2136,18 @@ pub struct ModCatalog {
     pub mods: Vec<ModEntry>,
     /// The built-in list is shown (the published one couldn't be fetched).
     pub builtin: bool,
+    /// Ids several places offer (the published catalogue, dev folders): every source that
+    /// has it ([`source_of`]), for ⋯ → Source. Ids from one place only aren't listed.
+    pub choices: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// Pure: the source tag of entry `m`: `catalogue`, or its dev code's tag.
+pub fn source_of(m: &ModEntry) -> String {
+    if m.dev && !m.source.is_empty() {
+        m.source.clone()
+    } else {
+        "catalogue".into()
+    }
 }
 
 impl ModCatalog {
@@ -2158,7 +2174,7 @@ impl ModCatalog {
         }
         Ok(ModCatalog {
             mods,
-            builtin: false,
+            ..ModCatalog::default()
         })
     }
 
@@ -2191,6 +2207,7 @@ impl ModCatalog {
                     }
                     m.shipped = false;
                     m.dev = true;
+                    m.source = super::dev_code::source_tag(code);
                     m.validate().map(|()| m)
                 });
             match entry {
@@ -2201,35 +2218,73 @@ impl ModCatalog {
         }
         Ok(ModCatalog {
             mods,
-            builtin: false,
+            ..ModCatalog::default()
         })
     }
 
     /// `dev`'s entries over these: a published entry with a dev entry's id or file gives
     /// way to it; the dev entries come first.
-    pub fn with_dev(mut self, dev: ModCatalog) -> ModCatalog {
-        self.mods.retain(|m| {
-            !dev.mods.iter().any(|d| {
-                d.id == m.id || (!d.file.is_empty() && d.file.eq_ignore_ascii_case(&m.file))
-            })
-        });
-        let mut mods = dev.mods;
-        mods.append(&mut self.mods);
-        self.mods = mods;
+    pub fn with_dev(self, dev: ModCatalog) -> ModCatalog {
+        self.with_devs(vec![dev], &Default::default())
+    }
+
+    /// Several dev folders' entries over these, `devs` in their codes' order. For each id
+    /// one entry is kept: the source `sources` names for it when that source has it, else the
+    /// first dev folder's, else the published one. A published entry also gives way to a
+    /// kept dev entry with its file. Dev entries come first. [`ModCatalog::choices`] lists
+    /// the ids several sources have.
+    pub fn with_devs(
+        mut self,
+        devs: Vec<ModCatalog>,
+        sources: &std::collections::BTreeMap<String, String>,
+    ) -> ModCatalog {
+        let dev: Vec<ModEntry> = devs.into_iter().flat_map(|d| d.mods).collect();
+        let published = std::mem::take(&mut self.mods);
+        let mut choices: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+        for m in dev.iter().chain(published.iter()) {
+            let tags = choices.entry(m.id.clone()).or_default();
+            let tag = source_of(m);
+            if !tags.contains(&tag) {
+                tags.push(tag);
+            }
+        }
+        // The source asked for, when it has the id.
+        let wanted = |id: &str| sources.get(id).filter(|s| choices.get(id).is_some_and(|c| c.contains(s)));
+        let mut kept: Vec<ModEntry> = Vec::new();
+        for m in dev {
+            let fits = wanted(&m.id).is_none_or(|w| *w == source_of(&m));
+            if fits && !kept.iter().any(|k| k.id == m.id) {
+                kept.push(m);
+            }
+        }
+        for m in published {
+            let taken = kept.iter().any(|k| {
+                k.id == m.id || (!k.file.is_empty() && k.file.eq_ignore_ascii_case(&m.file))
+            });
+            if !taken {
+                kept.push(m);
+            }
+        }
+        choices.retain(|_, c| c.len() > 1);
+        self.mods = kept;
+        self.choices = choices;
         self
     }
 
-    /// The dev folder's entries over `self`, when a dev code is in use (`text` from
-    /// [`super::dev_code::load`] or [`super::dev_code::kept`]).
-    fn plus_dev(self, dev: Option<(String, String)>) -> ModCatalog {
-        match dev.map(|(code, text)| ModCatalog::parse_dev(&text, &code)) {
-            Some(Ok(d)) => self.with_dev(d),
-            Some(Err(e)) => {
-                tracing::warn!("dev mods catalogue unreadable: {e:#}");
-                self
-            }
-            None => self,
-        }
+    /// The dev folders' entries over `self` (`dev` from [`super::dev_code::load`] or
+    /// [`super::dev_code::kept`], in the codes' order).
+    fn plus_dev(self, dev: Vec<(String, String)>) -> ModCatalog {
+        let devs = dev
+            .into_iter()
+            .filter_map(|(code, text)| match ModCatalog::parse_dev(&text, &code) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    tracing::warn!("dev mods catalogue unreadable: {e:#}");
+                    None
+                }
+            })
+            .collect();
+        self.with_devs(devs, &super::prefs::get().sources)
     }
 
     /// The draft in this repo, for when the published one can't be had.
@@ -2359,6 +2414,58 @@ pub(crate) mod tests {
             format!("https://release.echovr.de/launcher/dev/{CODE}/files/Pack.zip")
         );
         assert_eq!(ModCatalog::builtin().with_dev(d).mods.len(), published + 1);
+    }
+
+    #[test]
+    fn several_dev_folders_and_a_chosen_source() {
+        use super::super::dev_code::source_tag;
+        const A: &str = "abcdefghijklmnopqrstuvwxyz";
+        const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let sha = "a".repeat(64);
+        let folder = |version: &str, extra: &str| {
+            format!(
+                r#"{{"mods": [{{"id": "gpu-rating", "name": "GPU", "version": "{version}",
+                  "file": "NvrGpuRating.dll", "url": "files/g.dll", "sha256": "{sha}"}}{extra}]}}"#
+            )
+        };
+        let a = ModCatalog::parse_dev(&folder("2.0.0-a", ""), A).unwrap();
+        let b = ModCatalog::parse_dev(
+            &folder(
+                "2.0.0-b",
+                &format!(r#",{{"id": "b-only", "name": "B", "file": "B.dll", "url": "files/b.dll", "sha256": "{sha}"}}"#),
+            ),
+            B,
+        )
+        .unwrap();
+        let version_of = |c: &ModCatalog| c.mods.iter().find(|m| m.id == "gpu-rating").unwrap().version.clone();
+        let published = ModCatalog::builtin().mods.iter().find(|m| m.id == "gpu-rating").unwrap().version.clone();
+
+        // No choice: the first code's.
+        let both = ModCatalog::builtin().with_devs(vec![a.clone(), b.clone()], &Default::default());
+        assert_eq!(version_of(&both), "2.0.0-a");
+        assert_eq!(both.mods.iter().filter(|m| m.id == "gpu-rating").count(), 1);
+        assert!(both.mods.iter().any(|m| m.id == "b-only" && m.source == source_tag(B)));
+        assert_eq!(
+            both.choices["gpu-rating"],
+            vec![source_tag(A), source_tag(B), "catalogue".to_string()]
+        );
+        assert!(!both.choices.contains_key("b-only"));
+
+        // Chosen: the second code's, or the published one.
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert("gpu-rating".to_string(), source_tag(B));
+        assert_eq!(
+            version_of(&ModCatalog::builtin().with_devs(vec![a.clone(), b.clone()], &sources)),
+            "2.0.0-b"
+        );
+        sources.insert("gpu-rating".to_string(), "catalogue".to_string());
+        let published_kept = ModCatalog::builtin().with_devs(vec![a.clone(), b.clone()], &sources);
+        assert_eq!(version_of(&published_kept), published);
+        assert!(!published_kept.mods.iter().find(|m| m.id == "gpu-rating").unwrap().dev);
+
+        // A choice naming a source that doesn't have the id (a removed code) is ignored.
+        sources.insert("gpu-rating".to_string(), "dev:000000000000".to_string());
+        assert_eq!(version_of(&ModCatalog::builtin().with_devs(vec![a, b], &sources)), "2.0.0-a");
     }
 
     #[test]

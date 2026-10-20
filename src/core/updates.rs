@@ -578,6 +578,7 @@ mod tests {
                 entry("C.dll", "1.0"),
             ],
             builtin: false,
+            ..Default::default()
         };
         let catalog_source = |v: &str| Source::Catalog {
             id: "x".into(),

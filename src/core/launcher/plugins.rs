@@ -213,7 +213,7 @@ pub struct PluginEntry {
     pub homepage: String,
     /// Its icon, as plugin.json's `icon` names it (the library's card before it is got).
     pub icon: String,
-    /// From the dev folder of the dev code in use ([`super::dev_code`]), not published.
+    /// From the dev folder of a dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
 }
@@ -319,6 +319,13 @@ impl PluginCatalog {
         self
     }
 
+    /// Several dev folders' entries over these, `devs` in their codes' order: for an id
+    /// several of them have, the first code's.
+    pub fn with_devs(self, devs: Vec<PluginCatalog>) -> PluginCatalog {
+        // The last code's go on first, so an earlier code's entry ends up over it.
+        devs.into_iter().rev().fold(self, PluginCatalog::with_dev)
+    }
+
     pub fn builtin() -> PluginCatalog {
         let mut c = PluginCatalog::parse(include_str!("../../../docs/launcher/plugins.json"))
             .unwrap_or_default();
@@ -332,17 +339,17 @@ impl PluginCatalog {
 
     /// The published catalogue (kept), else the last one kept, else the built-in one.
     pub fn load() -> PluginCatalog {
-        let main = PluginCatalog::load_main();
-        match super::dev_code::load("plugins")
-            .map(|(code, text)| PluginCatalog::parse_dev(&text, &code))
-        {
-            Some(Ok(d)) => main.with_dev(d),
-            Some(Err(e)) => {
-                tracing::warn!("dev plugins catalogue unreadable: {e:#}");
-                main
-            }
-            None => main,
-        }
+        let devs = super::dev_code::load("plugins")
+            .into_iter()
+            .filter_map(|(code, text)| match PluginCatalog::parse_dev(&text, &code) {
+                Ok(d) => Some(d),
+                Err(e) => {
+                    tracing::warn!("dev plugins catalogue unreadable: {e:#}");
+                    None
+                }
+            })
+            .collect();
+        PluginCatalog::load_main().with_devs(devs)
     }
 
     /// The published catalogue (kept), else the last one kept, else the built-in one.

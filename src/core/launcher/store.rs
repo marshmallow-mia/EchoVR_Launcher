@@ -259,9 +259,22 @@ pub struct LauncherState {
     pub tray_at_login: bool,
     /// The launcher releases it updates to: main, beta or alpha (Advanced settings).
     pub launcher_channel: Channel,
-    /// A developer's dev code (Advanced settings): their unpublished mods and plugins are
-    /// listed too ([`super::dev_code`]).
+    /// The first of [`Self::dev_codes`], kept for launchers before 0.13, which know only one
+    /// code: written from `dev_codes` on every save, read into it once ([`Self::migrated`]).
     pub dev_code: Option<String>,
+    /// Developers' dev codes (Advanced settings), in the order they were added: their
+    /// unpublished mods and plugins are listed too ([`super::dev_code`]).
+    pub dev_codes: Vec<String>,
+    /// Mods the player tries prereleases of (catalogue ids, ⋯ → Prereleases): only those are
+    /// offered a prerelease, never all mods at once.
+    pub mod_prereleases: std::collections::BTreeSet<String>,
+    /// Where a mod comes from when several places have it (catalogue id → `catalogue` or
+    /// `dev:<12 hex of the code's sha256>`, ⋯ → Source). Not set: a dev channel's goes first.
+    pub mod_sources: std::collections::BTreeMap<String, String>,
+    /// Unlisted mods the player added by their id (More mods → Add by id).
+    pub unlisted_mods: Vec<String>,
+    /// Alerts the player dismissed (their ids, [`super::alerts`]).
+    pub alerts_seen: std::collections::BTreeSet<String>,
     /// Versions the player went back from ([`super::goback`]): part → the version (for the
     /// game, its update manifest's sha256) that isn't offered again. A newer one is.
     pub holds: std::collections::BTreeMap<String, String>,
@@ -393,6 +406,11 @@ impl Default for LauncherState {
             plugins_seen: None,
             launcher_channel: Channel::Main,
             dev_code: None,
+            dev_codes: Vec::new(),
+            mod_prereleases: Default::default(),
+            mod_sources: Default::default(),
+            unlisted_mods: Vec::new(),
+            alerts_seen: Default::default(),
             holds: Default::default(),
             launcher_previous: None,
         }
@@ -419,7 +437,8 @@ impl LauncherState {
         let s = Self::load_upgraded(&state_file());
         crate::core::pc_update::set_channel(s.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(s.launcher_channel);
-        super::dev_code::set(s.dev_code.as_deref());
+        super::dev_code::set_all(&s.dev_codes);
+        super::prefs::set(&s);
         s
     }
 
@@ -470,6 +489,12 @@ impl LauncherState {
         if self.schema < 2 || (self.schema < 3 && cfg!(target_os = "linux")) {
             self.event_builds = true;
         }
+        // A launcher before 0.13 kept one code, and drops `dev_codes` when it saves.
+        if self.dev_codes.is_empty() {
+            self.dev_codes.extend(self.dev_code.as_deref().and_then(super::dev_code::normalize));
+        }
+        self.dev_codes = super::dev_code::normalize_all(&self.dev_codes);
+        self.dev_code = self.dev_codes.first().cloned();
         self.schema = self.schema.max(SCHEMA);
         self
     }
@@ -477,7 +502,8 @@ impl LauncherState {
     pub fn save(&self) -> Result<()> {
         crate::core::pc_update::set_channel(self.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(self.launcher_channel);
-        super::dev_code::set(self.dev_code.as_deref());
+        super::dev_code::set_all(&self.dev_codes);
+        super::prefs::set(self);
         self.save_to(&state_file())
     }
 
@@ -485,9 +511,29 @@ impl LauncherState {
         let dir = path.parent().context("state file has no parent")?;
         std::fs::create_dir_all(dir)?;
         let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
+        let mut out = self.clone();
+        out.dev_code = self.dev_codes.first().cloned();
+        std::fs::write(&tmp, serde_json::to_vec_pretty(&out)?)?;
         std::fs::rename(&tmp, path).with_context(|| format!("write {}", path.display()))?;
         Ok(())
+    }
+
+    /// Adds dev code `code` (normalized) after the others; false when it's there already.
+    pub fn add_dev_code(&mut self, code: &str) -> bool {
+        match super::dev_code::normalize(code) {
+            Some(c) if !self.dev_codes.contains(&c) => {
+                self.dev_codes.push(c);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Removes dev code `code`, and the per-mod source choices that named it.
+    pub fn remove_dev_code(&mut self, code: &str) {
+        let tag = super::dev_code::source_tag(code);
+        self.dev_codes.retain(|c| c != code);
+        self.mod_sources.retain(|_, s| *s != tag);
     }
 
     pub fn version(&self, id: &str) -> Option<&InstalledVersion> {
@@ -668,6 +714,35 @@ mod tests {
         // Unknown/missing fields are tolerated.
         std::fs::write(&f, r#"{"schema":1,"library":"/lib","future":true}"#).unwrap();
         assert_eq!(LauncherState::load_from(&f).library, "/lib");
+    }
+
+    #[test]
+    fn one_dev_code_becomes_the_list_and_stays_for_older_launchers() {
+        const A: &str = "abcdefghijklmnopqrstuvwxyz";
+        const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        // A 0.12 launcher.json: one code, as typed.
+        std::fs::write(&f, r#"{"schema":3,"dev_code":"abcde-fghij-klmno-pqrst-uvwxy-z"}"#).unwrap();
+        let mut s = LauncherState::load_from(&f);
+        assert_eq!(s.dev_codes, vec![A.to_string()]);
+        assert!(s.add_dev_code(&B.to_uppercase()));
+        assert!(!s.add_dev_code(B));
+        s.mod_sources.insert("x".into(), super::super::dev_code::source_tag(B));
+        s.mod_sources.insert("y".into(), "catalogue".into());
+        s.save_to(&f).unwrap();
+        // 0.12 reads `dev_code`: the first one.
+        let raw: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&f).unwrap()).unwrap();
+        assert_eq!(raw["dev_code"], A);
+        let mut back = LauncherState::load_from(&f);
+        assert_eq!(back.dev_codes, vec![A.to_string(), B.to_string()]);
+        // Removing a code forgets the sources that named it.
+        back.remove_dev_code(B);
+        assert_eq!(back.dev_codes, vec![A.to_string()]);
+        assert_eq!(back.mod_sources.keys().collect::<Vec<_>>(), ["y"]);
+        // A 0.12 launcher that saved over it kept only `dev_code`, maybe another one.
+        std::fs::write(&f, format!(r#"{{"schema":3,"dev_code":"{B}"}}"#)).unwrap();
+        assert_eq!(LauncherState::load_from(&f).dev_codes, vec![B.to_string()]);
     }
 
     #[test]

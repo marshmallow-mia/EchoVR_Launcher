@@ -65,30 +65,30 @@ impl History {
         Ok(serde_json::from_str(text)?)
     }
 
-    /// The published history, with the dev folder's of the dev code in use (`None`: not
+    /// The published history, with the dev folders' of the dev codes in use (`None`: not
     /// there, or not readable now), kept a minute.
     pub fn load() -> Option<History> {
-        type Kept = (Instant, Option<String>, Option<History>);
+        type Kept = (Instant, Vec<String>, Option<History>);
         static CACHE: Mutex<Option<Kept>> = Mutex::new(None);
-        let code = super::dev_code::current();
+        let codes = super::dev_code::codes();
         let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
         if let Some((at, c, h)) = cache.as_ref() {
-            if at.elapsed() < KEEP_FOR && *c == code {
+            if at.elapsed() < KEEP_FOR && *c == codes {
                 return h.clone();
             }
         }
         let mut h = read(HISTORY_URL, "history.json");
-        if let Some(code) = &code {
+        for code in &codes {
             let folder = super::dev_code::folder(code);
             if let Some(dev) = read(
                 &format!("{folder}history.json"),
-                "the dev folder's history.json",
+                "a dev folder's history.json",
             ) {
                 h.get_or_insert_with(History::default)
                     .merge_dev(dev, &folder);
             }
         }
-        *cache = Some((Instant::now(), code, h.clone()));
+        *cache = Some((Instant::now(), codes, h.clone()));
         h
     }
 

@@ -264,7 +264,8 @@ enum Msg {
     /// Where Revive is installed.
     Revive(Option<String>),
     /// What the dev code's folder holds (Advanced settings).
-    DevCode(crate::core::launcher::dev_code::Status),
+    /// A dev code's folder as read for Advanced settings: the code, what it holds.
+    DevCode(String, crate::core::launcher::dev_code::Status),
     /// EchoXR (and what it needs) is fetched.
     EchoXr(bool),
     /// Echo VR copies on this PC the library doesn't have yet (for the library and the
@@ -805,10 +806,10 @@ pub struct Dashboard {
     quest_ip_field: String,
     /// Settings' classic lobbies server, as typed.
     relay_server_field: String,
-    /// Advanced settings' dev code, as typed.
+    /// Advanced settings' new dev code, as typed.
     dev_code_field: String,
-    /// What the dev code's folder held when last read.
-    dev_status: crate::core::launcher::dev_code::Status,
+    /// What each dev code's folder held when last read (by code; Advanced settings).
+    dev_statuses: std::collections::BTreeMap<String, crate::core::launcher::dev_code::Status>,
     /// The EchoVRCE session (its page).
     vrce: echovrce::Vrce,
     /// The game's own EchoVRCE sign-in (nEVR).
@@ -951,13 +952,7 @@ impl Dashboard {
         self.library_field = self.state.library.clone();
         self.quest_ip_field = self.state.quest_ip.clone().unwrap_or_default();
         self.relay_server_field = self.state.relay_server.clone();
-        self.dev_code_field = self
-            .state
-            .dev_code
-            .as_deref()
-            .and_then(crate::core::launcher::dev_code::normalize)
-            .map(|c| crate::core::launcher::dev_code::display(&c))
-            .unwrap_or_default();
+        self.dev_code_field.clear();
         self.linux_set_up = cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up();
         setup::shortcuts_through_launcher(self);
         setup::windows_steam_current(self);
@@ -2680,7 +2675,9 @@ impl Dashboard {
                 Msg::ModCatalog(c) => self.mods.catalog_done(c),
                 Msg::WaysBack(ways) => self.goback.ways = ways,
                 Msg::Revive(dir) => self.revive.done((), dir),
-                Msg::DevCode(status) => self.dev_status = status,
+                Msg::DevCode(code, status) => {
+                    self.dev_statuses.insert(code, status);
+                }
                 Msg::EchoXr(ready) => self.echoxr.done((), ready),
                 Msg::Found(key, found) => self.found.done(key, found),
                 Msg::FeedImage(name, img) => {
@@ -3963,33 +3960,51 @@ impl Dashboard {
     /// The status bar's chip while the launcher isn't on main: the channel followed, else
     /// (main picked again, not switched back yet) the running build's own. Its text, colour
     /// and tip.
-    /// Takes `code` as the dev code (`None`: none): saved, both catalogues read again, and
-    /// its folder checked for Advanced settings' line.
-    pub(super) fn set_dev_code(&mut self, ctx: &egui::Context, code: Option<String>) {
-        use crate::core::launcher::dev_code;
-        self.state.dev_code = code.clone();
+    /// Adds dev code `code` after the others: saved, both catalogues read again, and its
+    /// folder checked for Advanced settings' line.
+    pub(super) fn add_dev_code(&mut self, ctx: &egui::Context, code: &str) {
+        if self.state.add_dev_code(code) {
+            self.save();
+            self.dev_codes_changed(ctx);
+        }
+        self.dev_code_field.clear();
+    }
+
+    /// Removes dev code `code`: its folder's mods and plugins aren't listed any more (what
+    /// was installed from it stays, as "from a removed dev channel").
+    pub(super) fn remove_dev_code(&mut self, ctx: &egui::Context, code: &str) {
+        self.state.remove_dev_code(code);
         self.save();
-        self.dev_code_field = code.as_deref().map(dev_code::display).unwrap_or_default();
+        self.dev_statuses.remove(code);
+        self.dev_codes_changed(ctx);
+    }
+
+    fn dev_codes_changed(&mut self, ctx: &egui::Context) {
         self.mods.reload_catalog();
         self.plugins.reload();
         self.updates.check_soon();
-        self.dev_status = dev_code::Status::Off;
-        self.check_dev_code(ctx);
+        self.check_dev_codes(ctx);
     }
 
-    /// Reads the dev code's folder (for Advanced settings' line), once per code.
-    pub(super) fn check_dev_code(&mut self, ctx: &egui::Context) {
+    /// Reads each dev code's folder (for Advanced settings' lines), once per code.
+    pub(super) fn check_dev_codes(&mut self, ctx: &egui::Context) {
         use crate::core::launcher::dev_code::{self, Status};
-        let Some(code) = self.state.dev_code.as_deref().and_then(dev_code::normalize) else {
-            self.dev_status = Status::Off;
-            return;
-        };
-        if self.dev_status != Status::Off || self.demo {
+        if self.demo {
             return;
         }
-        self.dev_status = Status::Checking;
-        self.worker
-            .spawn(ctx, move |tx| tx.send(Msg::DevCode(dev_code::check(&code))));
+        let codes = self.state.dev_codes.clone();
+        self.dev_statuses.retain(|c, _| codes.contains(c));
+        for code in codes {
+            let status = self.dev_statuses.entry(code.clone()).or_default();
+            if *status != Status::Off {
+                continue;
+            }
+            *status = Status::Checking;
+            self.worker.spawn(ctx, move |tx| {
+                let status = dev_code::check(&code);
+                tx.send(Msg::DevCode(code, status))
+            });
+        }
     }
 
     fn channel_chip(&self) -> Option<(String, egui::Color32, String)> {
@@ -4112,9 +4127,13 @@ impl Dashboard {
             }
             status_end = chip.x - 12.0;
         }
-        // A dev code: unpublished mods and plugins are listed too.
-        if self.state.dev_code.is_some() {
-            let g = kit.spaced_galley("DEV CODE", design::din(12.0), design::TEXT, dz(0.5), false);
+        // Dev codes: unpublished mods and plugins are listed too.
+        if !self.state.dev_codes.is_empty() {
+            let label = match self.state.dev_codes.len() {
+                1 => "DEV CODE".to_string(),
+                n => format!("DEV CODES ({n})"),
+            };
+            let g = kit.spaced_galley(&label, design::din(12.0), design::TEXT, dz(0.5), false);
             let w = g.size().x / dz(1.0) + 20.0;
             let chip = Dr::new(status_end + 1.0 - w, 23.0, w, 27.0);
             let r = kit.drect(chip);
@@ -4122,7 +4141,7 @@ impl Dashboard {
             kit.ui
                 .painter()
                 .galley(r.center() - g.size() / 2.0, g, design::TEXT);
-            let tip = "A dev code is set: your dev folder's unpublished mods and plugins are listed too. Click to change it.";
+            let tip = "Dev codes are set: their dev folders' unpublished mods and plugins are listed too. Click to change them.";
             if kit.hot("dev-code-chip", r, true, tip).0.clicked {
                 self.overlay = Some(setup::Overlay::Advanced);
             }
