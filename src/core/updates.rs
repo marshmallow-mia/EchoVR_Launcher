@@ -354,7 +354,12 @@ fn plugin_findings(
                 Some(_) => catalog.pack_for(&p.file),
                 None => catalog.entry_for(&p.file),
             }
-            .filter(|m| m.downloadable() && m.version != *version)?;
+            // Only newer versions: going back to stable is the player's click on the Mods page.
+            .filter(|m| {
+                m.downloadable()
+                    && crate::core::launcher::catalogue::offer(version, &m.version)
+                        == Some(crate::core::launcher::catalogue::Offer::Update)
+            })?;
             if m.pack.is_some() && !packs.insert(m.id.clone()) {
                 return None;
             }

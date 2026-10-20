@@ -91,6 +91,8 @@ pub(super) enum Overlay {
     PluginSettings(Box<super::mods::SettingsSheet>),
     /// Settings: the advanced ones (the launcher's update channel).
     Advanced,
+    /// More mods → Add by id: an unlisted mod's id, as typed, and what the check of it said.
+    AddUnlisted { input: String, note: Option<String> },
 }
 
 /// The Install card's answers, prefilled with the last ones.
@@ -1053,6 +1055,7 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::Uninstall { .. }) => super::settings::uninstall_card(d, k),
         Some(Overlay::PluginSettings(_)) => super::mods::settings_card(d, k, ctx),
         Some(Overlay::Advanced) => super::settings::advanced_card(d, k, ctx),
+        Some(Overlay::AddUnlisted { .. }) => super::mods::unlisted_card(d, k, ctx),
         None => {}
     });
 }

@@ -264,6 +264,9 @@ enum Msg {
     /// Where Revive is installed.
     Revive(Option<String>),
     /// What the dev code's folder holds (Advanced settings).
+    /// An unlisted mod's id checked (More mods → Add by id): whether it's there, or why it
+    /// couldn't be checked.
+    UnlistedChecked(String, Result<bool, String>),
     /// A dev code's folder as read for Advanced settings: the code, what it holds.
     DevCode(String, crate::core::launcher::dev_code::Status),
     /// EchoXR (and what it needs) is fetched.
@@ -2675,6 +2678,7 @@ impl Dashboard {
                 Msg::ModCatalog(c) => self.mods.catalog_done(c),
                 Msg::WaysBack(ways) => self.goback.ways = ways,
                 Msg::Revive(dir) => self.revive.done((), dir),
+                Msg::UnlistedChecked(id, found) => mods::unlisted_checked(self, &id, found),
                 Msg::DevCode(code, status) => {
                     self.dev_statuses.insert(code, status);
                 }

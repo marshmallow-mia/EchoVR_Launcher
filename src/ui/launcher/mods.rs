@@ -14,6 +14,7 @@ use super::{
     SnapVariant,
 };
 use crate::core::launcher::catalog::Platform;
+use crate::core::launcher::catalogue;
 use crate::core::launcher::mods::{
     self, AssetPatch, Loader, ModCatalog, ModEntry, ModView, Plugin, PluginStatus, Source, Status,
 };
@@ -1013,24 +1014,237 @@ fn display_name(p: &Plugin, names: &std::collections::HashMap<String, String>) -
         .unwrap_or_else(|| p.name.replace('_', " "))
 }
 
-/// The catalogue's newer version of a plugin it installed (`None`: none, or not from it).
-fn update_for(p: &Plugin, c: Option<&ModCatalog>) -> Option<ModEntry> {
+/// The catalogue's version of a plugin it installed to offer, and how: newer (an update), or
+/// the stable one under an installed prerelease the player doesn't take any more (`None`:
+/// none, or not from it; [`catalogue::offer`]).
+fn update_for(p: &Plugin, c: Option<&ModCatalog>) -> Option<(ModEntry, catalogue::Offer)> {
     let Source::Catalog { version, .. } = &p.source else {
         return None;
     };
-    c?.entry_for(&p.file)
-        .filter(|m| m.downloadable() && m.version != *version)
-        .cloned()
+    let m = c?.entry_for(&p.file).filter(|m| m.downloadable())?;
+    Some((m.clone(), catalogue::offer(version, &m.version)?))
 }
 
 /// [`update_for`], unless it's the version the player went back from in version `vid`.
-fn unheld_update(d: &Dashboard, vid: &str, p: &Plugin) -> Option<ModEntry> {
+fn unheld_update(d: &Dashboard, vid: &str, p: &Plugin) -> Option<(ModEntry, catalogue::Offer)> {
     let part = crate::core::launcher::goback::Part::Mod {
         version: vid.to_string(),
         file: p.file.clone(),
     };
     update_for(p, d.mods.catalog.as_ref())
-        .filter(|m| !crate::core::launcher::goback::held(&d.state.holds, &part, &m.version))
+        .filter(|(m, _)| !crate::core::launcher::goback::held(&d.state.holds, &part, &m.version))
+}
+
+/// More mods → Add by id: the card for an unlisted mod's id. Add checks it's there
+/// (`launcher/unlisted/<id>.json`), then lists it with the others.
+pub(super) fn unlisted_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
+    let Some(setup::Overlay::AddUnlisted { input, note }) = &mut d.overlay else {
+        return;
+    };
+    let (w, h) = (dz(820.0), dz(300.0));
+    let (x, y, cw, bottom) = setup::card(k, w, h, "Add an unlisted mod");
+    let th = k.caps_text(
+        x,
+        y,
+        cw,
+        "Some mods aren't listed: their makers share them by their id. Type the id you got.",
+        17.0,
+        design::BODY,
+        0.0,
+    );
+    let fy = y + th + dz(20.0);
+    k.field("unlisted-id", input, x, fy, cw, BTN_H, "my-cool-mod", false, "The mod's id");
+    let id = input.trim().to_ascii_lowercase();
+    let valid = crate::core::launcher::catalog::is_safe_id(&id);
+    let have = d.state.unlisted_mods.contains(&id);
+    if let Some(n) = note.clone() {
+        k.caps_text(x, fy + BTN_H + dz(12.0), cw, &n, 16.0, design::QUEST_WARN, 0.0);
+    }
+    let by = bottom - BTN_H;
+    let cw2 = k.button_width("Cancel", None, BTN_H).max(110.0);
+    let aw = k.button_width("Add", None, BTN_H).max(120.0);
+    if k.button("unlisted-cancel", x + cw - cw2, by, cw2, BTN_H, Tone::Dark, None, "Cancel", true, "")
+        .clicked
+        || k.key(egui::Key::Escape)
+    {
+        d.overlay = None;
+        return;
+    }
+    let why = if !valid {
+        Some("Type the mod's id first: lowercase letters, digits, '.', '-', '_'")
+    } else if have {
+        Some("It's added already")
+    } else {
+        None
+    };
+    if k.button(
+        "unlisted-add",
+        x + cw - cw2 - dz(8.0) - aw,
+        by,
+        aw,
+        BTN_H,
+        Tone::Go,
+        None,
+        "Add",
+        why.is_none(),
+        why.unwrap_or("Look it up and list it in More mods"),
+    )
+    .clicked
+    {
+        *note = Some("Looking it up…".into());
+        let url = format!("{}{id}.json", crate::core::launcher::catalogue::UNLISTED);
+        d.worker.spawn(ctx, move |tx| {
+            let found = crate::core::http::get_text_opt(&url)
+                .map(|t| t.is_some())
+                .map_err(|e| format!("{e:#}"));
+            tx.send(Msg::UnlistedChecked(id, found))
+        });
+    }
+}
+
+/// What the lookup of an unlisted mod's id found: there, it's added and listed; not, the
+/// card says so.
+pub(super) fn unlisted_checked(d: &mut Dashboard, id: &str, found: Result<bool, String>) {
+    let note = match found {
+        Ok(true) => {
+            if !d.state.unlisted_mods.iter().any(|u| u == id) {
+                d.state.unlisted_mods.push(id.to_string());
+                d.save();
+            }
+            d.mods.reload_catalog();
+            d.updates.check_soon();
+            if matches!(d.overlay, Some(setup::Overlay::AddUnlisted { .. })) {
+                d.overlay = None;
+            }
+            d.notify(&format!("{id} is listed in More mods now"));
+            return;
+        }
+        Ok(false) => "No unlisted mod has this id.".to_string(),
+        Err(e) => format!("Couldn't look it up: {e}"),
+    };
+    if let Some(setup::Overlay::AddUnlisted { note: n, .. }) = &mut d.overlay {
+        *n = Some(note);
+    }
+}
+
+/// A choice in a mod's ⋯ menu.
+enum ModChoice {
+    /// Offer its prereleases (or stop).
+    Prereleases(bool),
+    /// Take it from this source (`catalogue` or a dev code's tag).
+    Source(String),
+    Homepage(String),
+    /// An unlisted mod leaves More mods (what's installed stays).
+    Forget,
+}
+
+/// A mod's ⋯ menu (catalogue id `id`): its prereleases, where it comes from when several
+/// places have it, its homepage; each row with what picking it does. Empty when there's
+/// nothing to choose.
+fn mod_menu(d: &Dashboard, id: &str) -> (Vec<MenuItem>, Vec<ModChoice>) {
+    let rows = mod_menu_rows(d, id);
+    rows.into_iter().unzip()
+}
+
+fn mod_menu_rows(d: &Dashboard, id: &str) -> Vec<(MenuItem, ModChoice)> {
+    use crate::core::launcher::dev_code;
+    let mut out = Vec::new();
+    let Some(c) = d.mods.catalog.as_ref() else {
+        return out;
+    };
+    if c.with_prereleases.contains(id) {
+        let on = d.state.mod_prereleases.contains(id);
+        out.push((
+            MenuItem::Pick {
+                label: "Prereleases".into(),
+                detail: if on { "Offered".into() } else { "Off".into() },
+                detail_color: design::GREY,
+                checked: on,
+                tip: if on {
+                    "Only stable versions again (a prerelease installed offers Switch to stable)".into()
+                } else {
+                    "Offer this mod's prereleases too: test versions, which may break".into()
+                },
+            },
+            ModChoice::Prereleases(!on),
+        ));
+    }
+    if let Some(sources) = c.choices.get(id) {
+        if !out.is_empty() {
+            out.push((MenuItem::Divider, ModChoice::Homepage(String::new())));
+        }
+        let chosen = c.mods.iter().find(|m| m.id == id).map(mods::source_of);
+        for (i, tag) in sources.iter().enumerate() {
+            let label = if tag == "catalogue" {
+                "Published version".to_string()
+            } else {
+                let code = d.state.dev_codes.iter().find(|c| dev_code::source_tag(c) == *tag);
+                let n = d.state.dev_codes.iter().position(|c| Some(c) == code).map_or(0, |n| n + 1);
+                code.and_then(|c| dev_code::channel_name(c))
+                    .map(|name| format!("Dev: {name}"))
+                    .unwrap_or_else(|| format!("Dev channel {n}"))
+            };
+            let detail = c
+                .mods
+                .iter()
+                .find(|m| m.id == id && mods::source_of(m) == *tag)
+                .map(|m| format!("v{}", m.version))
+                .unwrap_or_default();
+            out.push((
+                MenuItem::Pick {
+                    label,
+                    detail,
+                    detail_color: design::GREY,
+                    checked: chosen.as_deref() == Some(tag.as_str()),
+                    tip: if i == 0 {
+                        "Where this mod comes from".into()
+                    } else {
+                        "Take this mod from here instead".into()
+                    },
+                },
+                ModChoice::Source(tag.clone()),
+            ));
+        }
+    }
+    if d.state.unlisted_mods.iter().any(|u| u == id) {
+        if !out.is_empty() {
+            out.push((MenuItem::Divider, ModChoice::Homepage(String::new())));
+        }
+        out.push((
+            MenuItem::row("Take off the list", "An unlisted mod you added: More mods doesn't list it any more (installed, it stays)"),
+            ModChoice::Forget,
+        ));
+    }
+    let homepage = c.mods.iter().find(|m| m.id == id).map(|m| m.homepage.clone()).unwrap_or_default();
+    if !homepage.is_empty() {
+        if !out.is_empty() {
+            out.push((MenuItem::Divider, ModChoice::Homepage(String::new())));
+        }
+        out.push((MenuItem::row("Homepage", "Its page in your browser"), ModChoice::Homepage(homepage)));
+    }
+    out
+}
+
+/// Does what the player picked in mod `id`'s ⋯ menu.
+fn apply_mod_choice(d: &mut Dashboard, id: &str, choice: Option<ModChoice>) {
+    match choice {
+        Some(ModChoice::Prereleases(on)) => {
+            if on {
+                d.state.mod_prereleases.insert(id.to_string());
+            } else {
+                d.state.mod_prereleases.remove(id);
+            }
+        }
+        Some(ModChoice::Source(tag)) => {
+            d.state.mod_sources.insert(id.to_string(), tag);
+        }
+        Some(ModChoice::Homepage(url)) if !url.is_empty() => return platform::open_url(&url),
+        Some(ModChoice::Forget) => d.state.unlisted_mods.retain(|u| u != id),
+        _ => return,
+    }
+    d.save();
+    d.mods.reload_catalog();
+    d.updates.check_soon();
 }
 
 /// Which VR parts are installed, so listed with the plugins: EchoXR while it's how VR
@@ -1061,8 +1275,8 @@ struct Look {
     name: String,
     /// Who made it (the catalogue's word).
     author: Option<String>,
-    /// The catalogue's newer version of it.
-    update: Option<ModEntry>,
+    /// The catalogue's version of it to offer: newer, or back to stable.
+    update: Option<(ModEntry, catalogue::Offer)>,
     /// The launcher can change the mods (nEVR is there).
     editable: bool,
     /// Mods are off, or can't be changed: the switches don't work.
@@ -1198,20 +1412,34 @@ fn plugin_row(
         ..
     } = *look;
     let key = |what: &str| format!("mods-{what}-{}", p.file);
-    // Right to left: Update, Remove, Options, the state chip.
+    // Right to left: More, Update, Remove, Options, the state chip.
     let mut a = Actions::new(x, y, w);
-    if let Some(m) = &look.update {
+    if let Source::Catalog { id, .. } = &p.source {
+        let (items, choices) = mod_menu(d, id);
+        if !items.is_empty() {
+            if let Some(i) = a.menu(k, &key("more"), &items, "This mod's own choices") {
+                apply_mod_choice(d, id, choices.into_iter().nth(i));
+            }
+        }
+    }
+    if let Some((m, offer)) = &look.update {
+        let stable = *offer == catalogue::Offer::ToStable;
+        let ready_tip = if stable {
+            format!("Back to {} {}, the newest stable version (it loads at the next start)", m.name, m.version)
+        } else {
+            "Download its new version (it loads at the next start)".to_string()
+        };
         let tip = match (editable, busy) {
             (false, _) => "Needs the mod loader (nEVR) in this version",
             (true, Some(why)) => why,
-            (true, None) => "Download its new version (it loads at the next start)",
+            (true, None) => ready_tip.as_str(),
         };
         if a.button(
             k,
             &key("update"),
-            Tone::Go,
+            if stable { Tone::Dark } else { Tone::Go },
             Some(Icon::Download),
-            "Update",
+            if stable { "Switch to stable" } else { "Update" },
             editable && busy.is_none(),
             tip,
         ) {
@@ -1334,23 +1562,29 @@ fn plugin_row(
             },
         );
     }
-    let dev = |id: &str| {
+    let listed = |id: &str| {
         d.mods
             .catalog
             .as_ref()
             .and_then(|c| c.mods.iter().find(|m| m.id == id))
-            .is_some_and(|m| m.dev)
+            .map(|m| (m.dev, m.unlisted))
     };
     let source = match &p.source {
         Source::Shipped if !p.verified => ("Unverified", design::QUEST_WARN),
         Source::Shipped => ("Community update", design::SUBTLE),
-        // From the dev folder of the dev code in Advanced settings, not published.
-        Source::Catalog { id, .. } if dev(id) => ("Dev", design::RIM_BOTTOM),
+        // From the dev folder of a dev code in Advanced settings, not published.
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(dev, _)| dev) => ("Dev", design::RIM_BOTTOM),
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(_, unlisted)| unlisted) => {
+            ("Unlisted", design::BLUE)
+        }
         Source::Catalog { .. } => ("Catalogue", design::BLUE),
         Source::Local => ("Your DLL", design::QUEST_WARN),
     };
+    let prerelease = matches!(&p.source, Source::Catalog { version, .. }
+        if crate::core::semver::Version::parse(version).is_some_and(|v| v.is_prerelease()));
     let tags = [
         Some(source),
+        prerelease.then_some(("Prerelease", design::QUEST_WARN)),
         p.required.then_some(("Required", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
     ];
@@ -1412,6 +1646,16 @@ impl Actions {
             .clicked;
         self.right -= dz(ACTION_GAP);
         clicked
+    }
+
+    /// "More" with its menu (a mod's own choices, [`mod_menu`]); returns the row picked.
+    fn menu(&mut self, k: &mut Kit, key: &str, items: &[MenuItem], tip: &str) -> Option<usize> {
+        let bh = dz(ROW_BTN_H);
+        let bw = (k.button_width("More", None, bh) + bh).max(dz(100.0));
+        self.right -= bw;
+        let picked = k.menu_button(key, "More", items, self.right, self.cy - bh / 2.0, bw, bh, tip);
+        self.right -= dz(ACTION_GAP);
+        picked
     }
 
     fn chip(&mut self, k: &Kit, text: &str, color: Color32) {
@@ -2457,6 +2701,27 @@ fn catalogue_card(
         .size()
         .x;
     let lx = dz(r.right() - 22.0) - link_w;
+    // Add by id, left of it: an unlisted mod, which the list doesn't show.
+    let add_w = kit
+        .spaced_galley("ADD BY ID", design::din(14.0), design::TEXT, dz(0.5), true)
+        .size()
+        .x;
+    if kit
+        .link(
+            "mods-add-unlisted",
+            lx - add_w - dz(22.0),
+            ly,
+            "Add by id",
+            14.0,
+            "Add an unlisted mod: one its maker shares by its id instead of listing it",
+        )
+        .clicked
+    {
+        d.overlay = Some(setup::Overlay::AddUnlisted {
+            input: String::new(),
+            note: None,
+        });
+    }
     if d.mods.catalog_loading {
         let g = kit.spaced_galley("REFRESH", design::din(14.0), design::GREY, dz(0.5), false);
         kit.put(lx, ly, g);
@@ -2759,6 +3024,17 @@ fn entry(
         right -= cw;
         k.chip(right, y + (bh - dz(27.0)) / 2.0, chip, design::QUEST_OFF);
     }
+    if let Extra::Mod(_) = e {
+        let (items, choices) = mod_menu(d, &m.id);
+        if !items.is_empty() {
+            let mw = (k.button_width("More", None, bh) + bh).max(dz(100.0));
+            right -= mw + dz(ACTION_GAP);
+            let key = format!("mods-entry-more-{}", m.id);
+            if let Some(i) = k.menu_button(&key, "More", &items, right, y, mw, bh, "This mod's own choices") {
+                apply_mod_choice(d, &m.id, choices.into_iter().nth(i));
+            }
+        }
+    }
     // Left: name and version; the summary; who made it and what it does.
     let name = k.label_galley(
         &m.name,
@@ -2778,14 +3054,19 @@ fn entry(
         let gw = g.size().x;
         if vx + gw < right - dz(14.0) {
             k.put(vx, nr.center().y - k.origin.y - g.size().y / 2.0, g);
-            if m.dev && vx + gw + dz(14.0) + k.dot_tag_width("Dev", 12.0) < right - dz(14.0) {
-                k.dot_tag(
-                    vx + gw + dz(14.0),
-                    nr.center().y - k.origin.y,
-                    "Dev",
-                    12.0,
-                    design::RIM_BOTTOM,
-                );
+            let tag = if m.dev {
+                Some(("Dev", design::RIM_BOTTOM))
+            } else if m.prerelease {
+                Some(("Prerelease", design::QUEST_WARN))
+            } else if m.unlisted {
+                Some(("Unlisted", design::BLUE))
+            } else {
+                None
+            };
+            if let Some((tag, color)) = tag {
+                if vx + gw + dz(14.0) + k.dot_tag_width(tag, 12.0) < right - dz(14.0) {
+                    k.dot_tag(vx + gw + dz(14.0), nr.center().y - k.origin.y, tag, 12.0, color);
+                }
             }
         }
     }
@@ -3271,7 +3552,7 @@ mod tests {
         // An update is offered on the plugin's row instead.
         let combat = view.plugins.iter().find(|p| p.file == "CombatStats.dll");
         assert_eq!(
-            update_for(combat.unwrap(), Some(&catalog)).map(|m| m.version),
+            update_for(combat.unwrap(), Some(&catalog)).map(|(m, _)| m.version),
             Some("0.3.1".to_string())
         );
     }

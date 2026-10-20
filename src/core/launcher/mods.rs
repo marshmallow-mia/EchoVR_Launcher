@@ -2089,6 +2089,15 @@ pub struct ModEntry {
     /// A content pack (plugins and game data in one zip: [`super::packs`]); `file`,
     /// `url` and `sha256` are then empty.
     pub pack: Option<PackSpec>,
+    /// A prerelease ([`super::catalogue`]): offered only to whoever tries this mod's.
+    pub prerelease: bool,
+    /// What it needs: nEVR versions, other mods on beside it ([`super::catalogue`]).
+    pub requires: super::catalogue::Requires,
+    /// Mods that can't be on beside it (ids).
+    pub conflicts: Vec<String>,
+    /// Unlisted: added by its id ([`super::catalogue::UNLISTED`]).
+    #[serde(skip)]
+    pub unlisted: bool,
     /// From the dev folder of a dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
@@ -2139,6 +2148,13 @@ pub struct ModCatalog {
     /// Ids several places offer (the published catalogue, dev folders): every source that
     /// has it ([`source_of`]), for ⋯ → Source. Ids from one place only aren't listed.
     pub choices: std::collections::BTreeMap<String, Vec<String>>,
+    /// Mods catalogue.json has prereleases of (ids), for ⋯ → Prereleases.
+    pub with_prereleases: std::collections::BTreeSet<String>,
+    /// Mods catalogue.json lists (ids; with unlisted ones the player added): what's
+    /// installed from it and missing here is no longer available.
+    pub listed: std::collections::BTreeSet<String>,
+    /// catalogue.json was read (fresh or as kept): [`ModCatalog::listed`] means something.
+    pub has_catalogue: bool,
 }
 
 /// Pure: the source tag of entry `m`: `catalogue`, or its dev code's tag.
@@ -2287,6 +2303,101 @@ impl ModCatalog {
         self.with_devs(devs, &super::prefs::get().sources)
     }
 
+    /// catalogue.json's offered versions (and unlisted mods') over these published entries:
+    /// for each mod the version [`super::catalogue::CatalogueMod::choose`] picks (a
+    /// prerelease only for mods in `prereleases`). An entry of the launcher's own (shipped
+    /// or required) or with another mod's file always stays. Never shipped or required.
+    pub fn with_catalogue(
+        mut self,
+        mods: &[super::catalogue::CatalogueMod],
+        unlisted: &[String],
+        prereleases: &std::collections::BTreeSet<String>,
+    ) -> ModCatalog {
+        self.has_catalogue = true;
+        for m in mods {
+            self.listed.insert(m.id.clone());
+            if m.has_prereleases() {
+                self.with_prereleases.insert(m.id.clone());
+            }
+            let Some(chosen) = m.choose(prereleases.contains(&m.id)) else {
+                continue;
+            };
+            let mut e = chosen.entry.clone();
+            e.shipped = false;
+            e.required = false;
+            e.unlisted = unlisted.contains(&m.id);
+            if let Err(err) = e.validate() {
+                tracing::warn!("catalogue: {} {} left out: {err:#}", m.id, e.version);
+                continue;
+            }
+            let own = |o: &ModEntry| o.shipped || o.required;
+            if self.mods.iter().any(|o| {
+                (o.id == e.id && own(o))
+                    || (o.id != e.id && !e.file.is_empty() && o.file.eq_ignore_ascii_case(&e.file))
+            }) {
+                tracing::warn!("catalogue: {} clashes with the launcher's own mods, left out", e.id);
+                continue;
+            }
+            match self.mods.iter_mut().find(|o| o.id == e.id) {
+                Some(o) => *o = e,
+                None => self.mods.push(e),
+            }
+        }
+        self
+    }
+
+    /// catalogue.json and the unlisted mods the player added, fresh (kept for
+    /// [`ModCatalog::cached`]) or as kept last when they can't be read now. `None` when the
+    /// server has no catalogue.json (nothing published that way yet).
+    fn catalogue_mods(fresh: bool) -> Option<Vec<super::catalogue::CatalogueMod>> {
+        use super::catalogue::{Catalogue, UNLISTED, URL};
+        if cfg!(test) {
+            return None;
+        }
+        let read = |url: &str, file: &str| -> Option<String> {
+            let path = paths::data_dir().join(file);
+            if fresh {
+                match crate::core::http::get_text_opt(url) {
+                    Ok(Some(t)) => {
+                        let _ = std::fs::create_dir_all(paths::data_dir());
+                        let _ = std::fs::write(&path, &t);
+                        return Some(t);
+                    }
+                    Ok(None) => {
+                        let _ = std::fs::remove_file(&path);
+                        return None;
+                    }
+                    Err(e) => tracing::info!("{file} unavailable ({e:#}); using the last one kept"),
+                }
+            }
+            std::fs::read_to_string(path).ok()
+        };
+        let mut mods = read(URL, "catalogue.json")
+            .and_then(|t| Catalogue::parse(&t).map_err(|e| tracing::warn!("catalogue.json unreadable: {e:#}")).ok())?
+            .mods;
+        for id in super::prefs::get().unlisted {
+            if !super::catalog::is_safe_id(&id) {
+                continue;
+            }
+            let file = format!("unlisted-{id}.json");
+            if let Some(c) = read(&format!("{UNLISTED}{id}.json"), &file).and_then(|t| Catalogue::parse(&t).ok()) {
+                mods.extend(c.mods.into_iter().filter(|m| m.id == id));
+            }
+        }
+        Some(mods)
+    }
+
+    /// [`ModCatalog::with_catalogue`] with what [`ModCatalog::catalogue_mods`] has, if anything.
+    fn plus_catalogue(self, fresh: bool) -> ModCatalog {
+        match ModCatalog::catalogue_mods(fresh) {
+            Some(mods) => {
+                let prefs = super::prefs::get();
+                self.with_catalogue(&mods, &prefs.unlisted, &prefs.prereleases)
+            }
+            None => self,
+        }
+    }
+
     /// The draft in this repo, for when the published one can't be had.
     pub fn builtin() -> ModCatalog {
         let mut c =
@@ -2311,7 +2422,7 @@ impl ModCatalog {
                 ModCatalog::cached_main()
             }
         };
-        main.plus_dev(super::dev_code::load("mods"))
+        main.plus_catalogue(true).plus_dev(super::dev_code::load("mods"))
     }
 
     fn cache_path() -> PathBuf {
@@ -2321,7 +2432,9 @@ impl ModCatalog {
     /// The last catalogue fetched, else the built-in one: no network, for reading the
     /// mods and before a start. (Tests always get the built-in one.)
     pub fn cached() -> ModCatalog {
-        ModCatalog::cached_main().plus_dev(super::dev_code::kept("mods"))
+        ModCatalog::cached_main()
+            .plus_catalogue(false)
+            .plus_dev(super::dev_code::kept("mods"))
     }
 
     /// The published catalogue as kept last, else the built-in one (no dev entries).
@@ -2466,6 +2579,51 @@ pub(crate) mod tests {
         // A choice naming a source that doesn't have the id (a removed code) is ignored.
         sources.insert("gpu-rating".to_string(), "dev:000000000000".to_string());
         assert_eq!(version_of(&ModCatalog::builtin().with_devs(vec![a, b], &sources)), "2.0.0-a");
+    }
+
+    #[test]
+    fn catalogue_versions_over_the_published_ones() {
+        use super::super::catalogue::Catalogue;
+        let sha = "a".repeat(64);
+        let v = |id: &str, file: &str, version: &str, pre: bool, extra: &str| {
+            format!(
+                r#"{{"id": "{id}", "name": "{id}", "version": "{version}", "file": "{file}", "prerelease": {pre},
+                    "url": "https://release.echovr.de/launcher/mods/{file}", "sha256": "{sha}"{extra}}}"#
+            )
+        };
+        let cat = Catalogue::parse(&format!(
+            r#"{{"mods": [
+                {{"id": "cool", "versions": [{}, {}]}},
+                {{"id": "gpu-rating", "versions": [{}]}},
+                {{"id": "thief", "versions": [{}]}},
+                {{"id": "sneaky", "versions": [{}]}}
+            ]}}"#,
+            v("cool", "Cool.dll", "1.1.0-beta.1", true, ""),
+            v("cool", "Cool.dll", "1.0.0", false, ""),
+            v("gpu-rating", "NvrGpuRating.dll", "9.0.0", false, ""),
+            v("thief", "NvrAssetPatches.dll", "1.0.0", false, ""),
+            v("sneaky", "Sneaky.dll", "1.0.0", false, r#", "required": true, "shipped": false"#)
+        ))
+        .unwrap();
+        let none = std::collections::BTreeSet::new();
+        let c = ModCatalog::builtin().with_catalogue(&cat.mods, &[], &none);
+        let find = |c: &ModCatalog, id: &str| c.mods.iter().find(|m| m.id == id).cloned();
+        assert_eq!(find(&c, "cool").unwrap().version, "1.0.0");
+        assert!(c.with_prereleases.contains("cool"));
+        assert!(c.listed.contains("cool") && c.has_catalogue);
+        // The launcher's own entries stay: by id (required gpu-rating) and by file.
+        assert_ne!(find(&c, "gpu-rating").unwrap().version, "9.0.0");
+        assert!(find(&c, "thief").is_none());
+        // Never required or shipped from there.
+        let sneaky = find(&c, "sneaky").unwrap();
+        assert!(!sneaky.required && !sneaky.shipped);
+        // Prereleases only for the mods asked for.
+        let mut pre = std::collections::BTreeSet::new();
+        pre.insert("cool".to_string());
+        let c = ModCatalog::builtin().with_catalogue(&cat.mods, &["cool".to_string()], &pre);
+        let cool = find(&c, "cool").unwrap();
+        assert_eq!(cool.version, "1.1.0-beta.1");
+        assert!(cool.prerelease && cool.unlisted);
     }
 
     #[test]
