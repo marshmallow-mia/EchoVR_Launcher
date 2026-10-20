@@ -182,10 +182,21 @@ servers of its own: Settings → Launch options → **EchoCombat server** sets o
 the pack is on the game signs in and finds matches there. See
 [docs/launcher/mods.md](docs/launcher/mods.md#content-packs).
 
-**Dev codes** let mod and plugin makers test their work before it's published: with a code
-in Settings → Advanced settings → **Dev mods and plugins**, the launcher also lists their
-dev folder's mods and plugins (with a Dev tag). How a folder is filled, packs included:
-[docs/launcher/dev-folders.md](docs/launcher/dev-folders.md).
+**Mods from other developers** come through the same catalogue, checked and published by the
+server (make one from [EchoTools/echo-mod-template-repo](https://github.com/EchoTools/echo-mod-template-repo)).
+A mod's **More** menu turns its prereleases on (never for all mods at once), picks where it
+comes from, and reports it to the moderators. More mods → **Add by id** lists an unlisted one.
+A mod that needs another waits for it, a blocked version goes back or stays out, and the row
+says why. See [docs/launcher/mods.md](docs/launcher/mods.md#third-party-mods-cataloguejson).
+
+**Dev codes** let mod and plugin makers and their testers try work before it's published:
+with codes in Settings → Advanced settings → **Dev mods and plugins** (several at once), the
+launcher also lists their dev folders' mods and plugins (with a Dev tag). How a folder is
+filled, packs included: [docs/launcher/dev-folders.md](docs/launcher/dev-folders.md).
+
+**Alerts**: important notices from release.echovr.de show in the top bar, as a desktop
+notification, or (critical ones) as a card to acknowledge. See
+[docs/launcher/alerts.md](docs/launcher/alerts.md).
 
 ## Updates
 

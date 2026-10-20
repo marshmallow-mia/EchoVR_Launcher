@@ -7,12 +7,26 @@ key; you get a code and an `sftp` command.
 
 ## In the launcher
 
-Settings → **Advanced settings** → **Dev mods and plugins**: paste the code and press **Use
-code**. The card says how many mods and plugins your folder lists. Your entries appear on the
-Mods page (More mods) and the Plugins page with a **Dev** tag, and the status bar shows
-**DEV CODE** while a code is set. An entry with the same id as a published one replaces it
-(a mod also replaces one with the same file). **Remove** goes back to the published ones;
-installed dev mods then offer the published version as an update.
+Settings → **Advanced settings** → **Dev mods and plugins**: paste a code and press **Add
+code**. Since 0.13 several codes can be set (a tester can follow several developers): each
+gets a line saying its channel's name and how many mods and plugins its folder lists, with
+**Remove**. The entries appear on the Mods page (More mods) and the Plugins page with a **Dev**
+tag, and the status bar shows **DEV CODE** (or **DEV CODES (n)**). An entry with the same id
+as a published one replaces it (a mod also replaces one with the same file); with several
+codes, the first code's goes first. A mod's **More** → Source picks where it comes from when
+the catalogue and dev folders both have it. **Remove** goes back to the published ones;
+installed dev mods keep loading, tagged as no longer listed.
+
+`launcher.json` keeps the codes in `dev_codes` and the first one in `dev_code`, which
+launchers before 0.13 read.
+
+A folder can name its channel in a root-owned `channel.json` (`{"name": "…"}`; `echo-dev-add`
+writes it): Advanced settings shows the name, and alerts can aim at the channel
+([alerts.md](alerts.md)).
+
+Third-party developers' channels are *restricted* (code plus their EchoVRCE account, or one
+allowed): until the launcher can sign in to them, their codes say "No dev folder has this
+code"; those developers test with **Add DLL**.
 
 ## Your folder
 

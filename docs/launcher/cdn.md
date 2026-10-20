@@ -89,6 +89,10 @@ version back. Each update keeps what it replaced, one step back:
 
 ### release.echovr.de's history
 
+Third-party mods' versions come from `launcher/catalogue.json` (and `launcher/unlisted/*.json`,
+both in `index.json`): every version is noted once, prereleases too, so going back works for
+them as for the launcher's own mods.
+
 `https://release.echovr.de/launcher/history.json` (in the index, written by
 `echo-cdn-index`, only ever added to) lists every version each update manifest, mod and
 plugin had, oldest first; their files stay in the store:
@@ -122,7 +126,25 @@ a version's MANAGE menu go back from where the update was.
 
 ### Pulling a version for everyone
 
-`https://release.echovr.de/launcher/rollback.json` lists versions with a serious problem:
+`https://release.echovr.de/launcher/rollback.json` lists versions with a serious problem
+(`pulled`), and since 0.13 mod versions blocked for everyone (`blocked`, written by
+`echo-mod reject`; schema 2, which older launchers read as before):
+
+```json
+{"schema": 2, "pulled": [], "blocked": [
+  {"part": "mod", "id": "cool-mod", "versions": ">=1.2.0 <1.2.1", "action": "off",
+   "note": "It crashes in combat.", "alert": "2026-10-21-cool-mod"}
+]}
+```
+
+`versions` is a semver range (prereleases in it included) or `all`; `sha` blocks one file.
+A blocked version is never offered. Before a start, an installed one goes back to the newest
+version that isn't blocked (a kept copy, else from the history); without one it stays out of
+the start, and with `"action": "remove"` its file is set aside in `_local/quarantine/`
+(**Restore** on its row once the block is lifted). The Mods page and the status bar say so.
+The launcher keeps the last `rollback.json` it read, for starts while offline.
+
+The `pulled` list:
 
 ```json
 {"schema": 1, "pulled": [
