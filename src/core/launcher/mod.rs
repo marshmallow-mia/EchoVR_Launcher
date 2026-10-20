@@ -1,5 +1,6 @@
 //! The launcher: installed versions, launch profiles, game state, the Quest side.
 
+pub mod alerts;
 pub mod catalog;
 pub mod catalogue;
 pub mod dev_code;

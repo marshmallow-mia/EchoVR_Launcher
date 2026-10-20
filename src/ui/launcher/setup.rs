@@ -91,6 +91,8 @@ pub(super) enum Overlay {
     PluginSettings(Box<super::mods::SettingsSheet>),
     /// Settings: the advanced ones (the launcher's update channel).
     Advanced,
+    /// A critical alert, to be acknowledged ([`crate::core::launcher::alerts`]).
+    Alert(Box<crate::core::launcher::alerts::Alert>),
     /// More mods → Add by id: an unlisted mod's id, as typed, and what the check of it said.
     AddUnlisted { input: String, note: Option<String> },
 }
@@ -1056,6 +1058,7 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         Some(Overlay::PluginSettings(_)) => super::mods::settings_card(d, k, ctx),
         Some(Overlay::Advanced) => super::settings::advanced_card(d, k, ctx),
         Some(Overlay::AddUnlisted { .. }) => super::mods::unlisted_card(d, k, ctx),
+        Some(Overlay::Alert(_)) => super::alerts::card(d, k),
         None => {}
     });
 }

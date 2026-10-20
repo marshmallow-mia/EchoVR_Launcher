@@ -11,6 +11,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::core::launcher::alerts;
 use crate::core::launcher::store::LauncherState;
 use crate::core::launcher::{game_sign_in, ready};
 use crate::core::{tray, updates};
@@ -58,6 +59,11 @@ fn checker(status: impl Fn(String) + Send + 'static) {
                 let fresh = updates::not_yet_announced(&check);
                 if state.desktop_notifications {
                     updates::notify_desktop(&fresh);
+                }
+                // Warnings and critical alerts: on the desktop once each, also while closed.
+                if let Some(alerts) = &check.alerts {
+                    let unseen: Vec<_> = alerts.iter().filter(|a| !state.alerts_seen.contains(&a.id)).cloned().collect();
+                    alerts::notify_desktop(&alerts::not_yet_notified(&unseen));
                 }
                 status(status_text(&check.findings));
                 // Echo VR started from anywhere meanwhile: signed in, its folder ready.

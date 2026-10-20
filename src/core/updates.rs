@@ -132,6 +132,8 @@ pub struct Check {
     pub launcher_channel: update_check::Channel,
     /// Versions this launcher has that release.echovr.de pulled (full checks only).
     pub pulled: Vec<goback::Affected>,
+    /// The alerts for this launcher ([`crate::core::launcher::alerts`]); `None`: not read.
+    pub alerts: Option<Vec<crate::core::launcher::alerts::Alert>>,
 }
 
 /// Debug builds: `ECHOVR_FAKE_UPDATE=1` makes every Echo VR that gets updates look
@@ -255,8 +257,10 @@ pub fn check_catalogs(state: &LauncherState) -> Check {
     out
 }
 
-/// The catalogues' part of a check: their plugin updates and the plugins they list.
+/// The catalogues' part of a check: their plugin updates and the plugins they list, and
+/// the alerts.
 fn catalogs(state: &LauncherState, out: &mut Check) {
+    out.alerts = Some(crate::core::launcher::alerts::fetch(state));
     let catalog = ModCatalog::load();
     if !catalog.builtin {
         for v in state.versions.iter().filter(|v| v.present()) {

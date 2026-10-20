@@ -2,6 +2,7 @@
 //! purple backdrop. See `ui/design.rs` and `ui/style.rs` for the widgets. Installing,
 //! patching, SteamVR setup and the Quest all run inline (`setup.rs`).
 
+mod alerts;
 mod echovrce;
 mod friends;
 mod goback;
@@ -809,6 +810,12 @@ pub struct Dashboard {
     quest_ip_field: String,
     /// Settings' classic lobbies server, as typed.
     relay_server_field: String,
+    /// The alerts for this launcher not dismissed ([`crate::core::launcher::alerts`]).
+    alerts: Vec<crate::core::launcher::alerts::Alert>,
+    /// Critical alerts acknowledged in this run (they come back at the next start).
+    alerts_read: std::collections::BTreeSet<String>,
+    /// The alert whose More dialog is open.
+    alert_open: Option<crate::core::launcher::alerts::Alert>,
     /// Advanced settings' new dev code, as typed.
     dev_code_field: String,
     /// What each dev code's folder held when last read (by code; Advanced settings).
@@ -1520,6 +1527,9 @@ impl Dashboard {
         if !check.catalogs_only {
             self.goback.pulled = check.pulled.clone();
         }
+        if let Some(alerts) = check.alerts.clone() {
+            self.alerts_found(alerts);
+        }
         if check.catalogs_only {
             // The launcher's and the games' stay as the last full check found them.
             self.updates.findings.retain(|f| !f.is_catalogs());
@@ -1527,6 +1537,30 @@ impl Dashboard {
         } else {
             self.updates.findings = check.findings;
         }
+    }
+
+    /// The alerts a check found for this launcher: the ones not dismissed are kept for the
+    /// top bar, warnings and critical ones go on the desktop once, and a critical one not
+    /// acknowledged in this run opens its card.
+    fn alerts_found(&mut self, alerts: Vec<crate::core::launcher::alerts::Alert>) {
+        use crate::core::launcher::alerts::{self, Severity};
+        let open: Vec<_> = alerts
+            .into_iter()
+            .filter(|a| !(a.can_dismiss() && self.state.alerts_seen.contains(&a.id)))
+            .collect();
+        let fresh = alerts::not_yet_notified(&open);
+        if self.state.desktop_notifications {
+            alerts::notify_desktop(&fresh);
+        }
+        if self.overlay.is_none() {
+            if let Some(a) = open
+                .iter()
+                .find(|a| a.severity() == Severity::Critical && !self.alerts_read.contains(&a.id))
+            {
+                self.overlay = Some(setup::Overlay::Alert(Box::new(a.clone())));
+            }
+        }
+        self.alerts = open;
     }
 
     /// Starts the measurements the pages asked for that are due.
@@ -3266,6 +3300,7 @@ impl Dashboard {
         versions::handle_answers(self, &ctx);
         settings::uninstall_answers(self, &ctx);
         goback::answers(self, &ctx);
+        alerts::answers(self);
         play::answers(self, &ctx);
         // The page right of the unfolded rail: laid out that much narrower (as for a
         // narrower window), at the same height.
@@ -4221,6 +4256,11 @@ impl Dashboard {
             design::GREY
         };
         let x = dz(chip.right() + 12.0);
+        // An alert while nothing more urgent is said here: a notice, a job.
+        let quiet = notice.is_none() && self.jobs_in_order().is_empty();
+        if quiet && alerts::strip(self, kit, x, dz(status_end), dz(bar.y + bar.h / 2.0)) {
+            return;
+        }
         let g = kit.spaced_fit(
             &status.to_uppercase(),
             design::din(13.8),
