@@ -1203,7 +1203,14 @@ pub fn before_start(
     if let Err(e) = ensure_required(v, &ModCatalog::cached(), holds) {
         tracing::warn!("required mods: {e:#}");
     }
-    apply_blocks(v, &super::goback::Rollback::cached());
+    // Blocks as release.echovr.de has them now (else as kept last): one takes effect at the
+    // next start, not only after the next update check.
+    let rollback = if cfg!(test) {
+        super::goback::Rollback::cached()
+    } else {
+        super::goback::Rollback::load()
+    };
+    apply_blocks(v, &rollback);
     prepare(v, servers)
 }
 
