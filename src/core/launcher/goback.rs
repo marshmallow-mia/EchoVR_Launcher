@@ -331,6 +331,53 @@ pub fn go_back(
 pub struct Rollback {
     #[serde(default)]
     pub pulled: Vec<Pulled>,
+    /// Mod versions blocked for everyone (schema 2, `echo-mod reject`): never offered, and
+    /// an installed one goes back to the newest that isn't, or stays out of the start.
+    #[serde(default)]
+    pub blocked: Vec<Block>,
+}
+
+/// A block: versions of one mod nobody should run.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default)]
+pub struct Block {
+    /// `mod` (others are for later).
+    pub part: String,
+    /// The mod's catalogue id (or its file).
+    pub id: String,
+    /// The versions: a range ([`crate::core::semver`]), prereleases included, or `all`.
+    pub versions: String,
+    /// Or one file exactly, by its sha256.
+    pub sha: String,
+    /// `off` (out of the start) or `remove` (its files set aside as well).
+    pub action: String,
+    /// What is wrong, for the player.
+    pub note: String,
+    /// An alert that says more ([`super::alerts`]).
+    pub alert: String,
+}
+
+impl Block {
+    /// Pure: whether it blocks mod `id` (catalogue id, if known) in `file` at `version`
+    /// (its file's `sha`, if known).
+    pub fn covers(&self, id: Option<&str>, file: &str, version: &str, sha: Option<&str>) -> bool {
+        if self.part != "mod" || self.id.is_empty() {
+            return false;
+        }
+        let named = id.is_some_and(|i| i == self.id) || file.eq_ignore_ascii_case(&self.id);
+        let versions = match self.versions.trim() {
+            "" if !self.sha.is_empty() => true,
+            "" => false,
+            r => crate::core::semver::in_range(version, r, true),
+        };
+        let file_ok = self.sha.is_empty() || sha.is_some_and(|s| s.eq_ignore_ascii_case(&self.sha));
+        named && versions && file_ok
+    }
+
+    /// Set its files aside too, not only keep it out.
+    pub fn removes(&self) -> bool {
+        self.action == "remove"
+    }
 }
 
 /// A pulled version.
@@ -360,19 +407,50 @@ impl Rollback {
         Ok(serde_json::from_str(text)?)
     }
 
-    /// The published list (none when it can't be read: nothing is pulled).
+    /// The published list (none when it can't be read: nothing is pulled; blocks as kept
+    /// last). Kept for [`Rollback::cached`].
     pub fn load() -> Rollback {
+        let path = crate::core::paths::data_dir().join("rollback.json");
         match crate::core::http::get_text_opt(ROLLBACK_URL) {
-            Ok(Some(t)) => Rollback::parse(&t).unwrap_or_else(|e| {
-                tracing::warn!("rollback.json unreadable: {e:#}");
-                Rollback::default()
-            }),
-            Ok(None) => Rollback::default(),
-            Err(e) => {
-                tracing::info!("rollback.json unavailable: {e:#}");
+            Ok(Some(t)) => match Rollback::parse(&t) {
+                Ok(r) => {
+                    let _ = std::fs::create_dir_all(crate::core::paths::data_dir());
+                    let _ = std::fs::write(&path, &t);
+                    r
+                }
+                Err(e) => {
+                    tracing::warn!("rollback.json unreadable: {e:#}");
+                    Rollback::default()
+                }
+            },
+            Ok(None) => {
+                let _ = std::fs::remove_file(&path);
                 Rollback::default()
             }
+            Err(e) => {
+                tracing::info!("rollback.json unavailable: {e:#}");
+                Rollback {
+                    pulled: Vec::new(),
+                    ..Rollback::cached()
+                }
+            }
         }
+    }
+
+    /// The list as kept last (no network: before a start, while reading the mods).
+    pub fn cached() -> Rollback {
+        if cfg!(test) {
+            return Rollback::default();
+        }
+        std::fs::read_to_string(crate::core::paths::data_dir().join("rollback.json"))
+            .ok()
+            .and_then(|t| Rollback::parse(&t).ok())
+            .unwrap_or_default()
+    }
+
+    /// The block that covers mod `id` in `file` at `version`, if any ([`Block::covers`]).
+    pub fn block_for(&self, id: Option<&str>, file: &str, version: &str, sha: Option<&str>) -> Option<&Block> {
+        self.blocked.iter().find(|b| b.covers(id, file, version, sha))
     }
 }
 

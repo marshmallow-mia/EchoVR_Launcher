@@ -128,6 +128,31 @@ impl History {
         Some(e)
     }
 
+    /// The newest complete version of mod `id` older than `version` that `ok` takes (not
+    /// blocked), ready to install from the store. Versions that aren't semantic versions
+    /// aren't considered.
+    pub fn mod_newest_below(&self, id: &str, version: &str, ok: impl Fn(&str) -> bool) -> Option<ModEntry> {
+        use crate::core::semver::Version;
+        let below = Version::parse(version)?;
+        let mut e: ModEntry = self
+            .mods
+            .get(id)?
+            .iter()
+            .filter(|v| !serde_json::from_value::<Listed>((*v).clone()).unwrap_or_default().incomplete)
+            .filter_map(|v| serde_json::from_value::<ModEntry>(v.clone()).ok())
+            .filter_map(|e| Some((Version::parse(&e.version)?, e)))
+            .filter(|(v, e)| *v < below && ok(&e.version))
+            .max_by(|a, b| a.0.cmp(&b.0))?
+            .1;
+        if let Some(sha) = e.sha256.clone() {
+            e.url = from_store(&e.url, &sha);
+        }
+        if let Some(p) = e.pack.as_mut() {
+            p.url = from_store(&p.url, &p.sha256);
+        }
+        Some(e)
+    }
+
     /// The version listed before `version` of plugin `id`, ready to install from the store.
     pub fn plugin_before(&self, id: &str, version: &str) -> Option<PluginEntry> {
         let mut e: PluginEntry =

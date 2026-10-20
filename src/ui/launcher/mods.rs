@@ -56,6 +56,7 @@ const CATALOG_RETRY: Duration = Duration::from_secs(5 * 60);
 
 const ADD_KEY: &str = "mods-add-dll";
 const REMOVE_KEY: &str = "mods-remove";
+const NEEDS_KEY: &str = "mods-needs";
 
 /// The page's own state.
 #[derive(Default)]
@@ -75,6 +76,8 @@ pub(super) struct Mods {
     editing: Option<Editing>,
     /// The plugin "Remove" asks about.
     removing: Option<String>,
+    /// A mod to install with the mods it needs, which "Install them too?" asks about.
+    needs: Option<(ModEntry, Vec<ModEntry>)>,
 }
 
 struct Editing {
@@ -241,6 +244,12 @@ fn refresh_catalog(d: &mut Dashboard, ctx: &egui::Context) {
 
 /// The answers to this page's dialogs.
 fn answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if let Some(a) = d.dialogs.take(NEEDS_KEY) {
+        let needs = d.mods.needs.take();
+        if let (Some((entry, first)), true, Some(v)) = (needs, a.is_yes(), version(d)) {
+            install_with(d, ctx, &v, entry, first);
+        }
+    }
     if let Some(a) = d.dialogs.take(ADD_KEY) {
         if a.is_yes() {
             add_from_disk(d, ctx);
@@ -941,6 +950,25 @@ fn plugins_card(
                                     None
                                 })
                                 .flatten(),
+                            left_out: view.left_out.get(&p.file.to_ascii_lowercase()).cloned(),
+                            quarantined: view
+                                .quarantined
+                                .iter()
+                                .find(|(f, _)| f.eq_ignore_ascii_case(&p.file))
+                                .map(|(f, q)| {
+                                    let still = crate::core::launcher::goback::Rollback::cached()
+                                        .block_for(Some(&q.id), f, &q.version, None)
+                                        .is_some();
+                                    (q.note.clone(), !still)
+                                }),
+                            not_listed: match &p.source {
+                                Source::Catalog { id, .. } => d
+                                    .mods
+                                    .catalog
+                                    .as_ref()
+                                    .is_some_and(|c| !c.builtin && !c.mods.iter().any(|m| m.id == *id)),
+                                _ => false,
+                            },
                         };
                         plugin_row(d, k, v, p, &look, x, ry, w)
                     }
@@ -1288,6 +1316,13 @@ struct Look {
     held: bool,
     /// Its content pack stays off (why, as a chip).
     pack_off: Option<&'static str>,
+    /// Why the last start left it out (blocked, waiting for a mod it needs, a conflict).
+    left_out: Option<String>,
+    /// Set aside because it was blocked: the note, and whether the block is lifted now
+    /// (Restore puts it back then).
+    quarantined: Option<(String, bool)>,
+    /// From the catalogue, and the catalogue doesn't list it any more.
+    not_listed: bool,
 }
 
 /// Why a plugin that isn't verified doesn't load, and how to change that.
@@ -1486,10 +1521,21 @@ fn plugin_row(
                         v.name
                     ),
                 ),
-                None => (
-                    "Remove mod",
-                    format!("Delete {} ({}) from {}?", look.name, p.file, v.name),
-                ),
+                None => {
+                    let needed_by = match &p.source {
+                        Source::Catalog { id, .. } => mods::dependents(v, id),
+                        _ => Vec::new(),
+                    };
+                    let also = if needed_by.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {} need it: they wait for it at every start then.", needed_by.join(", "))
+                    };
+                    (
+                        "Remove mod",
+                        format!("Delete {} ({}) from {}?{also}", look.name, p.file, v.name),
+                    )
+                }
             };
             d.dialogs.confirm_danger(REMOVE_KEY, title, &text, "Remove");
         }
@@ -1524,9 +1570,43 @@ fn plugin_row(
             d.mods.editing = if open { None } else { Some(Editing::of(v, p)) };
         }
     }
+    // Set aside because it was blocked: Restore once the block is lifted.
+    if let Some((_, lifted)) = &look.quarantined {
+        if *lifted
+            && a.button(
+                k,
+                &key("restore"),
+                Tone::Dark,
+                None,
+                "Restore",
+                editable && busy.is_none(),
+                "Its block is lifted: put its file back",
+            )
+        {
+            let ctx = k.ui.ctx().clone();
+            let file = p.file.clone();
+            run(d, &ctx, v, "Restoring a mod", move |v, _, _| {
+                mods::restore_quarantined(v, &file)?;
+                Ok(format!("{file} is back: it loads at the next start"))
+            });
+        }
+    }
     // What needs looking at: only nEVR says what it loaded.
-    if look.held {
+    if look.quarantined.is_some() {
+        a.chip(k, "Set aside", design::RED);
+    } else if look.held {
         a.chip(k, "Not loaded", design::QUEST_WARN);
+    } else if let Some(why) = &look.left_out {
+        let chip = if why.starts_with("Blocked") {
+            ("Blocked", design::RED)
+        } else if why.starts_with("Waiting") || why.starts_with("Needs") {
+            ("Waiting", design::QUEST_WARN)
+        } else if why.starts_with("Conflicts") {
+            ("Conflict", design::QUEST_WARN)
+        } else {
+            ("Left out", design::QUEST_WARN)
+        };
+        a.chip(k, chip.0, chip.1);
     } else if let Some(why) = look.pack_off {
         a.chip(k, why, design::QUEST_WARN);
     } else if let Some((chip, color)) = state(p).filter(|_| look.current) {
@@ -1584,12 +1664,20 @@ fn plugin_row(
         if crate::core::semver::Version::parse(version).is_some_and(|v| v.is_prerelease()));
     let tags = [
         Some(source),
+        look.not_listed.then_some(("Not listed", design::GREY)),
         prerelease.then_some(("Prerelease", design::QUEST_WARN)),
         p.required.then_some(("Required", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
     ];
     name_tags(k, x, &a, &look.name, tags.into_iter().flatten());
-    let line = plugin_detail(p, look.author.as_deref());
+    let line = match (&look.quarantined, &look.left_out) {
+        (Some((note, lifted)), _) => format!(
+            "Set aside: blocked ({note}){}",
+            if *lifted { "  ·  the block is lifted: Restore puts it back" } else { "" }
+        ),
+        (None, Some(why)) => format!("{}  ·  {why}", p.file),
+        _ => plugin_detail(p, look.author.as_deref()),
+    };
     let g = detail_lines(k, &line, w);
     k.put(x + dz(INDENT), y + dz(DETAIL_Y), g);
 }
@@ -2829,11 +2917,99 @@ fn catalogue_card(
 
 /// Downloads the catalogue's `m` into `v` as a job (new, or its new version).
 fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntry) {
-    let entry = m.clone();
-    let title = format!("Installing {}", m.name);
+    // The nEVR it needs (only checked here: an installed mod is never turned off for it).
+    if let Some(range) = m.requires.nevr.as_deref() {
+        if let Some(have) = mods::nevr_version(v) {
+            let have_short = have.split('+').next().unwrap_or(&have).to_string();
+            if !crate::core::semver::in_range(&have, range, true) {
+                d.dialogs.info(
+                    "Needs another nEVR",
+                    &format!(
+                        "{} {} needs nEVR {range}, and {} has nEVR {have_short}. Advanced settings → \
+                         Launcher channel: Beta brings the newest nEVR; or ask its maker for a version \
+                         that runs on this one.",
+                        m.name, m.version, v.name
+                    ),
+                );
+                return;
+            }
+        }
+    }
+    // The mods it needs that aren't here: install them too?
+    let installed: Vec<String> = d
+        .mods
+        .view
+        .as_ref()
+        .filter(|(id, ..)| *id == v.id)
+        .map(|(_, view, _)| {
+            view.plugins
+                .iter()
+                .filter_map(|p| match &p.source {
+                    Source::Catalog { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let catalog = d.mods.catalog.clone().unwrap_or_default();
+    let missing: Vec<&crate::core::launcher::catalogue::Dependency> = m
+        .requires
+        .mods
+        .iter()
+        .filter(|dep| !installed.contains(&dep.id))
+        .collect();
+    if !missing.is_empty() {
+        let found: Vec<ModEntry> = missing
+            .iter()
+            .filter_map(|dep| catalog.mods.iter().find(|e| e.id == dep.id && e.downloadable()).cloned())
+            .collect();
+        let names = |list: &[ModEntry]| list.iter().map(|e| e.name.clone()).collect::<Vec<_>>().join(", ");
+        let absent: Vec<String> = missing
+            .iter()
+            .filter(|dep| !found.iter().any(|e| e.id == dep.id))
+            .map(|dep| dep.id.clone())
+            .collect();
+        let mut text = format!("{} needs ", m.name);
+        if !found.is_empty() {
+            text.push_str(&format!("{}: install it too?", names(&found)));
+        }
+        if !absent.is_empty() {
+            text.push_str(&format!(
+                "{}{}, which the catalogue doesn't have: {} waits for it at every start.",
+                if found.is_empty() { "" } else { " It also needs " },
+                absent.join(", "),
+                m.name
+            ));
+        }
+        d.mods.needs = Some((m.clone(), found));
+        d.dialogs.options(
+            NEEDS_KEY,
+            "It needs other mods",
+            &text,
+            DlgIcon::Question,
+            &["Install", "Cancel"],
+        );
+        return;
+    }
+    install_with(d, ctx, v, m.clone(), Vec::new());
+}
+
+/// Installs `entry` into `v`, the mods it needs (`first`) before it.
+fn install_with(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, entry: ModEntry, first: Vec<ModEntry>) {
+    let title = format!("Installing {}", entry.name);
     run(d, ctx, v, &title, move |v, cancel, on| {
-        mods::install(v, &entry, cancel, on)
-            .map(|()| format!("{} is installed: it loads at the next start", entry.name))
+        for dep in &first {
+            mods::install(v, dep, cancel, on)?;
+        }
+        mods::install(v, &entry, cancel, on)?;
+        Ok(match first.len() {
+            0 => format!("{} is installed: it loads at the next start", entry.name),
+            n => format!(
+                "{} and {n} {} it needs are installed: they load at the next start",
+                entry.name,
+                if n == 1 { "mod" } else { "mods" }
+            ),
+        })
     });
 }
 
@@ -3352,6 +3528,8 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         packs: Vec::new(),
         loads_early: true,
         repacked: false,
+        left_out: Default::default(),
+        quarantined: Default::default(),
         assets_enabled: true,
         asset_patches: [
             "netgun_combustion",

@@ -59,6 +59,12 @@ pub struct Requires {
     pub mods: Vec<Dependency>,
 }
 
+impl Requires {
+    pub fn is_empty(&self) -> bool {
+        self.nevr.is_none() && self.mods.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct Dependency {
