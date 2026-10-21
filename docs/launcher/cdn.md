@@ -53,7 +53,14 @@ Where the checksums come from:
   it), or when `checked` is more than 20 minutes older than the CDN's answer (its `Date`):
   echo-cdn-index writes it again at least every 5 minutes, so the sync to the CDN has
   stopped. A stale CDN index is still used when release.echovr.de can't be reached either.
-- **Never from the CDN:** `launcher/logs`, the live feed (`launcher/feed/`), `stats/`.
+- **Signed** (since 0.13.0-alpha.2): a CDN index counts only with a valid Ed25519 signature
+  in `index.json.sig` beside it (`{"signatures": [{"key", "sha256", "sig"}]}`, the index now
+  and the one before) by a key in `SIGNING_KEYS` (`src/core/sources.rs`); else
+  release.echovr.de's is used. Everything an index names is checked by its checksum, so a
+  tampered CDN, Bunny account or sync can't hand the launcher other files. Dev folders'
+  indexes are signed the same way.
+- **Never from the CDN:** `launcher/logs`, the live feed (`launcher/feed/`), what's behind
+  the EchoVRCE sign-in (`launcher/gated/`), `stats/`.
 
 `index.json` is written on release.echo by `echo-cdn-index` whenever a listed file
 changes (its `serial` goes up by one each time), and every 5 minutes anyway (a new

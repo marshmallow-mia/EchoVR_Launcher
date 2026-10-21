@@ -162,38 +162,54 @@ An entry that breaks a rule is left out; the rest of the list is still used.
 Mods from other developers (submitted at
 [EchoTools/echo-mods](https://github.com/EchoTools/echo-mods), made from
 [EchoTools/echo-mod-template-repo](https://github.com/EchoTools/echo-mod-template-repo)) are
-published by the server's mirror. `mods.json` keeps its meaning (the newest stable version of
-each, for launchers before 0.13); since 0.13 the launcher also reads
-`launcher/catalogue.json`: every version of each mod, newest first, with these fields beside
-a `mods.json` entry's:
+published by the server's mirror into `launcher/catalogue.json`, which only launchers since
+0.13 read: `mods.json` stays the launcher's own mods, so launchers before 0.13 never see a
+third-party mod. `catalogue.json` has every version of each mod, newest first, with these
+fields beside a `mods.json` entry's (and the mod's `publisher`, its GitHub account):
 
 | Field | Meaning |
 |---|---|
 | `prerelease` | A semver prerelease (`1.3.0-beta.1`) |
 | `requires` | `{"nevr": ">=4.1.0", "mods": [{"id": "…", "version": ">=1.0.0"}]}` |
 | `conflicts` | Mod ids that can't be on beside it |
-| `blocked` | `{"action", "note"}`: never offered |
+| `blocked` | `{"action", "note", "alert"}`: never offered |
 
-- The launcher offers each mod's newest version that isn't blocked. A prerelease only for the
-  mods the player turned **Prereleases** on for (the mod's **More** menu), never for all at
-  once; under an installed prerelease with prereleases off, the row offers **Switch to
-  stable**. Only newer versions (semver) count as updates.
-- Without `catalogue.json` (nothing published that way yet, or offline with none kept),
-  everything is as before. A catalogue entry never replaces the launcher's own mods (shipped
-  or required ones, or their files) and is never shipped or required itself.
+- They're tagged **Community** (More mods says who published them), and the first **Get** of
+  one says once what that is (`community_mods_ok` in `launcher.json`).
+- The launcher offers each mod's newest version no block covers (here or in
+  `rollback.json`). A prerelease only for the mods the player turned **Prereleases** on for
+  (the mod's **More** menu), never for all at once; a mod that has only prereleases is offered
+  as one, and getting it turns its prereleases on. Under an installed prerelease with
+  prereleases off, the row offers **Switch to stable**. Only newer versions (semver) count as
+  updates.
+- Without `catalogue.json` (nothing published that way yet, or offline with none kept) there
+  are no third-party mods to get; installed ones keep loading. A catalogue entry never
+  replaces the launcher's own mods (shipped or required ones, or their files) and is never
+  shipped or required itself.
 - **Unlisted** mods aren't in it: More mods → **Add by id** looks one up
-  (`launcher/unlisted/<id>.json`) and lists it (`unlisted_mods` in `launcher.json`).
+  (`launcher/unlisted/<id>.json`, else a **private** one behind the EchoVRCE sign-in,
+  `launcher/gated/private/<id>.json`, for the accounts its maker allowed), checks it has
+  something to offer, and lists it (`unlisted_mods` in `launcher.json`).
 - **More** on a mod: Prereleases, Source (when the catalogue and dev folders both have it),
   Report this mod (the logs go to the moderators with the mod and a note; needs the EchoVRCE
   sign-in), Homepage.
 - Install notes where a mod came from and what its version needs. **Get** offers to install
-  the mods it needs too and refuses a version that needs another nEVR (Beta brings the newest).
+  the mods it needs too, refuses a version that needs another nEVR (Beta brings the newest)
+  and one that can't run beside a mod that's on. **Update** goes through the same checks;
+  the update check and Play's update button leave a version that needs the player's OK (a
+  block, nEVR, a mod it needs or conflicts with) to the Mods page.
 - Before a start a mod stays out when it is blocked, waits for a mod it needs (missing, off,
-  or another version), or conflicts with one that loads before it. Its row says why
-  (`_local/launcher-left-out.json`), as it does for a file changed since it was installed.
-  Nothing is uninstalled for it, and a mod is never turned off because metadata appeared.
-- A mod installed from the catalogue that it doesn't list any more keeps loading, tagged **Not
-  listed** (a frozen mod, or one from a removed dev code).
+  out itself, or another version: a prerelease of it counts), or declares a conflict with one
+  that's on (only the mod that declares it). What's left out leaves out what needs it, until
+  nothing more drops. Its row says why (a chip, its reason on hover;
+  `_local/launcher-left-out.json`), as it does for a file changed since it was installed
+  (**Reinstall**). Nothing is uninstalled for it, and a mod is never turned off because
+  metadata appeared. A blocked content pack serves nothing at all.
+- Going back (a block, or **Go back**) takes only sound entries from the history: checked like
+  a catalogue's, never a blocked version, never a prerelease of a mod whose prereleases are
+  off.
+- A mod installed from the catalogue that it doesn't list any more keeps loading, tagged **No
+  longer available** (a frozen mod, or one from a removed dev code).
 - When Echo VR closes within a minute and a half twice since mods changed, the launcher asks
   whether to start without them (`runs` in `launcher-mods.json`); nothing is turned off
   without that click.

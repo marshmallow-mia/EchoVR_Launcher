@@ -2,8 +2,10 @@
 
 With a **dev code** the launcher lists your own mods and launcher plugins from your **dev
 folder** on release.echovr.de, before they're in the published catalogues. Only whoever has
-the code sees them. Ask the launcher's maintainers for a folder and send them an SSH public
-key; you get a code and an `sftp` command.
+the code sees them. Third-party developers get theirs with their first approved mod
+([EchoTools/echo-mods](https://github.com/EchoTools/echo-mods)): SFTP with the SSH keys of
+their GitHub account, the code in `DEV-CODE.txt` in the folder. Others ask the launcher's
+maintainers and send them an SSH public key; they get a code and an `sftp` command.
 
 ## In the launcher
 
@@ -24,9 +26,20 @@ A folder can name its channel in a root-owned `channel.json` (`{"name": "…"}`;
 writes it): Advanced settings shows the name, and alerts can aim at the channel
 ([alerts.md](alerts.md)).
 
-Third-party developers' channels are *restricted* (code plus their EchoVRCE account, or one
-allowed): until the launcher can sign in to them, their codes say "No dev folder has this
-code"; those developers test with **Add DLL**.
+Third-party developers' channels (since 0.13.0-alpha.2) are behind the EchoVRCE sign-in, at
+`launcher/gated/dev/<code>/`: *restricted* ones open for the developer's own EchoVRCE account
+and the accounts in their folder's `access.json`, *public* ones for any signed-in account
+(the maintainers choose which, never the developer). A code that isn't under `launcher/dev/`
+is looked for there with the player's EchoVRCE session (sent to release.echovr.de's
+`launcher/gated/` only, never to the CDN or anywhere else); its line in Advanced settings says
+**Sign in** (with a button) or that the account isn't allowed. Which codes are gated is kept
+by a hash of the code in `dev-gated.json`. Signed out, or no longer allowed: its mods aren't
+listed any more, installed ones keep loading.
+
+`access.json` (yours to overwrite): `{"schema": 1, "accounts": ["EchoVRCE username or account
+id", ...]}`, at most 50. A username counts for the first account that signs in with it.
+`ACCESS-STATUS.txt` beside it (read-only) says which were found and who has signed in. The
+same list opens your **private** mods (visibility `private` in `echo-mod.json`).
 
 ## Your folder
 
@@ -34,8 +47,14 @@ code"; those developers test with **Add DLL**.
 /                 your folder (SFTP shows it as /)
 ├── mods.json     your mods catalogue: overwrite it
 ├── plugins.json  your launcher plugins catalogue: overwrite it
-└── files/        your DLLs and zips
+├── files/        your DLLs and zips
+├── channel.json  your channel's name (read-only)
+├── access.json   who else may use a gated channel and your private mods: overwrite it
+├── ACCESS-STATUS.txt   what access.json was found to hold (read-only)
+└── DEV-CODE.txt  your code (read-only; never served)
 ```
+
+The last three are only in a third-party developer's (gated) channel.
 
 Upload with any SFTP client, e.g. `sftp -P 2999 dev-<name>@168.119.2.94`, then
 `put NvrMyMod.dll files/` and `put mods.json`. You can't make links or anything outside
