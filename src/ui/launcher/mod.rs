@@ -2925,6 +2925,8 @@ impl Dashboard {
                 let installed = v.id.clone();
                 self.state.upsert(v);
                 self.save();
+                // What its update replaced (or the history) can be gone back to now.
+                goback::refresh(self, ctx);
                 self.check_slot_soon(ctx, &installed);
                 // A new player's patch goes in now, if it is already here.
                 setup::apply_pending(self, ctx);
@@ -2958,6 +2960,7 @@ impl Dashboard {
                 self.updates.check_soon();
                 self.state.upsert(r.version);
                 self.save();
+                goback::refresh(self, ctx);
                 self.check_slot_soon(ctx, id);
                 setup::apply_pending(self, ctx);
                 if r.update_failed.is_none() {
