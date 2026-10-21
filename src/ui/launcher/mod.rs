@@ -885,6 +885,8 @@ pub struct Dashboard {
     game_since: Option<std::time::Instant>,
     /// The version that run is of (for the crash safety net: [`mods::game_ended`]).
     game_version: Option<String>,
+    /// That run was ended with STOP: no crash, whenever it ends.
+    pub(super) game_stopped: bool,
     /// The Quest was checked quietly once already.
     quest_auto_checked: bool,
     /// A full-window card on top (the install questions, the licence patch, joining…).
@@ -3304,12 +3306,12 @@ impl Dashboard {
             (true, None) => {
                 self.game_since = Some(std::time::Instant::now());
                 self.game_version = self.running_version().map(|v| v.id.clone());
+                self.game_stopped = false;
             }
             (false, Some(since)) => {
                 self.game_since = None;
-                if let Some(v) = self
-                    .game_version
-                    .take()
+                let stopped = std::mem::take(&mut self.game_stopped);
+                if let Some(v) = counted_run(self.game_version.take(), stopped)
                     .and_then(|id| self.state.version(&id).cloned())
                 {
                     mods::game_ended(self, &v, since.elapsed());
@@ -4551,9 +4553,25 @@ fn demo_catalog() -> Catalog {
     c
 }
 
+/// Pure: the version whose run the crash safety net counts when the game is gone: none
+/// when STOP ended it (on purpose, not a crash).
+fn counted_run(version: Option<String>, stopped: bool) -> Option<String> {
+    version.filter(|_| !stopped)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{clash, Res};
+    use super::{clash, counted_run, Res};
+
+    #[test]
+    fn a_run_ended_with_stop_is_no_crash() {
+        assert_eq!(
+            counted_run(Some("pc-latest".into()), false).as_deref(),
+            Some("pc-latest")
+        );
+        assert_eq!(counted_run(Some("pc-latest".into()), true), None);
+        assert_eq!(counted_run(None, false), None);
+    }
 
     /// The rail as designed while its plugin tabs fit, tighter with more, scrolling with
     /// more still, never into Settings, and a taller window gives room back.

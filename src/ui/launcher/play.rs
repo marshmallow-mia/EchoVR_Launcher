@@ -1449,6 +1449,8 @@ fn servers_here(n: usize) -> Option<String> {
 /// Ends the game PLAY started, or its start while the game hasn't shown up yet.
 fn stop(d: &mut Dashboard) {
     let starting = d.launched.is_some_and(|l| !l.seen) && d.local().ours.is_none();
+    // Ended on purpose: the crash safety net doesn't count this run.
+    d.game_stopped = true;
     if let Some(c) = d.launch_cancel.take() {
         c.store(true, Ordering::Relaxed);
     }

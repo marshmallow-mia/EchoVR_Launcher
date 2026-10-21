@@ -275,13 +275,14 @@ pub(super) fn game_ended(d: &mut Dashboard, v: &InstalledVersion, ran: std::time
     }
     // By their names, as the Mods page shows them.
     let view = mods::read(v);
+    let catalogued = names(d.mods.catalog.as_ref());
     let names = suspects
         .iter()
         .map(|f| {
             view.plugins
                 .iter()
                 .find(|p| p.file.eq_ignore_ascii_case(f))
-                .map(|p| p.name.clone())
+                .map(|p| display_name(p, &catalogued))
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| f.clone())
         })
