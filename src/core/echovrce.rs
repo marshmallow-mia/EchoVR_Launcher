@@ -987,7 +987,8 @@ mod tests {
     #[ignore]
     fn live_device_code_is_pending() {
         let c = request_code().unwrap();
-        assert_eq!(c.code.len(), 9);
+        // Its length is EchoVRCE's choice (9 characters once, 4 since October 2026).
+        assert!(!c.code.is_empty());
         assert_eq!(poll(&c.code).unwrap(), Poll::Pending);
     }
 }
