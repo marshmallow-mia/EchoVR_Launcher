@@ -222,8 +222,9 @@ fn of_version(v: &InstalledVersion, h: Option<&History>) -> Vec<WayBack> {
         });
     }
     if let Some(h) = h {
+        let rollback = Rollback::cached();
         for (file, id, now, name) in super::mods::from_catalog_unkept(v) {
-            if let Some(e) = h.mod_before(&id, &now) {
+            if let Some(e) = h.mod_before(&id, &now, |e| fits_back(&rollback, e)) {
                 let size = e.size.or(e.pack.as_ref().and_then(|p| p.size));
                 let shown = if name.is_empty() {
                     e.name.clone()
@@ -285,8 +286,9 @@ pub fn go_back(
                     .into_iter()
                     .find(|(f, ..)| f.eq_ignore_ascii_case(file))
                     .ok_or_else(|| anyhow::anyhow!("There is no earlier version of {file}."))?;
+                let rollback = Rollback::cached();
                 let e = History::load()
-                    .and_then(|h| h.mod_before(&cid, &now))
+                    .and_then(|h| h.mod_before(&cid, &now, |e| fits_back(&rollback, e)))
                     .ok_or_else(|| {
                         anyhow::anyhow!(
                             "There is no earlier version of {file} on release.echovr.de."
@@ -322,6 +324,22 @@ pub fn go_back(
         }
     };
     Ok((part.key(), from))
+}
+
+/// Whether going back to version `version` of mod `id` is fine as far as prereleases go:
+/// a prerelease only for a mod the player takes prereleases of.
+pub fn may_go_back_to(id: &str, version: &str) -> bool {
+    !crate::core::semver::Version::parse(version).is_some_and(|v| v.is_prerelease())
+        || super::prefs::get().prereleases.contains(id)
+}
+
+/// Pure but for the prerelease choice: a history entry to go back to, neither blocked nor an
+/// unwanted prerelease.
+fn fits_back(rollback: &Rollback, e: &super::mods::ModEntry) -> bool {
+    rollback
+        .block_for(Some(&e.id), &e.file, &e.version, e.sha256.as_deref())
+        .is_none()
+        && may_go_back_to(&e.id, &e.version)
 }
 
 // ---- release.echovr.de's pulled versions ----
@@ -368,6 +386,8 @@ impl Block {
         let versions = match self.versions.trim() {
             "" if !self.sha.is_empty() => true,
             "" => false,
+            // Every version: also one that isn't a semantic version.
+            "all" | "*" => true,
             r => crate::core::semver::in_range(version, r, true),
         };
         let file_ok = self.sha.is_empty() || sha.is_some_and(|s| s.eq_ignore_ascii_case(&self.sha));
@@ -384,6 +404,7 @@ impl Block {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Pulled {
     /// `launcher`, `game`, `mod` or `plugin`.
+    #[serde(default)]
     pub part: String,
     /// The version pulled: the launcher's, a mod's or a plugin's; for the game the sha256
     /// of its update manifest (`sha`).
@@ -408,12 +429,15 @@ impl Rollback {
     }
 
     /// The published list (none when it can't be read: nothing is pulled; blocks as kept
-    /// last). Kept for [`Rollback::cached`].
+    /// last). Kept for [`Rollback::cached`]. Asked for with a short timeout: it is read
+    /// before every start.
     pub fn load() -> Rollback {
         let path = crate::core::paths::data_dir().join("rollback.json");
         let got = super::test_feed::read("rollback.json")
             .map(Ok)
-            .unwrap_or_else(|| crate::core::http::get_text_opt(ROLLBACK_URL));
+            .unwrap_or_else(|| {
+                crate::core::sources::text(ROLLBACK_URL, std::time::Duration::from_secs(8))
+            });
         match got {
             Ok(Some(t)) => match Rollback::parse(&t) {
                 Ok(r) => {
@@ -421,9 +445,13 @@ impl Rollback {
                     let _ = std::fs::write(&path, &t);
                     r
                 }
+                // A broken file never lifts a block: the last good one holds.
                 Err(e) => {
-                    tracing::warn!("rollback.json unreadable: {e:#}");
-                    Rollback::default()
+                    tracing::warn!("rollback.json unreadable: {e:#}; the last one kept holds");
+                    Rollback {
+                        pulled: Vec::new(),
+                        ..Rollback::cached()
+                    }
                 }
             },
             Ok(None) => {

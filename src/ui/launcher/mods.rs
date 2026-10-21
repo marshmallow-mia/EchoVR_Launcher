@@ -57,6 +57,8 @@ const CATALOG_RETRY: Duration = Duration::from_secs(5 * 60);
 const ADD_KEY: &str = "mods-add-dll";
 const REMOVE_KEY: &str = "mods-remove";
 const NEEDS_KEY: &str = "mods-needs";
+/// The first Get of a community mod: what that is, once.
+const COMMUNITY_KEY: &str = "mods-community";
 const CRASH_KEY: &str = "mods-crash";
 
 /// The page's own state.
@@ -79,6 +81,8 @@ pub(super) struct Mods {
     removing: Option<String>,
     /// A mod to install with the mods it needs, which "Install them too?" asks about.
     needs: Option<(ModEntry, Vec<ModEntry>)>,
+    /// The community mod the first Get of one asks about.
+    community: Option<ModEntry>,
     /// The version and mods "The game closed right after starting" asks about.
     crash: Option<(InstalledVersion, Vec<String>)>,
 }
@@ -269,19 +273,33 @@ pub(super) fn game_ended(d: &mut Dashboard, v: &InstalledVersion, ran: std::time
     if suspects.is_empty() || d.dialogs.is_open() {
         return;
     }
-    let names = suspects.join(", ");
+    // By their names, as the Mods page shows them.
+    let view = mods::read(v);
+    let names = suspects
+        .iter()
+        .map(|f| {
+            view.plugins
+                .iter()
+                .find(|p| p.file.eq_ignore_ascii_case(f))
+                .map(|p| p.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| f.clone())
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let one = suspects.len() == 1;
     d.mods.crash = Some((v.clone(), suspects.clone()));
     d.dialogs.options(
         CRASH_KEY,
         "Echo VR closed right after starting",
         &format!(
-            "{} closed within a minute and a half twice since {names} changed. Start without {}? (The Mods page turns {} back on; Go back there puts the version before back.)",
+            "{} closed within a minute and a half twice since {names} changed. Turn {} off for now? (The Mods page turns {} back on; Go back there puts the version before back.)",
             v.name,
-            if suspects.len() == 1 { "it" } else { "them" },
-            if suspects.len() == 1 { "it" } else { "them" },
+            if one { "it" } else { "them" },
+            if one { "it" } else { "them" },
         ),
         DlgIcon::Warning,
-        &[if suspects.len() == 1 { "Start without it" } else { "Start without them" }, "Keep them"],
+        &[if one { "Turn it off" } else { "Turn them off" }, if one { "Keep it" } else { "Keep them" }],
     );
 }
 
@@ -306,6 +324,14 @@ fn answers(d: &mut Dashboard, ctx: &egui::Context) {
                     "The mods stay on".to_string()
                 })
             });
+        }
+    }
+    if let Some(a) = d.dialogs.take(COMMUNITY_KEY) {
+        let m = d.mods.community.take();
+        if let (Some(m), true, Some(v)) = (m, a.is_yes(), version(d)) {
+            d.state.community_mods_ok = true;
+            d.save();
+            get(d, ctx, &v, &m);
         }
     }
     if let Some(a) = d.dialogs.take(NEEDS_KEY) {
@@ -1019,12 +1045,7 @@ fn plugins_card(
                                 .quarantined
                                 .iter()
                                 .find(|(f, _)| f.eq_ignore_ascii_case(&p.file))
-                                .map(|(f, q)| {
-                                    let still = crate::core::launcher::goback::Rollback::cached()
-                                        .block_for(Some(&q.id), f, &q.version, None)
-                                        .is_some();
-                                    (q.note.clone(), !still)
-                                }),
+                                .map(|(f, q)| (q.note.clone(), mods::quarantine_lifted(v, f, q))),
                             not_listed: match &p.source {
                                 Source::Catalog { id, .. } => {
                                     d.mods.catalog.as_ref().is_some_and(|c| {
@@ -1127,8 +1148,8 @@ fn unheld_update(d: &Dashboard, vid: &str, p: &Plugin) -> Option<(ModEntry, cata
         .filter(|(m, _)| !crate::core::launcher::goback::held(&d.state.holds, &part, &m.version))
 }
 
-/// More mods → Add by id: the card for an unlisted mod's id. Add checks it's there
-/// (`launcher/unlisted/<id>.json`), then lists it with the others.
+/// More mods → Add by id: the card for an unlisted (or private) mod's id. Add checks it's
+/// there and has something to offer ([`catalogue::look_up`]), then lists it with the others.
 pub(super) fn unlisted_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     let Some(setup::Overlay::AddUnlisted { input, note }) = &mut d.overlay else {
         return;
@@ -1213,14 +1234,8 @@ pub(super) fn unlisted_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
     .clicked
     {
         *note = Some("Looking it up…".into());
-        let url = format!("{}{id}.json", crate::core::launcher::catalogue::UNLISTED);
         d.worker.spawn(ctx, move |tx| {
-            let test = crate::core::launcher::test_feed::read(&format!("unlisted/{id}.json"));
-            let found = test
-                .map(Ok)
-                .unwrap_or_else(|| crate::core::http::get_text_opt(&url))
-                .map(|t| t.is_some())
-                .map_err(|e| format!("{e:#}"));
+            let found = crate::core::launcher::catalogue::look_up(&id);
             tx.send(Msg::UnlistedChecked(id, found))
         });
     }
@@ -1228,22 +1243,42 @@ pub(super) fn unlisted_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
 
 /// What the lookup of an unlisted mod's id found: there, it's added and listed; not, the
 /// card says so.
-pub(super) fn unlisted_checked(d: &mut Dashboard, id: &str, found: Result<bool, String>) {
+pub(super) fn unlisted_checked(
+    d: &mut Dashboard,
+    id: &str,
+    found: Result<crate::core::launcher::catalogue::LookUp, String>,
+) {
+    use crate::core::launcher::catalogue::LookUp;
     let note = match found {
-        Ok(true) => {
+        Ok(LookUp::Found {
+            name,
+            prerelease_only,
+        }) => {
             if !d.state.unlisted_mods.iter().any(|u| u == id) {
                 d.state.unlisted_mods.push(id.to_string());
-                d.save();
             }
+            // Only prereleases so far: whoever adds it by its id asks for them.
+            if prerelease_only {
+                d.state.mod_prereleases.insert(id.to_string());
+            }
+            d.save();
             d.mods.reload_catalog();
             d.updates.check_soon();
             if matches!(d.overlay, Some(setup::Overlay::AddUnlisted { .. })) {
                 d.overlay = None;
             }
-            d.notify(&format!("{id} is listed in More mods now"));
+            d.notify(&format!("{name} is listed in More mods now"));
             return;
         }
-        Ok(false) => "No unlisted mod has this id.".to_string(),
+        Ok(LookUp::None) => "No unlisted or private mod has this id.".to_string(),
+        Ok(LookUp::SignIn) => {
+            "This mod is private: sign in with EchoVRCE (its page in the rail), then add it again."
+                .to_string()
+        }
+        Ok(LookUp::NotAllowed) => {
+            "This mod is private, and your EchoVRCE account isn't one its maker allowed."
+                .to_string()
+        }
         Err(e) => format!("Couldn't look it up: {e}"),
     };
     if let Some(setup::Overlay::AddUnlisted { note: n, .. }) = &mut d.overlay {
@@ -1727,6 +1762,30 @@ fn plugin_row(
             d.mods.editing = if open { None } else { Some(Editing::of(v, p)) };
         }
     }
+    // Its file changed since it was installed (left out for that): the catalogue's again.
+    let reinstall = match (&p.source, &look.left_out) {
+        (Source::Catalog { id, .. }, Some(why)) if why.starts_with("Its file changed") => d
+            .mods
+            .catalog
+            .as_ref()
+            .and_then(|c| c.mods.iter().find(|m| m.id == *id && m.downloadable()))
+            .cloned(),
+        _ => None,
+    };
+    if let Some(m) = reinstall {
+        if a.button(
+            k,
+            &key("reinstall"),
+            Tone::Go,
+            Some(Icon::Download),
+            "Reinstall",
+            editable && busy.is_none(),
+            busy.unwrap_or("Download it again (it loads at the next start)"),
+        ) {
+            let ctx = k.ui.ctx().clone();
+            get(d, &ctx, v, &m);
+        }
+    }
     // Set aside because it was blocked: Restore once the block is lifted.
     if let Some((_, lifted)) = &look.quarantined {
         if *lifted
@@ -1749,21 +1808,33 @@ fn plugin_row(
         }
     }
     // What needs looking at: only nEVR says what it loaded.
-    if look.quarantined.is_some() {
-        a.chip(k, "Set aside", design::RED);
+    if let Some((note, _)) = &look.quarantined {
+        let tip = format!(
+            "Turned off for everyone ({note}), and its file set aside. A fixed version \
+             replaces it; Restore appears if the block is lifted."
+        );
+        a.chip_tip(k, &key("chip"), "Set aside", design::RED, &tip);
     } else if look.held {
-        a.chip(k, "Not loaded", design::QUEST_WARN);
+        a.chip_tip(k, &key("chip"), "Not loaded", design::QUEST_WARN, HELD_TIP);
     } else if let Some(why) = &look.left_out {
         let chip = if why.starts_with("Blocked") {
             ("Blocked", design::RED)
         } else if why.starts_with("Waiting") || why.starts_with("Needs") {
             ("Waiting", design::QUEST_WARN)
-        } else if why.starts_with("Conflicts") {
+        } else if why.starts_with("Can't run beside") {
             ("Conflict", design::QUEST_WARN)
+        } else if why.starts_with("Its file changed") {
+            ("Changed", design::QUEST_WARN)
         } else {
             ("Left out", design::QUEST_WARN)
         };
-        a.chip(k, chip.0, chip.1);
+        a.chip_tip(
+            k,
+            &key("chip"),
+            chip.0,
+            chip.1,
+            &format!("Not loaded at the last start: {why}"),
+        );
     } else if let Some(why) = look.pack_off {
         a.chip(k, why, design::QUEST_WARN);
     } else if let Some((chip, color)) = state(p).filter(|_| look.current) {
@@ -1804,17 +1875,21 @@ fn plugin_row(
             .catalog
             .as_ref()
             .and_then(|c| c.mods.iter().find(|m| m.id == id))
-            .map(|m| (m.dev, m.unlisted))
+            .map(|m| (m.dev, m.unlisted, !m.publisher.is_empty()))
     };
     let source = match &p.source {
         Source::Shipped if !p.verified => ("Unverified", design::QUEST_WARN),
         Source::Shipped => ("Community update", design::SUBTLE),
         // From the dev folder of a dev code in Advanced settings, not published.
-        Source::Catalog { id, .. } if listed(id).is_some_and(|(dev, _)| dev) => {
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(dev, ..)| dev) => {
             ("Dev", design::RIM_BOTTOM)
         }
-        Source::Catalog { id, .. } if listed(id).is_some_and(|(_, unlisted)| unlisted) => {
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(_, unlisted, _)| unlisted) => {
             ("Unlisted", design::BLUE)
+        }
+        // A third party's, from catalogue.json: not EchoTools'.
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(.., community)| community) => {
+            ("Community", design::QUEST_WARN)
         }
         Source::Catalog { .. } => ("Catalogue", design::BLUE),
         Source::Local => ("Your DLL", design::QUEST_WARN),
@@ -1823,7 +1898,8 @@ fn plugin_row(
         if crate::core::semver::Version::parse(version).is_some_and(|v| v.is_prerelease()));
     let tags = [
         Some(source),
-        look.not_listed.then_some(("Not listed", design::GREY)),
+        look.not_listed
+            .then_some(("No longer available", design::GREY)),
         prerelease.then_some(("Prerelease", design::QUEST_WARN)),
         p.required.then_some(("Required", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
@@ -1921,6 +1997,16 @@ impl Actions {
     fn chip(&mut self, k: &Kit, text: &str, color: Color32) {
         self.right -= k.chip_width(text);
         k.chip(self.right, self.cy - dz(13.5), text, color);
+        self.right -= dz(ACTION_GAP);
+    }
+
+    /// [`Actions::chip`] that says more on hover.
+    fn chip_tip(&mut self, k: &mut Kit, key: &str, text: &str, color: Color32, tip: &str) {
+        let w = k.chip_width(text);
+        self.right -= w;
+        k.chip(self.right, self.cy - dz(13.5), text, color);
+        let r = k.rect(self.right, self.cy - dz(13.5), w, dz(27.0));
+        k.hot(key, r, false, tip);
         self.right -= dz(ACTION_GAP);
     }
 
@@ -3013,9 +3099,9 @@ fn catalogue_card(
     let note = if catalog.builtin {
         "The built-in list: release.echovr.de couldn't be reached."
     } else if catalog.mods.iter().any(|m| m.dev) {
-        "From release.echovr.de; Dev ones from your dev folder (Advanced settings). Every download is checked against its checksum, and again before every start."
+        "From release.echovr.de; Dev ones from your dev folder (Advanced settings). Community mods are made by others: built from their public source and checked, not made by EchoTools."
     } else {
-        "From release.echovr.de. Every download is checked against its checksum, and again before every start."
+        "From release.echovr.de. Community mods are made by others: built from their public source and checked, not made by EchoTools."
     };
     // Offline at the start: Retry beside the note.
     let retry_w = if catalog.builtin {
@@ -3089,6 +3175,24 @@ fn catalogue_card(
 
 /// Downloads the catalogue's `m` into `v` as a job (new, or its new version).
 fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntry) {
+    // The first community mod: what that means, once.
+    if !m.publisher.is_empty() && !d.state.community_mods_ok {
+        d.mods.community = Some(m.clone());
+        d.dialogs.options(
+            COMMUNITY_KEY,
+            "A community mod",
+            &format!(
+                "{} is made by {}, not by EchoTools. Every version is built from its public source on \
+                 GitHub and checked automatically before it's offered, and it can be turned off for \
+                 everyone if something is wrong with it. Like every mod, it runs inside Echo VR. \
+                 Report it from its ⋯ menu if it misbehaves.",
+                m.name, m.publisher
+            ),
+            DlgIcon::Question,
+            &["Get it", "Cancel"],
+        );
+        return;
+    }
     // The nEVR it needs (only checked here: an installed mod is never turned off for it).
     if let Some(range) = m.requires.nevr.as_deref() {
         if let Some(have) = mods::nevr_version(v) {
@@ -3106,6 +3210,45 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntr
                 return;
             }
         }
+    }
+    // A mod that's on and can't run beside it (either way round): one of them goes off first.
+    let on: Vec<(String, String, Vec<String>)> = d
+        .mods
+        .view
+        .as_ref()
+        .filter(|(id, ..)| *id == v.id)
+        .map(|(_, view, _)| {
+            view.plugins
+                .iter()
+                .filter(|p| p.enabled && p.present)
+                .filter_map(|p| match &p.source {
+                    Source::Catalog { id, .. } if *id != m.id => {
+                        let declared = d
+                            .mods
+                            .catalog
+                            .as_ref()
+                            .and_then(|c| c.mods.iter().find(|e| e.id == *id))
+                            .map(|e| e.conflicts.clone())
+                            .unwrap_or_default();
+                        Some((id.clone(), p.name.clone(), declared))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some((_, name, _)) = on
+        .iter()
+        .find(|(id, _, theirs)| m.conflicts.contains(id) || theirs.contains(&m.id))
+    {
+        d.dialogs.info(
+            "Can't run beside another mod",
+            &format!(
+                "{} can't run beside {name}, which is on. Turn {name} off first, then get {}.",
+                m.name, m.name
+            ),
+        );
+        return;
     }
     // The mods it needs that aren't here: install them too?
     let installed: Vec<String> = d
@@ -3189,6 +3332,12 @@ fn install_with(
     entry: ModEntry,
     first: Vec<ModEntry>,
 ) {
+    // Getting a prerelease (one with no release yet) is asking for that mod's prereleases.
+    for e in first.iter().chain(std::iter::once(&entry)) {
+        if e.prerelease && d.state.mod_prereleases.insert(e.id.clone()) {
+            d.save();
+        }
+    }
     let title = format!("Installing {}", entry.name);
     run(d, ctx, v, &title, move |v, cancel, on| {
         for dep in &first {
@@ -3217,6 +3366,10 @@ pub(super) fn update_all(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     let Some(catalog) = d.mods.catalog.as_ref() else {
         return;
     };
+    // The same checks as the update check's (it may be older than the catalogue now): one
+    // that needs the player's OK waits for the Mods page.
+    let plugins = mods::read(&v).plugins;
+    let rollback = crate::core::launcher::goback::Rollback::cached();
     let entries: Vec<ModEntry> = d
         .updates
         .findings
@@ -3231,6 +3384,7 @@ pub(super) fn update_all(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
                 .entry_for(file)
                 .or_else(|| catalog.pack_for(file))
                 .filter(|m| m.downloadable() && m.version == *to)
+                .filter(|m| mods::needs_ok(&v, &plugins, m, &rollback).is_none())
                 .cloned(),
             _ => None,
         })
@@ -3294,7 +3448,15 @@ fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Ex
 
 /// The meta line of a catalogue entry: author, size, what it does.
 fn meta(m: &ModEntry) -> String {
-    let author = (!m.author.is_empty()).then(|| format!("by {}", m.author));
+    // A community mod: who published it (their GitHub account), beside who wrote it.
+    let author = match (m.author.is_empty(), m.publisher.is_empty()) {
+        (false, false) if !m.author.eq_ignore_ascii_case(&m.publisher) => {
+            Some(format!("by {} (published by {})", m.author, m.publisher))
+        }
+        (false, _) => Some(format!("by {}", m.author)),
+        (true, false) => Some(format!("published by {}", m.publisher)),
+        (true, true) => None,
+    };
     let size = m.size.map(|b| {
         if b >= 1_000_000 {
             format!("{:.1} MB", b as f64 / 1e6)
@@ -3446,6 +3608,8 @@ fn entry(
                 Some(("Prerelease", design::QUEST_WARN))
             } else if m.unlisted {
                 Some(("Unlisted", design::BLUE))
+            } else if !m.publisher.is_empty() {
+                Some(("Community", design::QUEST_WARN))
             } else {
                 None
             };

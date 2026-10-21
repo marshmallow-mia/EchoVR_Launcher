@@ -496,6 +496,15 @@ impl Overlay {
     /// Turns `file` on or off: on its entry when the launcher added it, else as an
     /// override.
     pub fn set_plugin_enabled(&mut self, file: &str, on: bool) {
+        // A mod the launcher added turned on again: a change, for [`record_run`] (one the
+        // safety net looks at anew).
+        if on && self.added_mut(file).is_some() {
+            let mut runs = self.runs();
+            if !runs.changed.iter().any(|f| f.eq_ignore_ascii_case(file)) {
+                runs.changed.push(file.to_string());
+                self.set_runs(&runs);
+            }
+        }
         match self.added_mut(file) {
             Some(o) => {
                 o.insert("enabled".into(), on.into());
@@ -1214,16 +1223,25 @@ pub fn before_start(
     prepare(v, servers)
 }
 
-/// Says `text` once per launcher run in the status bar ([`take_notices`]).
+/// Says `text` once per launcher run in the status bar ([`take_notices`]); in the tray (its
+/// keeper prepares a start too), as a desktop notification, unless they're off.
 fn say(text: String) {
     static SAID: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
-    if SAID
+    if !SAID
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(text.clone())
     {
-        NOTICES.lock().unwrap_or_else(|e| e.into_inner()).push(text);
+        return;
     }
+    let tray = std::env::args().nth(1).as_deref() == Some(crate::core::tray::FLAG);
+    if tray && !cfg!(test) {
+        if super::store::LauncherState::load().desktop_notifications {
+            crate::core::desktop_notify::show("Echo VR mods", &text);
+        }
+        return;
+    }
+    NOTICES.lock().unwrap_or_else(|e| e.into_inner()).push(text);
 }
 
 /// Before a start: every mod of `v` whose version is blocked ([`super::goback::Block`]) goes
@@ -1288,7 +1306,11 @@ fn apply_blocks_with(
                 .map_err(|e| tracing::warn!("{name}: going back: {e:#}"))
                 .ok(),
             None => history()
-                .and_then(|h| h.mod_newest_below(&id, &l.version, |ver| !blocked(ver)))
+                .and_then(|h| {
+                    h.mod_newest_below(&id, &l.version, |e| {
+                        !blocked(&e.version) && super::goback::may_go_back_to(&id, &e.version)
+                    })
+                })
                 .and_then(|e| {
                     go_back_to(v, &a.file, &e, &AtomicBool::new(false), &mut |_| {})
                         .map_err(|err| {
@@ -1325,6 +1347,62 @@ fn apply_blocks_with(
             )),
         }
     }
+}
+
+/// Whether catalogue entry `m` can go into `v` without asking the player (`plugins`: what
+/// `v` has): no block covers it, its nEVR range fits, every mod it needs is there and on in a
+/// version it takes, and it conflicts with no mod that's on. `Some(why)` otherwise: the Mods
+/// page asks (Get, Update), and the update check and Play's update leave it to that.
+pub fn needs_ok(
+    v: &InstalledVersion,
+    plugins: &[Plugin],
+    m: &ModEntry,
+    rollback: &super::goback::Rollback,
+) -> Option<String> {
+    needs_ok_with(nevr_version(v).as_deref(), plugins, m, rollback)
+}
+
+/// Pure: [`needs_ok`] with `v`'s nEVR version (`None`: not known).
+fn needs_ok_with(
+    nevr: Option<&str>,
+    plugins: &[Plugin],
+    m: &ModEntry,
+    rollback: &super::goback::Rollback,
+) -> Option<String> {
+    if rollback
+        .block_for(Some(&m.id), &m.file, &m.version, m.sha256.as_deref())
+        .is_some()
+    {
+        return Some(format!("{} {} is blocked", m.name, m.version));
+    }
+    if let (Some(range), Some(have)) = (m.requires.nevr.as_deref(), nevr) {
+        if !crate::core::semver::in_range(have, range, true) {
+            return Some(format!("{} {} needs nEVR {range}", m.name, m.version));
+        }
+    }
+    let on = |id: &str| {
+        plugins.iter().find_map(|p| match &p.source {
+            Source::Catalog { id: i, version } if i == id && p.enabled && p.present => {
+                Some(version)
+            }
+            _ => None,
+        })
+    };
+    for dep in &m.requires.mods {
+        let range = if dep.version.is_empty() {
+            "*"
+        } else {
+            &dep.version
+        };
+        match on(&dep.id) {
+            Some(have) if crate::core::semver::in_range(have, range, true) => {}
+            _ => return Some(format!("{} {} needs {} {range}", m.name, m.version, dep.id)),
+        }
+    }
+    if let Some(c) = m.conflicts.iter().find(|c| on(c).is_some()) {
+        return Some(format!("{} {} can't run beside {c}", m.name, m.version));
+    }
+    None
 }
 
 /// The names of `v`'s installed mods that need mod `id` (as their install noted).
@@ -1428,11 +1506,26 @@ fn quarantine(v: &InstalledVersion, file: &str, id: &str, version: &str, note: &
     })
 }
 
-/// Puts a quarantined `file` back (Mods page → Restore, once its block is lifted).
+/// Whether the block that set `file` (as `q` noted it) aside is lifted now: no block covers
+/// that version and that very file (by its checksum).
+pub fn quarantine_lifted(v: &InstalledVersion, file: &str, q: &Quarantined) -> bool {
+    let sha = download::sha256_file(&quarantine_dir(v).join(file)).ok();
+    super::goback::Rollback::cached()
+        .block_for(Some(&q.id), file, &q.version, sha.as_deref())
+        .is_none()
+}
+
+/// Puts a quarantined `file` back (Mods page → Restore, once its block is lifted). Never
+/// over a file that's there (another version installed since).
 pub fn restore_quarantined(v: &InstalledVersion, file: &str) -> Result<()> {
     let from = quarantine_dir(v).join(file);
-    std::fs::rename(&from, plugins_dir(v).join(file))
-        .with_context(|| format!("put {file} back"))?;
+    let to = plugins_dir(v).join(file);
+    if to.exists() {
+        let _ = std::fs::remove_file(&from);
+        edit_overlay(v, |o| o.set_quarantined(file, None))?;
+        bail!("Another version of {file} is installed now: that one stays.");
+    }
+    std::fs::rename(&from, &to).with_context(|| format!("put {file} back"))?;
     edit_overlay(v, |o| o.set_quarantined(file, None))
 }
 
@@ -1521,8 +1614,9 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     let overlay = Overlay::read(&choices_path(v));
     let catalog = ModCatalog::cached();
     let local = nevr::local_plugins(v);
+    let rollback = super::goback::Rollback::cached();
     let served = if overlay.enabled() {
-        served_pack(v, &overlay, false)
+        served_pack(v, &overlay, false, &rollback)
     } else {
         None
     };
@@ -1544,14 +1638,7 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     } else if nevr::login_back(v)? {
         tracing::info!("{}: plays on EchoVRCE again: its sign-in is back", v.id);
     }
-    let (lines, left) = config_lines(
-        v,
-        &overlay,
-        &catalog,
-        local,
-        served.as_ref(),
-        &super::goback::Rollback::cached(),
-    );
+    let (lines, left) = config_lines(v, &overlay, &catalog, local, served.as_ref(), &rollback);
     if let Err(e) = write_json(
         &left_out_path(v),
         &serde_json::to_value(&left).unwrap_or_default(),
@@ -1566,8 +1653,9 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
 /// load: the list [`prepare`] gives nEVR, for a server's own `config.yaml`.
 pub fn server_plugins(v: &InstalledVersion) -> (Vec<PluginLine>, bool) {
     let overlay = Overlay::read(&choices_path(v));
+    let rollback = super::goback::Rollback::cached();
     let served = if overlay.enabled() {
-        served_pack(v, &overlay, false)
+        served_pack(v, &overlay, false, &rollback)
     } else {
         None
     };
@@ -1578,7 +1666,7 @@ pub fn server_plugins(v: &InstalledVersion) -> (Vec<PluginLine>, bool) {
         &ModCatalog::cached(),
         local,
         served.as_ref(),
-        &super::goback::Rollback::cached(),
+        &rollback,
     );
     (lines, local)
 }
@@ -1599,8 +1687,9 @@ pub fn before_echorelay_start(v: &InstalledVersion, hands: bool) -> Result<()> {
 /// the version has.
 fn echorelay_plugins(v: &InstalledVersion) -> Vec<PluginLine> {
     let overlay = Overlay::read(&choices_path(v));
+    let rollback = super::goback::Rollback::cached();
     let served = if overlay.enabled() {
-        served_pack(v, &overlay, true)
+        served_pack(v, &overlay, true, &rollback)
     } else {
         None
     };
@@ -1611,7 +1700,7 @@ fn echorelay_plugins(v: &InstalledVersion) -> Vec<PluginLine> {
         &catalog,
         nevr::local_plugins(v),
         served.as_ref(),
-        &super::goback::Rollback::cached(),
+        &rollback,
     )
     .0
 }
@@ -1689,36 +1778,6 @@ fn config_lines(
     let added = overlay.added();
     let all_packs = overlay.packs();
     let all = plugins(overlay, &plugin_files(v), None, catalog);
-    // What's on (present, and on with mods on), by catalogue id: what others need.
-    let on: BTreeMap<String, String> = all
-        .iter()
-        .filter(|q| q.present && q.enabled && (mods_on || q.required))
-        // A blocked one stays out: it isn't there for those that need it.
-        .filter(|q| match &q.source {
-            Source::Catalog { id, version } => rollback
-                .block_for(Some(id), &q.file, version, None)
-                .is_none(),
-            _ => true,
-        })
-        .filter_map(|q| match &q.source {
-            Source::Catalog { id, version } => Some((id.clone(), version.clone())),
-            _ => None,
-        })
-        .collect();
-    // Installed mods that are blocked (by id): who needs them waits, and says why.
-    let blocked_ids: BTreeSet<String> = all
-        .iter()
-        .filter_map(|q| match &q.source {
-            Source::Catalog { id, version }
-                if rollback
-                    .block_for(Some(id), &q.file, version, None)
-                    .is_some() =>
-            {
-                Some(id.clone())
-            }
-            _ => None,
-        })
-        .collect();
     let noted = |file: &str| {
         added
             .iter()
@@ -1726,37 +1785,50 @@ fn config_lines(
             .and_then(|a| a.launcher.clone())
             .unwrap_or_default()
     };
-    let mut lines: Vec<PluginLine> = Vec::new();
-    let mut left = Vec::new();
-    let mut leave = |file: &str, reason: String| {
-        tracing::info!("{file}: left out: {reason}");
-        left.push(LeftOut {
-            file: file.to_string(),
-            reason,
-        });
+    let name_of = |id: &str| {
+        all.iter()
+            .find(|q| matches!(&q.source, Source::Catalog { id: i, .. } if i == id))
+            .map(|q| q.name.clone())
+            .filter(|n| !n.is_empty())
+            .or_else(|| {
+                catalog
+                    .mods
+                    .iter()
+                    .find(|m| m.id == id)
+                    .map(|m| m.name.clone())
+            })
+            .unwrap_or_else(|| id.to_string())
     };
-    // The catalogue ids of the plugins listed so far (a conflict leaves the later one out).
-    let mut listed_ids: Vec<(String, Vec<String>)> = Vec::new();
-    for p in all.clone() {
+    // Why each plugin stays out (by file), and which are silently not listed.
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    let mut unlisted: BTreeSet<String> = BTreeSet::new();
+    let key = |file: &str| file.to_ascii_lowercase();
+    // The catalogue mods that would load (on, and nothing but what they need against them):
+    // (file, id, version), in load order.
+    let mut loading: Vec<(String, String, String)> = Vec::new();
+    for p in &all {
         if !p.present || !(mods_on || p.required) {
+            unlisted.insert(key(&p.file));
             continue;
         }
         // The overlay is listed for the pack it serves, and the pack's plugins with it;
         // without a pack served neither (a pack's plugins without its game data would
         // run on stock data).
         let overlay_plugin = p.file.eq_ignore_ascii_case(packs::OVERLAY_PLUGIN);
-        if overlay_plugin && served.is_none() {
-            continue;
-        }
-        if all_packs
-            .iter()
-            .find(|r| r.has_plugin(&p.file))
-            .is_some_and(|r| served.is_none_or(|s| s.id != r.id))
+        if (overlay_plugin && served.is_none())
+            || all_packs
+                .iter()
+                .find(|r| r.has_plugin(&p.file))
+                .is_some_and(|r| served.is_none_or(|s| s.id != r.id))
         {
+            unlisted.insert(key(&p.file));
             continue;
         }
         if !p.verified && !local {
-            leave(&p.file, "Not verified, and local plugins are off".into());
+            out.insert(
+                key(&p.file),
+                "Not verified, and local plugins are off".into(),
+            );
             continue;
         }
         let pinned = added
@@ -1766,9 +1838,9 @@ fn config_lines(
         if let Some(want) = &pinned {
             let have = download::sha256_file(&plugins_dir(v).join(&p.file)).unwrap_or_default();
             if !have.eq_ignore_ascii_case(want) {
-                leave(
-                    &p.file,
-                    "Its file changed since it was installed: install or add it again".into(),
+                out.insert(
+                    key(&p.file),
+                    "Its file changed since it was installed: Reinstall puts it right".into(),
                 );
                 continue;
             }
@@ -1780,46 +1852,113 @@ fn config_lines(
                 } else {
                     &b.note
                 };
-                leave(&p.file, format!("Blocked: {note}"));
+                out.insert(key(&p.file), format!("Blocked: {note}"));
                 continue;
             }
-            // What it needs on beside it; never something it conflicts with.
-            let n = noted(&p.file);
-            if p.enabled && mods_on {
-                let missing = n
-                    .requires
-                    .mods
-                    .iter()
-                    .find_map(|dep| match on.get(&dep.id) {
-                        None if blocked_ids.contains(&dep.id) => {
-                            Some(format!("Waiting for {}, which is blocked", dep.id))
-                        }
-                        None => Some(format!("Waiting for {}: install it and turn it on", dep.id)),
-                        Some(have)
-                            if !dep.version.is_empty()
-                                && !crate::core::semver::in_range(have, &dep.version, false) =>
-                        {
-                            Some(format!("Needs {} {} (it has {have})", dep.id, dep.version))
-                        }
-                        Some(_) => None,
-                    });
-                if let Some(why) = missing {
-                    leave(&p.file, why);
-                    continue;
-                }
-                let clash = listed_ids.iter().find(|(other, theirs)| {
-                    n.conflicts.iter().any(|c| c == other) || theirs.iter().any(|c| c == id)
-                });
-                if let Some((other, _)) = clash {
-                    leave(
-                        &p.file,
-                        format!("Conflicts with {other}, which loads first"),
-                    );
-                    continue;
-                }
-                listed_ids.push((id.clone(), n.conflicts.clone()));
+            if p.enabled {
+                loading.push((p.file.clone(), id.clone(), version.clone()));
             }
         }
+    }
+    // A conflict leaves out the mod that declares it (its own metadata; of two that declare
+    // each other, the later one).
+    if mods_on {
+        let mut gone: Vec<(String, String)> = Vec::new();
+        for (i, (file, id, _)) in loading.iter().enumerate() {
+            let mine = noted(file).conflicts;
+            let clash = loading.iter().enumerate().find(|(j, (_, other, _))| {
+                *j != i
+                    && other != id
+                    && mine.contains(other)
+                    && !gone.iter().any(|(_, g)| g == other)
+                    && (*j < i || !noted(&loading[*j].0).conflicts.contains(id))
+            });
+            if let Some((_, (_, other, _))) = clash {
+                gone.push((file.clone(), id.clone()));
+                out.insert(
+                    key(file),
+                    format!("Can't run beside {}: turn one of them off", name_of(other)),
+                );
+            }
+        }
+        loading.retain(|(f, ..)| !gone.iter().any(|(g, _)| g == f));
+    }
+    // What each needs on beside it, until nothing more drops out (one left out can leave
+    // out what needs it).
+    if mods_on {
+        loop {
+            let on: BTreeMap<&str, &str> = loading
+                .iter()
+                .map(|(_, id, version)| (id.as_str(), version.as_str()))
+                .collect();
+            let blocked_ids: BTreeSet<String> = all
+                .iter()
+                .filter_map(|q| match &q.source {
+                    Source::Catalog { id, version }
+                        if rollback
+                            .block_for(Some(id), &q.file, version, None)
+                            .is_some() =>
+                    {
+                        Some(id.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            let dropped: Vec<(String, String)> = loading
+                .iter()
+                .filter_map(|(file, _, _)| {
+                    noted(file).requires.mods.iter().find_map(|dep| {
+                        let name = name_of(&dep.id);
+                        let range = if dep.version.is_empty() {
+                            "*"
+                        } else {
+                            &dep.version
+                        };
+                        match on.get(dep.id.as_str()) {
+                            None if blocked_ids.contains(&dep.id) => Some((
+                                file.clone(),
+                                format!("Waiting for {name}, which is blocked"),
+                            )),
+                            None => Some((
+                                file.clone(),
+                                format!("Waiting for {name}: install it and turn it on"),
+                            )),
+                            // A prerelease of it counts too (whoever tries it asked for it).
+                            Some(have) if !crate::core::semver::in_range(have, range, true) => {
+                                Some((
+                                    file.clone(),
+                                    format!("Needs {name} {range} (it has {have}): update {name}"),
+                                ))
+                            }
+                            Some(_) => None,
+                        }
+                    })
+                })
+                .collect();
+            if dropped.is_empty() {
+                break;
+            }
+            for (file, why) in dropped {
+                out.insert(key(&file), why);
+                loading.retain(|(f, ..)| *f != file);
+            }
+        }
+    }
+    let mut lines: Vec<PluginLine> = Vec::new();
+    let mut left = Vec::new();
+    for p in all {
+        if unlisted.contains(&key(&p.file)) {
+            continue;
+        }
+        if let Some(reason) = out.get(&key(&p.file)) {
+            tracing::info!("{}: left out: {reason}", p.file);
+            left.push(LeftOut {
+                file: p.file.clone(),
+                reason: reason.clone(),
+            });
+            continue;
+        }
+        let overlay_plugin = p.file.eq_ignore_ascii_case(packs::OVERLAY_PLUGIN);
         let mut args = p.args;
         // An argument nEVR would read as an environment variable could keep every plugin
         // from loading (one saved before the launcher refused them).
@@ -1856,9 +1995,24 @@ fn config_lines(
 /// overlay plugin is there, its loader loads plugins early (EchoLoader, `echoloader`,
 /// always does; nEVR from its early load pass on) and the game data it replaces is as it
 /// shipped. Otherwise none, logged.
-fn served_pack(v: &InstalledVersion, overlay: &Overlay, echoloader: bool) -> Option<PackRecord> {
+fn served_pack(
+    v: &InstalledVersion,
+    overlay: &Overlay,
+    echoloader: bool,
+    rollback: &super::goback::Rollback,
+) -> Option<PackRecord> {
     let pack = overlay.packs().into_iter().find(|p| p.enabled)?;
     let bin = v.bin_dir();
+    // A blocked pack serves nothing: neither its game data nor its plugins.
+    if let Some(b) = rollback.block_for(Some(&pack.id), "", &pack.version, None) {
+        tracing::warn!(
+            "{} {} is blocked ({}): left out",
+            pack.name,
+            pack.version,
+            b.note
+        );
+        return None;
+    }
     if !pack_present(v, &pack) {
         tracing::warn!("{}: its files aren't all there: left out", pack.name);
         return None;
@@ -2096,6 +2250,8 @@ pub fn install(
     keep_previous(v, &e.file, &e.version);
     place(v, &file, &e.file)?;
     let _ = std::fs::remove_file(&file);
+    // A blocked copy set aside before is done with: this one replaces it.
+    let _ = std::fs::remove_file(quarantine_dir(v).join(&e.file));
     edit_overlay(v, |o| {
         o.add(&Entry {
             file: e.file.clone(),
@@ -2105,7 +2261,8 @@ pub fn install(
             sha256: Some(sha.to_ascii_lowercase()),
             launcher: Some(Added::from_entry(e)),
             required: false,
-        })
+        });
+        o.set_quarantined(&e.file, None);
     })
 }
 
@@ -2333,8 +2490,10 @@ pub fn remove(v: &InstalledVersion, file: &str) -> Result<()> {
         Err(e) => return Err(anyhow::Error::from(e).context(format!("delete {}", path.display()))),
     }
     let _ = std::fs::remove_dir_all(previous_dir(v).join(file));
+    let _ = std::fs::remove_file(quarantine_dir(v).join(file));
     edit_overlay(v, |o| {
         o.remove_added(file);
+        o.set_quarantined(file, None);
     })
 }
 
@@ -2550,6 +2709,10 @@ pub struct ModEntry {
     /// From the dev folder of a dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
+    /// A community mod: the GitHub account that published it through catalogue.json (empty
+    /// for the launcher's own mods and dev folders').
+    #[serde(skip)]
+    pub publisher: String,
     /// Where it came from: empty for the published catalogue, a dev code's
     /// [`super::dev_code::source_tag`] for its dev folder.
     #[serde(skip)]
@@ -2561,7 +2724,9 @@ impl ModEntry {
         !self.shipped && (!self.url.is_empty() || self.pack.is_some())
     }
 
-    fn validate(&self) -> Result<()> {
+    /// Whether it is a sound entry: a safe id and file name, a download on a trusted host
+    /// with a checksum (catalogues, dev folders, the history all go through this).
+    pub(super) fn validate(&self) -> Result<()> {
         if !catalog::is_safe_id(&self.id) {
             bail!("invalid mod id {:?}", self.id);
         }
@@ -2766,20 +2931,37 @@ impl ModCatalog {
         mods: &[super::catalogue::CatalogueMod],
         unlisted: &[String],
         prereleases: &std::collections::BTreeSet<String>,
+        rollback: &super::goback::Rollback,
     ) -> ModCatalog {
         self.has_catalogue = true;
+        let blocked = |e: &ModEntry| {
+            rollback
+                .block_for(Some(&e.id), &e.file, &e.version, e.sha256.as_deref())
+                .is_some()
+        };
         for m in mods {
             self.listed.insert(m.id.clone());
             if m.has_prereleases() {
                 self.with_prereleases.insert(m.id.clone());
             }
-            let Some(chosen) = m.choose(prereleases.contains(&m.id)) else {
+            // A mod with prereleases only is offered as one (Get then takes its prereleases).
+            let Some(chosen) = m
+                .choose_with(prereleases.contains(&m.id), &blocked)
+                .or_else(|| {
+                    m.choose_with(true, &blocked)
+                        .filter(|_| m.choose_with(false, &|_| false).is_none())
+                })
+            else {
+                // Nothing to offer (every version blocked): not from anywhere else either.
+                self.mods
+                    .retain(|o| o.id != m.id || o.shipped || o.required);
                 continue;
             };
             let mut e = chosen.entry.clone();
             e.shipped = false;
             e.required = false;
             e.unlisted = unlisted.contains(&m.id);
+            e.publisher = m.publisher.clone();
             if let Err(err) = e.validate() {
                 tracing::warn!("catalogue: {} {} left out: {err:#}", m.id, e.version);
                 continue;
@@ -2845,10 +3027,18 @@ impl ModCatalog {
             if !super::catalog::is_safe_id(&id) {
                 continue;
             }
-            let file = format!("unlisted-{id}.json");
-            if let Some(c) =
-                read(&format!("{UNLISTED}{id}.json"), &file).and_then(|t| Catalogue::parse(&t).ok())
-            {
+            // Unlisted, else private (behind the sign-in: none without it).
+            let found = read(
+                &format!("{UNLISTED}{id}.json"),
+                &format!("unlisted-{id}.json"),
+            )
+            .or_else(|| {
+                read(
+                    &format!("{}{id}.json", super::catalogue::PRIVATE),
+                    &format!("private-{id}.json"),
+                )
+            });
+            if let Some(c) = found.and_then(|t| Catalogue::parse(&t).ok()) {
                 mods.extend(c.mods.into_iter().filter(|m| m.id == id));
             }
         }
@@ -2860,7 +3050,12 @@ impl ModCatalog {
         match ModCatalog::catalogue_mods(fresh) {
             Some(mods) => {
                 let prefs = super::prefs::get();
-                self.with_catalogue(&mods, &prefs.unlisted, &prefs.prereleases)
+                self.with_catalogue(
+                    &mods,
+                    &prefs.unlisted,
+                    &prefs.prereleases,
+                    &super::goback::Rollback::cached(),
+                )
             }
             None => self,
         }
@@ -3107,7 +3302,7 @@ pub(crate) mod tests {
         ))
         .unwrap();
         let none = std::collections::BTreeSet::new();
-        let c = ModCatalog::builtin().with_catalogue(&cat.mods, &[], &none);
+        let c = ModCatalog::builtin().with_catalogue(&cat.mods, &[], &none, &Default::default());
         let find = |c: &ModCatalog, id: &str| c.mods.iter().find(|m| m.id == id).cloned();
         assert_eq!(find(&c, "cool").unwrap().version, "1.0.0");
         assert!(c.with_prereleases.contains("cool"));
@@ -3121,7 +3316,12 @@ pub(crate) mod tests {
         // Prereleases only for the mods asked for.
         let mut pre = std::collections::BTreeSet::new();
         pre.insert("cool".to_string());
-        let c = ModCatalog::builtin().with_catalogue(&cat.mods, &["cool".to_string()], &pre);
+        let c = ModCatalog::builtin().with_catalogue(
+            &cat.mods,
+            &["cool".to_string()],
+            &pre,
+            &Default::default(),
+        );
         let cool = find(&c, "cool").unwrap();
         assert_eq!(cool.version, "1.1.0-beta.1");
         assert!(cool.prerelease && cool.unlisted);
@@ -3667,7 +3867,7 @@ pub(crate) mod tests {
             "{left:?}"
         );
         assert!(
-            left["Rival.dll"].starts_with("Conflicts with base"),
+            left["Rival.dll"].starts_with("Can't run beside base"),
             "{left:?}"
         );
 
@@ -3691,6 +3891,27 @@ pub(crate) mod tests {
         );
         // With base out, rival has nothing to conflict with.
         assert!(lines.contains(&"Rival.dll".to_string()), "{left:?}");
+
+        // Out goes what needs one that's out for any reason, until nothing more drops: base
+        // changed on disk, so needy waits for it, and chained needs a needy that's out.
+        put_catalogue_mod(
+            &v,
+            "chained",
+            "Chained.dll",
+            "1.0.0",
+            Added {
+                requires: Requires {
+                    nevr: None,
+                    mods: vec![Dependency {
+                        id: "needy".into(),
+                        version: String::new(),
+                    }],
+                },
+                ..Default::default()
+            },
+        );
+        let (_, left) = lines_and_reasons(&v, &none);
+        assert!(left["Chained.dll"].starts_with("Waiting for"), "{left:?}");
 
         // A changed file says so.
         std::fs::write(v.bin_dir().join("plugins/Rival.dll"), "MZ changed").unwrap();
@@ -3972,6 +4193,119 @@ pub(crate) mod tests {
             });
         })
         .unwrap();
+    }
+
+    #[test]
+    fn a_blocked_pack_serves_nothing() {
+        use super::super::goback::{Block, Rollback};
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        with_pack(&v);
+        std::fs::write(
+            v.bin_dir().join(SLOT),
+            "MZ [NEVR.BOOT] plugin(s) marked early;  4.0.1 ",
+        )
+        .unwrap();
+        let overlay = Overlay::read(&choices_path(&v));
+        assert!(served_pack(&v, &overlay, false, &Rollback::default()).is_some());
+        let blocked = Rollback {
+            blocked: vec![Block {
+                part: "mod".into(),
+                id: "test".into(),
+                versions: "all".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(served_pack(&v, &overlay, false, &blocked).is_none());
+        let (lines, _) = config_lines(&v, &overlay, &ModCatalog::builtin(), false, None, &blocked);
+        assert!(!lines
+            .iter()
+            .any(|l| l.file == "One.dll" || l.file == packs::OVERLAY_PLUGIN));
+    }
+
+    #[test]
+    fn what_needs_the_players_ok() {
+        use super::super::catalogue::{Dependency, Requires};
+        use super::super::goback::{Block, Rollback};
+        let on = |id: &str, version: &str| Plugin {
+            file: format!("{id}.dll"),
+            name: id.into(),
+            version: version.into(),
+            source: Source::Catalog {
+                id: id.into(),
+                version: version.into(),
+            },
+            enabled: true,
+            added: true,
+            verified: true,
+            args: Default::default(),
+            defaults: Default::default(),
+            required: false,
+            present: true,
+            status: None,
+            settings: None,
+            pack: None,
+        };
+        let m = ModEntry {
+            id: "cool".into(),
+            name: "Cool".into(),
+            version: "2.0.0".into(),
+            file: "Cool.dll".into(),
+            requires: Requires {
+                nevr: Some(">=5.3.0".into()),
+                mods: vec![Dependency {
+                    id: "base".into(),
+                    version: ">=1.2.0".into(),
+                }],
+            },
+            conflicts: vec!["rival".into()],
+            ..Default::default()
+        };
+        let none = Rollback::default();
+        let base = on("base", "1.2.0");
+        assert_eq!(
+            needs_ok_with(Some("5.3.1"), std::slice::from_ref(&base), &m, &none),
+            None
+        );
+        assert!(
+            needs_ok_with(Some("5.2.1"), std::slice::from_ref(&base), &m, &none)
+                .unwrap()
+                .contains("nEVR")
+        );
+        // nEVR not known (another loader): not in the way.
+        assert_eq!(
+            needs_ok_with(None, std::slice::from_ref(&base), &m, &none),
+            None
+        );
+        assert!(needs_ok_with(None, &[on("base", "1.0.0")], &m, &none)
+            .unwrap()
+            .contains("needs base"));
+        // A prerelease of what it needs counts.
+        assert_eq!(
+            needs_ok_with(None, &[on("base", "1.3.0-beta.1")], &m, &none),
+            None
+        );
+        let mut off = base.clone();
+        off.enabled = false;
+        assert!(needs_ok_with(None, &[off], &m, &none).is_some());
+        assert!(
+            needs_ok_with(None, &[base.clone(), on("rival", "1.0.0")], &m, &none)
+                .unwrap()
+                .contains("rival")
+        );
+        let blocked = Rollback {
+            blocked: vec![Block {
+                part: "mod".into(),
+                id: "cool".into(),
+                versions: "2.0.0".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(needs_ok_with(None, &[base], &m, &blocked)
+            .unwrap()
+            .contains("blocked"));
     }
 
     #[test]

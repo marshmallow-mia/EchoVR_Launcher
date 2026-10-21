@@ -275,6 +275,8 @@ pub struct LauncherState {
     pub unlisted_mods: Vec<String>,
     /// Alerts the player dismissed (their ids, [`super::alerts`]).
     pub alerts_seen: std::collections::BTreeSet<String>,
+    /// The player read what a community mod is (the first Get of one asks once).
+    pub community_mods_ok: bool,
     /// Versions the player went back from ([`super::goback`]): part → the version (for the
     /// game, its update manifest's sha256) that isn't offered again. A newer one is.
     pub holds: std::collections::BTreeMap<String, String>,
@@ -411,6 +413,7 @@ impl Default for LauncherState {
             mod_sources: Default::default(),
             unlisted_mods: Vec::new(),
             alerts_seen: Default::default(),
+            community_mods_ok: false,
             holds: Default::default(),
             launcher_previous: None,
         }

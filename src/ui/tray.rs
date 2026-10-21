@@ -60,11 +60,16 @@ fn checker(status: impl Fn(String) + Send + 'static) {
                 if state.desktop_notifications {
                     updates::notify_desktop(&fresh);
                 }
-                // Warnings and critical alerts: on the desktop once each, also while closed.
+                // Warnings and critical alerts: on the desktop once each, also while closed
+                // (warnings only with desktop notifications on; a critical one always).
                 if let Some(alerts) = &check.alerts {
                     let unseen: Vec<_> = alerts
                         .iter()
                         .filter(|a| !state.alerts_seen.contains(&a.id))
+                        .filter(|a| {
+                            state.desktop_notifications
+                                || a.severity() == crate::core::launcher::alerts::Severity::Critical
+                        })
                         .cloned()
                         .collect();
                     alerts::notify_desktop(&alerts::not_yet_notified(&unseen));

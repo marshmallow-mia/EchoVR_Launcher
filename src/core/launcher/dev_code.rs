@@ -6,11 +6,20 @@
 //! entries too, over published ones with the same id (the first code's over a later one's).
 //! A code is 26 base32 characters (130 bits), never logged. A folder may also have a
 //! `channel.json` (`{"name": "…"}`, root's) naming the channel.
+//!
+//! A third-party developer's channel (restricted, or public) isn't under `launcher/dev/`:
+//! it's behind the EchoVRCE sign-in, `launcher/gated/dev/<code>/` ([`crate::core::http::GATED`]).
+//! A code whose folder isn't under `launcher/dev/` is looked for there, with the player's
+//! EchoVRCE session; which codes are gated is kept (by a hash of the code) in
+//! `dev-gated.json`.
 
+use std::collections::BTreeSet;
 use std::sync::Mutex;
 
 /// Where the dev folders are.
 pub const DEV_ROOT: &str = "https://release.echovr.de/launcher/dev/";
+/// Where the gated ones are.
+pub const GATED_ROOT: &str = "https://release.echovr.de/launcher/gated/dev/";
 /// A code's length, without the dashes it's shown with.
 pub const CODE_LEN: usize = 26;
 
@@ -70,14 +79,51 @@ pub fn source_tag(code: &str) -> String {
     )
 }
 
-/// Pure: `code`'s folder, with a trailing slash.
+/// `code`'s folder, with a trailing slash: under [`GATED_ROOT`] when it was found there.
 pub fn folder(code: &str) -> String {
-    format!("{DEV_ROOT}{code}/")
+    if is_gated(code) {
+        format!("{GATED_ROOT}{code}/")
+    } else {
+        format!("{DEV_ROOT}{code}/")
+    }
 }
 
-/// Pure: where `code`'s catalogue `name` ("mods.json", "plugins.json") is.
-pub fn catalog_url(code: &str, name: &str) -> String {
-    format!("{}{name}", folder(code))
+/// The codes found behind the sign-in, by [`source_tag`] (`None`: not read yet).
+static GATED: Mutex<Option<BTreeSet<String>>> = Mutex::new(None);
+
+fn gated_path() -> std::path::PathBuf {
+    crate::core::paths::data_dir().join("dev-gated.json")
+}
+
+fn with_gated<T>(f: impl FnOnce(&mut BTreeSet<String>) -> T) -> T {
+    let mut held = GATED.lock().unwrap_or_else(|p| p.into_inner());
+    let set = held.get_or_insert_with(|| {
+        if cfg!(test) {
+            return BTreeSet::new();
+        }
+        std::fs::read_to_string(gated_path())
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default()
+    });
+    f(set)
+}
+
+/// Whether `code`'s folder is behind the sign-in.
+pub fn is_gated(code: &str) -> bool {
+    with_gated(|s| s.contains(&source_tag(code)))
+}
+
+fn note_gated(code: &str, gated: bool) {
+    let tag = source_tag(code);
+    let changed = with_gated(|s| {
+        let changed = if gated { s.insert(tag) } else { s.remove(&tag) };
+        changed.then(|| serde_json::to_string(&*s).unwrap_or_default())
+    });
+    if let (Some(text), false) = (changed, cfg!(test)) {
+        let _ = std::fs::create_dir_all(crate::core::paths::data_dir());
+        let _ = std::fs::write(gated_path(), text);
+    }
 }
 
 /// Pure: a dev catalogue entry's download `url` as the launcher fetches it: a relative one
@@ -170,6 +216,11 @@ pub enum Status {
     Checking,
     /// No folder for this code.
     NotFound,
+    /// A channel behind the EchoVRCE sign-in, and there's no sign-in (or it ran out).
+    SignIn,
+    /// A channel behind the sign-in this EchoVRCE account isn't allowed on (or none has this
+    /// code).
+    NotAllowed,
     /// The folder's catalogues: how many mods and plugins they list, and the channel's name
     /// (its `channel.json`).
     Found {
@@ -187,10 +238,14 @@ impl Status {
         match self {
             Status::Off => "Not checked yet.".into(),
             Status::Checking => "Checking the code...".into(),
-            Status::NotFound => {
-                "No dev folder has this code (or it needs a sign-in this launcher can't do yet)."
+            Status::NotFound => "No dev folder has this code.".into(),
+            Status::SignIn => {
+                "This dev channel needs your EchoVRCE sign-in: sign in, then check the code again."
                     .into()
             }
+            Status::NotAllowed => "Your EchoVRCE account isn't allowed on this dev channel (its \
+                 developer adds you in their access.json), or no channel has this code."
+                .into(),
             Status::Found {
                 mods,
                 plugins,
@@ -236,6 +291,11 @@ fn load_one(code: &str, name: &str) -> Option<(String, String)> {
             let _ = std::fs::remove_file(&path);
             None
         }
+        // Signed out, or not allowed any more: nothing from it (what's installed stays).
+        Err(e) if matches!(crate::core::http::status_of(&e), Some(401 | 403)) => {
+            tracing::info!("dev {name} catalogue: {}", failed(&e).line());
+            None
+        }
         Err(e) => {
             tracing::info!("dev {name} catalogue unavailable ({e:#}); using the last one kept");
             kept_one(code, name)
@@ -275,21 +335,53 @@ fn parse_channel(text: &str) -> Option<String> {
 }
 
 /// Fetches `code`'s catalogue `name`: `Ok(None)` when its folder has none (or there's no
-/// such folder). Errors never name the code.
+/// such folder). Under `launcher/dev/`, else behind the sign-in (a 401 or 403 there is an
+/// error [`crate::core::http::status_of`] tells). Errors never name the code.
 pub fn fetch(code: &str, name: &str) -> anyhow::Result<Option<String>> {
-    crate::core::http::get_text_opt(&catalog_url(code, name))
-        .map_err(|e| anyhow::anyhow!(redact(&format!("{e:#}"))))
+    let get = |root: &str| crate::core::http::get_text_opt(&format!("{root}{code}/{name}"));
+    let hide = |e: anyhow::Error| {
+        let status = crate::core::http::status_of(&e);
+        let e = anyhow::anyhow!(redact(&format!("{e:#}")));
+        match status {
+            Some(s) => e.context(crate::core::http::HttpStatus(s)),
+            None => e,
+        }
+    };
+    let (first, second, gated_first) = if is_gated(code) {
+        (GATED_ROOT, DEV_ROOT, true)
+    } else {
+        (DEV_ROOT, GATED_ROOT, false)
+    };
+    match get(first).map_err(hide)? {
+        Some(t) => Ok(Some(t)),
+        None => {
+            let t = get(second).map_err(hide)?;
+            if t.is_some() {
+                note_gated(code, !gated_first);
+            }
+            Ok(t)
+        }
+    }
+}
+
+/// Pure: the status an error from [`fetch`] means.
+fn failed(e: &anyhow::Error) -> Status {
+    match crate::core::http::status_of(e) {
+        Some(401) => Status::SignIn,
+        Some(403) => Status::NotAllowed,
+        _ => Status::Failed(e.to_string()),
+    }
 }
 
 /// Reads `code`'s folder: how many mods and plugins it lists (the Advanced settings check).
 pub fn check(code: &str) -> Status {
     let mods = match fetch(code, "mods.json") {
         Ok(t) => t,
-        Err(e) => return Status::Failed(e.to_string()),
+        Err(e) => return failed(&e),
     };
     let plugins = match fetch(code, "plugins.json") {
         Ok(t) => t,
-        Err(e) => return Status::Failed(e.to_string()),
+        Err(e) => return failed(&e),
     };
     if mods.is_none() && plugins.is_none() {
         return Status::NotFound;

@@ -367,6 +367,12 @@ fn plugin_findings(
             if m.pack.is_some() && !packs.insert(m.id.clone()) {
                 return None;
             }
+            // One that needs the player's OK (a block, nEVR, a mod it needs or conflicts with)
+            // is offered on the Mods page only, never announced or updated from Play.
+            if let Some(why) = mods::needs_ok(v, plugins, m, &goback::Rollback::cached()) {
+                tracing::info!("updates: {why}: left to the Mods page");
+                return None;
+            }
             Some(Finding::Plugin {
                 version_id: v.id.clone(),
                 version_name: v.name.clone(),

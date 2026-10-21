@@ -24,6 +24,8 @@ arboard = { version = "3", default-features = false }
 dirs = "7.0.0"
 # persistence: the window's size, position and full screen are remembered.
 eframe = { version = "0.36.2", features = ["persistence"] }
+# Ed25519, pure Rust: the signature of release.echovr.de's index.json (core::sources).
+ed25519-dalek = { version = "2.1.1", default-features = false, features = ["std"] }
 egui = "0.36.2"
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }

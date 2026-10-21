@@ -15,8 +15,14 @@
 //! - echo-cdn-index last `checked` it more than [`STALE`] before the CDN sent it: the sync to
 //!   the CDN has stopped;
 //!
-//! then release.echovr.de's is used. A dev folder (`launcher/dev/<code>/`) has an index of its
-//! own, for its catalogues and files, read the same way.
+//! - it has no valid signature: `index.json.sig` beside it holds Ed25519 signatures of its exact
+//!   bytes by a key in [`SIGNING_KEYS`] (echo-cdn-index on release.echo signs every index). So a
+//!   CDN, a Bunny account or a sync that was tampered with can't hand out other files: what the
+//!   index names is checked by its checksum, and the index by its signature;
+//!
+//! then release.echovr.de's is used (over TLS: it is the source of truth). A dev folder
+//! (`launcher/dev/<code>/`) has an index of its own, for its catalogues and files, read the
+//! same way.
 //!
 //! A CDN that can't be reached (no connection, a timeout) is left out for [`CDN_PAUSE`]: until
 //! then everything comes straight from release.echovr.de.
@@ -39,6 +45,14 @@ pub const CDN: &str = "https://cdn.echovr.de/";
 /// The checksums of the small files that name everything else (and in each dev folder, of
 /// everything in it).
 const INDEX: &str = "index.json";
+/// Beside each index: its signatures ([`signed`]).
+const SIG: &str = "index.json.sig";
+/// The Ed25519 public keys an index may be signed with (`echo-cdn-index keygen` prints one). A
+/// new key is added here a release before the server signs with it.
+const SIGNING_KEYS: [[u8; 32]; 1] = [[
+    0xce, 0x04, 0x7f, 0xc8, 0x2a, 0x3d, 0x30, 0x8a, 0xa1, 0x6b, 0x6e, 0xe1, 0x1d, 0xcf, 0xe7, 0xb1,
+    0xf5, 0x57, 0xf0, 0x46, 0x59, 0xa4, 0x89, 0x59, 0xa0, 0xe7, 0x07, 0x84, 0xf3, 0x4e, 0x15, 0x95,
+]];
 /// Every public file by its checksum, on [`ORIGIN`] and [`CDN`]: `<STORE><aa>/<sha>`.
 const STORE: &str = "store/sha256/";
 /// Debug builds: another CDN (`http://127.0.0.1:8799/`, to try a CDN that is behind), or
@@ -56,11 +70,12 @@ pub const CDN_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long the CDN is left out after it couldn't be reached.
 const CDN_PAUSE: Duration = Duration::from_secs(10 * 60);
 
-/// Paths the CDN never serves: uploads, the live feed (not synced), stats and the index
-/// itself (the main one is read here, not as a file).
-const ORIGIN_ONLY: [&str; 6] = [
+/// Paths the CDN never serves: uploads, the live feed (not synced), what's behind the
+/// EchoVRCE sign-in, stats and the index itself (the main one is read here, not as a file).
+const ORIGIN_ONLY: [&str; 7] = [
     "launcher/logs",
     "launcher/feed/",
+    "launcher/gated/",
     "quest/launcher/logs",
     "quest/launcher/feed/",
     "stats",
@@ -80,6 +95,51 @@ pub struct Index {
     /// lowercase SHA-256.
     #[serde(default)]
     pub files: HashMap<String, String>,
+}
+
+/// `index.json.sig`: the signatures of the index now and of the one before it (the CDN may
+/// have either).
+#[derive(Debug, Deserialize)]
+struct Signatures {
+    #[serde(default)]
+    signatures: Vec<Signature>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Signature {
+    /// The first 16 hex digits of the public key's SHA-256.
+    key: String,
+    /// Of the index it signs.
+    sha256: String,
+    /// Base64, 64 bytes.
+    sig: String,
+}
+
+/// Pure: whether `sigs` (an `index.json.sig`) holds a valid signature of exactly `text` by one
+/// of `keys`.
+fn signed(text: &str, sigs: &str, keys: &[[u8; 32]]) -> bool {
+    use base64::Engine;
+    use ed25519_dalek::{Signature as Sig, Verifier, VerifyingKey};
+    let Ok(sigs) = serde_json::from_str::<Signatures>(sigs) else {
+        return false;
+    };
+    let sha = sha256_hex(text.as_bytes());
+    sigs.signatures
+        .iter()
+        .filter(|s| s.sha256.eq_ignore_ascii_case(&sha))
+        .any(|s| {
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&s.sig) else {
+                return false;
+            };
+            let Ok(sig) = Sig::from_slice(&bytes) else {
+                return false;
+            };
+            keys.iter().any(|k| {
+                sha256_hex(k)[..16].eq_ignore_ascii_case(&s.key)
+                    && VerifyingKey::from_bytes(k)
+                        .is_ok_and(|vk| vk.verify(text.as_bytes(), &sig).is_ok())
+            })
+        })
 }
 
 impl Index {
@@ -311,18 +371,29 @@ fn index(folder: &str) -> Known {
             return known.clone();
         }
     }
-    let read = |url: &str| {
+    let fetch = |url: &str| {
         super::http::dated_text(url, INDEX_TIMEOUT)
             .map_err(|e| tracing::info!("sources: {}: {}", redact(url), redact(&format!("{e:#}"))))
             .ok()
             .flatten()
-            .and_then(|(t, sent)| Some((Index::parse(&t)?, sent)))
     };
+    let read = |url: &str| fetch(url).and_then(|(t, sent)| Some((Index::parse(&t)?, sent)));
     let seen = seen_serial(folder);
     let known = pick(
         cdn_base().and_then(|b| {
-            let (i, sent) = read(&format!("{b}{folder}{INDEX}"))?;
-            Some((i, sent.unwrap_or_else(OffsetDateTime::now_utc)))
+            let (text, sent) = fetch(&format!("{b}{folder}{INDEX}"))?;
+            let sigs = fetch(&format!("{b}{folder}{SIG}")).map(|(t, _)| t);
+            if !sigs.is_some_and(|s| signed(&text, &s, &SIGNING_KEYS)) {
+                tracing::warn!(
+                    "sources: the CDN's {} has no valid signature; from release.echovr.de",
+                    redact(&format!("{folder}{INDEX}"))
+                );
+                return None;
+            }
+            Some((
+                Index::parse(&text)?,
+                sent.unwrap_or_else(OffsetDateTime::now_utc),
+            ))
         }),
         || read(&format!("{ORIGIN}{folder}{INDEX}")).map(|(i, _)| i),
         seen,
@@ -558,6 +629,52 @@ mod tests {
     }
 
     /// When the CDN sent an index checked at 12:00, `minutes` later.
+    // A key and a signature made with OpenSSL 3 (`openssl pkeyutl -sign -rawin`), as
+    // echo-cdn-index makes them.
+    const TEST_KEY: [u8; 32] = [
+        0x9d, 0x9f, 0x07, 0x72, 0x12, 0x2c, 0xb7, 0x08, 0x0b, 0x11, 0x7f, 0xea, 0x2b, 0x90, 0x5c,
+        0xd0, 0x4e, 0x7d, 0xbd, 0xb6, 0x13, 0x39, 0x4b, 0x85, 0x20, 0x2a, 0x55, 0x56, 0xe0, 0xbd,
+        0x57, 0x4d,
+    ];
+    const TEST_TEXT: &str = "{\"serial\": 7}\n";
+    const TEST_SIG: &str =
+        "5TUonRDBwkB2yJ+sqgw0VftyQyA8ZzKHEIUkPBqM9pqx+QvWErZKB90m9aVXGYAxzrHFmhgCLiLoKGx7a/0hDA==";
+
+    fn sig_file(key: &str, sha: &str, sig: &str) -> String {
+        format!(
+            r#"{{"schema": 1, "signatures": [{{"key": "{key}", "sha256": "{sha}", "sig": "{sig}"}}]}}"#
+        )
+    }
+
+    #[test]
+    fn an_index_counts_only_with_its_signature() {
+        let sha = sha256_hex(TEST_TEXT.as_bytes());
+        let good = sig_file("b843e365d60c89af", &sha, TEST_SIG);
+        assert!(signed(TEST_TEXT, &good, &[TEST_KEY]));
+        // Another text, another key, a key named wrongly, a broken file: no.
+        assert!(!signed("{\"serial\": 8}\n", &good, &[TEST_KEY]));
+        assert!(!signed(TEST_TEXT, &good, &SIGNING_KEYS));
+        assert!(!signed(
+            TEST_TEXT,
+            &sig_file("0000000000000000", &sha, TEST_SIG),
+            &[TEST_KEY]
+        ));
+        assert!(!signed(TEST_TEXT, "not json", &[TEST_KEY]));
+        let mut bad = TEST_SIG.to_string();
+        bad.replace_range(0..1, "6");
+        assert!(!signed(
+            TEST_TEXT,
+            &sig_file("b843e365d60c89af", &sha, &bad),
+            &[TEST_KEY]
+        ));
+        // The one before is kept beside it: either matches.
+        let both = format!(
+            r#"{{"signatures": [{{"key": "x", "sha256": "{}", "sig": "AA=="}}, {{"key": "b843e365d60c89af", "sha256": "{sha}", "sig": "{TEST_SIG}"}}]}}"#,
+            "0".repeat(64)
+        );
+        assert!(signed(TEST_TEXT, &both, &[TEST_KEY]));
+    }
+
     fn sent(minutes: i64) -> OffsetDateTime {
         OffsetDateTime::parse(
             "2026-10-19T12:00:00+00:00",
@@ -722,6 +839,23 @@ mod tests {
     /// Against release.echovr.de (needs network): what comes back matches its index, from
     /// the CDN or not. With `ECHOVR_CDN=http://127.0.0.1:8799` serving older copies, they are
     /// passed over (that server's log shows them asked for).
+    /// The live index, on release.echovr.de and the CDN, is signed with a key the launcher
+    /// knows (run by hand: `cargo test live_index_is_signed -- --ignored`).
+    #[test]
+    #[ignore]
+    fn live_index_is_signed() {
+        for base in [ORIGIN, CDN] {
+            let get = |p: &str| {
+                super::super::http::raw_text(&format!("{base}{p}"), INDEX_TIMEOUT)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("no {base}{p}"))
+            };
+            // The two are fetched one after the other: a new index may come in between.
+            let ok = (0..3).any(|_| signed(&get(INDEX), &get(SIG), &SIGNING_KEYS));
+            assert!(ok, "{base}{INDEX} isn't signed");
+        }
+    }
+
     #[test]
     #[ignore]
     fn live_files_match_the_index() {

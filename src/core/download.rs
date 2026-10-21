@@ -363,8 +363,7 @@ fn fetch_from(
     may_restart: bool,
 ) -> Result<()> {
     http::block_on(async {
-        let head = http::client_for(url)
-            .head(url)
+        let head = http::head(url)
             .timeout(Duration::from_secs(30))
             .send()
             .await
@@ -403,7 +402,7 @@ fn fetch_from(
             None => 0,
         };
 
-        let mut req = http::client_for(url).get(url);
+        let mut req = http::get(url);
         if offset > 0 {
             tracing::info!(
                 "resuming {} at {offset} of {} bytes",

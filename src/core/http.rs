@@ -42,6 +42,73 @@ pub fn client() -> &'static Client {
     CLIENT.get_or_init(|| build(Duration::from_secs(20)))
 }
 
+/// Where only some players may fetch from: dev channels and private mods behind the EchoVRCE
+/// sign-in (release.echovr.de's echo-access). Requests there carry the EchoVRCE session.
+pub const GATED: &str = "https://release.echovr.de/launcher/gated/";
+
+/// A GET of `url` ([`client_for`]), with the EchoVRCE session when `url` is [`GATED`] (and
+/// only then: the session never goes anywhere else).
+pub fn get(url: &str) -> reqwest::RequestBuilder {
+    signed_in(url, client_for(url).get(url))
+}
+
+/// A HEAD of `url`, as [`get`].
+pub fn head(url: &str) -> reqwest::RequestBuilder {
+    signed_in(url, client_for(url).head(url))
+}
+
+fn signed_in(url: &str, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match gated_token(url) {
+        Some(token) => req.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}")),
+        None => req,
+    }
+}
+
+/// The saved EchoVRCE session for a [`GATED`] `url`, while it is still good (the window and
+/// the tray keep it renewed; it is never renewed here, two renewing it would clash).
+fn gated_token(url: &str) -> Option<String> {
+    if !url.starts_with(GATED) || cfg!(test) {
+        return None;
+    }
+    let t = super::echovrce::store::load()?;
+    t.expires()
+        .is_none_or(|e| e > super::echovrce::now())
+        .then_some(t.token)
+}
+
+/// What a server answered instead of the file (in an error's chain: [`status_of`]).
+#[derive(Debug)]
+pub struct HttpStatus(pub u16);
+
+impl std::fmt::Display for HttpStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "server responded with {}", self.0)
+    }
+}
+
+impl std::error::Error for HttpStatus {}
+
+/// The HTTP status an error came from, if it came from one (as its cause or its context).
+pub fn status_of(e: &anyhow::Error) -> Option<u16> {
+    e.downcast_ref::<HttpStatus>()
+        .or_else(|| e.chain().find_map(|c| c.downcast_ref::<HttpStatus>()))
+        .map(|s| s.0)
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn a_status_is_found_as_cause_or_context() {
+        let cause = anyhow::Error::new(HttpStatus(401)).context("GET x");
+        assert_eq!(status_of(&cause), Some(401));
+        let context = anyhow!("something").context(HttpStatus(403));
+        assert_eq!(status_of(&context), Some(403));
+        assert_eq!(status_of(&anyhow!("nothing")), None);
+    }
+}
+
 /// The client for `url`: one to the CDN gives up on a connection sooner, as
 /// release.echovr.de is there to fall back on ([`super::sources`]).
 pub fn client_for(url: &str) -> &'static Client {
@@ -126,8 +193,7 @@ pub(crate) fn dated_text(
     timeout: Duration,
 ) -> Result<Option<(String, Option<time::OffsetDateTime>)>> {
     let got = block_on(async {
-        let resp = client_for(url)
-            .get(url)
+        let resp = get(url)
             .timeout(timeout)
             .send()
             .await
@@ -142,7 +208,7 @@ pub(crate) fn dated_text(
         match resp.status().as_u16() {
             404 | 410 => Ok(None),
             s if (200..300).contains(&s) => Ok(Some((resp.text().await?, date))),
-            _ => bail!("GET {url}: server responded with {}", resp.status()),
+            s => Err(anyhow::Error::new(HttpStatus(s)).context(format!("GET {url}"))),
         }
     });
     if let Err(e) = &got {
@@ -179,8 +245,7 @@ pub fn download_to(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Resul
 fn download_to_inner(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     use std::io::Write;
     block_on(async {
-        let mut resp = client_for(url)
-            .get(url)
+        let mut resp = get(url)
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;

@@ -1301,30 +1301,41 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
     for (i, code) in d.state.dev_codes.clone().iter().enumerate() {
         let status = d.dev_statuses.get(code).cloned().unwrap_or_default();
         let color = match status {
-            Status::NotFound | Status::Failed(_) => design::QUEST_WARN,
+            Status::NotFound | Status::Failed(_) | Status::SignIn | Status::NotAllowed => {
+                design::QUEST_WARN
+            }
             Status::Found { .. } => design::BODY,
             _ => design::GREY,
         };
+        // A channel behind the sign-in, and none: Sign in beside Remove.
+        let sign_w = if status == Status::SignIn {
+            k.button_width("Sign in", None, BTN_H).max(110.0)
+        } else {
+            0.0
+        };
+        let text_w = w - rm_w - dz(12.0) - if sign_w > 0.0 { sign_w + dz(10.0) } else { 0.0 };
         // Never the whole code on screen: its first five characters say which one it is.
         let shown = format!("{}-…", &code[..5]);
-        k.caps_text(
-            x,
-            ry + dz(4.0),
-            w - rm_w - dz(12.0),
-            &shown,
-            14.0,
-            design::TEXT,
-            0.0,
-        );
-        let line_h = k.caps_text(
-            x,
-            ry + dz(24.0),
-            w - rm_w - dz(12.0),
-            &status.line(),
-            14.0,
-            color,
-            0.0,
-        );
+        k.caps_text(x, ry + dz(4.0), text_w, &shown, 14.0, design::TEXT, 0.0);
+        let line_h = k.caps_text(x, ry + dz(24.0), text_w, &status.line(), 14.0, color, 0.0);
+        if sign_w > 0.0
+            && k.button(
+                &format!("dev-code-sign-in-{i}"),
+                x + w - rm_w - dz(10.0) - sign_w,
+                ry,
+                sign_w,
+                BTN_H,
+                Tone::Go,
+                None,
+                "Sign in",
+                !d.vrce.busy,
+                "Sign in with EchoVRCE: this dev channel opens for your account",
+            )
+            .clicked
+        {
+            d.page = super::Page::EchoVrce;
+            d.vrce.sign_in(ctx);
+        }
         if k.button(
             &format!("dev-code-remove-{i}"),
             x + w - rm_w,
@@ -1564,6 +1575,9 @@ pub(super) fn ask_upload(d: &mut Dashboard) {
         logs::collect(&d.state.versions)
     };
     if d.upload_sources.is_empty() {
+        // A report that can't go now isn't left for the next plain upload.
+        d.report = None;
+        d.report_note.clear();
         d.dialogs.info(
             "No logs yet",
             "There are no logs to upload yet: start Echo VR once, then try again.",

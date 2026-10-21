@@ -1,12 +1,12 @@
 //! `launcher/catalogue.json`: every version of every published third-party mod, prereleases
 //! flagged, with what each needs ([`Requires`]) and what it can't run beside, and the
-//! versions blocked for everyone. `mods.json` stays as before: it has the newest stable
-//! version of each, for launchers before 0.13. Unlisted mods have the same shape, one file
-//! each: `launcher/unlisted/<id>.json`.
+//! versions blocked for everyone. Only launchers since 0.13 read it: `mods.json` stays the
+//! launcher's own mods, so older launchers never see a third-party one. Unlisted mods have
+//! the same shape, one file each: `launcher/unlisted/<id>.json`.
 //!
-//! The launcher offers each mod's newest unblocked version, a prerelease only for the mods
-//! the player tries prereleases of ([`super::prefs`]). Without the file (not published, not
-//! readable) everything is as it was from `mods.json`.
+//! The launcher offers each mod's newest version no block covers (here or in rollback.json),
+//! a prerelease only for the mods the player tries prereleases of ([`super::prefs`]). Without
+//! the file (not published, not readable) there are no third-party mods to get.
 
 use serde::Deserialize;
 
@@ -16,6 +16,67 @@ use crate::core::semver;
 pub const URL: &str = "https://release.echovr.de/launcher/catalogue.json";
 /// Where an unlisted mod's file is: `{UNLISTED}<id>.json`.
 pub const UNLISTED: &str = "https://release.echovr.de/launcher/unlisted/";
+/// Where a private mod's file is (behind the EchoVRCE sign-in): `{PRIVATE}<id>.json`.
+pub const PRIVATE: &str = "https://release.echovr.de/launcher/gated/private/";
+
+/// What Add by id found for an id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LookUp {
+    /// A mod with something to offer: its name, and whether that's prereleases only.
+    Found { name: String, prerelease_only: bool },
+    /// No unlisted or private mod has it (or it has nothing to offer now).
+    None,
+    /// A private mod, and no EchoVRCE sign-in.
+    SignIn,
+    /// A private mod this account isn't allowed to have.
+    NotAllowed,
+}
+
+/// Pure: what `text` (an unlisted or private mod's file) has for `id`.
+pub fn found_in(text: &str, id: &str) -> LookUp {
+    let Some(m) = Catalogue::parse(text)
+        .ok()
+        .and_then(|c| c.mods.into_iter().find(|m| m.id == id))
+    else {
+        return LookUp::None;
+    };
+    match (
+        m.choose_with(false, &|_| false),
+        m.choose_with(true, &|_| false),
+    ) {
+        (Some(v), _) => LookUp::Found {
+            name: v.entry.name.clone(),
+            prerelease_only: false,
+        },
+        (None, Some(v)) => LookUp::Found {
+            name: v.entry.name.clone(),
+            prerelease_only: true,
+        },
+        (None, None) => LookUp::None,
+    }
+}
+
+/// Looks `id` up: an unlisted mod, else a private one (with the EchoVRCE session).
+pub fn look_up(id: &str) -> Result<LookUp, String> {
+    if let Some(t) = super::test_feed::read(&format!("unlisted/{id}.json")) {
+        return Ok(t.map_or(LookUp::None, |t| found_in(&t, id)));
+    }
+    let get = |url: String| crate::core::http::get_text_opt(&url);
+    match get(format!("{UNLISTED}{id}.json")) {
+        Ok(Some(t)) => return Ok(found_in(&t, id)),
+        Ok(None) => {}
+        Err(e) => return Err(format!("{e:#}")),
+    }
+    match get(format!("{PRIVATE}{id}.json")) {
+        Ok(Some(t)) => Ok(found_in(&t, id)),
+        Ok(None) => Ok(LookUp::None),
+        Err(e) => match crate::core::http::status_of(&e) {
+            Some(401) => Ok(LookUp::SignIn),
+            Some(403) => Ok(LookUp::NotAllowed),
+            _ => Err(format!("{e:#}")),
+        },
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -28,7 +89,7 @@ pub struct Catalogue {
 pub struct CatalogueMod {
     pub id: String,
     pub name: String,
-    /// The GitHub account that published it.
+    /// The GitHub account that published it (shown on its row: a community mod).
     pub publisher: String,
     /// Its repository, `owner/name`.
     pub repo: String,
@@ -79,6 +140,8 @@ pub struct Blocked {
     /// `off` or `remove`.
     pub action: String,
     pub note: String,
+    /// The alert that says more ([`super::alerts`]), if any.
+    pub alert: String,
 }
 
 impl Catalogue {
@@ -112,8 +175,19 @@ impl Catalogue {
 impl CatalogueMod {
     /// The version to offer: the newest one that isn't blocked and is a semantic version,
     /// a prerelease only with `prereleases`.
+    #[cfg(test)]
     pub fn choose(&self, prereleases: bool) -> Option<&CatalogueVersion> {
+        self.choose_with(prereleases, &|_| false)
+    }
+
+    /// [`CatalogueMod::choose`], leaving out what `blocked` says (rollback.json's blocks).
+    pub fn choose_with(
+        &self,
+        prereleases: bool,
+        blocked: &dyn Fn(&ModEntry) -> bool,
+    ) -> Option<&CatalogueVersion> {
         self.offered(prereleases)
+            .filter(|v| !blocked(&v.entry))
             .max_by(|a, b| version(a).cmp(&version(b)))
     }
 
@@ -124,10 +198,13 @@ impl CatalogueMod {
 
     fn offered(&self, prereleases: bool) -> impl Iterator<Item = &CatalogueVersion> {
         self.versions.iter().filter(move |v| {
+            let parsed = semver::Version::parse(&v.entry.version);
+            // A prerelease by its flag or by its version: either keeps it for those who ask.
+            let pre = v.entry.prerelease || parsed.as_ref().is_some_and(|p| p.is_prerelease());
             v.blocked.is_none()
                 && v.entry.id == self.id
-                && semver::Version::parse(&v.entry.version).is_some()
-                && (prereleases || !v.entry.prerelease)
+                && parsed.is_some()
+                && (prereleases || !pre)
         })
     }
 }
