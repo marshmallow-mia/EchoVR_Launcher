@@ -138,10 +138,26 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
     choices.hash(&mut h);
     v.root.hash(&mut h);
     std::fs::read(mods::choices_path(v)).ok().hash(&mut h);
-    // The catalogues as kept (read, not parsed: parsing logs what it leaves out).
-    std::fs::read(crate::core::paths::data_dir().join("mods.json"))
-        .ok()
-        .hash(&mut h);
+    // The catalogues as kept (read, not parsed: parsing logs what it leaves out), with
+    // catalogue.json, unlisted and private mods' files and the blocks (rollback.json): a block
+    // takes effect also for a start from elsewhere (Steam, a shortcut), not only at PLAY.
+    let data = crate::core::paths::data_dir();
+    for kept in ["mods.json", "catalogue.json", "rollback.json"] {
+        std::fs::read(data.join(kept)).ok().hash(&mut h);
+    }
+    let mut extra: Vec<_> = std::fs::read_dir(&data)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| {
+            (n.starts_with("unlisted-") || n.starts_with("private-")) && n.ends_with(".json")
+        })
+        .collect();
+    extra.sort();
+    for name in extra {
+        std::fs::read(data.join(&name)).ok().hash(&mut h);
+    }
     super::dev_code::kept("mods").hash(&mut h);
     crate::core::echoxr::is_fetched().hash(&mut h);
     super::echoxr_settings::current().hash(&mut h);

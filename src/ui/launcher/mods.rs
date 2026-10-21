@@ -1590,12 +1590,11 @@ fn detail(p: &Plugin) -> String {
     if let Some(e) = error {
         return format!("{}  ·  {e}", p.file);
     }
-    // The version nEVR read at the last start, else the one installed from the catalogue.
+    // The version installed from the catalogue (it has the prerelease part a DLL's own
+    // MAJOR.MINOR.PATCH lacks), else the one nEVR read at the last start.
     let version = match (&p.source, p.version.is_empty()) {
+        (Source::Catalog { version, .. }, _) if !version.is_empty() => Some(format!("v{version}")),
         (_, false) => Some(format!("v{}", p.version)),
-        (Source::Catalog { version, .. }, true) if !version.is_empty() => {
-            Some(format!("v{version}"))
-        }
         _ => None,
     }
     .map(|v| {
@@ -1745,7 +1744,8 @@ fn plugin_row(
             open_sheet(d, &p.file);
         }
         let can = editable && settings_busy(d, v, p).is_none();
-        row_settings(d, k, v, p, &mut a, can);
+        let end = name_end(k, x, &look.name);
+        row_settings(d, k, v, p, &mut a, can, end);
     } else if p.present {
         let open = d
             .mods
@@ -1878,6 +1878,8 @@ fn plugin_row(
             .map(|m| (m.dev, m.unlisted, !m.publisher.is_empty()))
     };
     let source = match &p.source {
+        // Gone from the catalogue (a frozen mod, a removed dev code): that, in its place.
+        Source::Catalog { .. } if look.not_listed => ("No longer available", design::GREY),
         Source::Shipped if !p.verified => ("Unverified", design::QUEST_WARN),
         Source::Shipped => ("Community update", design::SUBTLE),
         // From the dev folder of a dev code in Advanced settings, not published.
@@ -1898,8 +1900,6 @@ fn plugin_row(
         if crate::core::semver::Version::parse(version).is_some_and(|v| v.is_prerelease()));
     let tags = [
         Some(source),
-        look.not_listed
-            .then_some(("No longer available", design::GREY)),
         prerelease.then_some(("Prerelease", design::QUEST_WARN)),
         p.required.then_some(("Required", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
@@ -2083,6 +2083,14 @@ impl Actions {
         self.right -= dz(ACTION_GAP);
         flipped
     }
+}
+
+/// Where a row's name (at `x`) ends.
+fn name_end(k: &Kit, x: f32, name: &str) -> f32 {
+    x + dz(INDENT)
+        + k.label_galley(name, design::din(18.0), design::TEXT, f32::INFINITY)
+            .size()
+            .x
 }
 
 /// The tags right of a row's name, as many as fit before its buttons.
@@ -2276,7 +2284,8 @@ fn hands_row(
             open_sheet(d, &p.file);
         }
         let can = settings_busy(d, v, p).is_none();
-        row_settings(d, k, v, p, &mut a, can);
+        let end = name_end(k, x, name);
+        row_settings(d, k, v, p, &mut a, can, end);
     }
     // What needs looking at. Not in plugins/ yet, but downloaded: PLAY puts it there.
     let chip = match plugin {
@@ -2714,10 +2723,13 @@ fn row_settings(
     p: &Plugin,
     a: &mut Actions,
     enabled: bool,
+    name_end: f32,
 ) {
     let Some(sp) = &p.settings else {
         return;
     };
+    // Only what fits beside the name (with room for a tag): the rest is in Settings.
+    let room = name_end + dz(110.0);
     let mut changes = Vec::new();
     for key in sp.settings.row.iter().rev() {
         let Some(f) = sp.settings.field(key) else {
@@ -2727,6 +2739,8 @@ fn row_settings(
         let id = format!("mods-row-{}-{key}", p.file);
         let on = enabled && plugin_settings::holds(&f.enabled_if, &sp.values);
         match &f.kind {
+            plugin_settings::Kind::Bool { .. } if a.right - k.check_width(&f.label) < room => break,
+            plugin_settings::Kind::Choice { .. } if a.right - dz(170.0) < room => break,
             plugin_settings::Kind::Bool { on: yes, off } => {
                 let mut b = plugin_form::is_on(f, &value);
                 if a.check(k, &id, &mut b, &f.label, on, f.hover()) {
@@ -3185,7 +3199,7 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntr
                 "{} is made by {}, not by EchoTools. Every version is built from its public source on \
                  GitHub and checked automatically before it's offered, and it can be turned off for \
                  everyone if something is wrong with it. Like every mod, it runs inside Echo VR. \
-                 Report it from its ⋯ menu if it misbehaves.",
+                 Report it from its More menu if it misbehaves.",
                 m.name, m.publisher
             ),
             DlgIcon::Question,
