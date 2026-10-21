@@ -663,13 +663,44 @@ pub fn go_back(
     Ok(b.from)
 }
 
-/// Files of the update manifest that are missing or differ on disk.
+/// What VERIFY found missing or different on disk.
+#[derive(Debug, Default)]
+pub struct Verified {
+    /// The build's own files (REINSTALL's check: it fetches them again).
+    pub game: Vec<String>,
+    /// The update's files (an update puts them back).
+    pub update: Vec<String>,
+}
+
+/// Every game file against the build's checksums (when `entry`, the build `v` came from,
+/// has them), then the update's files against its manifest.
 pub fn verify(
+    v: &InstalledVersion,
+    entry: Option<&VersionEntry>,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<Verified> {
+    ensure_present(v)?;
+    let game = match entry.and_then(|e| e.files_manifest.as_deref()) {
+        Some(url) => Checksums::fetch(url, v, v.patched)?
+            .check(cancel, on)?
+            .into_iter()
+            .map(|(path, _)| path)
+            .collect(),
+        None => Vec::new(),
+    };
+    Ok(Verified {
+        game,
+        update: verify_update(v, cancel, on)?,
+    })
+}
+
+/// Files of the update manifest that are missing or differ on disk.
+fn verify_update(
     v: &InstalledVersion,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
 ) -> Result<Vec<String>> {
-    ensure_present(v)?;
     let (m, _) = pc_update::fetch_manifest(&manifest_url(v).ok_or_else(|| no_updates(v))?)?;
     let bin = v.bin_dir();
     let adds: Vec<_> = m
@@ -979,6 +1010,70 @@ mod tests {
         assert!(config.with_file_name("config.json.orig").is_file());
         let again = reinstall(&entry, &v, false, &cancel, &mut |_| {}, &mut || false).unwrap();
         assert!(again.repaired.is_empty(), "{:?}", again.repaired);
+    }
+
+    /// VERIFY checks the build's own files, not only the update's: a broken game data file
+    /// is found (it once said "All game files are intact" over one).
+    #[test]
+    fn verify_finds_a_broken_game_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join(paths::ARENA_DIR);
+        let bin = game.join("bin/win10");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(game.join("_data")).unwrap();
+        std::fs::create_dir_all(game.join("_local")).unwrap();
+        let sha = |b: &str| download::sha256_reader(&mut b.as_bytes()).unwrap();
+        let base = serve_files(vec![
+            (
+                "build.manifest",
+                format!(
+                    "# Archive: b.zip\n# Root: b/\nadd bin/win10/echovr.exe {}\nadd _data/a {}\nadd _local/config.json {}\n",
+                    sha("MZ build"),
+                    sha("data"),
+                    sha("theirs"),
+                ),
+            ),
+            (
+                "update.manifest",
+                format!("add echovr.exe {}\n", sha("MZ channel")),
+            ),
+        ]);
+        let entry = VersionEntry {
+            id: "pc-latest".into(),
+            files_manifest: Some(format!("{base}/build.manifest")),
+            update_manifest: Some(format!("{base}/update.manifest")),
+            ..Default::default()
+        };
+        let v = InstalledVersion {
+            id: "pc-latest".into(),
+            root: paths::normalize(&dir.path().to_string_lossy()),
+            catalog_id: Some("pc-latest".into()),
+            update_manifest: entry.update_manifest.clone(),
+            ..Default::default()
+        };
+        std::fs::write(bin.join(paths::DEFAULT_EXE), "MZ channel").unwrap();
+        std::fs::write(game.join("_data/a"), "data").unwrap();
+        std::fs::write(game.join("_local/config.json"), "yours").unwrap();
+        let cancel = AtomicBool::new(false);
+        let found = verify(&v, Some(&entry), &cancel, &mut |_| {}).unwrap();
+        assert!(
+            found.game.is_empty() && found.update.is_empty(),
+            "{found:?}"
+        );
+
+        std::fs::write(game.join("_data/a"), "broken").unwrap();
+        let found = verify(&v, Some(&entry), &cancel, &mut |_| {}).unwrap();
+        assert_eq!(found.game, ["_data/a"]);
+        assert!(found.update.is_empty());
+        // Without the build's entry, only the update can be checked.
+        assert!(verify(&v, None, &cancel, &mut |_| {})
+            .unwrap()
+            .game
+            .is_empty());
+
+        std::fs::write(bin.join(paths::DEFAULT_EXE), "MZ other").unwrap();
+        let found = verify(&v, Some(&entry), &cancel, &mut |_| {}).unwrap();
+        assert_eq!(found.update, ["echovr.exe"]);
     }
 
     #[test]

@@ -15,8 +15,8 @@ use crate::ui::widgets::MenuItem;
 const REMOVE_KEY: &str = "remove-version";
 const REPAIR_KEY: &str = "repair-version";
 
-pub(super) fn ask_repair(d: &mut Dashboard, id: &str, msg: &str) {
-    d.pending_repair = Some(id.to_string());
+pub(super) fn ask_repair(d: &mut Dashboard, id: &str, game: bool, msg: &str) {
+    d.pending_repair = Some((id.to_string(), game));
     d.dialogs
         .confirm(REPAIR_KEY, "Verify", msg, DlgIcon::Warning);
 }
@@ -89,6 +89,7 @@ pub(super) fn reinstall(
 
 fn verify(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
     let id = v.id.clone();
+    let entry = d.entry_for(&v);
     d.start_job(
         ctx,
         JobKind::Verify,
@@ -96,8 +97,8 @@ fn verify(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
         res(&v.id, false),
         &format!("Verifying {}", v.name),
         "Verifying game files...",
-        move |cancel, on| match versions::verify(&v, cancel, on) {
-            Ok(bad) => JobResult::Verified(bad),
+        move |cancel, on| match versions::verify(&v, entry.as_ref(), cancel, on) {
+            Ok(found) => JobResult::Verified(found),
             Err(e) => job_err(e, "Verify Failed"),
         },
     );
@@ -383,12 +384,15 @@ pub(super) fn handle_answers(d: &mut Dashboard, ctx: &egui::Context) {
         }
     }
     if let Some(a) = d.dialogs.take(REPAIR_KEY) {
-        let v = d
-            .pending_repair
-            .take()
-            .and_then(|id| d.state.version(&id).cloned());
-        if let (true, Some(v)) = (a.is_yes(), v) {
-            update(d, ctx, v);
+        match d.pending_repair.take() {
+            // The build's files: fetched again, then the update.
+            Some((id, true)) if a.is_yes() => repair_game(d, ctx, &id),
+            Some((id, false)) if a.is_yes() => {
+                if let Some(v) = d.state.version(&id).cloned() {
+                    update(d, ctx, v);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -453,7 +457,7 @@ pub(super) fn manage_menu(
         menu.push((
             MenuItem::row(
                 "Verify files",
-                "Check every game file against the update manifest",
+                "Check every game file against the build and its update",
             )
             .unless(missing.or(busy.as_deref())),
             Some(Act::Verify),

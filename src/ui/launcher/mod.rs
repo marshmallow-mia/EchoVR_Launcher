@@ -184,7 +184,7 @@ enum JobResult {
     /// Reinstalled: checked, the broken files fetched again.
     Reinstalled(crate::core::launcher::versions::Reinstalled),
     Updated,
-    Verified(Vec<String>),
+    Verified(crate::core::launcher::versions::Verified),
     /// `None` = cancelled.
     Failed(Option<UiError>),
     /// The licence patch was applied.
@@ -869,7 +869,9 @@ pub struct Dashboard {
     /// ADB over the network was set up over USB in this session (or tried).
     quest_net_tried: bool,
     pending_remove: Option<String>,
-    pending_repair: Option<String>,
+    /// The version VERIFY found broken, and whether the build's own files are (REINSTALL's
+    /// repair) or only the update's (an update).
+    pending_repair: Option<(String, bool)>,
     /// Last update result per version, shown on the Play page's Updates card.
     update_note: HashMap<String, String>,
     /// Snapshot mode: made-up state, never saved.
@@ -2993,12 +2995,13 @@ impl Dashboard {
                 self.update_note.insert(id.to_string(), "Up to date".into());
                 self.notify("Echo VR is up to date");
             }
-            JobResult::Verified(bad) if bad.is_empty() => {
+            JobResult::Verified(v) if v.game.is_empty() && v.update.is_empty() => {
                 self.update_note
                     .insert(id.to_string(), "All files intact".into());
                 self.notify("All game files are intact");
             }
-            JobResult::Verified(bad) => {
+            JobResult::Verified(v) => {
+                let bad: Vec<_> = v.game.iter().chain(&v.update).collect();
                 let mut msg = format!("{} file(s) are missing or modified:\n", bad.len());
                 for b in bad.iter().take(8) {
                     msg.push_str(&format!("\n  {b}"));
@@ -3007,7 +3010,7 @@ impl Dashboard {
                     msg.push_str("\n  ...");
                 }
                 msg.push_str("\n\nRepair them now?");
-                versions::ask_repair(self, id, &msg);
+                versions::ask_repair(self, id, !v.game.is_empty(), &msg);
             }
             JobResult::Patched => {
                 if let Some(v) = self.state.versions.iter_mut().find(|v| v.id == id) {
