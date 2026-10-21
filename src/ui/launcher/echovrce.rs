@@ -1217,7 +1217,17 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
                 }
                 (None, _) => "Signed in".to_string(),
             };
-            k.caps_text(x, ty + dz(28.0), w, &session, 16.0, design::TEXT, 0.0);
+            ty += dz(28.0) + k.caps_text(x, ty + dz(28.0), w, &session, 16.0, design::TEXT, 0.0);
+            // The account ID a mod maker puts into access.json (their dev channel, private
+            // mods): it never changes, unlike the name.
+            if !acc.id.is_empty() {
+                ty += dz(22.0);
+                k.caption(x, ty, "Account ID");
+                // As it is (lower case), not in capitals: it's copied and typed exactly.
+                let g =
+                    super::install::myriad(k, &acc.id, design::myriad(18.0), design::TEXT, w, true);
+                k.put(x, ty + dz(26.0), g);
+            }
             if button(
                 k,
                 "vrce-open",
@@ -1228,6 +1238,20 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
                 vrce::WEB,
             ) {
                 crate::core::platform::open_url(vrce::WEB);
+            }
+            if !acc.id.is_empty()
+                && button(
+                    k,
+                    "vrce-copy-id",
+                    Tone::Dark,
+                    None,
+                    "Copy ID",
+                    true,
+                    "Copy your EchoVRCE account ID: a mod maker adds it to let you test their mods",
+                )
+            {
+                ctx.copy_text(acc.id.clone());
+                d.notify("Your EchoVRCE account ID is copied");
             }
             if button(
                 k,
