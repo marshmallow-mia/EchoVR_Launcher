@@ -1333,6 +1333,8 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
             )
             .clicked
         {
+            // The card closes: the sign-in code shows on the EchoVRCE page behind it.
+            d.overlay = None;
             d.page = super::Page::EchoVrce;
             d.vrce.sign_in(ctx);
         }
