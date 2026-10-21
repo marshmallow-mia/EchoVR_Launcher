@@ -1223,8 +1223,44 @@ pub fn before_start(
     prepare(v, servers)
 }
 
+/// What the tray said while the window was closed ([`say`]), for the window to say too.
+const TRAY_NOTICES: &str = "tray-notices.json";
+
+/// Keeps `text` in the notices at `path` (the newest 20), for [`take_kept_notices`].
+fn keep_notice(path: &Path, text: &str) {
+    let mut list = read_kept(path);
+    if !list.iter().any(|t| t == text) {
+        list.push(text.to_string());
+    }
+    let start = list.len().saturating_sub(20);
+    if let Ok(t) = serde_json::to_string(&list[start..]) {
+        let _ = std::fs::write(path, t);
+    }
+}
+
+fn read_kept(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// The notices kept at `path`, which are gone from it then.
+fn take_kept(path: &Path) -> Vec<String> {
+    let list = read_kept(path);
+    let _ = std::fs::remove_file(path);
+    list
+}
+
+/// What the tray said while the window was closed (a mod blocked and gone back, say): the
+/// window says it once when it opens, also when desktop notifications are off.
+pub fn take_kept_notices() -> Vec<String> {
+    take_kept(&crate::core::paths::data_dir().join(TRAY_NOTICES))
+}
+
 /// Says `text` once per launcher run in the status bar ([`take_notices`]); in the tray (its
-/// keeper prepares a start too), as a desktop notification, unless they're off.
+/// keeper prepares a start too), as a desktop notification, unless they're off, and kept
+/// for the window ([`take_kept_notices`]).
 fn say(text: String) {
     static SAID: std::sync::Mutex<BTreeSet<String>> = std::sync::Mutex::new(BTreeSet::new());
     if !SAID
@@ -1239,6 +1275,7 @@ fn say(text: String) {
         if super::store::LauncherState::load().desktop_notifications {
             crate::core::desktop_notify::show("Echo VR mods", &text);
         }
+        keep_notice(&crate::core::paths::data_dir().join(TRAY_NOTICES), &text);
         return;
     }
     NOTICES.lock().unwrap_or_else(|e| e.into_inner()).push(text);
@@ -4612,6 +4649,23 @@ pub(crate) mod tests {
         // The next start has nothing to move and says nothing.
         before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
         assert!(take_notices().is_empty());
+    }
+
+    /// The tray's notices wait for the window: each once, the newest 20, gone once taken.
+    #[test]
+    fn the_trays_notices_wait_for_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(TRAY_NOTICES);
+        assert!(take_kept(&path).is_empty());
+        keep_notice(&path, "A is blocked: back to 1.0.0");
+        keep_notice(&path, "A is blocked: back to 1.0.0");
+        for i in 0..25 {
+            keep_notice(&path, &format!("n{i}"));
+        }
+        let kept = take_kept(&path);
+        assert_eq!(kept.len(), 20);
+        assert_eq!(kept.last().map(String::as_str), Some("n24"));
+        assert!(!path.exists() && take_kept(&path).is_empty());
     }
 
     #[test]

@@ -999,6 +999,12 @@ impl Dashboard {
         }
         self.check_launcher_update(ctx);
         goback::refresh(self, ctx);
+        // What the tray did meanwhile (a blocked mod gone back), once.
+        if !self.demo {
+            for n in crate::core::launcher::mods::take_kept_notices() {
+                self.notify(&n);
+            }
+        }
         // The tray looks for updates while the window is closed (and starts at login if
         // its autostart entry is still there).
         if !self.demo {
