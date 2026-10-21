@@ -1954,10 +1954,10 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
     d.uploading_logs = true;
     d.notify("Uploading your logs…");
     let sources = std::mem::take(&mut d.upload_sources);
-    let report = d
-        .report
-        .take()
-        .map(|(what, _)| (what, std::mem::take(&mut d.report_note)));
+    let (report, reported) = match d.report.take() {
+        Some((what, name)) => (Some((what, std::mem::take(&mut d.report_note))), Some(name)),
+        None => (None, None),
+    };
     tracing::info!("logs: uploading {} log(s)", sources.len());
     let versions = d.state.versions.clone();
     d.worker.spawn(ctx, move |tx| {
@@ -1969,7 +1969,7 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
         let r = logs::bundle(&sources)
             .and_then(|b| logs::upload(b, &who))
             .map_err(|e| format!("{e:#}"));
-        tx.send(Msg::LogsUploaded(r));
+        tx.send(Msg::LogsUploaded(r, reported));
     });
 }
 
@@ -1985,9 +1985,24 @@ fn upload_token(d: &Dashboard) -> Option<String> {
         .map(|t| t.token.clone())
 }
 
-/// The logs arrived: their reference, copied, to give the developer.
-pub(super) fn logs_sent(d: &mut Dashboard, ctx: &egui::Context, code: &str) {
+/// The logs arrived: their reference, copied, to give the developer. A mod report needs
+/// nothing more: it reached the moderators by itself.
+pub(super) fn logs_sent(
+    d: &mut Dashboard,
+    ctx: &egui::Context,
+    code: &str,
+    reported: Option<&str>,
+) {
     ctx.copy_text(code.to_string());
+    if let Some(name) = reported {
+        d.dialogs.info(
+            "Your report is sent",
+            &format!(
+                "The moderators got your report on {name} with your logs: nothing more to do. Its reference is {code} (it's copied), if they ask.\n\nThe logs are deleted after 30 days."
+            ),
+        );
+        return;
+    }
     d.dialogs.info(
         "Your logs are uploaded",
         &format!(

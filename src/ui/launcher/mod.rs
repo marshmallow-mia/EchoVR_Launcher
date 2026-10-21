@@ -299,7 +299,8 @@ enum Msg {
     /// The headset's logs were saved into this folder, or why not.
     QuestLogs(Result<PathBuf, UiError>),
     /// The logs were uploaded: the service's reference, or why not.
-    LogsUploaded(Result<String, String>),
+    /// The upload's reference (or why it failed), and the reported mod's name for a report.
+    LogsUploaded(Result<String, String>, Option<String>),
     /// Linux: what PLAY's start through Steam waits for.
     LaunchNote(String),
     /// Linux: Steam has the link (true), the start was cancelled (false), or it failed.
@@ -1849,7 +1850,7 @@ impl Dashboard {
                 self.state.launcher_channel = update_check::Channel::Beta;
                 self.launcher_update = LauncherUpdate::Latest;
             }
-            Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A"),
+            Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A", None),
             Some(
                 v @ (SnapVariant::InstallAsk
                 | SnapVariant::InstallAskNew
@@ -2672,12 +2673,12 @@ impl Dashboard {
                         versions::check_existing(self, ctx, e, &id);
                     }
                 }
-                Msg::LogsUploaded(r) => {
+                Msg::LogsUploaded(r, reported) => {
                     self.uploading_logs = false;
                     match r {
                         Ok(code) => {
                             tracing::info!("logs: uploaded");
-                            settings::logs_sent(self, ctx, &code)
+                            settings::logs_sent(self, ctx, &code, reported.as_deref())
                         }
                         Err(why) => {
                             tracing::warn!("logs: upload failed: {why}");
