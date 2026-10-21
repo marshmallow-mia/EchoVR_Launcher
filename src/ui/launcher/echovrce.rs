@@ -956,8 +956,8 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         Page::EchoVrce.title(),
     );
     let cy = header.y + header.h / 2.0;
-    // Right to left: Unuwufy (the easter egg's), Sign out, In browser, Reload, the zoom,
-    // then who is signed in.
+    // Right to left: Unuwufy (the easter egg's), Sign out, In browser, Reload, Copy ID, the
+    // zoom, then who is signed in.
     let mut right = header.right() - 22.0;
     if crate::ui::uwu::on() {
         right = super::unuwufy_button(kit, right, cy) - 26.0;
@@ -1005,6 +1005,20 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         34.0,
     ) {
         d.web.reload();
+    }
+    // The account ID a mod maker puts into access.json (their dev channel, private mods): it
+    // never changes, unlike the name.
+    if !account.id.is_empty()
+        && link(
+            kit,
+            "vrce-site-copy-id",
+            "Copy ID",
+            "Copy your EchoVRCE account ID: a mod maker adds it to let you test their mods",
+            34.0,
+        )
+    {
+        kit.ui.ctx().copy_text(account.id.clone());
+        d.notify("Your EchoVRCE account ID is copied");
     }
     let keys = if cfg!(target_os = "macos") {
         "Cmd"

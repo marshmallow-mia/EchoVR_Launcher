@@ -36,10 +36,12 @@ is looked for there with the player's EchoVRCE session (sent to release.echovr.d
 by a hash of the code in `dev-gated.json`. Signed out, or no longer allowed: its mods aren't
 listed any more, installed ones keep loading.
 
-`access.json` (yours to overwrite): `{"schema": 1, "accounts": ["EchoVRCE username or account
-id", ...]}`, at most 50. A username counts for the first account that signs in with it.
-`ACCESS-STATUS.txt` beside it (read-only) says which were found and who has signed in. The
-same list opens your **private** mods (visibility `private` in `echo-mod.json`).
+`access.json` (yours to overwrite): `{"schema": 1, "accounts": ["<EchoVRCE account ID>", ...]}`,
+at most 50. Account IDs only: a username can change and then be someone else's. Testers copy
+theirs on the launcher's EchoVRCE page (**Copy ID**). `ACCESS-STATUS.txt` beside it (read-only)
+says which were found, what was refused, and when each last opened the channel. The same list
+opens your **private** mods (visibility `private` in `echo-mod.json`). Your own account is the
+one the maintainers noted when they approved your first mod.
 
 ## Your folder
 
