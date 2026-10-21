@@ -2706,6 +2706,9 @@ pub struct ModEntry {
     /// Unlisted: added by its id ([`super::catalogue::UNLISTED`]).
     #[serde(skip)]
     pub unlisted: bool,
+    /// Private: added by its id, for the accounts its maker allowed (with `unlisted`).
+    #[serde(skip)]
+    pub private: bool,
     /// From the dev folder of a dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
@@ -2961,6 +2964,7 @@ impl ModCatalog {
             e.shipped = false;
             e.required = false;
             e.unlisted = unlisted.contains(&m.id);
+            e.private = e.unlisted && m.visibility == "private";
             e.publisher = m.publisher.clone();
             if let Err(err) = e.validate() {
                 tracing::warn!("catalogue: {} {} left out: {err:#}", m.id, e.version);
@@ -3324,7 +3328,17 @@ pub(crate) mod tests {
         );
         let cool = find(&c, "cool").unwrap();
         assert_eq!(cool.version, "1.1.0-beta.1");
-        assert!(cool.prerelease && cool.unlisted);
+        assert!(cool.prerelease && cool.unlisted && !cool.private);
+        // A private one is tagged so (it's added by id too).
+        let mut private = cat.mods.clone();
+        private[0].visibility = "private".into();
+        let c = ModCatalog::builtin().with_catalogue(
+            &private,
+            &["cool".to_string()],
+            &pre,
+            &Default::default(),
+        );
+        assert!(find(&c, "cool").unwrap().private);
     }
 
     #[test]

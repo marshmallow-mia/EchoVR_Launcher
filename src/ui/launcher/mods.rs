@@ -1180,7 +1180,11 @@ pub(super) fn unlisted_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
     let id = input.trim().to_ascii_lowercase();
     let valid = crate::core::launcher::catalog::is_safe_id(&id);
     let have = d.state.unlisted_mods.contains(&id);
-    if let Some(n) = note.clone() {
+    // Already added: said on the card, not only in the disabled button's tip.
+    let shown = note.clone().or_else(|| {
+        have.then(|| "It's added already: it's in More mods, or installed above".to_string())
+    });
+    if let Some(n) = shown {
         k.caps_text(
             x,
             fy + BTN_H + dz(12.0),
@@ -1875,7 +1879,7 @@ fn plugin_row(
             .catalog
             .as_ref()
             .and_then(|c| c.mods.iter().find(|m| m.id == id))
-            .map(|m| (m.dev, m.unlisted, !m.publisher.is_empty()))
+            .map(|m| (m.dev, m.unlisted, !m.publisher.is_empty(), m.private))
     };
     let source = match &p.source {
         // Gone from the catalogue (a frozen mod, a removed dev code): that, in its place.
@@ -1886,11 +1890,14 @@ fn plugin_row(
         Source::Catalog { id, .. } if listed(id).is_some_and(|(dev, ..)| dev) => {
             ("Dev", design::RIM_BOTTOM)
         }
-        Source::Catalog { id, .. } if listed(id).is_some_and(|(_, unlisted, _)| unlisted) => {
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(.., private)| private) => {
+            ("Private", design::BLUE)
+        }
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(_, unlisted, ..)| unlisted) => {
             ("Unlisted", design::BLUE)
         }
         // A third party's, from catalogue.json: not EchoTools'.
-        Source::Catalog { id, .. } if listed(id).is_some_and(|(.., community)| community) => {
+        Source::Catalog { id, .. } if listed(id).is_some_and(|(_, _, community, _)| community) => {
             ("Community", design::QUEST_WARN)
         }
         Source::Catalog { .. } => ("Catalogue", design::BLUE),
@@ -3482,6 +3489,8 @@ fn meta(m: &ModEntry) -> String {
     // What kind of version it is, first: the tag beside the name may not fit.
     let kind = if m.prerelease {
         Some("prerelease".to_string())
+    } else if m.private {
+        Some("private".to_string())
     } else if m.unlisted {
         Some("unlisted".to_string())
     } else {
@@ -3620,6 +3629,8 @@ fn entry(
                 Some(("Dev", design::RIM_BOTTOM))
             } else if m.prerelease {
                 Some(("Prerelease", design::QUEST_WARN))
+            } else if m.private {
+                Some(("Private", design::BLUE))
             } else if m.unlisted {
                 Some(("Unlisted", design::BLUE))
             } else if !m.publisher.is_empty() {
