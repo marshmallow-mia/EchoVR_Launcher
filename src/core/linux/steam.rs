@@ -508,15 +508,24 @@ pub fn install_shortcut(root: &Path, s: &Shortcut) -> Result<u32> {
 
 /// Steam's processes (its client and web helpers) of the install at `root`: the native
 /// one's, or those in the Flatpak's sandbox. Each with its pids, the host's first (see
-/// [`ns_pids`]).
+/// [`ns_pids`]). Processes only, not their threads, and none that already ended: the
+/// `steam` that handed a running Steam a command ends at once, and stays a zombie until
+/// its parent reaps it.
 fn processes(root: &Path) -> Vec<(String, Vec<u32>)> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
     let flatpak = is_flatpak(root);
     let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing().without_tasks(),
+    );
     sys.processes()
         .iter()
         .filter_map(|(pid, p)| {
+            if p.thread_kind().is_some() || p.status() == ProcessStatus::Zombie {
+                return None;
+            }
             let name = p.name().to_str()?;
             let name = name.strip_suffix(".exe").unwrap_or(name);
             if !matches!(name, "steam" | "steamwebhelper") {
@@ -575,6 +584,23 @@ fn steam_command(root: &Path) -> std::process::Command {
     } else {
         std::process::Command::new("steam")
     }
+}
+
+/// Runs Steam's command with `args` in the background, and reaps it when it ends. Steam's
+/// `steam` script hands a running Steam its command and ends at once; unreaped it stayed a
+/// zombie named `steam`, which counted as Steam still running until the launcher closed
+/// ("Steam didn't close", PLAY waiting for a Steam that wasn't there).
+fn spawn_steam(root: &Path, args: &[&str]) -> std::io::Result<()> {
+    let mut child = steam_command(root)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Whether SteamVR runs. Closing Steam under it leaves its processes behind, and the
@@ -675,13 +701,7 @@ pub fn shutdown(root: &Path) -> Result<()> {
     if vr_running() {
         bail!("SteamVR is running. Close SteamVR first: Steam has to restart once for this.");
     }
-    steam_command(root)
-        .arg("-shutdown")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("Couldn't ask Steam to close")?;
+    spawn_steam(root, &["-shutdown"]).context("Couldn't ask Steam to close")?;
     for _ in 0..120 {
         std::thread::sleep(Duration::from_millis(500));
         if !running(root) {
@@ -695,13 +715,7 @@ pub fn shutdown(root: &Path) -> Result<()> {
 
 /// Starts Steam again, in the background, and waits (up to 90 seconds) until it is up.
 pub fn start(root: &Path) -> Result<()> {
-    steam_command(root)
-        .arg("-silent")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context("Couldn't start Steam")?;
+    spawn_steam(root, &["-silent"]).context("Couldn't start Steam")?;
     if wait_ready(root, Duration::from_secs(90)) {
         // Up, and a moment more for it to take links.
         std::thread::sleep(Duration::from_secs(3));
@@ -724,13 +738,7 @@ pub fn run_when_up(
     let mut started = false;
     if !running(root) {
         on("Starting Steam");
-        steam_command(root)
-            .arg("-silent")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .context("Couldn't start Steam")?;
+        spawn_steam(root, &["-silent"]).context("Couldn't start Steam")?;
         started = true;
     }
     let since = std::time::Instant::now();
@@ -764,13 +772,7 @@ pub fn run_when_up(
 
 /// Hands Steam a `steam://` link (say, to start SteamVR).
 pub fn open(root: &Path, link: &str) -> Result<()> {
-    steam_command(root)
-        .arg(link)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("Couldn't ask Steam to open {link}"))?;
+    spawn_steam(root, &[link]).with_context(|| format!("Couldn't ask Steam to open {link}"))?;
     Ok(())
 }
 
@@ -799,6 +801,33 @@ mod tests {
         assert!(is_client(&native, 3_790_601));
         assert!(ns_pids("Name:\tsteam\n").is_empty());
         assert!(!is_client(&[], 1));
+    }
+
+    // What `steam -shutdown` left when Steam ran: a `steam` that ended unreaped.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_ended_steam_is_not_steam_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("steam");
+        std::fs::copy("/bin/true", &fake).unwrap();
+        let mut child = std::process::Command::new(&fake).spawn().unwrap();
+        let pid = child.id();
+        let zombie = || {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .is_ok_and(|s| s.rsplit(") ").next().is_some_and(|r| r.starts_with('Z')))
+        };
+        for _ in 0..100 {
+            if zombie() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(zombie(), "the stand-in never ended");
+        let listed = processes(dir.path())
+            .iter()
+            .any(|(_, pids)| pids.first() == Some(&pid));
+        let _ = child.wait();
+        assert!(!listed);
     }
 
     #[test]
