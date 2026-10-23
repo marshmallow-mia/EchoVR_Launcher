@@ -2,153 +2,21 @@
   "schema": 1,
   "id": "server-host",
   "name": "Server host",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "marshmallow-mia",
-  "summary": "Host an Echo VR game server from your launcher's install: writes the server's own setup (its account, EchoVRCE or another Nakama, its region, and the mods the Mods page has on, EchoCombat too) and gives you the command that starts it.",
+  "summary": "Run Echo VR game servers on this PC with nEVR: add servers, start and stop them, see what each one does and its live console. They sign in as their own account, register with EchoVRCE, start again after every match, and keep running while the launcher is closed. Windows, and Linux through the launcher's Proton.",
   "icon": "globe",
-  "settings": {
-    "store": {
-      "file": "settings.json",
-      "format": "json"
-    },
-    "sections": [
-      {
-        "title": "Server account",
-        "fields": [
-          { "key": "discord_id", "type": "text", "label": "Discord ID" },
-          { "key": "password", "type": "secret", "label": "Password" }
-        ]
-      },
-      {
-        "title": "Where",
-        "fields": [
-          { "key": "regions", "type": "text", "label": "Region", "default": "uwu" },
-          { "key": "guilds", "type": "text", "label": "Guilds", "default": "" },
-          { "key": "port", "type": "text", "label": "Port", "default": "6792" },
-          { "key": "folder", "type": "text", "label": "Folder", "default": "server" }
-        ]
-      },
-      {
-        "title": "Services",
-        "fields": [
-          { "key": "socket_uri", "type": "text", "label": "Login", "default": "ws://g.echovrce.com:80/spr" },
-          { "key": "serverdb_uri", "type": "text", "label": "Registration", "default": "ws://g.echovrce.com:80/nevr" },
-          { "key": "http_uri", "type": "text", "label": "HTTP", "default": "https://g.echovrce.com:7350" },
-          { "key": "http_key", "type": "text", "label": "HTTP key", "default": "1c65a082-6712-4a02-8c6d-23d5c32f7409" },
-          { "key": "server_key", "type": "text", "label": "Server key", "default": "65675147-2a31-40e3-be21-98704de1b027" }
-        ]
-      }
-    ]
-  },
-  "actions": {
-    "write": [
-      {
-        "require": "{launcher.features.host}",
-        "otherwise": "This plugin needs a newer launcher: Settings, Update now."
-      },
-      {
-        "require": "{settings.discord_id}",
-        "otherwise": "Fill in the server account's Discord ID first."
-      },
-      {
-        "require": "{settings.password}",
-        "otherwise": "Fill in the server account's password first."
-      },
-      {
-        "host": {
-          "folder": "{settings.folder|'server'}",
-          "socket_uri": "{settings.socket_uri}",
-          "serverdb_uri": "{settings.serverdb_uri}",
-          "http_uri": "{settings.http_uri}",
-          "http_key": "{settings.http_key}",
-          "server_key": "{settings.server_key}",
-          "discord_id": "{settings.discord_id}",
-          "password": "{settings.password}",
-          "regions": "{settings.regions}",
-          "guilds": "{settings.guilds}",
-          "port": "{settings.port}",
-          "mods": true,
-          "save": "page.host"
-        }
-      }
-    ],
-    "copy": [
-      { "copy": "{page.host.command}" }
-    ]
-  },
   "page": {
+    "builtin": "server-host",
     "columns": [
       [
         {
-          "title": "Your game server",
-          "help": "The account your server signs in with on EchoVRCE (or another Nakama below), not your own player account.",
+          "title": "Server host",
           "blocks": [
             {
-              "text": "This plugin needs a newer launcher: Settings, Update now.",
+              "text": "This version of the plugin needs launcher 0.12.3 or newer: Settings, Update now (the beta channel has it).",
               "tone": "warn",
-              "when": "!{launcher.features.host}"
-            },
-            { "field": "settings.discord_id", "label": "Discord ID", "hint": "The server account's" },
-            {
-              "field": "settings.password",
-              "label": "Password",
-              "hint": "The server account's: it's kept in plain text, in the server's own folder",
-              "secret": true
-            },
-            { "field": "settings.regions", "label": "Region", "hint": "Where it registers, e.g. uwu. Several: comma-separated" },
-            { "field": "settings.guilds", "label": "Guilds", "hint": "Optional: the guild ids it hosts for, comma-separated. Each guild has to give the server account its server host role" },
-            { "field": "settings.port", "label": "Port", "hint": "Forward it (UDP and TCP) to this PC: EchoVRCE checks it when the server registers" },
-            { "text": "{page.error}", "tone": "warn", "when": "{page.error}" },
-            {
-              "button": {
-                "label": "Write the server setup",
-                "action": "write",
-                "primary": true,
-                "enabled": "{settings.discord_id}"
-              }
-            }
-          ]
-        },
-        {
-          "title": "Start it",
-          "when": "{page.host.command}",
-          "blocks": [
-            { "value": "{page.host.folder}", "label": "Its setup" },
-            { "value": "{page.host.command}", "label": "Command", "copy": true },
-            {
-              "text": "Run it whenever you want the server up (Windows: double-click start-server in its setup folder, or run the command in a Command Prompt). nEVR ends a server after each match, and the script starts it again. To stop it on Windows, close the server's window, then press S in the script's; on Linux, Ctrl+C. Write the setup again after changing mods on the Mods page.",
-              "tone": "muted"
-            }
-          ]
-        },
-        {
-          "title": "Services",
-          "help": "EchoVRCE's, unless your server plays on another Nakama.",
-          "blocks": [
-            { "field": "settings.socket_uri", "label": "Login", "hint": "services.socket_uri" },
-            { "field": "settings.serverdb_uri", "label": "Registration", "hint": "services.serverdb_uri; empty: through the login" },
-            { "field": "settings.http_uri", "label": "HTTP", "hint": "auth.http_uri" },
-            { "field": "settings.http_key", "label": "HTTP key", "hint": "auth.http_key: EchoVRCE's is public" },
-            { "field": "settings.server_key", "label": "Server key", "hint": "auth.server_key: EchoVRCE's is public" },
-            { "field": "settings.folder", "label": "Folder", "hint": "In the game's _local folder: one per server setup" }
-          ]
-        }
-      ],
-      [
-        {
-          "title": "How it works",
-          "blocks": [
-            {
-              "text": "Write the server setup puts the server's own config.yaml and config.json into the live build's _local folder. They hold the account and services above, and the mods the Mods page has on, a content pack such as EchoCombat included.",
-              "tone": "muted"
-            },
-            {
-              "text": "Its start script runs echovr.exe as a headless server on that setup (-config-path), and again after each match. PLAY and the launcher never change it, and the server signs in as its own account, not as yours. On Linux it runs in a Wine prefix of its own, so you can play beside it.",
-              "tone": "muted"
-            },
-            {
-              "text": "A content pack on a server needs nEVR 4.1.0 or newer (the launcher's game update).",
-              "tone": "muted"
+              "when": "!{launcher.features.server_host}"
             }
           ]
         }

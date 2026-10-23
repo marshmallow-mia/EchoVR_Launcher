@@ -504,6 +504,18 @@ pub fn link_device(token: &str) -> Result<Tokens> {
     bail!("EchoVRCE didn't hand over the linked session. Try again.")
 }
 
+/// A JWT's claims (its payload), `Null` when it isn't one.
+pub fn jwt_claims(token: &str) -> Value {
+    let Some(payload) = token.split('.').nth(1) else {
+        return Value::Null;
+    };
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null)
+}
+
 /// The script that signs echovrce.com in with `tokens` (a session linked for it) before
 /// its own scripts run, once per linked session: later the site renews that session
 /// itself. A newly linked session always replaces what the site had (on macOS its storage

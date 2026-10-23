@@ -34,7 +34,13 @@ pub struct PluginPage {
     pub actions: BTreeMap<String, Vec<Step>>,
     /// The page: columns of cards, left to right.
     pub columns: Vec<Vec<Card>>,
+    /// A page the launcher draws itself instead ([`BUILTIN`]), for the plugin of that
+    /// id only; launchers without it draw `columns` (a "needs a newer launcher" card).
+    pub builtin: String,
 }
+
+/// The built-in pages: (name, the only plugin id that may ask for it).
+pub const BUILTIN: &[(&str, &str)] = &[("server-host", "server-host")];
 
 /// The rail icons a plugin can pick.
 pub const ICONS: &[&str] = &["plugin", "calendar", "globe", "controller"];
@@ -337,6 +343,19 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
             actions.insert(name.clone(), parsed);
         }
     }
+    let builtin = match v.get("page").map(|p| s(p, "builtin")) {
+        Some(b) if b.is_empty() => String::new(),
+        Some(b) if BUILTIN.contains(&(b.as_str(), id.as_str())) => b,
+        Some(b) => {
+            warn(
+                &mut w,
+                "page.builtin",
+                format!("no built-in page {b:?} for this plugin"),
+            );
+            String::new()
+        }
+        None => String::new(),
+    };
     let columns: Vec<Vec<Card>> = match v
         .get("page")
         .and_then(|p| p.get("columns"))
@@ -359,6 +378,7 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
                     .unwrap_or_default()
             })
             .collect(),
+        None if !builtin.is_empty() => Vec::new(),
         None => {
             warn(
                 &mut w,
@@ -424,6 +444,7 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
         data,
         actions,
         columns,
+        builtin,
     };
     (Some(page), w)
 }
@@ -1030,18 +1051,13 @@ mod tests {
         ));
         assert!(w.is_empty(), "{w:?}");
         let p = p.unwrap();
-        let Some(Step::Host {
-            fields, mods, save, ..
-        }) = p.actions["write"].last()
-        else {
-            panic!("the write action ends with its host step");
-        };
-        assert!(*mods);
-        assert_eq!(save, "page.host");
-        assert_eq!(fields.len(), HOST_FIELDS.len());
-        let ctx = serde_json::json!({"settings": {"folder": "", "regions": "eu"}});
-        assert_eq!(render(&fields["folder"], &ctx), "server");
-        assert_eq!(render(&fields["regions"], &ctx), "eu");
+        assert_eq!(p.builtin, "server-host");
+        // Older launchers draw its one card: it says to update.
+        assert_eq!(p.columns.len(), 1);
+        // Another plugin can't ask for that page.
+        let (p, w) = parse(r#"{"id": "other", "name": "O", "page": {"builtin": "server-host"}}"#);
+        assert!(p.is_none() || p.unwrap().builtin.is_empty());
+        assert!(!w.is_empty());
     }
 
     /// The Controllers plugin reads without a warning, with one form per section, its

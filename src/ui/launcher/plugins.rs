@@ -939,6 +939,9 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
     let Some(p) = d.plugins.list.get(i as usize).cloned() else {
         return empty_state(kit, Icon::Plus, "Plugins", "This plugin was removed.");
     };
+    if p.page.builtin == "server-host" && p.page.id == crate::core::server_host::PLUGIN_ID {
+        return super::server_host::show(d, kit, ctx);
+    }
     view(d, &p);
     answers(d, &p);
     let c = context(d, &p);
@@ -2989,6 +2992,21 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
     if let Some(p) = d.plugins.list.get(2) {
         d.state.rail_unpinned.insert(p.page.id.clone());
     }
+}
+
+/// Snapshots: the plugin `text` describes installed, after the others.
+pub(super) fn snap_install(d: &mut Dashboard, text: &str) {
+    let (page, _) = core::read_description(text);
+    let Some(page) = page else {
+        return;
+    };
+    d.plugins.list.retain(|p| p.page.id != page.id);
+    d.plugins.list.push(Installed {
+        from_catalog: Some(page.version.clone()),
+        page: std::sync::Arc::new(page),
+        dir: std::path::PathBuf::new(),
+        warnings: Vec::new(),
+    });
 }
 
 pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {

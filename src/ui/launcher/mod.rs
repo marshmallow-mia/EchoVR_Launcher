@@ -15,6 +15,7 @@ mod panel;
 mod play;
 mod plugin_form;
 mod plugins;
+mod server_host;
 mod servers;
 mod settings;
 mod setup;
@@ -716,6 +717,13 @@ pub enum SnapVariant {
     ManyPlugins,
     ManyPluginsOpen,
     ManyPluginsMenu,
+    /// The Server host plugin installed (its tab second): its servers, a console, the
+    /// Doctor, and a server's settings card.
+    ServerHost,
+    ServerHostConsole,
+    ServerHostDoctor,
+    ServerHostEdit,
+    ServerHostSettings,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -845,6 +853,8 @@ pub struct Dashboard {
     mods: mods::Mods,
     /// The launcher plugins: their tabs and the Plugins page.
     plugins: plugins::PluginsUi,
+    /// The Server host plugin's page: the game servers on this PC.
+    server_host: server_host::HostUi,
     /// Who opens spark:// links (Windows, Linux), once read.
     link_handler: Option<links::Handler>,
     /// When a link handed over by another launcher was last looked for.
@@ -1625,6 +1635,7 @@ impl Dashboard {
             self,
             self.snap_variant == Some(SnapVariant::PluginControllers),
         );
+        server_host::snap(self, self.snap_variant);
         self.state.rail_open = demo_state().rail_open;
         self.state.rail_order.clear();
         self.state.rail_unpinned.clear();
@@ -2093,6 +2104,11 @@ impl Dashboard {
                 | SnapVariant::PluginGameServerAsk
                 | SnapVariant::PluginGameServerSet
                 | SnapVariant::PluginControllers
+                | SnapVariant::ServerHost
+                | SnapVariant::ServerHostConsole
+                | SnapVariant::ServerHostDoctor
+                | SnapVariant::ServerHostEdit
+                | SnapVariant::ServerHostSettings
                 | SnapVariant::ManyPlugins
                 | SnapVariant::ManyPluginsOpen
                 | SnapVariant::ManyPluginsMenu,

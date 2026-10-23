@@ -28,6 +28,12 @@ fn main() {
         std::process::exit(ui::tray::main());
     }
 
+    // The game servers' supervisor (the Server host plugin's page starts it): no window.
+    if args.get(1).map(String::as_str) == Some(core::server_host::FLAG) {
+        core::log::init("server-host.log");
+        std::process::exit(core::server_host::supervisor::main());
+    }
+
     // A spark:// link clicked elsewhere: for the launcher already running (this one then
     // exits), or for this one once it is up.
     if let Some(link) = args.get(1).filter(|a| core::links::parse(a).is_some()) {

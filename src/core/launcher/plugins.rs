@@ -190,8 +190,9 @@ pub fn launcher_context(state: &LauncherState) -> Value {
         "event_builds": builds,
         // What this launcher can do for a plugin, so one can say when it needs a newer one.
         // form: settings forms on the page; presets: the presets card; echoxr_settings: an
-        // `echoxr` store is kept beside EchoXR in every version.
-        "features": {"server": true, "echorelay": true, "host": true, "form": true, "presets": true, "echoxr_settings": true},
+        // `echoxr` store is kept beside EchoXR in every version; server_host: the Server
+        // host plugin's built-in page (`"builtin": "server-host"`).
+        "features": {"server": true, "echorelay": true, "host": true, "form": true, "presets": true, "echoxr_settings": true, "server_host": true},
     })
 }
 

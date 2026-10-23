@@ -78,6 +78,11 @@ pub enum Request {
         manifest_url: String,
         staging: String,
     },
+    /// Let these ports (UDP and TCP) in through Windows Firewall for the launcher's game
+    /// servers: its own rule, made anew with exactly these ports.
+    AllowServerPorts {
+        ports: Vec<u16>,
+    },
     Shutdown,
 }
 
@@ -161,16 +166,22 @@ pub fn handle(req: &Request) -> Reply {
             }
         }
         Request::ExcludeFromDefender { dir } => {
-            let bins: Vec<std::path::PathBuf> = super::launcher::store::LauncherState::load()
+            let mut bins: Vec<std::path::PathBuf> = super::launcher::store::LauncherState::load()
                 .versions
                 .iter()
                 .map(|v| v.bin_dir())
                 .collect();
+            // The game servers' folders (their copies of nEVR).
+            bins.push(super::server_host::doctor::servers_folder());
             match known_bin(dir, &bins).and_then(|d| add_defender_exclusion(&d)) {
                 Ok(()) => Reply::Ok,
                 Err(e) => Reply::Err(format!("{e:#}")),
             }
         }
+        Request::AllowServerPorts { ports } => match allow_ports(ports) {
+            Ok(()) => Reply::Ok,
+            Err(e) => Reply::Err(format!("{e:#}")),
+        },
         Request::RepairGameFiles {
             game,
             manifest_url,
@@ -346,6 +357,51 @@ fn known_bin(dir: &str, bins: &[std::path::PathBuf]) -> Result<std::path::PathBu
     } else {
         bail!("{} isn't an Echo VR folder the launcher has", dir.display())
     }
+}
+
+/// Pure: the ports as netsh's `localport=` list, if they can be a game server's.
+fn port_list(ports: &[u16]) -> Result<String> {
+    if ports.is_empty() || ports.len() > 64 || ports.iter().any(|p| *p < 1024) {
+        bail!("refusing the ports {ports:?}");
+    }
+    Ok(ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(","))
+}
+
+/// The launcher's firewall rule for its game servers, with exactly `ports` (needs
+/// administrator rights).
+fn allow_ports(ports: &[u16]) -> Result<()> {
+    if !cfg!(windows) {
+        bail!("Windows Firewall is Windows'");
+    }
+    let list = port_list(ports)?;
+    let name = format!("name={}", super::server_host::doctor::FIREWALL_RULE);
+    let _ = super::process::command("netsh")
+        .args(["advfirewall", "firewall", "delete", "rule"])
+        .arg(&name)
+        .output();
+    for proto in ["UDP", "TCP"] {
+        let out = super::process::command("netsh")
+            .args(["advfirewall", "firewall", "add", "rule"])
+            .arg(&name)
+            .args(["dir=in", "action=allow", "profile=any"])
+            .arg(format!("protocol={proto}"))
+            .arg(format!("localport={list}"))
+            .output()
+            .context("couldn't run netsh")?;
+        if !out.status.success() {
+            bail!(
+                "Windows Firewall didn't take the rule ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout).trim()
+            );
+        }
+    }
+    tracing::info!("firewall: game server ports {list} let in");
+    Ok(())
 }
 
 /// Pure: `s` as a PowerShell string literal (single quotes: nothing in it is expanded).
@@ -646,6 +702,18 @@ pub fn exclude_from_defender(
 ) -> Result<()> {
     let req = Request::ExcludeFromDefender {
         dir: bin.to_string_lossy().into(),
+    };
+    match broker::request(&req, consent)? {
+        Reply::Err(m) => bail!("{m}"),
+        _ => Ok(()),
+    }
+}
+
+/// Lets the game servers' `ports` in through Windows Firewall: through the helper (after
+/// `consent`).
+pub fn allow_server_ports(ports: &[u16], consent: &mut dyn FnMut() -> bool) -> Result<()> {
+    let req = Request::AllowServerPorts {
+        ports: ports.to_vec(),
     };
     match broker::request(&req, consent)? {
         Reply::Err(m) => bail!("{m}"),
@@ -971,6 +1039,14 @@ mod tests {
     use super::*;
     use crate::core::manifest::Manifest;
     use std::path::PathBuf;
+
+    #[test]
+    fn lets_in_only_a_servers_ports() {
+        assert_eq!(port_list(&[6792, 6793]).unwrap(), "6792,6793");
+        assert!(port_list(&[]).is_err());
+        assert!(port_list(&[80]).is_err());
+        assert!(port_list(&[7000; 65]).is_err());
+    }
 
     /// A game folder with its exe, staging beside it, and the build's checksums for
     /// `files` (path, content).

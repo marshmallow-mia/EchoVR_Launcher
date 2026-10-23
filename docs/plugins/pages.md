@@ -78,6 +78,10 @@ there were.
   - A page edits them with fields bound to `settings.<key>`.
 - **`page.columns`:** one column fills the page; two put the second into the right-hand panel. A
   column scrolls when its cards are taller than the page.
+- **`page.builtin`:** a page the launcher draws itself, for one plugin only: `"server-host"` for
+  the plugin `server-host` (0.12.3 on, `launcher.features.server_host`). Launchers without it
+  draw `columns`, so those say to update. A built-in page named by another plugin is left out
+  with a warning. See [server-host/README.md](server-host/README.md).
 
 ## Text: templates
 
@@ -93,6 +97,7 @@ Every text in a page is a template. `{path}` is filled from the page's context:
 | `launcher.server.address`, `.name`, `.kind`, `.discord_id`, `.display_name`, `.plugin` | the server the live build plays on instead of EchoVRCE, as a plugin's `server` step set it (empty: EchoVRCE; `kind`: `nakama` or `echorelay`), and that plugin's id. Its key and password aren't shown. Launchers before 0.11.11-beta.1 have no `launcher.server` |
 | `launcher.features.server`, `.echorelay`, `.host` | `true` when this launcher has the `server` step, its EchoRelay kind (0.11.12 on) and the `host` step (0.11.15 on): a plugin can say when it needs a newer launcher |
 | `launcher.features.form`, `.presets`, `.echoxr_settings` | `true` when this launcher draws the `form` and `presets` blocks and keeps an `echoxr` store beside EchoXR (0.11.16 on) |
+| `launcher.features.server_host` | `true` when this launcher has the Server host plugin's built-in page (0.12.3 on) |
 | `item` | inside a list: its row |
 
 Template syntax:
@@ -225,4 +230,8 @@ beside its own `config.yaml`, never the player's. A guild it hosts for has to gi
 account its server host role, or it registers for no guild. Content packs on a server need
 nEVR 4.1.0 or newer.
 
-The example: [server-host/plugin.json](server-host/plugin.json), the Server host plugin.
+`socket_uri` is always written: EchoVRCE's (`wss://g.echovrce.com:443/nevr`) when the plugin
+leaves it empty, since nEVR refuses to start a server without one.
+
+The Server host plugin itself (0.2.0 on) no longer uses this step: it has a page of its
+own, [server-host/README.md](server-host/README.md).

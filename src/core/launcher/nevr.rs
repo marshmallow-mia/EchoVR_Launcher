@@ -600,6 +600,18 @@ pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
     write_private(&ours, text.as_bytes())
 }
 
+/// Gives the game in a folder of its own (a game server's `_local`) `login`, beside its
+/// `config.yaml`.
+pub fn write_login_at(local: &Path, login: &GameLogin) -> Result<()> {
+    std::fs::create_dir_all(local).with_context(|| format!("create {}", local.display()))?;
+    let path = local.join(CREDENTIALS);
+    // nEVR hides the file, and Windows won't overwrite a hidden file in place.
+    if path.is_file() {
+        std::fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
+    }
+    write_private(&path, serde_json::to_string_pretty(login)?.as_bytes())
+}
+
 /// Removes `v`'s game sign-ins that are `user_id`'s (signing out of the launcher signs
 /// the game out too).
 pub fn forget_login(v: &InstalledVersion, user_id: &str) {
@@ -621,7 +633,7 @@ pub fn forget_login(v: &InstalledVersion, user_id: &str) {
 }
 
 #[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let mut f = std::fs::OpenOptions::new()
@@ -636,7 +648,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::write(path, bytes).with_context(|| format!("Couldn't write {}", path.display()))
 }
 
