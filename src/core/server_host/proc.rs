@@ -33,6 +33,7 @@ pub struct Game {
 
 /// Linux: the server's Wine prefix, its wineserver and the game's path in it.
 #[derive(Default)]
+#[cfg_attr(windows, allow(dead_code))]
 pub struct Wine {
     pub prefix: std::path::PathBuf,
     pub wineserver: std::path::PathBuf,
