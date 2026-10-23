@@ -92,6 +92,20 @@ impl Shared {
 
 /// `--server-host`: runs until no server is left to run. Its exit code.
 pub fn main() -> i32 {
+    // `--server-host link`: a device link for the servers' account, without a window (a
+    // server PC without a desktop).
+    if std::env::args().nth(2).as_deref() == Some("link") {
+        return match link_from_terminal() {
+            Ok(who) => {
+                println!("Linked: the servers sign in as {who}.");
+                0
+            }
+            Err(e) => {
+                eprintln!("{e:#}");
+                1
+            }
+        };
+    }
     if running_elsewhere() {
         tracing::info!("server host: one runs already");
         return 0;
@@ -159,6 +173,37 @@ pub fn main() -> i32 {
     }
     tracing::info!("server host: no server left to run, ended");
     0
+}
+
+/// Asks EchoVRCE for a code, says where to approve it, waits for that and keeps the link
+/// for the servers: the account's name.
+fn link_from_terminal() -> Result<String> {
+    use crate::core::echovrce::{self, Poll};
+    let code = echovrce::request_code()?;
+    println!(
+        "Approve the code {} at {} while signed in as the servers' account (it runs out in {} minutes).",
+        code.code,
+        echovrce::approve_url(&code.code),
+        code.expires_in.as_secs() / 60
+    );
+    let until = Instant::now() + code.expires_in;
+    while Instant::now() < until {
+        std::thread::sleep(Duration::from_secs(3));
+        match echovrce::poll(&code.code) {
+            Ok(Poll::Approved(t)) => {
+                let a = account::from_code(&t)?;
+                let who = a.username.clone();
+                let mut cfg = Config::load();
+                account::use_device(&mut cfg, a, t)?;
+                cfg.save()?;
+                return Ok(who);
+            }
+            Ok(Poll::Pending) => {}
+            Err(e) if echovrce::is_unavailable(&e) => {}
+            Err(e) => return Err(e),
+        }
+    }
+    bail!("The code ran out: run it again.")
 }
 
 /// Whether another server host of this user runs.
