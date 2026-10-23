@@ -123,7 +123,7 @@ fn defender_check(c: &Config) -> Option<Check> {
         .servers
         .iter()
         .filter(|s| {
-            let bin = super::farm_root(&s.dir()).join(super::farm::BIN);
+            let bin = super::farm::bin_in(&super::farm_root(&s.dir()));
             bin.is_dir() && !bin.join("BugSplat64.dll").is_file()
         })
         .map(|s| s.name.as_str())

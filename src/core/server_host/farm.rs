@@ -14,8 +14,11 @@ use std::time::SystemTime;
 
 use anyhow::{bail, Context, Result};
 
-/// The executable's folder, from the game's root.
-pub const BIN: &str = "bin/win10";
+/// The executable's folder in a game root (`bin/win10`, joined by parts: on Windows a
+/// path with `/` in it breaks `mklink`).
+pub fn bin_in(root: &Path) -> PathBuf {
+    root.join("bin").join("win10")
+}
 /// The file that sets the server's port.
 pub const NETCONFIG: &str = "sourcedb/rad15/json/r14/config/netconfig_dedicatedserver.json";
 /// Folders in `bin/win10` the server writes to: its own, never links.
@@ -45,7 +48,7 @@ pub struct Farm<'a> {
 impl Farm<'_> {
     /// The server's executable folder.
     pub fn bin(&self) -> PathBuf {
-        self.root.join(BIN)
+        bin_in(self.root)
     }
 
     pub fn local(&self) -> PathBuf {
@@ -54,9 +57,9 @@ impl Farm<'_> {
 
     /// Builds or refreshes it; keeps what the server wrote itself (its sign-in, logs).
     pub fn build(&self) -> Result<()> {
-        if !self.game.join(BIN).is_dir() {
+        if !bin_in(self.game).is_dir() {
             bail!(
-                "{} has no {BIN}: is the game installed?",
+                "{} has no bin/win10: is the game installed?",
                 self.game.display()
             );
         }
@@ -85,7 +88,7 @@ impl Farm<'_> {
     /// `bin/win10`: its files and plugins copied, its other folders linked, the server's
     /// own folders real.
     fn sync_bin(&self) -> Result<()> {
-        let (src, dst) = (self.game.join(BIN), self.bin());
+        let (src, dst) = (bin_in(self.game), self.bin());
         real_dir(&dst)?;
         for d in BIN_OWN {
             real_dir(&dst.join(d))?;
@@ -310,19 +313,22 @@ fn make_link(target: &Path, link: &Path, dir: bool) -> Result<()> {
         std::fs::copy(target, link)?;
         return Ok(());
     }
-    // A directory junction: no admin rights or developer mode needed.
+    // A directory junction: no admin rights or developer mode needed. mklink takes only
+    // backslashes (`bin/win10` would make it fail).
+    let win = |p: &Path| p.to_string_lossy().replace('/', "\\");
     let out = crate::core::process::command("cmd")
         .arg("/c")
         .arg("mklink")
         .arg("/J")
-        .arg(link)
-        .arg(target)
+        .arg(win(link))
+        .arg(win(target))
         .output()
         .context("mklink")?;
     if !out.status.success() {
         bail!(
-            "mklink /J failed: {}",
-            String::from_utf8_lossy(&out.stdout).trim()
+            "mklink /J failed: {} {}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+            String::from_utf8_lossy(&out.stderr).trim()
         );
     }
     Ok(())
@@ -472,7 +478,7 @@ mod tests {
             config_json: "{}",
         };
         farm.build().unwrap();
-        let bin = root.join(BIN);
+        let bin = bin_in(&root);
         assert_eq!(
             std::fs::read_to_string(bin.join("echovr.exe")).unwrap(),
             "exe"
