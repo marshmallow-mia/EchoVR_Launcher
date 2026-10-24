@@ -84,6 +84,8 @@ pub fn run(c: &Config, running: &[String]) -> Vec<Check> {
             }
         }
     }
+    #[cfg(target_os = "linux")]
+    out.extend(linux_checks());
     if cfg!(target_os = "linux") {
         if crate::core::linux::echoxr::proton_script().is_file() {
             out.push(check(
@@ -139,6 +141,49 @@ fn defender_check(c: &Config) -> Option<Check> {
             Fix::Defender,
         )
     })
+}
+
+/// Pure: whether glibc `version` ("2.36") is at least `major.minor`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn glibc_at_least(version: &str, major: u32, minor: u32) -> bool {
+    let mut parts = version
+        .trim()
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0));
+    let (a, b) = (parts.next().unwrap_or(0), parts.next().unwrap_or(0));
+    (a, b) >= (major, minor)
+}
+
+/// Linux: what the launcher's GE-Proton needs from the system: glibc 2.38 or newer (its
+/// Wine won't load on older ones, such as Debian 12), and the Vulkan loader (its start
+/// script loads it even for a server).
+#[cfg(target_os = "linux")]
+fn linux_checks() -> Vec<Check> {
+    let mut out = Vec::new();
+    let glibc = unsafe { std::ffi::CStr::from_ptr(libc::gnu_get_libc_version()) }
+        .to_string_lossy()
+        .into_owned();
+    if !glibc_at_least(&glibc, 2, 38) {
+        out.push(check(
+            "System",
+            Level::Bad,
+            format!("This system's glibc is {glibc}: GE-Proton needs 2.38 or newer (Debian 13, Ubuntu 24.04, Fedora 39 and newer)."),
+            Fix::None,
+        ));
+    }
+    let name = std::ffi::CString::new("libvulkan.so.1").unwrap_or_default();
+    let h = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY) };
+    if h.is_null() {
+        out.push(check(
+            "Vulkan",
+            Level::Bad,
+            "The Vulkan loader (libvulkan.so.1) is missing: Proton won't start without it. Install it (libvulkan1 or vulkan-loader).",
+            Fix::None,
+        ));
+    } else {
+        unsafe { libc::dlclose(h) };
+    }
+    out
 }
 
 fn account_check(c: &Config) -> Check {
@@ -333,6 +378,14 @@ pub fn servers_folder() -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tells_an_old_glibc() {
+        assert!(glibc_at_least("2.38", 2, 38));
+        assert!(glibc_at_least("2.41", 2, 38));
+        assert!(!glibc_at_least("2.36", 2, 38));
+        assert!(glibc_at_least("3.0", 2, 38));
+    }
 
     #[test]
     fn reads_the_firewall_rules_ports() {

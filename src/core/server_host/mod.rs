@@ -33,9 +33,11 @@ pub const FLAG: &str = "--server-host";
 /// The plugin whose page this is (its `plugin.json` says `"builtin": "server-host"`).
 pub const PLUGIN_ID: &str = "server-host";
 
-/// EchoVRCE's services, the defaults. `/nevr` is the ingress for a token sign-in (nEVR's
-/// bridge), and without a `socket_uri` a server never signs in at all.
-pub const SOCKET_URI: &str = "wss://g.echovrce.com:443/nevr";
+/// EchoVRCE's services, the defaults: the ones Mia's live servers (evr-docker) sign in and
+/// register with, with a linked account (nEVR 5.4) and with a password alike. Without a
+/// `socket_uri` a server never signs in at all; `wss://…:443/nevr` turns a linked account's
+/// login away (no Bearer token: "service unavailable").
+pub const SOCKET_URI: &str = "ws://g.echovrce.com:80/spr";
 pub const SERVERDB_URI: &str = "ws://g.echovrce.com:80/nevr";
 pub const HTTP_URI: &str = "https://g.echovrce.com:7350";
 /// EchoVRCE's public keys: every game build carries them.
@@ -228,8 +230,12 @@ impl Config {
             .unwrap_or_else(|| Config::default().filled())
     }
 
-    /// Empty values back to their defaults.
+    /// Empty values back to their defaults (and 0.12.3-beta.1's login address, which turns
+    /// a linked account away, to the one that signs it in).
     fn filled(mut self) -> Config {
+        if self.services.socket_uri.trim() == "wss://g.echovrce.com:443/nevr" {
+            self.services.socket_uri = SOCKET_URI.into();
+        }
         let d = Services::default();
         let s = &mut self.services;
         for (v, dv) in [
@@ -445,6 +451,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("servers.json");
         std::fs::write(&p, r#"{"services": {"socket_uri": "  "}}"#).unwrap();
+        let old = dir.path().join("old.json");
+        std::fs::write(
+            &old,
+            r#"{"services": {"socket_uri": "wss://g.echovrce.com:443/nevr"}}"#,
+        )
+        .unwrap();
+        assert_eq!(Config::load_from(&old).services.socket_uri, SOCKET_URI);
         let c = Config::load_from(&p);
         assert_eq!(c.services.socket_uri, SOCKET_URI);
         assert_eq!(c.publisher_lock, "echovrce");

@@ -187,7 +187,7 @@ mod tests {
             ..Server::default()
         };
         let text = render(&config(SignIn::Password), &s, &[], false);
-        assert!(text.contains("services:\n  socket_uri: \"wss://g.echovrce.com:443/nevr?regions=uwu\"\n  serverdb_uri: \"ws://g.echovrce.com:80/nevr\"\n"));
+        assert!(text.contains("services:\n  socket_uri: \"ws://g.echovrce.com:80/spr?regions=uwu\"\n  serverdb_uri: \"ws://g.echovrce.com:80/nevr\"\n"));
         assert!(text.contains("identity:\n  discord_id: \"123456789012345678\"\n"));
         assert!(text.contains("  password: \"${NEVR_PASSWORD}\"\n"));
         assert!(text.contains("network:\n  regions: [\"uwu\"]\n  tick_rate_hz: 120\n"));

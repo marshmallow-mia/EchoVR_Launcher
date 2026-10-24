@@ -230,7 +230,7 @@ beside its own `config.yaml`, never the player's. A guild it hosts for has to gi
 account its server host role, or it registers for no guild. Content packs on a server need
 nEVR 4.1.0 or newer.
 
-`socket_uri` is always written: EchoVRCE's (`wss://g.echovrce.com:443/nevr`) when the plugin
+`socket_uri` is always written: EchoVRCE's (`ws://g.echovrce.com:80/spr`) when the plugin
 leaves it empty, since nEVR refuses to start a server without one.
 
 The Server host plugin itself (0.2.0 on) no longer uses this step: it has a page of its

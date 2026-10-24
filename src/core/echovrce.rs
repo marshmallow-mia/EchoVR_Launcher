@@ -440,6 +440,9 @@ fn poll_answer(status: u16, body: &Value) -> Result<Poll> {
             Ok(Poll::Pending)
         }
         (s, _) if unavailable_status(s) => Err(unavailable(s, body)),
+        (200, None) if body.get("status").and_then(Value::as_str) == Some("expired") => {
+            bail!("The sign-in code ran out. Try again.")
+        }
         _ => bail!(
             "The sign-in code didn't work ({status}: {}). Try again.",
             message(body)
@@ -861,6 +864,11 @@ mod tests {
     fn poll_answers() {
         let pending = json!({ "status": "pending" });
         assert_eq!(poll_answer(200, &pending).unwrap(), Poll::Pending);
+        let expired = json!({ "status": "expired" });
+        assert!(poll_answer(200, &expired)
+            .unwrap_err()
+            .to_string()
+            .contains("ran out"));
         let approved = json!({ "token": "t", "refresh_token": "r" });
         assert!(matches!(
             poll_answer(200, &approved).unwrap(),

@@ -386,7 +386,7 @@ mod tests {
             &[],
             false,
         );
-        assert!(text.contains("services:\n  socket_uri: \"wss://g.echovrce.com:443/nevr\"\n"));
+        assert!(text.contains("services:\n  socket_uri: \"ws://g.echovrce.com:80/spr\"\n"));
     }
 
     #[test]
