@@ -39,6 +39,10 @@ const REMOVE_KEY: &str = "plugins-remove";
 const SERVER_KEY: &str = "plugins-server";
 /// "Set up a game server?" (a plugin's `host` step).
 const HOST_KEY: &str = "plugins-host";
+/// "Get <plugin>?" / "Update <plugin>?": what it can do (that it couldn't before).
+const CONSENT_KEY: &str = "plugins-consent";
+/// "Allow <plugin>?": a changed or hand-copied plugin's page.
+const ALLOW_KEY: &str = "plugins-allow";
 /// A settings form's button that asks first.
 const FORM_ACTION_KEY: &str = "plugins-form-action";
 /// "Replace your preset?" and "Delete this preset?".
@@ -74,6 +78,13 @@ pub(super) struct PluginsUi {
     server_asked: Option<(String, GameServer)>,
     /// The game server setup a plugin's `host` step asked to write, while the question is up.
     host_asked: Option<HostAsked>,
+    /// A plugin downloaded and waiting for the player to allow what it can do (and what
+    /// to say once it is in place).
+    staged: Option<(core::Staged, String)>,
+    /// The plugin whose "Allow" question is up.
+    allow_asked: Option<String>,
+    /// Plugins the signed catalogue turned off this run (told once).
+    blocked_told: std::collections::BTreeSet<String>,
     /// A plugin page's question that is up (its id, what was asked).
     asked: Option<(String, Asked)>,
     /// The plugin whose rail menu (right click) is open.
@@ -126,6 +137,8 @@ enum Msg {
         plugin: String,
         result: Result<Value, String>,
     },
+    /// Downloaded and checked, waiting to be put in place (what to say once it is).
+    Staged(Result<Box<core::Staged>, String>, String),
     Done(String, Result<(), String>),
 }
 
@@ -267,6 +280,12 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                 }
             }
             Msg::Answered { plugin, result } => answered(d, ctx, &plugin, result),
+            Msg::Staged(Err(e), _) => {
+                d.plugins.busy = None;
+                d.dialogs
+                    .error("Couldn't change the plugin", &e, Default::default());
+            }
+            Msg::Staged(Ok(s), done) => staged(d, ctx, *s, done),
             Msg::Done(what, result) => {
                 d.plugins.busy = None;
                 match result {
@@ -280,11 +299,13 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
             }
         }
     }
+    consent_answers(d, ctx);
     if let Some(ans) = d.dialogs.take(REMOVE_KEY) {
         if let (true, Some(id)) = (ans.is_yes(), d.plugins.remove_asked.take()) {
-            // Got again later, it starts on the rail.
+            // Got again later, it starts on the rail, and is asked about again.
             d.state.rail_order.retain(|o| *o != id);
             d.state.rail_unpinned.remove(&id);
+            d.state.plugin_grants.remove(&id);
             d.save();
             d.plugins.busy = Some(id.clone());
             d.plugins.worker.spawn(ctx, move |tx| {
@@ -367,7 +388,29 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
 /// check): the Plugins page offers what they list. Advanced settings' line about the
 /// dev folder is read again too.
 pub(super) fn catalog_done(d: &mut Dashboard, c: PluginCatalog) {
+    // What the signed catalogue turns off is turned off here (and stays off while listed).
+    let blocked: Vec<(String, String, String)> = d
+        .plugins
+        .list
+        .iter()
+        .filter_map(|p| {
+            let why = c.blocked_reason(&p.page.id, &p.page.version)?;
+            Some((p.page.id.clone(), p.page.name.clone(), why.to_string()))
+        })
+        .collect();
     d.plugins.catalog = Some(c);
+    for (id, name, why) in blocked {
+        if !is_off(d, &id) {
+            tracing::warn!("plugin {id}: turned off by the signed catalogue: {why}");
+            set_off(d, &id, true);
+        }
+        if d.plugins.blocked_told.insert(id) {
+            d.dialogs.info(
+                &format!("{name} was turned off"),
+                &blocked_text(&name, &why),
+            );
+        }
+    }
     d.plugins.catalog_at = Some(std::time::Instant::now());
     d.plugins.loading = false;
     if d.dev_status != crate::core::launcher::dev_code::Status::Checking {
@@ -527,7 +570,7 @@ fn send(
 }
 
 fn fetch_due(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
-    if is_off(d, &p.page.id) {
+    if !runs(d, p) {
         return;
     }
     view(d, p);
@@ -578,6 +621,9 @@ fn act(d: &mut Dashboard, ctx: &egui::Context, p: &Installed, name: &str, item: 
     let Some(steps) = p.page.actions.get(name).cloned() else {
         return;
     };
+    if !runs(d, p) {
+        return;
+    }
     let v = view(d, p);
     if v.runner.is_some() {
         return;
@@ -1069,6 +1115,131 @@ pub(super) fn is_off(d: &Dashboard, id: &str) -> bool {
     d.state.plugins_off.contains(id)
 }
 
+/// Whether plugin `p` does anything: turned on, and allowed all it can do.
+fn runs(d: &Dashboard, p: &Installed) -> bool {
+    d.demo || (!is_off(d, &p.page.id) && core::allowed(&d.state, p))
+}
+
+/// Why the signed catalogue turned plugin `p` off (it can't be turned on while listed).
+fn blocked(d: &Dashboard, p: &Installed) -> Option<String> {
+    d.plugins
+        .catalog
+        .as_ref()?
+        .blocked_reason(&p.page.id, &p.page.version)
+        .map(str::to_string)
+}
+
+fn blocked_text(name: &str, why: &str) -> String {
+    let why = if why.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" {}", why.trim())
+    };
+    format!(
+        "This version of {name} was turned off by the launcher's makers, for everyone who has it.{why} Update it once a fixed version is out, or remove it."
+    )
+}
+
+/// What the player allowed plugin `id` so far: kept, else what one installed before the
+/// launcher asked has.
+fn granted(d: &Dashboard, id: &str) -> crate::core::launcher::plugin_permissions::Permissions {
+    if let Some(g) = d.state.plugin_grants.get(id) {
+        return g.clone();
+    }
+    d.plugins
+        .list
+        .iter()
+        .find(|p| p.page.id == id && core::allowed(&d.state, p))
+        .map(|p| p.needs.clone())
+        .unwrap_or_default()
+}
+
+/// The player allowed all plugin `p` can do now (its page): it runs.
+fn allow(d: &mut Dashboard, p: &Installed) {
+    let g = granted(d, &p.page.id).with(&p.needs);
+    d.state.plugin_grants.insert(p.page.id.clone(), g);
+    d.save();
+    tracing::info!("plugin {}: the player allowed what it does", p.page.id);
+    let text = echoxr_settings::current(&d.state);
+    echoxr_settings::apply_all(&d.state.versions, text.as_deref());
+    d.notify("Plugin allowed");
+}
+
+/// A plugin is downloaded: in place at once when it can do nothing the player hasn't
+/// allowed, else after asking.
+fn staged(d: &mut Dashboard, ctx: &egui::Context, s: core::Staged, done: String) {
+    let added = s.needs.missing(&granted(d, &s.entry.id));
+    if added.is_empty() {
+        return commit(d, ctx, s, done);
+    }
+    let update = d.plugins.list.iter().any(|p| p.page.id == s.entry.id);
+    let lines: String = added.lines().iter().map(|l| format!("\n• {l}")).collect();
+    let (title, message, yes) = if update {
+        (
+            format!("Update {}?", s.entry.name),
+            format!("Version {} can also:{lines}", s.entry.version),
+            "Update",
+        )
+    } else {
+        (
+            format!("Get {}?", s.entry.name),
+            format!("{} can:{lines}", s.entry.name),
+            "Get it",
+        )
+    };
+    d.dialogs.options(
+        CONSENT_KEY,
+        &title,
+        &message,
+        crate::ui::dialogs::Icon::Info,
+        &[yes, "Cancel"],
+    );
+    d.plugins.staged = Some((s, done));
+}
+
+/// The answers to "Get <plugin>?" and "Allow <plugin>?".
+fn consent_answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if let Some(ans) = d.dialogs.take(CONSENT_KEY) {
+        if let Some((s, done)) = d.plugins.staged.take() {
+            if ans.is_yes() {
+                commit(d, ctx, s, done);
+            } else {
+                tracing::info!(
+                    "plugin {} {}: the player didn't allow it",
+                    s.entry.id,
+                    s.entry.version
+                );
+                let update = d.plugins.list.iter().any(|p| p.page.id == s.entry.id);
+                s.discard();
+                d.plugins.busy = None;
+                d.notify(if update {
+                    "The update wasn't installed"
+                } else {
+                    "The plugin wasn't added"
+                });
+            }
+        }
+    }
+    if let Some(ans) = d.dialogs.take(ALLOW_KEY) {
+        if let (true, Some(id)) = (ans.is_yes(), d.plugins.allow_asked.take()) {
+            if let Some(p) = d.plugins.list.iter().find(|p| p.page.id == id).cloned() {
+                allow(d, &p);
+            }
+        }
+    }
+}
+
+/// Puts a staged plugin in place; what it can do is allowed from now on.
+fn commit(d: &mut Dashboard, ctx: &egui::Context, s: core::Staged, done: String) {
+    let g = granted(d, &s.entry.id).with(&s.needs);
+    d.state.plugin_grants.insert(s.entry.id.clone(), g);
+    d.save();
+    d.plugins.worker.spawn(ctx, move |tx| {
+        let r = core::commit(s).map_err(|err| format!("{err:#}"));
+        tx.send(Msg::Done(done, r));
+    });
+}
+
 /// Turns the plugin off (no tab, nothing fetched, the game's server it chose and EchoXR's
 /// settings it keeps let go of) or on again.
 pub(super) fn set_off(d: &mut Dashboard, id: &str, off: bool) {
@@ -1085,7 +1256,7 @@ pub(super) fn set_off(d: &mut Dashboard, id: &str, off: bool) {
     }
     d.save();
     if !d.demo {
-        let text = echoxr_settings::current(&d.state.plugins_off);
+        let text = echoxr_settings::current(&d.state);
         echoxr_settings::apply_all(&d.state.versions, text.as_deref());
     }
     tracing::info!("plugin {id}: turned {}", if off { "off" } else { "on" });
@@ -1156,31 +1327,53 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
         return empty_state(kit, Icon::Plus, "Plugins", "This plugin was removed.");
     };
     if is_off(d, &p.page.id) {
-        let (x, y, w, h) = super::empty_panel(
-            kit,
-            rail_icon(&p.page),
-            &p.page.name,
-            "This plugin is turned off: it has no tab, and does nothing until it is turned on again.",
-        );
-        let bw = kit.button_width("Turn on", None, BTN_H).max(dz(160.0));
-        let turn_on = kit.button(
-            "plugin-turn-on",
-            x + (w - bw) / 2.0,
-            y + h - dz(40.0) - BTN_H,
-            bw,
-            BTN_H,
-            Tone::Blue,
-            None,
-            "Turn on",
-            true,
-            "",
-        );
-        if turn_on.clicked {
+        let why = blocked(d, &p);
+        let text = match &why {
+            Some(why) => blocked_text(&p.page.name, why),
+            None => "This plugin is turned off: it has no tab, and does nothing until it is turned on again.".to_string(),
+        };
+        if panel_button(kit, &p, &text, "Turn on", why.is_none()) {
             set_off(d, &p.page.id, false);
         }
         return;
     }
+    let not_allowed = core::not_allowed(&d.state, &p);
+    if !d.demo && !not_allowed.is_empty() {
+        let how = match p.trust {
+            _ if p.from_catalog.is_none() => "was put here by hand, so",
+            core::Trust::Changed => "changed since it was installed, so",
+            _ => "was updated and can do more now, so",
+        };
+        let text = format!(
+            "{} {how} it does nothing until you allow what it can do.",
+            p.page.name
+        );
+        if panel_button(kit, &p, &text, "Review and allow", true) {
+            let lines: String = not_allowed
+                .lines()
+                .iter()
+                .map(|l| format!("\n• {l}"))
+                .collect();
+            d.plugins.allow_asked = Some(p.page.id.clone());
+            d.dialogs.options(
+                ALLOW_KEY,
+                &format!("Allow {}?", p.page.name),
+                &format!("{} can:{lines}", p.page.name),
+                crate::ui::dialogs::Icon::Warning,
+                &["Allow", "Cancel"],
+            );
+        }
+        return;
+    }
     if p.page.builtin == "server-host" && p.page.id == crate::core::server_host::PLUGIN_ID {
+        if !p.may_use_builtin() {
+            let text = "Server host runs game servers on this PC, so the launcher opens it only as signed by its makers, and this copy isn't: update it, or remove it and get it again.";
+            if panel_button(kit, &p, text, "Open Plugins", true) {
+                d.plugins.focus = Some(p.page.id.clone());
+                d.page = Page::Plugins;
+            }
+            return;
+        }
         return super::server_host::show(d, kit, ctx);
     }
     view(d, &p);
@@ -1219,6 +1412,26 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
             });
         }
     }
+}
+
+/// A plugin page that shows only why it doesn't run, with one button at its foot: whether
+/// it was clicked.
+fn panel_button(kit: &mut Kit, p: &Installed, text: &str, label: &str, enabled: bool) -> bool {
+    let (x, y, w, h) = super::empty_panel(kit, rail_icon(&p.page), &p.page.name, text);
+    let bw = kit.button_width(label, None, BTN_H).max(dz(160.0));
+    kit.button(
+        "plugin-panel-button",
+        x + (w - bw) / 2.0,
+        y + h - dz(40.0) - BTN_H,
+        bw,
+        BTN_H,
+        Tone::Blue,
+        None,
+        label,
+        enabled,
+        "",
+    )
+    .clicked
 }
 
 /// A column of cards in `r`, scrolled when it is taller.
@@ -1764,8 +1977,8 @@ fn write_form(d: &mut Dashboard, p: &Installed, changes: Vec<(String, String)>) 
 /// a change reaches a game that is running.
 fn keep_echoxr(d: &Dashboard, p: &Installed) {
     if d.demo
-        || is_off(d, &p.page.id)
-        || !p.trust.may_keep_echoxr()
+        || !runs(d, p)
+        || !p.may_keep_echoxr()
         || !p
             .page
             .settings
@@ -2552,8 +2765,17 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
     if is_off(d, &p.page.id) {
         tags.push(("Turned off".to_string(), design::GREY));
     }
+    if blocked(d, p).is_some() {
+        tags.push(("Turned off by its makers".to_string(), design::QUEST_WARN));
+    }
     if p.trust == core::Trust::Changed {
         tags.push(("Changed since install".to_string(), design::QUEST_WARN));
+    }
+    if !p.page.builtin.is_empty() && !p.may_use_builtin() {
+        tags.push(("Not signed".to_string(), design::QUEST_WARN));
+    }
+    if !d.demo && !core::allowed(&d.state, p) {
+        tags.push(("Needs your OK".to_string(), design::QUEST_WARN));
     }
     if update {
         tags.push(("Update".to_string(), design::QUEST_ON));
@@ -3020,7 +3242,11 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         .unless(off.then_some("It's turned off: no tab until it is turned on")),
         if off {
-            MenuItem::row("Turn on", "Its tab and page are back")
+            MenuItem::row("Turn on", "Its tab and page are back").unless(
+                blocked(d, &p)
+                    .is_some()
+                    .then_some("Its makers turned this version off"),
+            )
         } else {
             MenuItem::row(
                 "Turn off",
@@ -3131,9 +3357,11 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str)
     d.plugins.busy = Some(e.id.clone());
     let done = done.to_string();
     d.plugins.worker.spawn(ctx, move |tx| {
-        let r = core::install(&e, &std::sync::atomic::AtomicBool::new(false), &mut |_| {})
-            .map_err(|err| format!("{err:#}"));
-        tx.send(Msg::Done(done, r));
+        let r =
+            core::stage_from_catalog(&e, &std::sync::atomic::AtomicBool::new(false), &mut |_| {})
+                .map(Box::new)
+                .map_err(|err| format!("{err:#}"));
+        tx.send(Msg::Staged(r, done));
     });
 }
 
@@ -3191,7 +3419,7 @@ fn demo() -> PluginsUi {
         dir: std::path::PathBuf::new(),
         from_catalog: Some(page_version),
         warnings: Vec::new(),
-        trust: Default::default(),
+        ..Default::default()
     });
     let mut v = View {
         page: json!({"build": "halloween", "region": "EU"}),
@@ -3301,7 +3529,7 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
             page: std::sync::Arc::new(page),
             dir: std::path::PathBuf::new(),
             warnings,
-            trust: Default::default(),
+            ..Default::default()
         });
     }
     // The second one off the rail.
@@ -3322,7 +3550,7 @@ pub(super) fn snap_install(d: &mut Dashboard, text: &str) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
-        trust: Default::default(),
+        ..Default::default()
     });
 }
 
@@ -3351,7 +3579,7 @@ pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
-        trust: Default::default(),
+        ..Default::default()
     });
     let mut view = View {
         page: json!({}),
@@ -3391,7 +3619,7 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
-        trust: Default::default(),
+        ..Default::default()
     });
     let settings = [
         ("relay_address", "203.0.113.7:6800"),
@@ -3439,7 +3667,8 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
 
 #[cfg(test)]
 mod tests {
-    use super::Failure;
+    use super::*;
+    use crate::core::launcher::plugin_permissions::Permissions;
 
     /// The library: the pinned plugins in the rail's order, the unpinned ones, then the
     /// catalogue's others; the filters keep either part.
@@ -3533,6 +3762,87 @@ mod tests {
         assert_eq!(rail_order(&installed, &order, &none), [2, 0, 1, 3]);
         let unpinned = ["a".to_string(), "d".into()].into_iter().collect();
         assert_eq!(rail_order(&installed, &order, &unpinned), [2, 1]);
+    }
+
+    /// A zip of plugin description `desc`.
+    fn zip_of(desc: &str) -> tempfile::NamedTempFile {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let mut z = ::zip::ZipWriter::new(std::fs::File::create(f.path()).unwrap());
+        z.start_file("plugin.json", ::zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut z, desc.as_bytes()).unwrap();
+        z.finish().unwrap();
+        f
+    }
+
+    #[test]
+    fn getting_a_plugin_asks_what_it_can_do_and_an_update_what_it_adds() {
+        use crate::ui::dialogs::Answer;
+        let root = tempfile::tempdir().unwrap();
+        let no = std::sync::atomic::AtomicBool::new(false);
+        // Snapshot mode: nothing is saved to the real launcher state.
+        let mut d = Dashboard {
+            demo: true,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let desc = include_str!("../../../docs/plugins/event-lobbies/plugin.json");
+        let entry = |v: &str| core::PluginEntry {
+            id: "event-lobbies".into(),
+            name: "Event lobbies".into(),
+            version: v.into(),
+            ..Default::default()
+        };
+        let zip = zip_of(desc);
+        let stage = |v: &str| core::stage(root.path(), &entry(v), zip.path(), &no).unwrap();
+        let installed = root.path().join("event-lobbies");
+
+        // Cancel: not added, nothing allowed.
+        staged(&mut d, &ctx, stage("0.1.0"), "Plugin added".into());
+        assert_eq!(d.dialogs.open_keys(), vec![CONSENT_KEY]);
+        d.dialogs.press(CONSENT_KEY, Answer::Button(1));
+        consent_answers(&mut d, &ctx);
+        assert!(d.plugins.staged.is_none() && d.state.plugin_grants.is_empty());
+        assert!(!root.path().join(".event-lobbies.new").exists() && !installed.exists());
+
+        // Get it: allowed what it can do, and put in place.
+        staged(&mut d, &ctx, stage("0.1.0"), "Plugin added".into());
+        d.dialogs.press(CONSENT_KEY, Answer::Button(0));
+        consent_answers(&mut d, &ctx);
+        let needs = Permissions::of(&core::read_description(desc).0.unwrap());
+        assert_eq!(d.state.plugin_grants.get("event-lobbies"), Some(&needs));
+        let start = Instant::now();
+        while !installed.join("plugin.json").exists() {
+            assert!(start.elapsed().as_secs() < 10, "it wasn't put in place");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        while d.plugins.worker.drain().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        d.plugins.list = core::installed_in(root.path());
+
+        // An update that can do no more: no question.
+        staged(&mut d, &ctx, stage("0.1.1"), "Plugin updated".into());
+        assert!(d.dialogs.open_keys().is_empty());
+        while d.plugins.worker.drain().is_empty() {
+            assert!(start.elapsed().as_secs() < 10, "it wasn't updated");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // One that can do more: asked about only that.
+        let more = desc.replacen(
+            "\"get\": \"http://{settings.server|launcher.relay.server}/api/matches\"",
+            "\"get\": \"https://stats.example.com/api/matches\"",
+            1,
+        );
+        assert_ne!(more, desc);
+        let zip2 = zip_of(&more);
+        let s = core::stage(root.path(), &entry("0.2.0"), zip2.path(), &no).unwrap();
+        staged(&mut d, &ctx, s, "Plugin updated".into());
+        assert_eq!(d.dialogs.open_keys(), vec![CONSENT_KEY]);
+        let (s, _) = d.plugins.staged.as_ref().unwrap();
+        let added = s.needs.missing(&needs);
+        assert_eq!(added.lines(), ["Talk to stats.example.com"]);
     }
 
     #[test]

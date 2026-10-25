@@ -25,6 +25,7 @@ dirs = "7.0.0"
 # persistence: the window's size, position and full screen are remembered.
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui = "0.36.2"
+ed25519-dalek = { version = "2.1.1", default-features = false, features = ["std"] }
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
 open = "5.4.4"

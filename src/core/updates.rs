@@ -716,7 +716,7 @@ mod tests {
             dir: PathBuf::new(),
             from_catalog: from_catalog.map(String::from),
             warnings: Vec::new(),
-            trust: Default::default(),
+            ..Default::default()
         }
     }
 
@@ -731,7 +731,7 @@ mod tests {
                 entry("old", "1.0", "plugins/o.zip"),
                 entry("soon", "", ""),
             ],
-            builtin: false,
+            ..Default::default()
         };
         let have = [
             installed("event-lobbies", Some("0.1.2")),

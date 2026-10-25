@@ -34,9 +34,11 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
 - **Turned off** (0.12.4 on): no tab, its page fetches nothing, a game server it chose is
   EchoVRCE again and EchoXR's settings it keeps go; **Turn on** brings it back. Kept in
   `launcher.json` (`plugins_off`).
-- **Getting one:** the Plugins page gets plugins from the catalogue,
-  `https://release.echovr.de/launcher/plugins.json`. The launcher's built-in draft is
-  [../launcher/plugins.json](../launcher/plugins.json).
+- **Getting one:** the Plugins page gets plugins from the catalogue. Since 0.12.4 that is the
+  signed one, `https://release.echovr.de/launcher/plugins.v2.json` (see
+  [The signed catalogue](#the-signed-catalogue)); older launchers, and newer ones until they
+  have seen a signed one, read `https://release.echovr.de/launcher/plugins.json`. The
+  launcher's built-in draft is [../launcher/plugins.json](../launcher/plugins.json).
 - **A catalogue entry:** it names a zip with `plugin.json` at its root (or in one top folder) and its
   `sha256`, like a mod: `id`, `name`, `summary`, `author`, `version`, `url`, `sha256`, `homepage`,
   and `icon` (as in `plugin.json`: the card's icon before the plugin is got).
@@ -57,8 +59,88 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
   settings beside the game (`"echoxr": true`, [settings.md](settings.md)); one added by hand
   or changed does in debug builds only.
 
+- **What it can do, allowed by the player** (0.12.4 on): see [Permissions](#permissions).
+- **Signed by its makers** (0.12.4 on): see [Signatures](#signatures).
+
 What a description gets wrong is left out and logged. The Plugins page says how many problems
 there were.
+
+### Permissions
+
+The launcher reads from a plugin's description what it can do, and the player allows that
+before it does anything:
+
+| What | Read from |
+|---|---|
+| Talk to `<server>` | a request whose URL names its server (`https://api.example.com/…`, or a `'literal'` fallback) |
+| Talk to the classic lobbies server your settings name | `{launcher.relay.server}` in a request's server |
+| Talk to servers you type in its settings | `{settings.…}` in a request's server |
+| Use your classic lobbies password | `launcher.relay.password` anywhere |
+| Change the server Echo VR plays on | a `server` step with an address |
+| Set up a game server in Echo VR's folder | a `host` step |
+| Change EchoXR's settings in every installed version | an `echoxr` settings store |
+| Start Echo VR | a `play` step |
+| Run game servers on this PC | `"builtin": "server-host"` |
+
+- **Getting one** asks "Get <plugin>?" with that list once it is downloaded, before it is put
+  in place; Cancel drops it. One that can do none of it is put in place at once.
+- **An update** asks only about what it can do that the version before couldn't ("Version x
+  can also: …"); Cancel keeps the version installed.
+- **On its page:** a plugin added by hand, one whose files changed since it was installed, and
+  one an older launcher updated show **Review and allow** instead of their page, and do
+  nothing (no requests, no actions, no EchoXR settings) until the player allows them. One
+  installed from the catalogue before 0.12.4 has what it could do then.
+- What the player allowed is kept in `launcher.json` (`plugin_grants`), and goes with
+  **Remove**.
+
+### Signatures
+
+A first-party plugin carries `plugin.sig`: an Ed25519 signature of its id, version and the
+checksum of each of its files, made with the plugins key (not the mods index's). The launcher
+checks it every time it reads the plugin; the player's settings and presets, and the
+launcher's dot files, aren't part of it.
+
+- **What it unlocks:** `"builtin": "server-host"` (Server host's page) only for a signed
+  plugin, its files as signed; an unsigned copy's page says to update it. A signed plugin
+  may also keep EchoXR's settings when it wasn't installed from a catalogue. Debug builds
+  don't ask for a signature.
+- **Signing one:** `scripts/sign.py plugin docs/plugins/<id> --zip <id>-<version>.zip` (the
+  plugins key is `~/echovr-signing-key/plugins.key`, kept offline; OpenSSL 3 makes the
+  signature). It writes `plugin.sig` into the folder and prints the zip's size and `sha256`
+  for the catalogue entry. Change any file afterwards and sign again.
+- `plugin.sig`:
+
+  ```json
+  {
+    "schema": 1,
+    "statement": "echovr-plugin-v1\nid controllers\nversion 0.1.3\n<sha256>  plugin.json\n",
+    "signatures": [{"key": "f1258b9bc6b67b2d", "sha256": "<of the statement>", "sig": "<base64>"}]
+  }
+  ```
+
+  `key` is the first 16 hex digits of the public key's SHA-256. Files are listed by path
+  (`/` between folders), one `<sha256>  <path>` line each, sorted.
+
+### The signed catalogue
+
+`plugins.v2.json` has the same entries as `plugins.json`, and `plugins.v2.json.sig` beside it
+holds its signature by the plugins key (`scripts/sign.py file plugins.v2.json`, which keeps
+the signature before beside the new one).
+
+- **Read first** since 0.12.4. Once a launcher has seen a signed one, it keeps it and never
+  reads the unsigned `plugins.json` again: when the signed one can't be fetched or its
+  signature is wrong, the one kept is used.
+- **`blocked`:** plugin versions turned off for everyone, only in the signed catalogue:
+
+  ```json
+  "blocked": [{"id": "event-lobbies", "versions": ["0.1.2"], "reason": "It sent your password twice."}]
+  ```
+
+  No `versions`: every version. The launcher turns such a plugin off, says why once, tags its
+  card **Turned off by its makers**, and doesn't let it be turned on while it is listed. An
+  update to a version not listed works as usual.
+- **Publishing:** keep both catalogues' entries alike (old launchers read only
+  `plugins.json`), and upload `plugins.v2.json.sig` together with `plugins.v2.json`.
 
 ## plugin.json
 

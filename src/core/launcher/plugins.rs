@@ -13,18 +13,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::plugin_page::{self, PluginPage};
+use super::plugin_permissions::Permissions;
 use super::plugin_settings::{self, FileFormat, Store};
 use super::store::LauncherState;
 use super::{catalog, relay};
 use crate::core::{download, paths};
 
 pub const CATALOG_URL: &str = "https://release.echovr.de/launcher/plugins.json";
+/// The signed catalogue (`.sig` beside it) launchers since 0.12.4 read first; launchers
+/// before read only [`CATALOG_URL`].
+pub const CATALOG_V2_URL: &str = "https://release.echovr.de/launcher/plugins.v2.json";
 /// A plugin's description in its folder.
 pub const DESCRIPTION: &str = "plugin.json";
 /// Where a plugin's settings are kept when its description doesn't say.
 pub const SETTINGS_FILE: &str = "settings.json";
 /// What the launcher notes about a plugin it installed.
 const INSTALLED: &str = ".installed.json";
+/// A first-party plugin's signature of its files ([`crate::core::signing`]).
+pub const SIGNATURE: &str = "plugin.sig";
 
 /// The folder plugins are in.
 pub fn dir() -> PathBuf {
@@ -32,7 +38,7 @@ pub fn dir() -> PathBuf {
 }
 
 /// An installed plugin.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Installed {
     pub page: Arc<PluginPage>,
     pub dir: PathBuf,
@@ -42,6 +48,84 @@ pub struct Installed {
     pub warnings: Vec<String>,
     /// Whether its files are the ones the launcher installed.
     pub trust: Trust,
+    /// Its files are signed by a first-party key, as they are now.
+    pub first_party: bool,
+    /// What it can do ([`Permissions::of`] its description).
+    pub needs: Permissions,
+}
+
+impl Installed {
+    /// Whether it may keep EchoXR's settings beside the game: only as installed from a
+    /// catalogue, or signed (debug builds: any, for writing one).
+    pub fn may_keep_echoxr(&self) -> bool {
+        self.first_party || self.trust.may_keep_echoxr()
+    }
+
+    /// Whether the launcher draws the page it asks for ([`plugin_page::BUILTIN`]): only for
+    /// a first-party plugin, its files as signed (debug builds: any).
+    pub fn may_use_builtin(&self) -> bool {
+        self.first_party || cfg!(debug_assertions)
+    }
+}
+
+/// Pure: whether the player allowed plugin `p` all it can do now. One the launcher
+/// installed from the catalogue before it asked (no grant kept, its files unchanged) has
+/// what it had.
+pub fn allowed(state: &LauncherState, p: &Installed) -> bool {
+    match state.plugin_grants.get(&p.page.id) {
+        Some(g) => p.needs.missing(g).is_empty(),
+        None => p.needs.is_empty() || (p.from_catalog.is_some() && p.trust == Trust::Catalog),
+    }
+}
+
+/// Pure: what plugin `p` can do that the player hasn't allowed yet.
+pub fn not_allowed(state: &LauncherState, p: &Installed) -> Permissions {
+    if allowed(state, p) {
+        return Permissions::default();
+    }
+    p.needs.missing(
+        &state
+            .plugin_grants
+            .get(&p.page.id)
+            .cloned()
+            .unwrap_or_default(),
+    )
+}
+
+/// Whether the files of plugin `page` in `folder` are the ones its `plugin.sig` vouches
+/// for, signed by one of `keys`: every one of its own files as signed, none missing (the
+/// player's settings and presets aside).
+pub fn signed_by(folder: &Path, page: &PluginPage, keys: &[[u8; 32]]) -> bool {
+    let Ok(text) = std::fs::read_to_string(folder.join(SIGNATURE)) else {
+        return false;
+    };
+    let Some(st) = crate::core::signing::plugin_statement(&text, keys) else {
+        return false;
+    };
+    if st.id != page.id || st.version != page.version {
+        return false;
+    }
+    let players = player_files(page);
+    let mut own = own_files(folder, page);
+    own.remove(SIGNATURE);
+    own.iter().all(|(f, sha)| st.files.get(f) == Some(sha))
+        && st
+            .files
+            .iter()
+            .all(|(f, sha)| players.contains(f) || own.get(f) == Some(sha))
+}
+
+/// The player's files of plugin `page`: its settings and presets.
+fn player_files(page: &PluginPage) -> std::collections::HashSet<String> {
+    let mut theirs: std::collections::HashSet<String> = page
+        .settings
+        .as_ref()
+        .map(plugin_settings::store_files)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    theirs.insert(super::presets::PRESETS_FILE.to_string());
+    theirs
 }
 
 /// Where an installed plugin's files come from.
@@ -78,14 +162,7 @@ struct InstalledNote {
 /// folders): not the launcher's notes, the player's settings and presets, or what the
 /// launcher keeps for it (dot files and folders).
 fn own_files(folder: &Path, page: &PluginPage) -> BTreeMap<String, String> {
-    let mut theirs: std::collections::HashSet<String> = page
-        .settings
-        .as_ref()
-        .map(plugin_settings::store_files)
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    theirs.insert(super::presets::PRESETS_FILE.to_string());
+    let theirs = player_files(page);
     let mut out = BTreeMap::new();
     let mut todo = vec![(folder.to_path_buf(), String::new())];
     while let Some((dir, prefix)) = todo.pop() {
@@ -134,12 +211,6 @@ fn trust_of(folder: &Path, page: &PluginPage) -> (Trust, Option<String>) {
     (trust, Some(note.version))
 }
 
-/// Pure but for reading the folder: how far the plugin in `folder` can be trusted (for
-/// what reads plugins without [`read_one`]).
-pub fn trust_in(folder: &Path, page: &PluginPage) -> Trust {
-    trust_of(folder, page).0
-}
-
 /// Pure: a plugin's description as the launcher uses it. Settings without a file of their
 /// own are kept in [`SETTINGS_FILE`] (a launcher plugin has no nEVR arguments).
 pub fn read_description(text: &str) -> (Option<PluginPage>, Vec<String>) {
@@ -163,27 +234,49 @@ pub fn read_description(text: &str) -> (Option<PluginPage>, Vec<String>) {
 /// Reads the plugin in `folder`; none if it has no valid description, or its id isn't the
 /// folder's name.
 pub fn read_one(folder: &Path) -> Option<Installed> {
+    read_logging(folder, true)
+}
+
+/// [`read_one`] without logging what its description gets wrong (the plugins page does).
+pub fn read_quietly(folder: &Path) -> Option<Installed> {
+    read_logging(folder, false)
+}
+
+fn read_logging(folder: &Path, log: bool) -> Option<Installed> {
     let text = std::fs::read_to_string(folder.join(DESCRIPTION)).ok()?;
     let (page, warnings) = read_description(&text);
-    for w in &warnings {
-        tracing::warn!("plugin {}: {w}", folder.display());
+    if log {
+        for w in &warnings {
+            tracing::warn!("plugin {}: {w}", folder.display());
+        }
     }
     let page = page?;
     if folder.file_name().and_then(|n| n.to_str()) != Some(page.id.as_str()) {
-        tracing::warn!(
-            "plugin {}: its id {:?} isn't its folder's name; left out",
-            folder.display(),
-            page.id
-        );
+        if log {
+            tracing::warn!(
+                "plugin {}: its id {:?} isn't its folder's name; left out",
+                folder.display(),
+                page.id
+            );
+        }
         return None;
     }
     let (trust, from_catalog) = trust_of(folder, &page);
+    let first_party = signed_by(folder, &page, &crate::core::signing::PLUGIN_KEYS);
+    if log && !first_party && folder.join(SIGNATURE).exists() {
+        tracing::warn!(
+            "plugin {}: its {SIGNATURE} isn't valid, or its files aren't the ones signed",
+            folder.display()
+        );
+    }
     Some(Installed {
+        needs: Permissions::of(&page),
         page: Arc::new(page),
         dir: folder.to_path_buf(),
         from_catalog,
         warnings,
         trust,
+        first_party,
     })
 }
 
@@ -411,6 +504,28 @@ pub struct PluginCatalog {
     pub plugins: Vec<PluginEntry>,
     /// The built-in list is shown (the published one couldn't be fetched).
     pub builtin: bool,
+    /// It is the signed one ([`CATALOG_V2_URL`]).
+    pub signed: bool,
+    /// Plugin versions turned off everywhere (a signed catalogue's only).
+    pub blocked: Vec<Blocked>,
+}
+
+/// A plugin (some of its versions, or all) the signed catalogue turns off: the launcher
+/// turns it off and doesn't let it be turned on again while it is listed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(default)]
+pub struct Blocked {
+    pub id: String,
+    /// Empty: every version.
+    pub versions: Vec<String>,
+    /// Why, for the player.
+    pub reason: String,
+}
+
+impl Blocked {
+    pub fn covers(&self, id: &str, version: &str) -> bool {
+        self.id == id && (self.versions.is_empty() || self.versions.iter().any(|v| v == version))
+    }
 }
 
 impl PluginCatalog {
@@ -420,8 +535,11 @@ impl PluginCatalog {
         struct Raw {
             #[serde(default)]
             plugins: Vec<Value>,
+            #[serde(default)]
+            blocked: Vec<Blocked>,
         }
         let raw: Raw = serde_json::from_str(text)?;
+        let blocked = raw.blocked;
         let mut seen = std::collections::HashSet::new();
         let mut plugins = Vec::new();
         for (i, value) in raw.plugins.into_iter().enumerate() {
@@ -436,8 +554,28 @@ impl PluginCatalog {
         }
         Ok(PluginCatalog {
             plugins,
-            builtin: false,
+            blocked,
+            ..Default::default()
         })
+    }
+
+    /// The signed catalogue in `text`, if `sig` (its `.sig`) holds a signature of it by one
+    /// of `keys`; only it may turn plugins off ([`Blocked`]).
+    pub fn parse_signed(text: &str, sig: &str, keys: &[[u8; 32]]) -> Result<PluginCatalog> {
+        if !crate::core::signing::signed(text, sig, keys) {
+            bail!("it has no valid signature");
+        }
+        let mut c = PluginCatalog::parse(text)?;
+        c.signed = true;
+        Ok(c)
+    }
+
+    /// The version of plugin `id` it turns off, and why.
+    pub fn blocked_reason(&self, id: &str, version: &str) -> Option<&str> {
+        self.blocked
+            .iter()
+            .find(|b| b.covers(id, version))
+            .map(|b| b.reason.as_str())
     }
 
     /// A dev folder's catalogue (of `code`): every entry downloads from that folder (a
@@ -445,6 +583,7 @@ impl PluginCatalog {
     /// [`PluginEntry::dev`].
     pub fn parse_dev(text: &str, code: &str) -> Result<PluginCatalog> {
         let mut c = PluginCatalog::parse(text)?;
+        c.blocked.clear();
         c.plugins.retain_mut(|p| {
             if p.url.is_empty() {
                 return true;
@@ -480,6 +619,12 @@ impl PluginCatalog {
         self
     }
 
+    /// An unsigned catalogue (the old one, the last one kept): it turns nothing off.
+    fn unsigned(mut self) -> PluginCatalog {
+        self.blocked.clear();
+        self
+    }
+
     pub fn builtin() -> PluginCatalog {
         let mut c = PluginCatalog::parse(include_str!("../../../docs/launcher/plugins.json"))
             .unwrap_or_default();
@@ -489,6 +634,10 @@ impl PluginCatalog {
 
     fn cache_path() -> PathBuf {
         paths::data_dir().join("plugins.json")
+    }
+
+    fn cache_v2_path() -> PathBuf {
+        paths::data_dir().join("plugins.v2.json")
     }
 
     /// The published catalogue (kept), else the last one kept, else the built-in one.
@@ -506,8 +655,39 @@ impl PluginCatalog {
         }
     }
 
-    /// The published catalogue (kept), else the last one kept, else the built-in one.
+    /// The signed catalogue (kept, its signature beside it), else the last signed one kept;
+    /// before any was seen, the old one ([`CATALOG_URL`]: kept), else the last one of
+    /// those kept, else the built-in one. Once a signed one was seen, no unsigned one is
+    /// read (a server that sends no signed one can't swap the list).
     fn load_main() -> PluginCatalog {
+        let keys = &crate::core::signing::PLUGIN_KEYS;
+        let v2 = PluginCatalog::cache_v2_path();
+        let sig = v2.with_extension("json.sig");
+        let get = crate::core::http::get_text;
+        let fetched = get(CATALOG_V2_URL).and_then(|t| {
+            let s = get(&format!("{CATALOG_V2_URL}.sig"))?;
+            PluginCatalog::parse_signed(&t, &s, keys).map(|c| (c, t, s))
+        });
+        match fetched {
+            Ok((c, text, s)) => {
+                let _ = std::fs::create_dir_all(paths::data_dir());
+                let _ = std::fs::write(&v2, text);
+                let _ = std::fs::write(&sig, s);
+                return c;
+            }
+            Err(e) => tracing::info!("signed plugins catalogue unavailable: {e:#}"),
+        }
+        if let (Ok(t), Ok(s)) = (std::fs::read_to_string(&v2), std::fs::read_to_string(&sig)) {
+            match PluginCatalog::parse_signed(&t, &s, keys) {
+                Ok(c) => return c,
+                Err(e) => tracing::warn!("the signed plugins catalogue kept: {e:#}"),
+            }
+        }
+        PluginCatalog::load_v1().unsigned()
+    }
+
+    /// [`CATALOG_URL`] (kept), else the last one kept, else the built-in one.
+    fn load_v1() -> PluginCatalog {
         let fetched = crate::core::http::get_text(CATALOG_URL)
             .and_then(|t| PluginCatalog::parse(&t).map(|c| (c, t)));
         match fetched {
@@ -549,6 +729,34 @@ pub fn install_into(
     cancel: &AtomicBool,
     on: &mut dyn FnMut(download::Progress),
 ) -> Result<()> {
+    commit(stage_into(root, e, cancel, on)?)
+}
+
+/// A plugin downloaded and checked, beside the one installed: [`commit`] puts it in
+/// place, [`Staged::discard`] drops it (the player didn't allow what it can do).
+#[derive(Debug)]
+pub struct Staged {
+    pub entry: PluginEntry,
+    pub page: PluginPage,
+    /// What it can do.
+    pub needs: Permissions,
+    root: PathBuf,
+    dir: PathBuf,
+}
+
+impl Staged {
+    pub fn discard(self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Downloads `e` (checked against its checksum) and stages it in `root` ([`Staged`]).
+pub fn stage_into(
+    root: &Path,
+    e: &PluginEntry,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(download::Progress),
+) -> Result<Staged> {
     if !e.downloadable() {
         bail!("{} can't be downloaded yet.", e.name);
     }
@@ -560,13 +768,28 @@ pub fn install_into(
         cancel,
         on,
     )?;
-    let result = unpack(root, e, &zip, cancel);
+    let result = stage(root, e, &zip, cancel);
     let _ = std::fs::remove_file(&zip);
     result
 }
 
+/// [`stage_into`] the plugins folder.
+pub fn stage_from_catalog(
+    e: &PluginEntry,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(download::Progress),
+) -> Result<Staged> {
+    stage_into(&dir(), e, cancel, on)
+}
+
 /// Puts the plugin in `zip` into `root/<id>` (see [`install_into`]).
+#[cfg(test)]
 pub fn unpack(root: &Path, e: &PluginEntry, zip: &Path, cancel: &AtomicBool) -> Result<()> {
+    commit(stage(root, e, zip, cancel)?)
+}
+
+/// Unpacks `zip` beside the plugin in `root` and checks its description.
+pub fn stage(root: &Path, e: &PluginEntry, zip: &Path, cancel: &AtomicBool) -> Result<Staged> {
     let staged = root.join(format!(".{}.new", e.id));
     let _ = std::fs::remove_dir_all(&staged);
     let top = crate::core::zip::top_folder(zip)?;
@@ -578,13 +801,30 @@ pub fn unpack(root: &Path, e: &PluginEntry, zip: &Path, cancel: &AtomicBool) -> 
         Some(p) => bail!("the download is plugin {:?}, not {:?}", p.id, e.id),
         None => bail!("{}'s description can't be read", e.name),
     });
-    let page = match check {
-        Ok(p) => p,
+    match check {
+        Ok(page) => Ok(Staged {
+            entry: e.clone(),
+            needs: Permissions::of(&page),
+            page,
+            root: root.to_path_buf(),
+            dir: staged,
+        }),
         Err(err) => {
             let _ = std::fs::remove_dir_all(&staged);
-            return Err(err);
+            Err(err)
         }
-    };
+    }
+}
+
+/// Puts a staged plugin in place, keeping the player's settings and presets.
+pub fn commit(s: Staged) -> Result<()> {
+    let Staged {
+        entry: e,
+        page,
+        root,
+        dir: staged,
+        ..
+    } = s;
     let dest = root.join(&e.id);
     // Its settings and the player's presets stay.
     if let Some(s) = &page.settings {
@@ -606,7 +846,7 @@ pub fn unpack(root: &Path, e: &PluginEntry, zip: &Path, cancel: &AtomicBool) -> 
     std::fs::write(staged.join(INSTALLED), serde_json::to_string(&note)?)?;
     if dest.exists() {
         // Another version the launcher installed is kept for going back ([`go_back`]).
-        let previous = previous_dir(root, &e.id);
+        let previous = previous_dir(&root, &e.id);
         let _ = std::fs::remove_dir_all(&previous);
         let other = note_in(&dest).is_some_and(|n| n.version != e.version);
         if !(other && std::fs::rename(&dest, &previous).is_ok()) {
@@ -717,14 +957,6 @@ pub fn go_back_to(root: &Path, e: &PluginEntry, cancel: &AtomicBool) -> Result<S
     Ok(now.version)
 }
 
-pub fn install(
-    e: &PluginEntry,
-    cancel: &AtomicBool,
-    on: &mut dyn FnMut(download::Progress),
-) -> Result<()> {
-    install_into(&dir(), e, cancel, on)
-}
-
 /// Removes plugin `id` and its settings.
 pub fn remove_from(root: &Path, id: &str) -> Result<()> {
     if !catalog::is_safe_id(id) {
@@ -831,7 +1063,7 @@ mod tests {
                 url: "plugins/x.zip".into(),
                 ..entry("event-lobbies", "0.3.0")
             }],
-            builtin: false,
+            ..Default::default()
         };
         assert_eq!(
             update_for(&all[0], &catalog).map(|e| e.version.as_str()),
@@ -1129,5 +1361,204 @@ mod tests {
     fn the_builtin_catalogue_parses() {
         let c = PluginCatalog::builtin();
         assert!(c.entry("event-lobbies").is_some());
+    }
+
+    /// Signs the plugin in `dir` with the test key, as `scripts/sign.py plugin` does.
+    fn sign(dir: &Path, page: &PluginPage) {
+        let mut files = own_files(dir, page);
+        files.remove(SIGNATURE);
+        // A shipped settings file is signed too (the player's copy may differ later).
+        for f in player_files(page) {
+            if let Ok(sha) = download::sha256_file(&dir.join(&f)) {
+                files.insert(f, sha);
+            }
+        }
+        let st = crate::core::signing::PluginStatement {
+            id: page.id.clone(),
+            version: page.version.clone(),
+            files,
+        };
+        let sig = crate::core::signing::tests::sig_file(&st.text(), true);
+        std::fs::write(dir.join(SIGNATURE), sig).unwrap();
+    }
+
+    #[test]
+    fn a_signature_vouches_for_the_files_as_they_are() {
+        let keys = [crate::core::signing::tests::test_key()];
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("event-lobbies");
+        std::fs::create_dir_all(dir.join("icons")).unwrap();
+        std::fs::write(dir.join(DESCRIPTION), DESC).unwrap();
+        std::fs::write(dir.join("icons/a.png"), "png").unwrap();
+        let page = read_description(DESC).0.unwrap();
+        assert!(!signed_by(&dir, &page, &keys), "unsigned");
+        sign(&dir, &page);
+        assert!(signed_by(&dir, &page, &keys));
+        assert!(!signed_by(&dir, &page, &crate::core::signing::PLUGIN_KEYS));
+        // The player's settings and presets, the launcher's notes: still as signed.
+        let p = read_one(&dir).unwrap();
+        write_settings(&p, &[("name".into(), "Alice".into())]).unwrap();
+        std::fs::write(dir.join(super::super::presets::PRESETS_FILE), "[]").unwrap();
+        std::fs::write(dir.join(INSTALLED), "{}").unwrap();
+        assert!(signed_by(&dir, &page, &keys));
+        // A file changed, added or gone: not.
+        std::fs::write(dir.join("icons/a.png"), "other").unwrap();
+        assert!(!signed_by(&dir, &page, &keys));
+        std::fs::write(dir.join("icons/a.png"), "png").unwrap();
+        std::fs::write(dir.join("extra.json"), "{}").unwrap();
+        assert!(!signed_by(&dir, &page, &keys));
+        std::fs::remove_file(dir.join("extra.json")).unwrap();
+        std::fs::remove_file(dir.join("icons/a.png")).unwrap();
+        assert!(!signed_by(&dir, &page, &keys));
+        std::fs::write(dir.join("icons/a.png"), "png").unwrap();
+        assert!(signed_by(&dir, &page, &keys));
+        // Another version's description under the same signature: not.
+        let newer = DESC.replacen("\"name\"", "\"version\": \"9.9.9\", \"name\"", 1);
+        std::fs::write(dir.join(DESCRIPTION), &newer).unwrap();
+        let page9 = read_description(&newer).0.unwrap();
+        assert_eq!(page9.version, "9.9.9");
+        assert!(!signed_by(&dir, &page9, &keys));
+    }
+
+    #[test]
+    fn a_plugin_runs_once_allowed_what_it_can_do() {
+        use super::super::plugin_permissions::Permissions;
+        let page = read_description(include_str!(
+            "../../../docs/plugins/event-lobbies/plugin.json"
+        ))
+        .0
+        .unwrap();
+        let needs = Permissions::of(&page);
+        assert!(!needs.is_empty());
+        let mut p = Installed {
+            page: Arc::new(page),
+            needs: needs.clone(),
+            ..Default::default()
+        };
+        let mut state = LauncherState::default();
+        // By hand, nothing allowed yet.
+        p.trust = Trust::Hand;
+        assert!(!allowed(&state, &p));
+        assert_eq!(not_allowed(&state, &p), needs);
+        // From the catalogue before the launcher asked, as installed: what it had.
+        p.from_catalog = Some("0.1.0".into());
+        p.trust = Trust::Catalog;
+        assert!(allowed(&state, &p));
+        // Changed since: asked again.
+        p.trust = Trust::Changed;
+        assert!(!allowed(&state, &p));
+        // Allowed, then it can do more.
+        state.plugin_grants.insert(p.page.id.clone(), needs.clone());
+        assert!(allowed(&state, &p));
+        p.needs.servers.insert("https://evil.example:443".into());
+        assert!(!allowed(&state, &p));
+        assert_eq!(
+            not_allowed(&state, &p)
+                .servers
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["https://evil.example:443"]
+        );
+        // One that can do nothing runs without asking.
+        let none = Installed::default();
+        assert!(allowed(&LauncherState::default(), &none));
+    }
+
+    #[test]
+    fn only_the_signed_catalogue_turns_plugins_off() {
+        let text = r#"{"schema": 1, "plugins": [], "blocked": [
+            {"id": "event-lobbies", "versions": ["0.1.2"], "reason": "It sent requests twice."},
+            {"id": "bad"}
+        ]}"#;
+        let keys = [crate::core::signing::tests::test_key()];
+        let sig = crate::core::signing::tests::sig_file(text, false);
+        let c = PluginCatalog::parse_signed(text, &sig, &keys).unwrap();
+        assert!(c.signed);
+        assert_eq!(
+            c.blocked_reason("event-lobbies", "0.1.2"),
+            Some("It sent requests twice.")
+        );
+        assert_eq!(c.blocked_reason("event-lobbies", "0.1.3"), None);
+        assert_eq!(c.blocked_reason("bad", "1.0"), Some(""));
+        // Not signed by the key, or changed: refused.
+        assert!(
+            PluginCatalog::parse_signed(text, &sig, &crate::core::signing::PLUGIN_KEYS).is_err()
+        );
+        assert!(
+            PluginCatalog::parse_signed(&text.replace("twice", "thrice"), &sig, &keys).is_err()
+        );
+        // Unsigned ones (the old catalogue, a dev folder's) turn nothing off.
+        assert!(PluginCatalog::parse(text)
+            .unwrap()
+            .unsigned()
+            .blocked
+            .is_empty());
+        assert!(PluginCatalog::parse_dev(text, "code")
+            .unwrap()
+            .blocked
+            .is_empty());
+    }
+
+    /// The files `scripts/sign.py` made for a release (`ECHOVR_RELEASE_DIR`: plugin zips,
+    /// and `plugins.v2.json` with its `.sig`) are signed with the plugins key as this
+    /// launcher checks: run before uploading them.
+    #[test]
+    #[ignore = "needs ECHOVR_RELEASE_DIR"]
+    fn a_release_is_signed() {
+        let dir = PathBuf::from(std::env::var("ECHOVR_RELEASE_DIR").unwrap());
+        let keys = &crate::core::signing::PLUGIN_KEYS;
+        let text = std::fs::read_to_string(dir.join("plugins.v2.json")).unwrap();
+        let sig = std::fs::read_to_string(dir.join("plugins.v2.json.sig")).unwrap();
+        let c = PluginCatalog::parse_signed(&text, &sig, keys).unwrap();
+        let no = AtomicBool::new(false);
+        for e in &c.plugins {
+            let zip = dir.join(format!("{}-{}.zip", e.id, e.version));
+            assert_eq!(download::sha256_file(&zip).unwrap(), e.sha256, "{}", e.id);
+            let root = tempfile::tempdir().unwrap();
+            commit(stage(root.path(), e, &zip, &no).unwrap()).unwrap();
+            let p = read_one(&root.path().join(&e.id)).unwrap();
+            assert!(p.first_party, "{} isn't signed", e.id);
+        }
+    }
+
+    #[test]
+    fn a_staged_plugin_waits_beside_the_installed_one() {
+        let root = tempfile::tempdir().unwrap();
+        let no = AtomicBool::new(false);
+        let z = zip_with(&[("plugin.json", DESC), ("app.txt", "one")]);
+        unpack(root.path(), &entry("event-lobbies", "0.1.0"), z.path(), &no).unwrap();
+        let z2 = zip_with(&[("plugin.json", DESC), ("app.txt", "two")]);
+        let s = stage(
+            root.path(),
+            &entry("event-lobbies", "0.2.0"),
+            z2.path(),
+            &no,
+        )
+        .unwrap();
+        assert_eq!(
+            s.needs,
+            super::super::plugin_permissions::Permissions::of(&s.page)
+        );
+        // Not in place until committed, and not read as a plugin meanwhile.
+        let all = installed_in(root.path());
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].from_catalog.as_deref(), Some("0.1.0"));
+        s.discard();
+        assert!(!root.path().join(".event-lobbies.new").exists());
+        let dir = root.path().join("event-lobbies");
+        assert_eq!(std::fs::read_to_string(dir.join("app.txt")).unwrap(), "one");
+        let s = stage(
+            root.path(),
+            &entry("event-lobbies", "0.2.0"),
+            z2.path(),
+            &no,
+        )
+        .unwrap();
+        commit(s).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("app.txt")).unwrap(), "two");
+        assert_eq!(
+            installed_in(root.path())[0].from_catalog.as_deref(),
+            Some("0.2.0")
+        );
     }
 }
