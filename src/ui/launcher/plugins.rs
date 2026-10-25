@@ -37,6 +37,8 @@ const ROW_GAP: f32 = 10.0;
 const REMOVE_KEY: &str = "plugins-remove";
 /// "Play on another server?" (a plugin's `server` step).
 const SERVER_KEY: &str = "plugins-server";
+/// "Set up a game server?" (a plugin's `host` step).
+const HOST_KEY: &str = "plugins-host";
 /// A settings form's button that asks first.
 const FORM_ACTION_KEY: &str = "plugins-form-action";
 /// "Replace your preset?" and "Delete this preset?".
@@ -70,6 +72,8 @@ pub(super) struct PluginsUi {
     /// The server a plugin's `server` step asked to play on (its id, the server), while the
     /// question is up.
     server_asked: Option<(String, GameServer)>,
+    /// The game server setup a plugin's `host` step asked to write, while the question is up.
+    host_asked: Option<HostAsked>,
     /// A plugin page's question that is up (its id, what was asked).
     asked: Option<(String, Asked)>,
     /// The plugin whose rail menu (right click) is open.
@@ -80,6 +84,15 @@ pub(super) struct PluginsUi {
     pub rail_seen: Option<Page>,
     /// The plugin the Plugins page scrolls to and marks (Plugin details).
     pub focus: Option<String>,
+}
+
+/// A `host` step waiting for the player's yes.
+struct HostAsked {
+    plugin: String,
+    host: crate::core::launcher::host::Host,
+    version: crate::core::launcher::store::InstalledVersion,
+    /// Where what it wrote goes (`save`).
+    save: String,
 }
 
 /// What a plugin page's settings blocks asked.
@@ -305,6 +318,43 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
             }
         }
     }
+    if let Some(ans) = d.dialogs.take(HOST_KEY) {
+        if let Some(a) = d.plugins.host_asked.take() {
+            let p = d
+                .plugins
+                .list
+                .iter()
+                .find(|p| p.page.id == a.plugin)
+                .cloned();
+            match p {
+                Some(p) if ans.is_yes() => {
+                    match crate::core::launcher::host::write(&a.version, &a.host) {
+                        Ok(written) => {
+                            tracing::info!(
+                                "plugin {}: a game server's setup in {} (the player said yes)",
+                                a.plugin,
+                                written.dir.display()
+                            );
+                            if !a.save.is_empty() {
+                                set_bound(d, &p, &a.save, written.to_value());
+                            }
+                            if let Some(r) = d
+                                .plugins
+                                .views
+                                .get_mut(&a.plugin)
+                                .and_then(|v| v.runner.as_mut())
+                            {
+                                r.waiting = false;
+                            }
+                            advance(d, ctx, &p);
+                        }
+                        Err(e) => fail(d, &a.plugin, format!("{e:#}")),
+                    }
+                }
+                _ => fail(d, &a.plugin, "The game server wasn't set up.".into()),
+            }
+        }
+    }
     // The shown plugin page's data, when due.
     if let Page::Plugin(i) = d.page {
         if let Some(p) = d.plugins.list.get(i as usize).cloned() {
@@ -388,6 +438,14 @@ impl Failure {
     /// says "server responded with <status>" for an error answer.
     fn of_get(e: &anyhow::Error) -> Failure {
         let message = format!("{e:#}");
+        if e.downcast_ref::<crate::core::http::RedirectRefused>()
+            .is_some()
+        {
+            return Failure {
+                message,
+                kind: "refused",
+            };
+        }
         let no_answer = e
             .chain()
             .any(|c| c.downcast_ref::<reqwest::Error>().is_some());
@@ -413,17 +471,44 @@ fn send(
     c: &Value,
     f: impl FnOnce(Result<Value, Failure>) -> Msg + Send + 'static,
 ) {
-    let url = pp::render(&r.url, c);
-    let body = r.body.as_ref().map(|b| pp::render_body(b, c));
+    let url = match core::request_url(&r.url, c) {
+        Ok(u) => u,
+        Err(message) => {
+            tracing::warn!("plugin request {}: {message}", r.url);
+            let failure = Failure {
+                message,
+                kind: "refused",
+            };
+            d.plugins
+                .worker
+                .spawn(ctx, move |tx| tx.send(f(Err(failure))));
+            return;
+        }
+    };
+    // The player's classic lobbies password goes to that server only.
+    let body = r.body.as_ref().map(|b| {
+        if core::to_relay(&d.state, &url) {
+            pp::render_body(b, &core::with_relay_password(c, &d.state))
+        } else {
+            pp::render_body(b, c)
+        }
+    });
     let method = r.method;
     d.plugins.worker.spawn(ctx, move |tx| {
         let result = match method {
-            Method::Get => crate::core::http::get_text(&url).map_err(|e| Failure::of_get(&e)),
-            // post_json fails only when no answer came back.
-            Method::Post => crate::core::http::post_json(&url, &body.unwrap_or(Value::Null))
+            Method::Get => crate::core::http::plugin_get(&url).map_err(|e| Failure::of_get(&e)),
+            // plugin_post fails only when no answer came back, or it was sent elsewhere.
+            Method::Post => crate::core::http::plugin_post(&url, &body.unwrap_or(Value::Null))
                 .map_err(|e| Failure {
                     message: format!("{e:#}"),
-                    kind: "unreachable",
+                    kind: if e
+                        .downcast_ref::<crate::core::http::RedirectRefused>()
+                        .is_some()
+                    {
+                        "refused"
+                    } else {
+                        "unreachable"
+                    },
                 })
                 .and_then(|(status, text)| {
                     if status >= 500 {
@@ -442,6 +527,9 @@ fn send(
 }
 
 fn fetch_due(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
+    if is_off(d, &p.page.id) {
+        return;
+    }
     view(d, p);
     let c = context(d, p);
     let mut due = Vec::new();
@@ -659,18 +747,25 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                         "Install the live build first: a game server runs from it.".into(),
                     );
                 };
-                match crate::core::launcher::host::write(&v, &host) {
-                    Ok(written) => {
-                        tracing::info!(
-                            "plugin {id}: a game server's setup in {}",
-                            written.dir.display()
-                        );
-                        if !save.is_empty() {
-                            set_bound(d, p, &save, written.to_value());
-                        }
-                    }
-                    Err(e) => return fail(d, &id, format!("{e:#}")),
+                // It writes a server account into the game's folder: the player says yes first.
+                let message = host_question(&p.page.name, &v.name, &host);
+                if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
+                    r.waiting = true;
                 }
+                d.plugins.host_asked = Some(HostAsked {
+                    plugin: id.clone(),
+                    host,
+                    version: v,
+                    save,
+                });
+                d.dialogs.options(
+                    HOST_KEY,
+                    "Set up a game server?",
+                    &message,
+                    crate::ui::dialogs::Icon::Warning,
+                    &["Set it up", "Cancel"],
+                );
+                return;
             }
             Step::Server {
                 kind,
@@ -685,6 +780,15 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                     ServerKind::EchoRelay
                 } else {
                     ServerKind::Nakama
+                };
+                // The player's classic lobbies account signs in on that server only.
+                let address_text = pp::render(&address, &c).trim().to_string();
+                let c = if kind == ServerKind::EchoRelay
+                    && core::to_relay(&d.state, &format!("http://{address_text}"))
+                {
+                    core::with_relay_password(&c, &d.state)
+                } else {
+                    c
                 };
                 let server = GameServer {
                     name: pp::render(&name, &c).trim().to_string(),
@@ -719,6 +823,24 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                             format!(
                                 "{address} isn't an EchoRelay address: host:port, e.g. {}.",
                                 relay::DEFAULT_SERVER
+                            ),
+                        );
+                    }
+                    let launchers = d
+                        .state
+                        .relay_account
+                        .as_ref()
+                        .is_some_and(|a| !a.password.is_empty());
+                    if account.password.is_empty()
+                        && launchers
+                        && !core::to_relay(&d.state, &format!("http://{address}"))
+                    {
+                        return fail(
+                            d,
+                            &id,
+                            format!(
+                                "Your classic lobbies password goes only to the classic lobbies server the launcher's settings name: for {address}, type your password there in {}.",
+                                p.page.name
                             ),
                         );
                     }
@@ -812,6 +934,33 @@ fn back_to_nevr(d: &mut Dashboard) {
     }
 }
 
+/// Pure: what the player is asked before plugin `plugin` writes a game server's setup into
+/// `version`.
+fn host_question(plugin: &str, version: &str, h: &crate::core::launcher::host::Host) -> String {
+    let folder = if h.folder.is_empty() {
+        "server"
+    } else {
+        &h.folder
+    };
+    let account = if h.discord_id.is_empty() {
+        String::new()
+    } else {
+        format!(", signed in as {}", h.discord_id)
+    };
+    let to = [&h.socket_uri, &h.serverdb_uri]
+        .into_iter()
+        .filter_map(|u| core::origin(&u.replace("ws://", "http://").replace("wss://", "https://")))
+        .map(|o| o.split("://").nth(1).unwrap_or_default().to_string())
+        .next()
+        .map(|o| format!(", registering with {o}"))
+        .unwrap_or_default();
+    format!(
+        "{plugin} wants to set up a game server in {version}: its own setup and a start \
+         script in _local/{folder}{account}{to}. The server runs when you start \
+         that script. Only say yes if you asked {plugin} for this."
+    )
+}
+
 /// Pure: what the player is asked before plugin `plugin` sets the game's server.
 fn server_question(plugin: &str, s: &GameServer) -> String {
     let address = &s.server.address;
@@ -888,7 +1037,13 @@ fn set_bound(d: &mut Dashboard, p: &Installed, bind: &str, value: Value) {
 /// player ordered, then the ones installed since. Unpinned ones are left out.
 pub(super) fn pinned(d: &Dashboard) -> Vec<u8> {
     let ids: Vec<&str> = d.plugins.list.iter().map(|p| p.page.id.as_str()).collect();
-    rail_order(&ids, &d.state.rail_order, &d.state.rail_unpinned)
+    let hidden: std::collections::BTreeSet<String> = d
+        .state
+        .rail_unpinned
+        .union(&d.state.plugins_off)
+        .cloned()
+        .collect();
+    rail_order(&ids, &d.state.rail_order, &hidden)
 }
 
 /// [`pinned`] for these installed ids.
@@ -907,6 +1062,38 @@ fn rail_order(
         }
     }
     out
+}
+
+/// Whether the player turned the plugin off.
+pub(super) fn is_off(d: &Dashboard, id: &str) -> bool {
+    d.state.plugins_off.contains(id)
+}
+
+/// Turns the plugin off (no tab, nothing fetched, the game's server it chose and EchoXR's
+/// settings it keeps let go of) or on again.
+pub(super) fn set_off(d: &mut Dashboard, id: &str, off: bool) {
+    if off {
+        d.state.plugins_off.insert(id.to_string());
+        if d.state.game_server.as_ref().is_some_and(|g| g.plugin == id) {
+            reset_game_server(d);
+        }
+        if let Some(v) = d.plugins.views.get_mut(id) {
+            v.runner = None;
+        }
+    } else {
+        d.state.plugins_off.remove(id);
+    }
+    d.save();
+    if !d.demo {
+        let text = echoxr_settings::current(&d.state.plugins_off);
+        echoxr_settings::apply_all(&d.state.versions, text.as_deref());
+    }
+    tracing::info!("plugin {id}: turned {}", if off { "off" } else { "on" });
+    d.notify(if off {
+        "Plugin turned off"
+    } else {
+        "Plugin turned on"
+    });
 }
 
 /// Whether the plugin is on the rail.
@@ -968,6 +1155,31 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
     let Some(p) = d.plugins.list.get(i as usize).cloned() else {
         return empty_state(kit, Icon::Plus, "Plugins", "This plugin was removed.");
     };
+    if is_off(d, &p.page.id) {
+        let (x, y, w, h) = super::empty_panel(
+            kit,
+            rail_icon(&p.page),
+            &p.page.name,
+            "This plugin is turned off: it has no tab, and does nothing until it is turned on again.",
+        );
+        let bw = kit.button_width("Turn on", None, BTN_H).max(dz(160.0));
+        let turn_on = kit.button(
+            "plugin-turn-on",
+            x + (w - bw) / 2.0,
+            y + h - dz(40.0) - BTN_H,
+            bw,
+            BTN_H,
+            Tone::Blue,
+            None,
+            "Turn on",
+            true,
+            "",
+        );
+        if turn_on.clicked {
+            set_off(d, &p.page.id, false);
+        }
+        return;
+    }
     if p.page.builtin == "server-host" && p.page.id == crate::core::server_host::PLUGIN_ID {
         return super::server_host::show(d, kit, ctx);
     }
@@ -1552,6 +1764,8 @@ fn write_form(d: &mut Dashboard, p: &Installed, changes: Vec<(String, String)>) 
 /// a change reaches a game that is running.
 fn keep_echoxr(d: &Dashboard, p: &Installed) {
     if d.demo
+        || is_off(d, &p.page.id)
+        || !p.trust.may_keep_echoxr()
         || !p
             .page
             .settings
@@ -2335,6 +2549,12 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
         meta.push("added by hand".into());
     }
     let mut tags = Vec::new();
+    if is_off(d, &p.page.id) {
+        tags.push(("Turned off".to_string(), design::GREY));
+    }
+    if p.trust == core::Trust::Changed {
+        tags.push(("Changed since install".to_string(), design::QUEST_WARN));
+    }
     if update {
         tags.push(("Update".to_string(), design::QUEST_ON));
     }
@@ -2765,6 +2985,7 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let entry = catalog.plugins.iter().find(|e| e.id == id).cloned();
     let homepage = entry.map(|e| e.homepage).unwrap_or_default();
     let pin = is_pinned(d, &id);
+    let off = is_off(d, &id);
     let idle = d.plugins.busy.is_none();
     let wait = (!idle).then_some("Wait: a plugin is being installed or updated");
     let back = super::goback::way_of(d, &Part::Plugin { id: id.clone() }).cloned();
@@ -2796,6 +3017,15 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 "Pin to the rail",
                 "Its tab goes in the rail, the bar on the left",
             )
+        }
+        .unless(off.then_some("It's turned off: no tab until it is turned on")),
+        if off {
+            MenuItem::row("Turn on", "Its tab and page are back")
+        } else {
+            MenuItem::row(
+                "Turn off",
+                "No tab, and it does nothing until it is turned on again",
+            )
         },
         MenuItem::row("Remove", "Remove it and its settings").unless(wait),
         MenuItem::Divider,
@@ -2816,7 +3046,8 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             }
         }
         Some(2) => set_pinned(d, &id, !pin),
-        Some(3) => {
+        Some(3) => set_off(d, &id, !off),
+        Some(4) => {
             d.plugins.remove_asked = Some(id.clone());
             // The game's server it chose goes with it.
             let server = d
@@ -2838,7 +3069,7 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 "Remove",
             );
         }
-        Some(5) => crate::core::platform::open_url(&homepage),
+        Some(6) => crate::core::platform::open_url(&homepage),
         _ => {}
     }
     if !kit.menu_open(CARD_MENU) {
@@ -2960,6 +3191,7 @@ fn demo() -> PluginsUi {
         dir: std::path::PathBuf::new(),
         from_catalog: Some(page_version),
         warnings: Vec::new(),
+        trust: Default::default(),
     });
     let mut v = View {
         page: json!({"build": "halloween", "region": "EU"}),
@@ -3069,6 +3301,7 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
             page: std::sync::Arc::new(page),
             dir: std::path::PathBuf::new(),
             warnings,
+            trust: Default::default(),
         });
     }
     // The second one off the rail.
@@ -3089,6 +3322,7 @@ pub(super) fn snap_install(d: &mut Dashboard, text: &str) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
+        trust: Default::default(),
     });
 }
 
@@ -3117,6 +3351,7 @@ pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
+        trust: Default::default(),
     });
     let mut view = View {
         page: json!({}),
@@ -3156,6 +3391,7 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
+        trust: Default::default(),
     });
     let settings = [
         ("relay_address", "203.0.113.7:6800"),
@@ -3311,5 +3547,8 @@ mod tests {
             "GET http://x/api/matches: server responded with 500 Internal Server Error"
         );
         assert_eq!(Failure::of_get(&e).kind, "server");
+        // Sent on to another server: not followed.
+        let e = anyhow::Error::new(crate::core::http::RedirectRefused).context("GET http://x/a");
+        assert_eq!(Failure::of_get(&e).kind, "refused");
     }
 }

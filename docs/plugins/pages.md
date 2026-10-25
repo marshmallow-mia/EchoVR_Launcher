@@ -30,7 +30,10 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
 - **The Plugins page** (the rail's puzzle piece) is the library: a card for every plugin, the
   installed ones first (in the rail's order), then the catalogue's others. **All**, **Installed**
   and **Available** pick which. An installed one's card has **Open**, **Update** when there is one,
-  its pin, and **⋯** (or a right click) for Update, Pin, Remove and its homepage.
+  its pin, and **⋯** (or a right click) for Update, Pin, Turn off, Remove and its homepage.
+- **Turned off** (0.12.4 on): no tab, its page fetches nothing, a game server it chose is
+  EchoVRCE again and EchoXR's settings it keeps go; **Turn on** brings it back. Kept in
+  `launcher.json` (`plugins_off`).
 - **Getting one:** the Plugins page gets plugins from the catalogue,
   `https://release.echovr.de/launcher/plugins.json`. The launcher's built-in draft is
   [../launcher/plugins.json](../launcher/plugins.json).
@@ -47,6 +50,12 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
 - **Writing one:** put its folder into `plugins/` by hand. The folder's name must be its `id`. It is
   listed as "added by hand" and read again when the launcher starts. In debug builds,
   `ECHOVR_PAGE=<id>` opens its tab at start.
+- **Its files as installed** (0.12.4 on): the launcher notes the checksum of each of a plugin's
+  own files when it installs one (`.installed.json`; one installed before is noted the first
+  time it is read), not its settings or presets. A plugin whose files changed since shows
+  **Changed since install**. Only a plugin as installed from a catalogue keeps EchoXR's
+  settings beside the game (`"echoxr": true`, [settings.md](settings.md)); one added by hand
+  or changed does in debug builds only.
 
 What a description gets wrong is left out and logged. The Plugins page says how many problems
 there were.
@@ -91,8 +100,9 @@ Every text in a page is a template. `{path}` is filled from the page's context:
 |---|---|
 | `settings.<key>` | the plugin's settings (text) |
 | `page.<key>` | values the page sets while the launcher runs (fields, choices, `save`, `set`) |
-| `data.<name>` | what data source `<name>` fetched (its JSON). When it failed: `{"error": "…", "failed": "…"}`, `failed` saying why: `unreachable` (no connection, or no answer in time), `missing` (the server doesn't have that address: 404, 405, 501) or `server` (another error answer). The next fetch that works replaces it |
-| `launcher.relay.server`, `.name`, `.password` | the classic lobbies server and account from the launcher's settings |
+| `data.<name>` | what data source `<name>` fetched (its JSON). When it failed: `{"error": "…", "failed": "…"}`, `failed` saying why: `unreachable` (no connection, or no answer in time), `missing` (the server doesn't have that address: 404, 405, 501), `server` (another error answer) or `refused` (the launcher didn't send it: see **Where requests go**). The next fetch that works replaces it |
+| `launcher.relay.server`, `.name` | the classic lobbies server and account name from the launcher's settings |
+| `launcher.relay.password` | that account's password, **only in a request's `body` to that server** (`http://` + `launcher.relay.server`) and in a `server` step to it; everywhere else it is empty (0.12.4 on; before, every page had it) |
 | `launcher.event_builds` | the installed event builds: `[{"id": "halloween", "version": "pc-halloween-2018", "name": "Halloween 2018"}]` |
 | `launcher.server.address`, `.name`, `.kind`, `.discord_id`, `.display_name`, `.plugin` | the server the live build plays on instead of EchoVRCE, as a plugin's `server` step set it (empty: EchoVRCE; `kind`: `nakama` or `echorelay`), and that plugin's id. Its key and password aren't shown. Launchers before 0.11.11-beta.1 have no `launcher.server` |
 | `launcher.features.server`, `.echorelay`, `.host` | `true` when this launcher has the `server` step, its EchoRelay kind (0.11.12 on) and the `host` step (0.11.15 on): a plugin can say when it needs a newer launcher |
@@ -127,6 +137,21 @@ Template syntax:
 - **The answer:** parsed as JSON (text that isn't JSON is kept as a string). A POST answered with
   4xx still counts, so a server's `{"ok": false, "message": …}` reaches the page. A network
   failure or a 5xx answer sets `data.<name>` to `{"error": "…"}`.
+
+### Where requests go
+
+A data source's or a step's request (0.12.4 on):
+
+- **Its server comes from the description, the plugin's settings or `launcher.*`:** the URL's
+  scheme, host and port must be the same with `data`, `page` and `item` left empty. So
+  `http://{settings.server|launcher.relay.server}/api/join/{item.id}` is sent, and
+  `{data.next.url}` or `http://{page.host}/…` is refused (`failed`: `refused`): a server's
+  answer can't send the plugin's requests, and what they carry, elsewhere.
+- **Redirects:** followed only on the same server (scheme, host and port), at most five. A
+  redirect elsewhere fails the request.
+- **No cookies** are kept between requests.
+- **The classic lobbies password** is filled in only in a body sent to that server (see
+  `launcher.relay.password` above).
 
 ## Cards and blocks
 
@@ -167,7 +192,7 @@ to why (the page shows it where it likes, e.g. `{"text": "{page.error}", "tone":
 | `{"refresh": ["matches", "current"]}` | fetches those data sources again now |
 | `{"server": {"kind": "nakama", "address": "…", "key": "…", "discord_id": "…", "password": "…", "name": "…"}}` | the live build plays on that Nakama server instead of EchoVRCE from its next start: the launcher asks the player first, and No ends the action. `{"server": null}` (or an empty address) is EchoVRCE again, without asking. See **The game's server** |
 | `{"server": {"kind": "echorelay", "address": "host:port", "display_name": "…", "password": "…"}}` | the same for an EchoRelay server, as that name and password |
-| `{"host": {"folder": "server", "discord_id": "…", "password": "…", "regions": "…", "guilds": "…", "port": "6792", "socket_uri": "…", "serverdb_uri": "…", "http_uri": "…", "http_key": "…", "server_key": "…", "mods": true, "save": "page.host"}}` | writes a game server's own setup into the live build. What it wrote goes to `save`. See **A game server's setup** |
+| `{"host": {"folder": "server", "discord_id": "…", "password": "…", "regions": "…", "guilds": "…", "port": "6792", "socket_uri": "…", "serverdb_uri": "…", "http_uri": "…", "http_key": "…", "server_key": "…", "mods": true, "save": "page.host"}}` | writes a game server's own setup into the live build once the player says yes (0.12.4 on: before, without asking). What it wrote goes to `save`. See **A game server's setup** |
 
 ### The game's server
 

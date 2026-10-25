@@ -40,12 +40,104 @@ pub struct Installed {
     pub from_catalog: Option<String>,
     /// What its description got wrong (left out).
     pub warnings: Vec<String>,
+    /// Whether its files are the ones the launcher installed.
+    pub trust: Trust,
+}
+
+/// Where an installed plugin's files come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Trust {
+    /// The launcher installed them from a catalogue, and they are as it installed them.
+    #[default]
+    Catalog,
+    /// The launcher installed it, but its files changed since.
+    Changed,
+    /// Put there by hand (no catalogue, no checksum).
+    Hand,
+}
+
+impl Trust {
+    /// Whether the plugin may keep EchoXR's settings beside the game: only as installed
+    /// from a catalogue (debug builds: any, for writing one).
+    pub fn may_keep_echoxr(self) -> bool {
+        self == Trust::Catalog || cfg!(debug_assertions)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct InstalledNote {
     version: String,
     sha256: String,
+    /// The plugin's own files as installed (path in its folder → sha256), not the player's
+    /// settings and presets. Launchers before 0.12.4 didn't note them: the first read does.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    files: BTreeMap<String, String>,
+}
+
+/// The files in `folder` that are the plugin's own, by their path in it (`/` between
+/// folders): not the launcher's notes, the player's settings and presets, or what the
+/// launcher keeps for it (dot files and folders).
+fn own_files(folder: &Path, page: &PluginPage) -> BTreeMap<String, String> {
+    let mut theirs: std::collections::HashSet<String> = page
+        .settings
+        .as_ref()
+        .map(plugin_settings::store_files)
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    theirs.insert(super::presets::PRESETS_FILE.to_string());
+    let mut out = BTreeMap::new();
+    let mut todo = vec![(folder.to_path_buf(), String::new())];
+    while let Some((dir, prefix)) = todo.pop() {
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = format!("{prefix}{name}");
+            let path = e.path();
+            if path.is_dir() {
+                todo.push((path, format!("{rel}/")));
+            } else if !theirs.contains(&rel) {
+                if let Ok(sha) = download::sha256_file(&path) {
+                    out.insert(rel, sha);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// How far plugin `page` in `folder` can be trusted; notes its files when the launcher
+/// installed it but didn't note them yet.
+fn trust_of(folder: &Path, page: &PluginPage) -> (Trust, Option<String>) {
+    let Some(mut note) = note_in(folder) else {
+        return (Trust::Hand, None);
+    };
+    let now = own_files(folder, page);
+    if note.files.is_empty() {
+        note.files = now;
+        if let Ok(t) = serde_json::to_string(&note) {
+            let _ = std::fs::write(folder.join(INSTALLED), t);
+        }
+        return (Trust::Catalog, Some(note.version));
+    }
+    let trust = if note.files == now {
+        Trust::Catalog
+    } else {
+        tracing::warn!(
+            "plugin {}: its files changed since the launcher installed them",
+            folder.display()
+        );
+        Trust::Changed
+    };
+    (trust, Some(note.version))
+}
+
+/// Pure but for reading the folder: how far the plugin in `folder` can be trusted (for
+/// what reads plugins without [`read_one`]).
+pub fn trust_in(folder: &Path, page: &PluginPage) -> Trust {
+    trust_of(folder, page).0
 }
 
 /// Pure: a plugin's description as the launcher uses it. Settings without a file of their
@@ -85,15 +177,13 @@ pub fn read_one(folder: &Path) -> Option<Installed> {
         );
         return None;
     }
-    let from_catalog = std::fs::read_to_string(folder.join(INSTALLED))
-        .ok()
-        .and_then(|t| serde_json::from_str::<InstalledNote>(&t).ok())
-        .map(|n| n.version);
+    let (trust, from_catalog) = trust_of(folder, &page);
     Some(Installed {
         page: Arc::new(page),
         dir: folder.to_path_buf(),
         from_catalog,
         warnings,
+        trust,
     })
 }
 
@@ -158,7 +248,78 @@ pub fn version_for(state: &LauncherState, name: &str) -> Option<String> {
         .map(|v| v.id.clone())
 }
 
-/// Pure: the `launcher` part of a page's context.
+/// The classic lobbies server the launcher's settings name (`host:port`).
+fn relay_server(state: &LauncherState) -> &str {
+    if state.relay_server.trim().is_empty() {
+        relay::DEFAULT_SERVER
+    } else {
+        state.relay_server.trim()
+    }
+}
+
+/// Pure: `scheme://host:port` of an http(s) URL (the port written out, the host in lower
+/// case); none for anything else.
+pub fn origin(url: &str) -> Option<String> {
+    let u = url::Url::parse(url.trim()).ok()?;
+    if !matches!(u.scheme(), "http" | "https") {
+        return None;
+    }
+    Some(format!(
+        "{}://{}:{}",
+        u.scheme(),
+        u.host_str()?.to_ascii_lowercase(),
+        u.port_or_known_default()?
+    ))
+}
+
+/// Pure: whether `url` goes to the launcher's classic lobbies server (`http://host:port`),
+/// the only place the player's account there is sent to.
+pub fn to_relay(state: &LauncherState, url: &str) -> bool {
+    origin(url).is_some_and(|o| o == format!("http://{}", relay_server(state).to_ascii_lowercase()))
+}
+
+/// Pure: `ctx` with the player's classic lobbies password in `launcher.relay.password`,
+/// for what goes to that server only ([`to_relay`]); a page's context never has it.
+pub fn with_relay_password(ctx: &Value, state: &LauncherState) -> Value {
+    let mut c = ctx.clone();
+    let password = state
+        .relay_account
+        .as_ref()
+        .map(|a| a.password.clone())
+        .unwrap_or_default();
+    plugin_page::set_path(&mut c, "launcher.relay.password", Value::String(password));
+    c
+}
+
+/// Pure: `ctx` with only what the player and the launcher put there (`settings`,
+/// `launcher`): what a request's server may come from.
+pub fn trusted_context(ctx: &Value) -> Value {
+    json!({
+        "settings": ctx.get("settings").cloned().unwrap_or_else(|| json!({})),
+        "launcher": ctx.get("launcher").cloned().unwrap_or_else(|| json!({})),
+    })
+}
+
+/// Pure: the URL a request's template `url` is filled in as, or why it isn't sent: it must
+/// be http(s), and its server must come from the plugin's description, its settings or the
+/// launcher, never from what a server answered or the page holds (`data.`, `page.`,
+/// `item`): a server can't send the plugin's requests elsewhere.
+pub fn request_url(url: &str, ctx: &Value) -> std::result::Result<String, String> {
+    let full = plugin_page::render(url, ctx);
+    let Some(to) = origin(&full) else {
+        return Err(format!("{full:?} isn't an http:// or https:// address."));
+    };
+    let trusted = origin(&plugin_page::render(url, &trusted_context(ctx)));
+    if trusted.as_deref() != Some(to.as_str()) {
+        return Err(format!(
+            "The plugin's request to {to} wasn't sent: its server came from an answer or the page, not from its settings."
+        ));
+    }
+    Ok(full)
+}
+
+/// Pure: the `launcher` part of a page's context. The player's passwords aren't in it
+/// ([`with_relay_password`]).
 pub fn launcher_context(state: &LauncherState) -> Value {
     let account = state.relay_account.clone().unwrap_or_default();
     let builds: Vec<Value> = EVENT_BUILDS
@@ -175,9 +336,8 @@ pub fn launcher_context(state: &LauncherState) -> Value {
     let server = state.game_server.clone().unwrap_or_default();
     json!({
         "relay": {
-            "server": if state.relay_server.trim().is_empty() { relay::DEFAULT_SERVER } else { state.relay_server.trim() },
+            "server": relay_server(state),
             "name": account.name,
-            "password": account.password,
         },
         "server": {
             "address": server.server.address,
@@ -441,6 +601,7 @@ pub fn unpack(root: &Path, e: &PluginEntry, zip: &Path, cancel: &AtomicBool) -> 
     let note = InstalledNote {
         version: e.version.clone(),
         sha256: e.sha256.clone(),
+        files: own_files(&staged, &page),
     };
     std::fs::write(staged.join(INSTALLED), serde_json::to_string(&note)?)?;
     if dest.exists() {
@@ -806,6 +967,10 @@ mod tests {
         );
         assert_eq!(c["relay"]["name"], "Alice");
         assert_eq!(c["relay"]["server"], relay::DEFAULT_SERVER);
+        // The password is never in a page's context: only what goes to that server has it.
+        assert!(c["relay"].get("password").is_none(), "{c}");
+        let full = with_relay_password(&json!({"launcher": c}), &s);
+        assert_eq!(full["launcher"]["relay"]["password"], "pw");
         assert_eq!(
             c["event_builds"],
             json!([{"id": "halloween", "version": "pc-halloween-2018", "name": "Halloween 2018"}])
@@ -835,6 +1000,129 @@ mod tests {
             "{:?}",
             all.iter().map(|p| &p.warnings).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn origins_and_the_relay_server() {
+        assert_eq!(
+            origin("http://Example.com/x").as_deref(),
+            Some("http://example.com:80")
+        );
+        assert_eq!(
+            origin("https://a.b:8443/").as_deref(),
+            Some("https://a.b:8443")
+        );
+        assert_eq!(origin("ftp://a.b/"), None);
+        assert_eq!(origin("not a url"), None);
+        let s = LauncherState::default();
+        assert!(to_relay(
+            &s,
+            &format!("http://{}/api/matches", relay::DEFAULT_SERVER)
+        ));
+        assert!(!to_relay(
+            &s,
+            &format!("https://{}/api/matches", relay::DEFAULT_SERVER)
+        ));
+        assert!(!to_relay(&s, "http://evil.example:6800/api/matches"));
+        let s = LauncherState {
+            relay_server: " other.example:7000 ".into(),
+            ..Default::default()
+        };
+        assert!(to_relay(&s, "http://OTHER.example:7000/x"));
+        assert!(!to_relay(
+            &s,
+            &format!("http://{}/x", relay::DEFAULT_SERVER)
+        ));
+    }
+
+    #[test]
+    fn a_request_goes_only_where_settings_and_the_launcher_say() {
+        let c = json!({
+            "settings": {"server": "", "api": "https://api.example"},
+            "launcher": {"relay": {"server": "relay.example:6800"}},
+            "page": {"to": "evil.example", "build": "halloween"},
+            "data": {"next": {"url": "https://evil.example/steal"}},
+            "item": {"id": "42", "host": "evil.example"},
+        });
+        // Event lobbies' requests: the server from settings or the launcher; the rest of
+        // the URL may come from anywhere.
+        assert_eq!(
+            request_url("http://{settings.server|launcher.relay.server}/api/servers/regions?build={page.build}", &c).unwrap(),
+            "http://relay.example:6800/api/servers/regions?build=halloween"
+        );
+        assert_eq!(
+            request_url("{settings.api}/join/{item.id}", &c).unwrap(),
+            "https://api.example/join/42"
+        );
+        // A server named by an answer, the page or a row isn't sent to.
+        for bad in [
+            "{data.next.url}",
+            "http://{page.to}/x",
+            "http://{item.host}/x",
+            "http://{page.to|settings.server}/x",
+            "https://api.example@{item.host}/x",
+        ] {
+            assert!(request_url(bad, &c).is_err(), "{bad}");
+        }
+        // Not http(s).
+        assert!(request_url("file:///etc/passwd", &c).is_err());
+    }
+
+    /// Every plugin the docs ship still sends its requests (with its settings empty).
+    #[test]
+    fn the_shipped_plugins_requests_are_allowed() {
+        let state = LauncherState::default();
+        for name in ["event-lobbies", "controllers", "game-server", "server-host"] {
+            let path = format!(
+                "{}/docs/plugins/{name}/plugin.json",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let (page, _) = read_description(&std::fs::read_to_string(&path).unwrap());
+            let page = page.unwrap();
+            let c = json!({
+                "settings": {}, "page": {"build": "halloween"},
+                "data": {}, "launcher": launcher_context(&state),
+            });
+            let requests = page.data.iter().map(|s| &s.request).chain(
+                page.actions.values().flatten().filter_map(|s| match s {
+                    plugin_page::Step::Request { request, .. } => Some(request),
+                    _ => None,
+                }),
+            );
+            for r in requests {
+                let url =
+                    request_url(&r.url, &c).unwrap_or_else(|e| panic!("{name}: {}: {e}", r.url));
+                // Event lobbies' account goes to the classic lobbies server only.
+                assert!(to_relay(&state, &url), "{name}: {url}");
+            }
+        }
+    }
+
+    #[test]
+    fn trust_follows_the_files_as_installed() {
+        let root = tempfile::tempdir().unwrap();
+        let no = AtomicBool::new(false);
+        let z = zip_with(&[("plugin.json", DESC), ("app.txt", "one")]);
+        unpack(root.path(), &entry("event-lobbies", "0.1.0"), z.path(), &no).unwrap();
+        let p = &installed_in(root.path())[0];
+        assert_eq!(p.trust, Trust::Catalog);
+        // The player's settings change: still as installed.
+        write_settings(p, &[("name".into(), "Alice".into())]).unwrap();
+        assert_eq!(installed_in(root.path())[0].trust, Trust::Catalog);
+        // Its own files change: not any more.
+        std::fs::write(p.dir.join("app.txt"), "two").unwrap();
+        assert_eq!(installed_in(root.path())[0].trust, Trust::Changed);
+        assert!(!Trust::Changed.may_keep_echoxr() || cfg!(debug_assertions));
+        // A launcher before 0.12.4 noted no files: the first read notes them.
+        let dir = root.path().join("event-lobbies");
+        std::fs::write(dir.join(INSTALLED), r#"{"version": "0.1.0", "sha256": ""}"#).unwrap();
+        assert_eq!(installed_in(root.path())[0].trust, Trust::Catalog);
+        assert!(!note_in(&dir).unwrap().files.is_empty());
+        std::fs::write(dir.join("app.txt"), "three").unwrap();
+        assert_eq!(installed_in(root.path())[0].trust, Trust::Changed);
+        // By hand: no note.
+        std::fs::remove_file(dir.join(INSTALLED)).unwrap();
+        assert_eq!(installed_in(root.path())[0].trust, Trust::Hand);
     }
 
     #[test]

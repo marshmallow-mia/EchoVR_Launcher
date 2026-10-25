@@ -37,6 +37,8 @@ pub const SLOT: &str = "BugSplat64.dll";
 const STOCK_SLOT_SHA256: &str = "618e34d3bfde69846c0202d42951366bff5e03cd2885b6825f55e09fb2cf160b";
 /// The launcher's choices, in the game's `_local` beside `config.yaml`.
 pub const CHOICES: &str = "launcher-mods.json";
+/// The plugins the last update placed, by their checksums (in `_local`, [`note_shipped`]).
+pub const SHIPPED_NOTE: &str = "launcher-shipped.json";
 const PLUGINS: &str = "plugins";
 /// Where plugins log (beside the exe), each in a folder of its own.
 const PLUGIN_LOGS: &str = "plugin_logs";
@@ -764,6 +766,74 @@ pub fn choices_path(v: &InstalledVersion) -> PathBuf {
     nevr::local_dir(v).join(CHOICES)
 }
 
+/// Notes the plugins in update `adds` (manifest paths `plugins/<file>`, relative to `bin`)
+/// with their checksums, in the version's `_local` (beside `bin`, its `bin/<win10|win7>`): a
+/// plugin the update shipped is verified by its checksum from then on, not its name.
+pub fn note_shipped<'a>(bin: &Path, adds: impl Iterator<Item = &'a crate::core::manifest::Entry>) {
+    let Some(root) = bin.parent().and_then(Path::parent) else {
+        return;
+    };
+    let shipped: std::collections::BTreeMap<String, String> = adds
+        .filter_map(|e| {
+            let file = e.path.strip_prefix("plugins/")?;
+            (!file.contains('/') && file.to_ascii_lowercase().ends_with(".dll")).then(|| {
+                Some((
+                    file.to_ascii_lowercase(),
+                    e.sha256.clone()?.to_ascii_lowercase(),
+                ))
+            })?
+        })
+        .collect();
+    let dir = root.join("_local");
+    let _ = std::fs::create_dir_all(&dir);
+    match serde_json::to_string_pretty(&shipped) {
+        Ok(t) => {
+            if let Err(e) = std::fs::write(dir.join(SHIPPED_NOTE), t) {
+                tracing::warn!("couldn't note the update's plugins: {e:#}");
+            }
+        }
+        Err(e) => tracing::warn!("couldn't note the update's plugins: {e:#}"),
+    }
+}
+
+/// Forgets what [`note_shipped`] noted for `bin` (going back put other files there): its
+/// plugins are verified by their names again until the next update.
+pub fn forget_shipped(bin: &Path) {
+    if let Some(root) = bin.parent().and_then(Path::parent) {
+        let _ = std::fs::remove_file(root.join("_local").join(SHIPPED_NOTE));
+    }
+}
+
+/// The plugins the last update placed in `v` (lower-case file → sha256), if it noted them
+/// (versions updated before 0.12.4 didn't).
+fn shipped_note(v: &InstalledVersion) -> Option<std::collections::BTreeMap<String, String>> {
+    let t = std::fs::read_to_string(nevr::local_dir(v).join(SHIPPED_NOTE)).ok()?;
+    serde_json::from_str(&t).ok()
+}
+
+/// Pure: whether plugin `file` that nobody added (with checksum `have`) is still what
+/// verified it: the checksum the update noted for it, else the catalogue's. EchoXR Hands'
+/// is the launcher's own copy (put in and taken out before every start).
+fn shipped_still_verified(
+    file: &str,
+    have: &str,
+    noted: Option<&std::collections::BTreeMap<String, String>>,
+    catalog: &ModCatalog,
+) -> bool {
+    if file.eq_ignore_ascii_case(crate::core::echoxr_hands::PLUGIN) {
+        return true;
+    }
+    let Some(noted) = noted else {
+        // Nothing noted (an update before 0.12.4): by its name, as before.
+        return true;
+    };
+    noted
+        .get(&file.to_ascii_lowercase())
+        .into_iter()
+        .chain(catalog.entry_for(file).and_then(|m| m.sha256.as_ref()))
+        .any(|want| want.eq_ignore_ascii_case(have))
+}
+
 /// What the launcher put into `v` for mods, to take out when it lets go of `v`: the
 /// plugins it added (that are still its own), its choices file, and the `config.yaml` it
 /// writes for nEVR.
@@ -778,6 +848,7 @@ pub fn launcher_files(v: &InstalledVersion) -> Vec<PathBuf> {
     for pack in overlay.packs() {
         out.extend(pack.settings.iter().map(|s| plugins_dir(v).join(s)));
     }
+    out.push(nevr::local_dir(v).join(SHIPPED_NOTE));
     out.push(choices_path(v));
     out.push(nevr::local_dir(v).join(nevr::CONFIG));
     out
@@ -1326,6 +1397,7 @@ fn config_lines(
     let mods_on = overlay.enabled();
     let added = overlay.added();
     let all_packs = overlay.packs();
+    let noted = shipped_note(v);
     let mut lines = Vec::new();
     for p in plugins(overlay, &plugin_files(v), None, catalog) {
         if !p.present || !(mods_on || p.required) {
@@ -1351,6 +1423,16 @@ fn config_lines(
                 p.file
             );
             continue;
+        }
+        if p.source == Source::Shipped && !local {
+            let have = download::sha256_file(&plugins_dir(v).join(&p.file)).unwrap_or_default();
+            if !shipped_still_verified(&p.file, &have, noted.as_ref(), catalog) {
+                tracing::warn!(
+                    "{}: not the file the update or the catalogue has (changed by hand?), and local plugins are off: left out",
+                    p.file
+                );
+                continue;
+            }
         }
         let pinned = added
             .iter()
@@ -2301,6 +2383,72 @@ impl ModCatalog {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn a_shipped_plugin_is_verified_by_its_checksum_once_noted() {
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        let catalog = ModCatalog::default();
+        let noted: std::collections::BTreeMap<String, String> =
+            [("nvrgpurating.dll".to_string(), a.clone())].into();
+        assert!(shipped_still_verified(
+            "NvrGpuRating.dll",
+            &a,
+            Some(&noted),
+            &catalog
+        ));
+        assert!(!shipped_still_verified(
+            "NvrGpuRating.dll",
+            &b,
+            Some(&noted),
+            &catalog
+        ));
+        // Not noted, not in the catalogue: no.
+        assert!(!shipped_still_verified(
+            "Other.dll",
+            &a,
+            Some(&noted),
+            &catalog
+        ));
+        // Nothing noted (an older update): by its name, as before.
+        assert!(shipped_still_verified(
+            "NvrGpuRating.dll",
+            &b,
+            None,
+            &catalog
+        ));
+        // EchoXR Hands' copy is the launcher's own.
+        assert!(shipped_still_verified(
+            crate::core::echoxr_hands::PLUGIN,
+            &b,
+            Some(&noted),
+            &catalog
+        ));
+    }
+
+    #[test]
+    fn an_update_notes_its_plugins() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin/win10");
+        std::fs::create_dir_all(&bin).unwrap();
+        let e = |path: &str, sha: &str| crate::core::manifest::Entry {
+            action: crate::core::manifest::Action::Add,
+            path: path.into(),
+            sha256: Some(sha.into()),
+            base: None,
+        };
+        let adds = [
+            e("plugins/NvrGpuRating.dll", &"A".repeat(64)),
+            e("echovr.exe", &"c".repeat(64)),
+            e("plugins/sub/x.dll", &"d".repeat(64)),
+        ];
+        note_shipped(&bin, adds.iter());
+        let t = std::fs::read_to_string(root.path().join("_local").join(SHIPPED_NOTE)).unwrap();
+        let m: std::collections::BTreeMap<String, String> = serde_json::from_str(&t).unwrap();
+        assert_eq!(m.len(), 1);
+        assert_eq!(m["nvrgpurating.dll"], "a".repeat(64));
+        forget_shipped(&bin);
+        assert!(!root.path().join("_local").join(SHIPPED_NOTE).exists());
+    }
 
     #[test]
     fn dev_folder_mods_go_over_published_ones() {

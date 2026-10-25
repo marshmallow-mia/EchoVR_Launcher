@@ -4671,6 +4671,19 @@ fn browser_dialog(id: &str) -> (&'static str, String) {
 
 /// A centred card for pages that are not built yet.
 fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
+    let (x, y, w, h) = empty_panel(kit, icon, title, text);
+    let cw = kit.chip_width("Coming soon");
+    kit.chip(
+        x + (w - cw) / 2.0,
+        y + h - dz(62.0),
+        "Coming soon",
+        design::BLUE,
+    );
+}
+
+/// [`empty_state`]'s panel with its icon, title and text, without the chip: its place
+/// (x, y, w, h), for what goes at its foot.
+fn empty_panel(kit: &mut Kit, icon: Icon, title: &str, text: &str) -> (f32, f32, f32, f32) {
     let (w, h) = (dz(780.0), dz(336.0));
     let x = X0 + (CW + kit.ex - w) / 2.0;
     let y = dz(300.0) + kit.ey / 2.0;
@@ -4694,13 +4707,7 @@ fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
         let gx = x + (w - g.size().x) / 2.0;
         ty += kit.put(gx, ty, g).height();
     }
-    let cw = kit.chip_width("Coming soon");
-    kit.chip(
-        x + (w - cw) / 2.0,
-        y + h - dz(62.0),
-        "Coming soon",
-        design::BLUE,
-    );
+    (x, y, w, h)
 }
 
 /// Two made-up versions for UI snapshots.

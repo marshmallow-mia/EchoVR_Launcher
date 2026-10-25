@@ -27,8 +27,9 @@ pub fn is_echoxr(s: &Settings) -> bool {
 
 /// The settings text of the installed plugin that keeps EchoXR's, found without logging
 /// what descriptions get wrong (the plugins page does that): for preparing a version and
-/// its fingerprint (file I/O).
-pub fn current() -> Option<String> {
+/// its fingerprint (file I/O). Only a plugin as the launcher installed it from a catalogue
+/// may ([`plugins::Trust::may_keep_echoxr`]), and none the player turned off (`off`).
+pub fn current(off: &std::collections::BTreeSet<String>) -> Option<String> {
     let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(plugins::dir())
         .into_iter()
         .flatten()
@@ -38,7 +39,9 @@ pub fn current() -> Option<String> {
             let text = std::fs::read_to_string(e.path().join(plugins::DESCRIPTION)).ok()?;
             let page = plugins::read_description(&text).0?;
             (e.file_name().to_str() == Some(page.id.as_str())
-                && page.settings.as_ref().is_some_and(is_echoxr))
+                && !off.contains(&page.id)
+                && page.settings.as_ref().is_some_and(is_echoxr)
+                && plugins::trust_in(&e.path(), &page).may_keep_echoxr())
             .then(|| (page.name.to_lowercase(), e.path()))
         })
         .collect();

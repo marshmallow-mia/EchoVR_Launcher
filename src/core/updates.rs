@@ -716,6 +716,7 @@ mod tests {
             dir: PathBuf::new(),
             from_catalog: from_catalog.map(String::from),
             warnings: Vec::new(),
+            trust: Default::default(),
         }
     }
 

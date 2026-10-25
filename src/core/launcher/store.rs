@@ -249,6 +249,8 @@ pub struct LauncherState {
     pub rail_order: Vec<String>,
     /// Plugins the player took off the rail (ids): their pages open from the Plugins page.
     pub rail_unpinned: std::collections::BTreeSet<String>,
+    /// Plugins the player turned off (ids): no tab, nothing fetched or kept for them.
+    pub plugins_off: std::collections::BTreeSet<String>,
     /// How far the EchoVRCE site is zoomed, in percent (100 = its own size).
     pub vrce_zoom: u16,
     /// Updates found are announced on the desktop too.
@@ -382,6 +384,7 @@ impl Default for LauncherState {
             rail_open: true,
             rail_order: Vec::new(),
             rail_unpinned: Default::default(),
+            plugins_off: Default::default(),
             vrce_zoom: 100,
             desktop_notifications: true,
             tray: true,

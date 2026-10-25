@@ -31,6 +31,7 @@ The launcher never edits the community update's files. It writes:
 | `_local/config.yaml` (the game's `_local`) | nEVR's plugin list, written before every start from the plugins in `bin/win10/plugins` and the launcher's choices; with mods off only the required plugins (NvrAssetPatches with `required_only`). When a pack that is on has a server of its own, also that server and the account there ([below](#a-packs-own-server)) |
 | `_local/launcher-mods.json` | the choices: "Start without mods" (`enabled`), a plugin on or off and its arguments (`overrides`), the plugins it added (`add`, each with its `sha256`) |
 | `_local/.credentials.json` | the game's own EchoVRCE sign-in (see below); `.credentials.json.echovrce` while a start plays on a pack's own server |
+| `_local/launcher-shipped.json` | the plugins the last community update placed in `plugins/`, by their checksums (0.12.4 on; going back to the update before forgets it) |
 | `bin/win10/asset_patches/manifest.local.json` | every asset patch, or one of them, on or off |
 | `bin/win10/plugins/<file>.dll` | only the plugins it installed (from the catalogue) or added (from disk) |
 
@@ -44,8 +45,12 @@ leaves it out of `config.yaml` when the file changed.
 
 **Verified plugins only.** A plugin is verified when it comes from the mods catalogue, or
 its file is one the catalogue names (the community update's), or it is EchoXR Hands'
-(pinned by checksum). Anything else (a DLL added from disk, or one put into `plugins/` by
-hand) is listed as not loaded and left out of `config.yaml`, and Add DLL is off, until the
+(the launcher's own copy, put in before every start). Since 0.12.4 a plugin the update
+ships is checked by its checksum too: once `launcher-shipped.json` notes the update's
+plugins, a file that is neither what the update placed nor the catalogue's version (one
+replaced by hand) is left out like a DLL from disk; a version updated before keeps going by
+the file's name until its next update. Anything else (a DLL added from disk, or one put into
+`plugins/` by hand) is listed as not loaded and left out of `config.yaml`, and Add DLL is off, until the
 version's loader config turns local plugins on: a top-level `x-local-plugins: true` in
 `_local/config.yaml`, which nEVR ignores (it leaves `x-` keys to others) and the launcher
 keeps when it writes the file. Writing a plugin and loading it:
