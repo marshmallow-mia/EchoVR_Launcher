@@ -288,7 +288,7 @@ fn run(
         "Starting...",
         move |cancel, on| match f(&v, cancel, on) {
             Ok(notice) => JobResult::ModsChanged(notice),
-            Err(e) => versions::job_err(e, "Mods"),
+            Err(e) => versions::job_err(e, "Couldn't change the mods"),
         },
     );
 }
@@ -323,7 +323,7 @@ fn add_from_disk(d: &mut Dashboard, ctx: &egui::Context) {
         return;
     };
     let Some(src) = rfd::FileDialog::new()
-        .add_filter("Plugins", &["dll"])
+        .add_filter("Mods (DLL)", &["dll"])
         .pick_file()
     else {
         return;
@@ -480,17 +480,17 @@ fn loader_card(
     kit.caps_text(x, text_y, w, &text, size, design::BODY, dz(8.0));
     match &view.loader {
         Loader::Nevr { .. } | Loader::EchoRelay => {
-            let mut off = !view.enabled;
+            let mut on = view.enabled;
             if kit.check(
                 "mods-off",
-                &mut off,
-                "Start without mods",
+                &mut on,
+                "Mods on",
                 x,
                 by + dz(5.0),
                 true,
-                "Echo VR starts with only the plugins it needs (the required ones, with their required patches). Turn it off again to have your mods back.",
+                "Untick to start Echo VR with only the mods it needs (the required ones, with their required patches). Tick again to have your mods back.",
             ) {
-                write(d, v, |v| mods::set_enabled(v, !off), |m| m.enabled = !off);
+                write(d, v, |v| mods::set_enabled(v, on), |m| m.enabled = on);
             }
         }
         // The community update brings it: nothing to do here.
@@ -504,7 +504,7 @@ fn loader_card(
     let (label, dir, tip) = (
         "Mods folder",
         mods::plugins_dir(v),
-        "Open the game's plugins folder, where the mods are",
+        "Open the folder the mods are in",
     );
     let bw = kit
         .button_width(label, Some(Icon::Folder), BTN_H)
@@ -566,7 +566,7 @@ fn loader_card(
         }
     }
     if pack_waits {
-        let label = "Channel…";
+        let label = "Get Beta's mod loader";
         let bw = kit.button_width(label, None, BTN_H).max(dz(150.0));
         right -= bw;
         if kit
@@ -580,11 +580,11 @@ fn loader_card(
                 None,
                 label,
                 true,
-                "Advanced settings: the Beta channel brings the nEVR that loads plugins early (then update this version)",
+                "Switches the launcher to the Beta channel: its nEVR loads these mods. Asks first",
             )
             .clicked
         {
-            d.overlay = Some(setup::Overlay::Advanced);
+            super::settings::ask_channel(d, crate::core::launcher::update_check::Channel::Beta);
         }
     }
 }
@@ -614,9 +614,9 @@ fn logs_menu(
     let nevr_log = nevr::log_dir();
     let mut items = vec![
         MenuItem::row(
-            "Plugin logs folder",
+            "Mod logs folder",
             &format!(
-                "{}: where each plugin keeps its own log",
+                "{}: where each mod keeps its own log",
                 plugin_logs.display()
             ),
         ),
@@ -762,11 +762,11 @@ fn loader_text(view: &ModView) -> String {
             pack.unwrap_or_default()
         ),
         Loader::Nevr { .. } if pack.is_some() && !view.loads_early => format!(
-            "{} needs a nEVR that loads plugins before the game reads its data (the Beta channel's, for now), so it stays off with this one.",
+            "{} needs a nEVR that loads mods before the game reads its data (the Beta channel's, for now), so it stays off with this one.",
             pack.unwrap_or_default()
         ),
         Loader::Nevr { .. } if !view.enabled => {
-            "Mods are off: Echo VR starts with only the required plugins.".into()
+            "Mods are off: Echo VR starts with only the required mods.".into()
         }
         Loader::Nevr { version } => {
             let about = format!("Discord sign-in, friends and parties in the game, and the mods below. Build {version}.");
@@ -775,10 +775,10 @@ fn loader_text(view: &ModView) -> String {
                 None => format!("It hasn't started yet: what it loads shows here after you PLAY. {about}"),
             }
         }
-        Loader::None => "Echo VR runs without plugins for now. nEVR runtime (Discord sign-in, friends and parties in the game, and plugins) comes with the community update, the next time this version updates.".into(),
-        Loader::EchoRelay if !view.enabled => "Echo VR plays on an EchoRelay server: EchoLoader stands in for nEVR, with EchoRelay's patch. Mods are off: it loads only the required plugins. Back to EchoVRCE in the Game server plugin puts nEVR back.".into(),
+        Loader::None => "Echo VR runs without mods for now. nEVR runtime (Discord sign-in, friends and parties in the game, and mods) comes with the community update, the next time this version updates.".into(),
+        Loader::EchoRelay if !view.enabled => "Echo VR plays on an EchoRelay server: EchoLoader stands in for nEVR, with EchoRelay's patch. Mods are off: it loads only the required mods. Back to EchoVRCE in the Game server plugin puts nEVR back.".into(),
         Loader::EchoRelay => "Echo VR plays on an EchoRelay server: EchoLoader stands in for nEVR, with EchoRelay's patch and the mods that are on here. Back to EchoVRCE in the Game server plugin puts nEVR back.".into(),
-        Loader::Unknown => "BugSplat64.dll here is neither the game's nor nEVR runtime. Verify on the Install page puts the right one back.".into(),
+        Loader::Unknown => "BugSplat64.dll here is neither the game's nor nEVR runtime. Repair game files puts the right one back.".into(),
     }
 }
 
@@ -834,7 +834,7 @@ fn plugins_card(
     let tip = match (editable, busy, local) {
         (false, ..) => "Needs the mod loader (nEVR)",
         (true, Some(why), _) => why,
-        (true, None, false) => "Local plugins are off: x-local-plugins: true in this version's _local/config.yaml turns them on (see docs/plugins/local-plugins.md)",
+        (true, None, false) => "Mods from your computer are off for this version (for mod makers: x-local-plugins: true in its _local/config.yaml turns them on)",
         (true, None, true) => "Add a mod's DLL from your computer",
     };
     if kit
@@ -855,7 +855,7 @@ fn plugins_card(
         d.dialogs.confirm(
             ADD_KEY,
             "Add a mod",
-            "A mod's DLL is a program that runs inside Echo VR with the same rights as the game and you: add only DLLs from people you trust.\n\nIt is copied into the game's plugins folder and loads at the next start.",
+            "A mod's DLL is a program that runs inside Echo VR with the same rights as the game and you: add only DLLs from people you trust.\n\nIt is copied into the game's mods folder and loads at the next start.",
             DlgIcon::Warning,
         );
     }
@@ -868,7 +868,7 @@ fn plugins_card(
         let text = if view.local_plugins {
             "No mods here. The community update brings the asset patches; More mods has more, and Add DLL takes one from your computer."
         } else {
-            "No mods here. The community update brings the asset patches, and More mods has more. Add DLL (one from your computer) needs local plugins on: see docs/plugins/local-plugins.md."
+            "No mods here. The community update brings the asset patches, and More mods has more."
         };
         kit.caps_text(x, y, w, text, 15.5, design::BODY, 0.0);
         return;
@@ -878,7 +878,7 @@ fn plugins_card(
     let locked_why = if !editable {
         Some("Needs the mod loader (nEVR) in this version")
     } else if !view.enabled {
-        Some("Mods are off: untick Start without mods first")
+        Some("Mods are off: tick Mods on first")
     } else {
         None
     };
@@ -1077,7 +1077,7 @@ struct Look {
 }
 
 /// Why a plugin that isn't verified doesn't load, and how to change that.
-const HELD_TIP: &str = "Not from the community update or the catalogue: it loads only with local plugins on (x-local-plugins: true in this version's _local/config.yaml, see docs/plugins/local-plugins.md)";
+const HELD_TIP: &str = "Not from the community update or the catalogue: it loads only when mods from your computer are on (for mod makers: x-local-plugins: true in this version's _local/config.yaml)";
 
 /// The VR parts above the plugins: not nEVR's, the launcher puts them in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1225,13 +1225,16 @@ fn plugin_row(
         file: p.file.clone(),
     };
     if let Some(w) = super::goback::way_of(d, &part).cloned() {
-        let tip = format!("Put back {} (it loads at the next start)", w.before);
+        let tip = format!(
+            "Undo its last update: back to {} (it loads at the next start)",
+            w.before
+        );
         if a.button(
             k,
             &key("back"),
             Tone::Dark,
             None,
-            "Go back",
+            "Undo update",
             editable && busy.is_none(),
             busy.unwrap_or(&tip),
         ) {
@@ -1254,7 +1257,7 @@ fn plugin_row(
                 Some(pack) => (
                     "Remove mod",
                     format!(
-                        "Delete {pack} from {}? Its plugins and its game data go with it.",
+                        "Delete {pack} from {}? Its mods and its game data go with it.",
                         v.name
                     ),
                 ),
@@ -1288,7 +1291,7 @@ fn plugin_row(
             .is_some_and(|e| e.file.eq_ignore_ascii_case(&p.file));
         let tone = if open { Tone::Blue } else { Tone::Dark };
         let tip = if editable {
-            "The arguments nEVR hands this plugin"
+            "The arguments nEVR hands this mod"
         } else {
             "Needs the mod loader (nEVR)"
         };
@@ -1529,10 +1532,9 @@ fn plugin_detail(p: &Plugin, author: Option<&str>) -> String {
 /// A VR part's row, as a plugin's: its name with tags, what it does under it. It is
 /// listed while it is in use: on Linux EchoXR is how VR plays (always, required); on
 /// Windows SteamVR plays through it instead of Revive (and Virtual Desktop through SteamVR
-/// or its own OpenXR runtime), and Remove goes back to Revive and VD's Oculus mode (it is in
-/// More mods again).
+/// or its own OpenXR runtime), which Settings chooses (its Settings button goes there).
 fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f32, w: f32) {
-    use crate::core::launcher::store::{Runtime, SteamVrVia, VdVia};
+    use crate::core::launcher::store::Runtime;
     let linux = cfg!(target_os = "linux") && !d.demo;
     let name = "EchoXR";
     let in_use = d.state.profile.runtime == Runtime::Revive || d.state.profile.through_echoxr();
@@ -1552,34 +1554,18 @@ fn echoxr_row(d: &mut Dashboard, k: &mut Kit, v: &InstalledVersion, x: f32, y: f
     let mut a = Actions::new(x, y, w);
     if !linux {
         let tip = why.as_deref().unwrap_or(
-            "SteamVR plays through Revive again, Virtual Desktop in its Oculus mode (hand tracking, which needs EchoXR, goes too)",
+            "Revive or EchoXR: chosen in Settings, under How you play (SteamVR's Through)",
         );
-        if a.button(k, &key("remove"), Tone::Dark, None, "Remove", !busy, tip) {
-            d.state.profile.steamvr_via = SteamVrVia::Revive;
-            d.state.profile.vd_via = VdVia::Meta;
-            let hands_off = d.state.echoxr_hands;
-            let mut failed = None;
-            if hands_off {
-                d.state.echoxr_hands = false;
-                if let Err(e) = crate::core::echoxr_hands::remove_from(&v.bin_dir()) {
-                    tracing::warn!("hand tracking: {e:#}");
-                    failed = Some(format!("{e:#}"));
-                }
-                d.mods.changed();
-            }
-            d.save();
-            match failed {
-                Some(e) => d.dialogs.error(
-                    "SteamVR plays through Revive now",
-                    &format!("Hand tracking is off, but its plugin couldn't be taken out of the game's folder:\n\n{e}"),
-                    Default::default(),
-                ),
-                None => d.notify(if hands_off {
-                    "SteamVR plays through Revive now, without hand tracking (it needs EchoXR)"
-                } else {
-                    "SteamVR plays through Revive now"
-                }),
-            }
+        if a.button(
+            k,
+            &key("settings"),
+            Tone::Dark,
+            Some(Icon::Gear),
+            "Settings",
+            !busy,
+            tip,
+        ) {
+            d.page = Page::Settings;
         }
     }
     // No chip: PLAY prepares it whenever it isn't ready, nothing to look at.
@@ -1650,7 +1636,7 @@ fn hands_row(
     let key = |what: &str| format!("mods-vr-{what}-hands");
     let mut a = Actions::new(x, y, w);
     let installed = d.demo || hands::installed_in(&bin);
-    let tip_remove = busy.unwrap_or("Take its plugin out of the game's plugins folder");
+    let tip_remove = busy.unwrap_or("Take its DLL out of the game's folder");
     if a.button(
         k,
         &key("remove"),
@@ -1972,7 +1958,7 @@ fn options_rows(
                 if let Some((key, _)) = env {
                     d.dialogs.error(
                         "Couldn't save the arguments",
-                        &format!("{key}: nEVR reads ${{…}} as an environment variable, and when that isn't set it loads no plugins at all. Leave it out."),
+                        &format!("{key}: nEVR reads ${{…}} as an environment variable, and when that isn't set it loads no mods at all. Leave it out."),
                         Default::default(),
                     );
                     return;
@@ -1992,7 +1978,7 @@ fn options_rows(
                         }
                     },
                 );
-                d.notify("Saved: the mod gets its arguments at the next start");
+                d.notify_next_start("Saved: the mod gets its arguments at the next start");
             } else {
                 d.mods.editing = None;
             }
@@ -2021,10 +2007,18 @@ fn options_rows(
         Some(Icon::Refresh),
         label,
         typed != defaults,
-        "Every argument back to the mod's defaults",
+        "Every argument back to the mod's defaults (asks first)",
     )
     .clicked
     {
+        d.dialogs.confirm_danger(
+            ARGS_RESET_KEY,
+            "Reset the arguments?",
+            "Every argument of this mod goes back to its defaults. What you typed is lost.",
+            "Reset",
+        );
+    }
+    if d.dialogs.take(ARGS_RESET_KEY).is_some_and(|a| a.is_yes()) {
         let file = e.file.clone();
         d.mods.editing = None;
         write(
@@ -2037,7 +2031,7 @@ fn options_rows(
                 }
             },
         );
-        d.notify("Reset: the mod gets its default arguments at the next start");
+        d.notify_next_start("Reset: the mod gets its default arguments at the next start");
     }
 }
 
@@ -2051,6 +2045,8 @@ pub(super) struct SettingsSheet {
 }
 
 const ACTION_KEY: &str = "mods-settings-action";
+const RESET_ALL_KEY: &str = "mods-settings-reset";
+const ARGS_RESET_KEY: &str = "mods-args-reset";
 
 fn open_sheet(d: &mut Dashboard, file: &str) {
     d.overlay = Some(setup::Overlay::PluginSettings(Box::new(SettingsSheet {
@@ -2305,10 +2301,18 @@ pub(super) fn settings_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
         None,
         "Reset all",
         enabled && differs,
-        "Every setting back to its default",
+        "Every setting back to its default (asks first)",
     )
     .clicked
     {
+        d.dialogs.confirm_danger(
+            RESET_ALL_KEY,
+            "Reset every setting?",
+            "Every setting of this mod goes back to its default. What you changed is lost.",
+            "Reset all",
+        );
+    }
+    if d.dialogs.take(RESET_ALL_KEY).is_some_and(|a| a.is_yes()) {
         changes.extend(
             defaults
                 .into_iter()
@@ -2369,8 +2373,6 @@ fn open_dir(d: &mut Dashboard, dir: &std::path::Path) {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Extra<'a> {
     Mod(&'a ModEntry),
-    /// EchoXR, on Windows while SteamVR plays through Revive.
-    EchoXr,
     /// EchoXR Hands, while it's off.
     Hands,
 }
@@ -2380,16 +2382,6 @@ impl Extra<'_> {
     fn info(&self) -> ModEntry {
         match self {
             Extra::Mod(m) => (*m).clone(),
-            Extra::EchoXr => ModEntry {
-                id: "echoxr".into(),
-                name: "EchoXR".into(),
-                summary: "SteamVR plays Echo VR through EchoXR's OpenXR layer instead of Revive: no injection, no administrator rights. Live build only.".into(),
-                author: crate::core::echoxr::AUTHORS.into(),
-                version: crate::core::echoxr::VERSION.into(),
-                homepage: "https://github.com/marshmallow-mia/EchoXR".into(),
-                capabilities: vec!["vr".into()],
-                ..Default::default()
-            },
             Extra::Hands => ModEntry {
                 id: "echoxr-hands".into(),
                 name: "EchoXR Hands".into(),
@@ -2413,9 +2405,6 @@ fn extras<'a>(
 ) -> Vec<Extra<'a>> {
     let mut out = Vec::new();
     if let Some(vr) = vr {
-        if !vr.echoxr {
-            out.push(Extra::EchoXr);
-        }
         if !vr.hands {
             out.push(Extra::Hands);
         }
@@ -2572,6 +2561,27 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, m: &ModEntr
     });
 }
 
+/// "Update now" on an undone update: the catalogue's version of mod `file` in installed
+/// version `id`. False when there's none to get (or its files are in use).
+pub(super) fn update_newest(d: &mut Dashboard, ctx: &egui::Context, id: &str, file: &str) -> bool {
+    let Some(v) = d.state.versions.iter().find(|v| v.id == id).cloned() else {
+        return false;
+    };
+    let Some(m) = d.mods.catalog.as_ref().and_then(|c| {
+        c.entry_for(file)
+            .or_else(|| c.pack_for(file))
+            .filter(|m| m.downloadable())
+            .cloned()
+    }) else {
+        return false;
+    };
+    if busy(d, &v).is_some() {
+        return false;
+    }
+    get(d, ctx, &v, &m);
+    true
+}
+
 /// Play's update button: every catalogue plugin of installed version `id` the update
 /// check found a newer version of, in one job. Nothing when there's none (or its files
 /// are in use).
@@ -2625,17 +2635,44 @@ pub(super) fn update_all(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     });
 }
 
+/// SteamVR (and Virtual Desktop) through Revive and Oculus mode again, not EchoXR: with
+/// hand tracking on, its DLL leaves `v`, the version PLAY starts (it needs EchoXR).
+pub(super) fn through_revive(d: &mut Dashboard, v: Option<&InstalledVersion>) {
+    use crate::core::launcher::store::{SteamVrVia, VdVia};
+    d.state.profile.steamvr_via = SteamVrVia::Revive;
+    d.state.profile.vd_via = VdVia::Meta;
+    let hands_off = d.state.echoxr_hands;
+    let mut failed = None;
+    if hands_off {
+        d.state.echoxr_hands = false;
+        if let Some(v) = v {
+            if let Err(e) = crate::core::echoxr_hands::remove_from(&v.bin_dir()) {
+                tracing::warn!("hand tracking: {e:#}");
+                failed = Some(format!("{e:#}"));
+            }
+        }
+        d.mods.changed();
+    }
+    d.save();
+    match failed {
+        Some(e) => d.dialogs.error(
+            "SteamVR plays through Revive now",
+            &format!("Hand tracking is off, but its DLL couldn't be taken out of the game's folder:\n\n{e}"),
+            Default::default(),
+        ),
+        None => d.notify(if hands_off {
+            "SteamVR plays through Revive now, without hand tracking (it needs EchoXR)"
+        } else {
+            "SteamVR plays through Revive now"
+        }),
+    }
+}
+
 /// GET on an additional plugin.
 fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Extra) {
     use crate::core::echoxr_hands as hands;
-    use crate::core::launcher::store::SteamVrVia;
     match e {
         Extra::Mod(m) => get(d, ctx, v, m),
-        Extra::EchoXr => {
-            d.state.profile.steamvr_via = SteamVrVia::EchoXr;
-            d.save();
-            d.notify("SteamVR plays through EchoXR now");
-        }
         Extra::Hands => {
             // On (and EchoXR with it) only once it is installed: a failed download leaves
             // it in More mods.
@@ -2651,7 +2688,7 @@ fn get_extra(d: &mut Dashboard, ctx: &egui::Context, v: &InstalledVersion, e: Ex
                     .and_then(|()| hands::install_into(&v.bin_dir()))
                 {
                     Ok(()) => JobResult::HandsInstalled,
-                    Err(e) => versions::job_err(e, "Mods"),
+                    Err(e) => versions::job_err(e, "Couldn't change the mods"),
                 },
             );
         }
@@ -2718,7 +2755,7 @@ fn entry(
     let mut right = x + w;
     let gettable = match e {
         Extra::Mod(m) => m.downloadable(),
-        Extra::EchoXr | Extra::Hands => true,
+        Extra::Hands => true,
     };
     if gettable {
         let label = "Get";
@@ -2726,14 +2763,11 @@ fn entry(
             .button_width(label, Some(Icon::Download), bh)
             .max(dz(110.0));
         right -= bw;
-        let vr_busy = d.busy_with(&[Res::Vr]);
         let why = match e {
-            Extra::EchoXr => vr_busy.as_deref(),
             _ if !editable => Some("Needs the mod loader (nEVR) in this version"),
             _ => busy,
         };
         let tip = why.unwrap_or(match e {
-            Extra::EchoXr => "SteamVR plays through EchoXR instead of Revive (PLAY prepares it)",
             Extra::Hands => "Download it into this version (it turns EchoXR on too)",
             Extra::Mod(_) => "Download it into this version (it loads at the next start)",
         });
@@ -3259,9 +3293,10 @@ mod tests {
         };
         // Combat Stats is here, the required, shipped ones come with the update.
         assert_eq!(ids(None), ["replay-recorder"]);
+        // EchoXR itself is chosen in Settings (SteamVR's "Through").
         assert_eq!(
             ids(Some(VrInstalled::default())),
-            ["echoxr", "echoxr-hands", "replay-recorder"]
+            ["echoxr-hands", "replay-recorder"]
         );
         let echoxr = VrInstalled {
             echoxr: true,

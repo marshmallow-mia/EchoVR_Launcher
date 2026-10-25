@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use super::notices::{Action, Notice};
 use super::{hero, panel, setup, Dashboard, Page};
 use crate::core::echovrce::game::{
     self, Found, Friend, FriendState, Invite, Lobby, Match, Mode, Region, Role, Summary, Ticket,
@@ -21,7 +22,7 @@ use crate::ui::design::{self, dz, Dr};
 use crate::ui::kit::Kit;
 use crate::ui::parts::Worker;
 use crate::ui::style::Icon;
-use crate::ui::widgets::{Tone, BTN_H};
+use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 
 const LIST_EVERY: Duration = Duration::from_secs(5);
 /// While Play shows RIGHT NOW: for the matches your friends are in.
@@ -32,6 +33,8 @@ const TICKETS_AWAY: Duration = Duration::from_secs(30);
 const FRIENDS_EVERY: Duration = Duration::from_secs(30);
 /// While the Friends page is shown: requests come and go.
 const FRIENDS_ON_PAGE: Duration = Duration::from_secs(5);
+/// On the other pages: for the rail's dot and a notice when someone asks.
+const FRIENDS_AWAY: Duration = Duration::from_secs(2 * 60);
 /// Whether or not the page is shown.
 const INVITES_EVERY: Duration = Duration::from_secs(15);
 /// Your match history (its tab, and Friends' PLAYED WITH).
@@ -192,23 +195,23 @@ fn due(at: Option<Instant>, every: Duration) -> bool {
 
 impl Servers {
     /// Every frame: takes in what arrived, and refreshes what is due (more while a page
-    /// shows it). Returns a notice for the status bar.
+    /// shows it). Returns the notices for the status bar.
     pub(super) fn tick(
         &mut self,
         ctx: &egui::Context,
         session: Option<(Tokens, Account)>,
         shown: Shown,
-    ) -> Option<String> {
+    ) -> Vec<Notice> {
         let visible = shown == Shown::Servers;
         let social = shown != Shown::Neither;
         if self.demo {
-            return None;
+            return Vec::new();
         }
         let Some((tokens, account)) = session else {
             if !self.account.is_empty() {
                 *self = Servers::default();
             }
-            return None;
+            return Vec::new();
         };
         if self.account != account.id {
             *self = Servers {
@@ -216,7 +219,7 @@ impl Servers {
                 ..Servers::default()
             };
         }
-        let mut notice = None;
+        let mut notices = Vec::new();
         for m in self.worker.drain() {
             match m {
                 Msg::List(r) => {
@@ -245,10 +248,34 @@ impl Servers {
                     }
                 }
                 Msg::Friends(Ok(f)) => {
+                    let asked = |l: &[game::Friend]| -> Vec<String> {
+                        l.iter()
+                            .filter(|f| f.state == game::FriendState::Received)
+                            .map(|f| f.user_id.clone())
+                            .collect()
+                    };
+                    let before = asked(&self.requests);
+                    let first = self.friends_read.is_none();
                     (self.friends, self.requests) = f
                         .into_iter()
                         .partition(|f| f.state == game::FriendState::Friend);
                     self.friends_read = Some(Ok(()));
+                    // A new request while the Friends page isn't shown: said once.
+                    let new: Vec<&game::Friend> = self
+                        .requests
+                        .iter()
+                        .filter(|f| {
+                            f.state == game::FriendState::Received && !before.contains(&f.user_id)
+                        })
+                        .collect();
+                    if let (false, false, Some(f)) = (first, shown == Shown::Friends, new.first()) {
+                        let text = match new.len() {
+                            1 => format!("{} sent you a friend request", f.name),
+                            n => format!("{n} new friend requests"),
+                        };
+                        notices
+                            .push(Notice::info(&text).with("See it", Action::Page(Page::Friends)));
+                    }
                 }
                 // The lists stay as they were; with none yet, the pages say why.
                 Msg::Friends(Err(e)) => self.friends_read = Some(Err(e)),
@@ -264,9 +291,14 @@ impl Servers {
                         list.iter().filter(|i| !self.seen.contains(&i.id)).collect();
                     if let Some(first) = new.first() {
                         let who = sender(first);
-                        notice = Some(match new.len() {
-                            1 => format!("{who} invited you to a match"),
-                            n => format!("{who} and {} more invited you to matches", n - 1),
+                        notices.push(match new.len() {
+                            1 => Notice::info(&format!("{who} invited you to a match"))
+                                .with("Join", Action::JoinInvite(first.id.clone())),
+                            n => Notice::info(&format!(
+                                "{who} and {} more invited you to matches",
+                                n - 1
+                            ))
+                            .with("See invites", Action::Page(Page::Servers)),
                         });
                         self.attention = true;
                     }
@@ -275,12 +307,12 @@ impl Servers {
                 }
                 Msg::Invited(user, name, match_id, r) => {
                     self.inviting.remove(&user);
-                    notice = Some(match r {
+                    notices.push(match r {
                         Ok(()) => {
                             self.invited.insert((user, match_id));
-                            format!("Invited {name}")
+                            Notice::info(&format!("Invited {name}"))
                         }
-                        Err(e) => format!("Couldn't invite {name}: {e}"),
+                        Err(e) => Notice::error(&format!("Couldn't invite {name}: {e}")),
                     });
                 }
                 Msg::Found(text, r) => {
@@ -290,8 +322,8 @@ impl Servers {
                 Msg::FriendChanged(user, name, what, r) => {
                     self.changing.remove(&user);
                     self.friends_at = None;
-                    notice = Some(match r {
-                        Ok(()) => {
+                    notices.push(match r {
+                        Ok(()) => Notice::info(&{
                             let asked = self.requests.iter().position(|f| f.user_id == user);
                             match (what, asked) {
                                 ("add", Some(i))
@@ -314,18 +346,20 @@ impl Servers {
                                 _ => {
                                     self.friends.retain(|f| f.user_id != user);
                                     self.requests.retain(|f| f.user_id != user);
-                                    format!("{name} is off your list")
+                                    format!("Removed {name} from your friends")
                                 }
                             }
-                        }
-                        Err(e) => format!("Couldn't change your friendship with {name}: {e}"),
+                        }),
+                        Err(e) => Notice::error(&format!(
+                            "Couldn't change your friendship with {name}: {e}"
+                        )),
                     });
                 }
                 Msg::Done(r) => {
                     self.busy = false;
                     self.list_at = None;
                     match r {
-                        Ok(Done::Queued(text)) => notice = Some(text),
+                        Ok(Done::Queued(text)) => notices.push(Notice::info(&text)),
                         Ok(Done::Launch(lobby)) => self.launch = Some(lobby),
                         Ok(Done::Started(id)) => {
                             self.created = Some(Created {
@@ -336,7 +370,7 @@ impl Servers {
                             });
                             self.ready = Some(id);
                         }
-                        Err(e) => notice = Some(e),
+                        Err(e) => notices.push(Notice::error(&e)),
                     }
                 }
             }
@@ -346,12 +380,12 @@ impl Servers {
         if social && !self.loading && due(self.list_at, list_every) {
             self.refresh(ctx, &token);
         }
-        let friends_every = if shown == Shown::Friends {
-            FRIENDS_ON_PAGE
-        } else {
-            FRIENDS_EVERY
+        let friends_every = match shown {
+            Shown::Friends => FRIENDS_ON_PAGE,
+            Shown::Neither => FRIENDS_AWAY,
+            _ => FRIENDS_EVERY,
         };
-        if social && due(self.friends_at, friends_every) {
+        if due(self.friends_at, friends_every) {
             self.friends_at = Some(Instant::now());
             let t = token.clone();
             self.worker.spawn(ctx, move |tx| {
@@ -407,7 +441,7 @@ impl Servers {
         } else if social {
             ctx.request_repaint_after(LIST_ON_PLAY);
         }
-        notice
+        notices
     }
 
     /// Friends: looks for players named like `text`.
@@ -717,6 +751,19 @@ pub(super) fn starts_pc(d: &Dashboard) -> bool {
     d.platform == Platform::Pc && !d.game().is_running() && super::setup::pc_play_supported(d)
 }
 
+/// What a JOIN button says: it starts the game into the match, or (the game running, or
+/// on the Quest side) queues it as the next one.
+fn join_words(d: &Dashboard) -> (&'static str, &'static str) {
+    if starts_pc(d) {
+        ("Join", "Start Echo VR straight into this match")
+    } else {
+        (
+            "Queue",
+            "Queue it as your next match: the terminal in Echo VR takes you there",
+        )
+    }
+}
+
 fn queued(quest: bool) -> Done {
     Done::Queued(if quest {
         "Queued as your next match: start Echo VR on your Quest and use the terminal to go there"
@@ -775,6 +822,15 @@ pub(super) fn queue_lobby(d: &mut Dashboard, ctx: &egui::Context, lobby: &str) {
             .map_err(|e| format!("Couldn't join: {e:#}"));
         tx.send(Msg::Done(r));
     });
+}
+
+/// A notice's "Join": the invite `id`'s JOIN, while it is still open.
+pub(super) fn join_invite(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
+    match d.servers.invites.iter().find(|i| i.id == id).cloned() {
+        Some(invite) if !d.servers.busy => accept(d, ctx, &invite),
+        Some(_) => d.notify("Wait a moment: a join or start is under way"),
+        None => d.notify("That invite isn't open any more"),
+    }
 }
 
 /// An invite's JOIN: accepts it, then joins its match.
@@ -862,7 +918,7 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         return;
     };
     let (w, h) = (dz(1000.0), dz(640.0));
-    let (x, y, cw, bottom) = setup::card(k, w, h, "Start a server");
+    let (x, y, cw, bottom) = setup::card(k, w, h, "Start a match");
     let set = |d: &mut Dashboard, m: usize, r: Option<String>, g: Option<String>, l: usize| {
         d.overlay = Some(setup::Overlay::StartServer {
             mode: m,
@@ -928,7 +984,7 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         .clone()
         .or_else(|| guilds.first().map(|(id, _)| id.clone()));
     if guilds.len() > 1 {
-        k.caption(x, ty, "Guild");
+        k.caption(x, ty, "Discord community (guild)");
         // Four to a row, as many rows as there are guilds.
         for (i, (id, name)) in guilds.iter().enumerate() {
             let on = chosen_guild.as_deref() == Some(id);
@@ -982,7 +1038,7 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                 x,
                 list_top,
                 cw,
-                &format!("Couldn't find free servers: {e}"),
+                &format!("Couldn't look for free servers. Check your connection, then open this again. ({e})"),
                 16.0,
                 design::DANGER,
                 0.0,
@@ -995,12 +1051,12 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
                 .filter(|r| operator || chosen_guild.as_ref().is_some_and(|g| r.groups.contains(g)))
                 .collect();
             if usable.is_empty() {
-                why_not = Some("No free server is waiting for your guild right now");
+                why_not = Some("No free server is waiting for this community right now");
                 k.caps_text(
                     x,
                     list_top,
                     cw,
-                    "No free server is waiting for your guild right now.",
+                    "No free server is waiting for this community right now. Try again in a few minutes, or pick another community.",
                     16.0,
                     design::BODY,
                     0.0,
@@ -1116,12 +1172,13 @@ pub(super) fn start_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         };
         d.overlay = None;
         d.servers.busy = true;
+        d.notify("Starting your match…");
         let mode_id = game::START_MODES[mode].0;
         let level_id = combat.then(|| game::COMBAT_LEVELS[level].0);
         d.servers.worker.spawn(ctx, move |tx| {
             let r = game::start(&tokens.token, &guild, mode_id, &region, level_id)
                 .map(Done::Started)
-                .map_err(|e| format!("Couldn't start the server: {e:#}"));
+                .map_err(|e| format!("Couldn't start the match: {e:#}"));
             tx.send(Msg::Done(r));
         });
     }
@@ -1505,7 +1562,9 @@ fn live_rows(
         .collect();
     if list.is_empty() {
         let text = match (&d.servers.error, d.servers.updated, filter) {
-            (Some(e), _, _) => format!("The servers couldn't be read: {e}"),
+            (Some(e), _, _) => format!(
+                "Couldn't load the servers: they load again by themselves in a moment. ({e})"
+            ),
             (None, None, _) => "Reading the servers…".to_string(),
             (None, Some(_), Some(f)) => format!("No {} match right now.", f.label()),
             (None, Some(_), None) => "No match is running right now.".to_string(),
@@ -1542,6 +1601,7 @@ fn live_rows(
     );
     let scroll = d.servers.scroll;
     let busy = d.servers.busy;
+    let (join_label, join_tip) = join_words(d);
     // Links are shared for public matches, and the one you are in or started.
     let me = d.vrce.session().map(|(_, a)| a.id).unwrap_or_default();
     let own: Vec<String> = game::find_me(&list, &me)
@@ -1559,7 +1619,8 @@ fn live_rows(
             }
             let rr = k.rect(x - pad, ry, w + 2.0 * pad - dz(8.0), row_h - dz(8.0));
             if i % 2 == 0 {
-                k.ui.painter().rect_filled(rr, dz(6.0), egui::Color32::from_white_alpha(6));
+                k.ui.painter()
+                    .rect_filled(rr, dz(6.0), egui::Color32::from_white_alpha(6));
             }
             // Left: mode and who may join; under it, where.
             let lobby = match m.lobby {
@@ -1567,7 +1628,12 @@ fn live_rows(
                 Lobby::Private => "Private",
                 Lobby::Unassigned => "Waiting",
             };
-            let name = k.label_galley(&format!("{}  ·  {lobby}", m.mode.label()), design::din(18.0), design::TEXT, dz(420.0));
+            let name = k.label_galley(
+                &format!("{}  ·  {lobby}", m.mode.label()),
+                design::din(18.0),
+                design::TEXT,
+                dz(420.0),
+            );
             k.put(x + dz(6.0), ry + dz(8.0), name);
             let place = k.label_galley(&m.location, design::din(14.0), design::GREY, dz(420.0));
             k.put(x + dz(6.0), ry + dz(36.0), place);
@@ -1589,20 +1655,41 @@ fn live_rows(
                 let mins = (crate::core::echovrce::now() - s).max(0) / 60;
                 detail.push(format!("{mins} min"));
             }
-            let dg = k.label_galley(&detail.join("   ·   "), design::din(15.0), design::SUBTLE, dz(260.0));
+            let dg = k.label_galley(
+                &detail.join("   ·   "),
+                design::din(15.0),
+                design::SUBTLE,
+                dz(260.0),
+            );
             k.put(x + dz(600.0), cy - dg.size().y / 2.0, dg);
 
             // Right: JOIN, or why not; left of it, the link to copy.
             let bw = dz(130.0);
             let bx = x + w - bw - dz(8.0);
             let left = if m.joinable() {
-                let tip = "Start Echo VR straight into this match (with the game running: queue it as your next)";
-                if k.button(&format!("join-{}", m.id), bx, cy - dz(20.0), bw, dz(40.0), Tone::Go, None, "Join", !busy, tip).clicked {
+                if k.button(
+                    &format!("join-{}", m.id),
+                    bx,
+                    cy - dz(20.0),
+                    bw,
+                    dz(40.0),
+                    Tone::Go,
+                    None,
+                    join_label,
+                    !busy,
+                    join_tip,
+                )
+                .clicked
+                {
                     join_it = Some(m.id.clone());
                 }
                 bx
             } else {
-                let why = if m.lobby == Lobby::Private { "Private" } else { "Full" };
+                let why = if m.lobby == Lobby::Private {
+                    "Private"
+                } else {
+                    "Full"
+                };
                 let cw = k.chip_width(why);
                 k.chip(x + w - cw - dz(8.0), cy - dz(13.5), why, design::QUEST_OFF);
                 x + w - cw - dz(8.0)
@@ -1610,7 +1697,20 @@ fn live_rows(
             if m.lobby == Lobby::Public || own.contains(&m.id) {
                 let s = dz(40.0);
                 let tip = "Copy this match's link, to send to players";
-                if k.button(&format!("copy-{}", m.id), left - dz(10.0) - s, cy - dz(20.0), s, s, Tone::Dark, Some(Icon::Copy), "", true, tip).clicked {
+                if k.button(
+                    &format!("copy-{}", m.id),
+                    left - dz(10.0) - s,
+                    cy - dz(20.0),
+                    s,
+                    s,
+                    Tone::Dark,
+                    Some(Icon::Copy),
+                    "",
+                    true,
+                    tip,
+                )
+                .clicked
+                {
                     copy_it = Some(m.id.clone());
                 }
             }
@@ -1886,7 +1986,7 @@ fn you_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, account: Option
             BTN_H,
             Tone::Blue,
             Some(Icon::Globe),
-            "Start a server",
+            "Start a match",
             !d.servers.busy,
             "Start a new match on a free server",
         )
@@ -1947,15 +2047,42 @@ pub(super) fn invite_tiles(
     }
     let mut ty = y;
     k.caption(x, ty, "Invites");
-    if invites.len() > room {
-        let more = format!("+{} more", invites.len() - room);
-        let g = k.label_galley(&more, design::din(14.0), design::GREY, f32::INFINITY);
-        k.put(x + w - g.size().x, ty, g);
-    }
-    ty += dz(28.0);
     let busy = d.servers.busy;
+    let (join_label, join_tip) = join_words(d);
     let mut accept_it = None;
     let mut dismiss_it = None;
+    // The ones that don't fit: in a menu under "+n more", to join from there.
+    if invites.len() > room {
+        let rest = &invites[room..];
+        let more = format!("+{} more", rest.len());
+        let (key, tip) = ("invites-more", "Show the other invites");
+        let open = k.menu_open(key);
+        let color = if open { design::TEXT } else { design::GREY };
+        let g = k.label_galley(&more, design::din(14.0), color, f32::INFINITY);
+        let r = k.put(x + w - g.size().x, ty, g);
+        let (resp, ..) = k.hot(key, r.expand(dz(4.0)), true, tip);
+        if resp.clicked {
+            k.toggle_menu(key);
+        }
+        let items: Vec<MenuItem> = rest
+            .iter()
+            .map(|inv| {
+                MenuItem::row(
+                    &format!("{} · {}", sender(inv), about(d.servers.find(&inv.match_id))),
+                    join_tip,
+                )
+                .unless(busy.then_some("Busy with another match"))
+            })
+            .collect();
+        let anchor = egui::Rect::from_min_max(
+            egui::pos2(r.max.x - dz(420.0), r.min.y),
+            egui::pos2(r.max.x, r.max.y),
+        );
+        if let Some(i) = k.menu_at(key, anchor, &items) {
+            accept_it = Some(rest[i].clone());
+        }
+    }
+    ty += dz(28.0);
     for inv in invites.iter().take(room) {
         let h = dz(SMALL_TILE_H);
         hero::tile(k, x, ty, w, h, false);
@@ -1997,9 +2124,9 @@ pub(super) fn invite_tiles(
             s,
             Tone::Go,
             None,
-            "Join",
+            join_label,
             !busy,
-            "Join their match",
+            join_tip,
         )
         .clicked
         {
@@ -2134,6 +2261,7 @@ pub(super) fn friend_tiles(
     );
     let scroll = *scroll;
     let busy = d.servers.busy;
+    let (join_label, join_tip) = join_words(d);
     let (invited, inviting) = (&d.servers.invited, &d.servers.inviting);
     let pad = dz(TILE_PAD);
     let mut join_it = None;
@@ -2175,10 +2303,10 @@ pub(super) fn friend_tiles(
                     dz(36.0),
                     dz(36.0),
                     Tone::Dark,
-                    Some(Icon::Close),
+                    Some(Icon::Trash),
                     "",
                     !changing.contains(&f.user_id),
-                    "Remove from your friends",
+                    "Remove from your friends (asks first)",
                 )
                 .clicked
             {
@@ -2195,9 +2323,9 @@ pub(super) fn friend_tiles(
                         dz(36.0),
                         Tone::Go,
                         None,
-                        "Join",
+                        join_label,
                         !busy,
-                        "Join their match",
+                        join_tip,
                     )
                     .clicked
                     {

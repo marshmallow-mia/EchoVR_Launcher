@@ -47,6 +47,12 @@ enum Kind {
     Browser(String),
 }
 
+/// Whether Enter picks a dialog's first button: not when that deletes something (a slip
+/// of the key mustn't).
+fn enter_answers(kind: &Kind) -> bool {
+    matches!(kind, Kind::Error(_) | Kind::Message(_, _, false))
+}
+
 struct Dialog {
     key: &'static str,
     title: String,
@@ -199,7 +205,7 @@ impl DialogHost {
         });
         let answer = answer.or(match (&top.kind, keys) {
             (_, (_, true)) => Some(Answer::Closed),
-            (Kind::Error(_) | Kind::Message(..), (true, _)) => Some(Answer::Button(0)),
+            (kind, (true, _)) if enter_answers(kind) => Some(Answer::Button(0)),
             _ => None,
         });
         if let Some(a) = answer {
@@ -440,5 +446,18 @@ fn draw(k: &mut Kit, d: &mut Dialog) -> Option<Answer> {
             k.button_row("dialog-btn", right, by, &["Cancel"], Tone::Dark)
                 .map(|_| Answer::Closed)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn enter_never_deletes() {
+        let ok = Kind::Message(Icon::Info, vec!["OK".into()], false);
+        let delete = Kind::Message(Icon::Warning, vec!["Delete".into(), "Cancel".into()], true);
+        assert!(enter_answers(&ok));
+        assert!(!enter_answers(&delete));
     }
 }

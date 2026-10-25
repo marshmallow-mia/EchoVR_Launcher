@@ -55,6 +55,23 @@ impl Part {
             Part::Plugin { id } => format!("plugin:{id}"),
         }
     }
+
+    /// The part a hold's key is about ([`Part::key`] back; a mod's file lowercased).
+    pub fn from_key(key: &str) -> Option<Part> {
+        let mut parts = key.splitn(3, ':');
+        match (parts.next()?, parts.next(), parts.next()) {
+            ("launcher", None, _) => Some(Part::Launcher),
+            ("game", Some(version), None) => Some(Part::Game {
+                version: version.into(),
+            }),
+            ("mod", Some(version), Some(file)) => Some(Part::Mod {
+                version: version.into(),
+                file: file.into(),
+            }),
+            ("plugin", Some(id), None) => Some(Part::Plugin { id: id.into() }),
+            _ => None,
+        }
+    }
 }
 
 /// A way back: a part updated, with what it has now and what it goes back to.
@@ -464,6 +481,19 @@ mod tests {
             .key(),
             "mod:pc-latest:nvrgpurating.dll"
         );
+        // And back from the key.
+        for part in [
+            Part::Launcher,
+            g.clone(),
+            p.clone(),
+            Part::Mod {
+                version: "pc-latest".into(),
+                file: "nvrgpurating.dll".into(),
+            },
+        ] {
+            assert_eq!(Part::from_key(&part.key()), Some(part));
+        }
+        assert_eq!(Part::from_key("something:new"), None);
     }
 
     #[test]

@@ -61,7 +61,7 @@ pub(super) struct PluginsUi {
     views: HashMap<String, View>,
     worker: Worker<Msg>,
     /// The plugin being installed, updated or removed.
-    busy: Option<String>,
+    pub(super) busy: Option<String>,
     /// The catalogue is being read again (Refresh).
     loading: bool,
     /// Debug builds: the plugin ECHOVR_PAGE named, opened once it is read.
@@ -231,7 +231,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     }
                     d.save();
                     back_to_nevr(d);
-                    d.notify("Echo VR plays on EchoVRCE again");
+                    d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
                 }
             }
             Msg::Catalog(c) => catalog_done(d, c),
@@ -258,10 +258,12 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                 d.plugins.busy = None;
                 match result {
                     Ok(()) => d.notify(&what),
-                    Err(e) => d.dialogs.error("Plugins", &e, Default::default()),
+                    Err(e) => d
+                        .dialogs
+                        .error("Couldn't change the plugin", &e, Default::default()),
                 }
                 reread(d, ctx);
-                super::goback::refresh(d, ctx);
+                super::goback::refresh_after_update(d, ctx);
             }
         }
     }
@@ -293,7 +295,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     if to_nakama {
                         back_to_nevr(d);
                     }
-                    d.notify("Echo VR's server changed");
+                    d.notify_next_start("Echo VR's server changed: from its next start");
                     if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
                         r.waiting = false;
                     }
@@ -548,7 +550,7 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                         d,
                         &id,
                         if why.is_empty() {
-                            "That didn't work.".into()
+                            "The plugin couldn't do that: check its settings and try again, or ask its author.".into()
                         } else {
                             why
                         },
@@ -705,7 +707,7 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                         );
                         d.save();
                         back_to_nevr(d);
-                        d.notify("Echo VR plays on EchoVRCE again");
+                        d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
                     }
                     continue;
                 }
@@ -764,6 +766,33 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
 
 /// The live builds set up for an EchoRelay server get nEVR back now (the next start would
 /// otherwise), unless Echo VR runs from them.
+/// "Back to EchoVRCE and join": the server a plugin chose is let go of, nEVR back in its
+/// place.
+pub(super) fn back_to_echovrce(d: &mut Dashboard) {
+    if let Some(g) = d.state.game_server.take() {
+        tracing::info!(
+            "Echo VR plays on EchoVRCE again (was {}, the player joined an EchoVRCE match)",
+            g.server.address
+        );
+        d.save();
+        back_to_nevr(d);
+        d.notify("Echo VR plays on EchoVRCE again");
+    }
+}
+
+/// Settings' "EchoVRCE again" for the server a plugin set.
+pub(super) fn reset_game_server(d: &mut Dashboard) {
+    if let Some(g) = d.state.game_server.take() {
+        tracing::info!(
+            "Echo VR plays on EchoVRCE again (was {}, reset in Settings)",
+            g.server.address
+        );
+        d.save();
+        back_to_nevr(d);
+        d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
+    }
+}
+
 fn back_to_nevr(d: &mut Dashboard) {
     let local = d.local();
     for v in d
@@ -2182,7 +2211,7 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
     if cards.is_empty() {
         let text = match (d.plugins.filter, catalog.is_some()) {
             (Filter::Installed, _) => {
-                "None yet. Plugins add apps to the launcher. Get one under Available, and pin the ones you use to the rail."
+                "None yet. Plugins add apps to the launcher. Get one under Available, and pin the ones you use to the rail (the bar on the left)."
             }
             (_, false) => "Reading the plugins list…",
             _ => "You have every plugin there is.",
@@ -2328,7 +2357,7 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
         summary: p.page.summary.clone(),
         two_buttons: update,
         note: (!p.warnings.is_empty())
-            .then(|| "Its description has problems: the launcher's log lists them.".into()),
+            .then(|| "This plugin may not work right: tell its author (the launcher's log lists what's wrong).".into()),
     }
 }
 
@@ -2579,7 +2608,7 @@ fn installed_card(
     let (pin_icon, pin_tip) = if pin {
         (Icon::Pinned, "In the rail: click to unpin it")
     } else {
-        (Icon::Pin, "Pin it to the rail")
+        (Icon::Pin, "Pin it to the rail (the bar on the left)")
     };
     if icon_button(
         kit,
@@ -2619,7 +2648,7 @@ fn installed_card(
     let idle = busy.is_none();
     let busy_tip = busy
         .as_ref()
-        .map(|b| format!("Wait: {b} is being installed or updated"));
+        .map(|b| format!("Wait: {} is being installed or updated", name_of(d, b)));
     let stacked = buttons_stacked(kit, info, inner);
     let (open_w, open_y) = match (&update, stacked) {
         (Some(_), false) => ((inner - dz(10.0)) / 2.0, by),
@@ -2699,10 +2728,10 @@ fn offered_card(
         .plugins
         .busy
         .as_ref()
-        .map(|id| format!("Wait: {id} is being installed"));
+        .map(|id| format!("Wait: {} is being installed", name_of(d, id)));
     let tip = busy_tip
         .as_deref()
-        .unwrap_or("Download and add it: it gets a tab in the rail");
+        .unwrap_or("Download and add it: it gets a tab in the rail (the bar on the left)");
     if kit
         .button(
             &format!("plugins-get-{}", e.id),
@@ -2750,12 +2779,12 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         },
         match &back {
             Some(w) => MenuItem::row(
-                &format!("Go back to {}", w.before),
+                &format!("Undo update (back to {})", w.before),
                 "Put back the version it had before its last update",
             )
             .unless(wait),
-            None => MenuItem::row("Go back", "")
-                .unless(Some("No earlier version kept: it wasn't updated since")),
+            None => MenuItem::row("Undo update", "")
+                .unless(Some("Nothing to undo: it hasn't been updated yet")),
         },
         if pin {
             MenuItem::row(
@@ -2763,7 +2792,10 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 "Its tab leaves the rail: open it from here",
             )
         } else {
-            MenuItem::row("Pin to the rail", "Its tab goes in the rail")
+            MenuItem::row(
+                "Pin to the rail",
+                "Its tab goes in the rail, the bar on the left",
+            )
         },
         MenuItem::row("Remove", "Remove it and its settings").unless(wait),
         MenuItem::Divider,
@@ -2786,10 +2818,23 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         Some(2) => set_pinned(d, &id, !pin),
         Some(3) => {
             d.plugins.remove_asked = Some(id.clone());
+            // The game's server it chose goes with it.
+            let server = d
+                .state
+                .game_server
+                .as_ref()
+                .filter(|g| g.plugin == id)
+                .map(|g| {
+                    format!(
+                        "\n\nEcho VR plays on {} because of it: without it, Echo VR goes back to EchoVRCE.",
+                        if g.name.is_empty() { &g.server.address } else { &g.name }
+                    )
+                })
+                .unwrap_or_default();
             d.dialogs.confirm_danger(
                 REMOVE_KEY,
-                "Remove plugin",
-                &format!("Remove {} and its settings?", p.page.name),
+                &format!("Remove {}?", p.page.name),
+                &format!("{} and its settings are removed.{server}", p.page.name),
                 "Remove",
             );
         }
@@ -2799,6 +2844,23 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if !kit.menu_open(CARD_MENU) {
         d.plugins.card_menu = None;
     }
+}
+
+/// What plugin `id` is called (installed, or in the catalogue), for the player.
+pub(super) fn name_of(d: &Dashboard, id: &str) -> String {
+    d.plugins
+        .list
+        .iter()
+        .find(|p| p.page.id == id)
+        .map(|p| p.page.name.clone())
+        .or_else(|| {
+            d.plugins
+                .catalog
+                .as_ref()
+                .and_then(|c| c.plugins.iter().find(|e| e.id == id))
+                .map(|e| e.name.clone())
+        })
+        .unwrap_or_else(|| id.to_string())
 }
 
 /// The catalogue's other version of `p`, unless it's the one the player went back from.
@@ -2811,6 +2873,27 @@ fn update_of<'a>(
         id: p.page.id.clone(),
     };
     core::update_for(p, catalog).filter(|e| !goback::held(&d.state.holds, &part, &e.version))
+}
+
+/// "Update now" on an undone update: the catalogue's version of plugin `id`. False when
+/// there's none (or a plugin is being installed).
+pub(super) fn update_newest(d: &mut Dashboard, ctx: &egui::Context, id: &str) -> bool {
+    let Some(p) = d.plugins.list.iter().find(|p| p.page.id == id) else {
+        return false;
+    };
+    let entry = d
+        .plugins
+        .catalog
+        .as_ref()
+        .and_then(|c| core::update_for(p, c))
+        .cloned();
+    match entry {
+        Some(e) if d.plugins.busy.is_none() => {
+            get(d, ctx, e, "Plugin updated");
+            true
+        }
+        _ => false,
+    }
 }
 
 fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str) {

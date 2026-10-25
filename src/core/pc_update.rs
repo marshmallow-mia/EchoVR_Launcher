@@ -221,7 +221,7 @@ pub enum UpdateError {
 impl UpdateError {
     pub fn title(&self) -> String {
         match self {
-            UpdateError::HashMismatch(p) => format!("Hash mismatch for {p}"),
+            UpdateError::HashMismatch(p) => format!("A download came out damaged: {p}"),
             UpdateError::FileInUse { .. } => "Please close Echo VR first".into(),
         }
     }
@@ -231,7 +231,7 @@ impl UpdateError {
 pub fn error_title(e: &anyhow::Error) -> String {
     match e.downcast_ref::<UpdateError>() {
         Some(u) => u.title(),
-        None => "Update Failed".into(),
+        None => "Couldn't update".into(),
     }
 }
 

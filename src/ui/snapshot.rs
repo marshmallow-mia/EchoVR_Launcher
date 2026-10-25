@@ -296,6 +296,22 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("mods_vd", Page::Mods, SnapVariant::SettingsVirtualDesktop),
         ("play_vd_switch", Page::Play, SnapVariant::DialogVdSwitch),
+        ("play_notice_action", Page::Play, SnapVariant::NoticeAction),
+        (
+            "servers_notice_error",
+            Page::Servers,
+            SnapVariant::NoticeError,
+        ),
+        (
+            "echovrce_notice_action",
+            Page::EchoVrce,
+            SnapVariant::NoticeAction,
+        ),
+        (
+            "settings_channel_ask",
+            Page::Settings,
+            SnapVariant::DialogChannel,
+        ),
         (
             "play_nevr_blocked",
             Page::Play,

@@ -86,16 +86,18 @@ impl Finding {
     pub fn text(&self) -> String {
         match self {
             Finding::Launcher { version, .. } => {
-                format!("Echo VR Launcher {version} is out")
+                format!("Echo VR Launcher {version} is available")
             }
-            Finding::Game { name, .. } => format!("An update for {name} is ready"),
+            Finding::Game { name, .. } => format!("An update for {name} is available"),
             Finding::Plugin {
                 version_name,
                 name,
                 to,
                 ..
-            } => format!("{name} {to} is out (in {version_name})"),
-            Finding::LauncherPlugin { name, to, .. } => format!("The {name} plugin {to} is out"),
+            } => format!("{name} {to} is available (in {version_name})"),
+            Finding::LauncherPlugin { name, to, .. } => {
+                format!("The {name} plugin {to} is available")
+            }
             Finding::NewPlugin { name, dev, .. } => format!(
                 "New {}plugin: {name}, on the Plugins page",
                 if *dev { "dev " } else { "" }
@@ -674,7 +676,7 @@ mod tests {
         }];
         let (s, b) = notification_text(&one);
         assert_eq!(s, "Update available");
-        assert!(b.starts_with("An update for Echo VR (PC, latest) is ready"));
+        assert!(b.starts_with("An update for Echo VR (PC, latest) is available"));
         let many: Vec<Finding> = (0..6)
             .map(|i| Finding::Launcher {
                 version: format!("0.{i}"),

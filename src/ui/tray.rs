@@ -300,7 +300,7 @@ mod tests {
         };
         assert_eq!(
             status_text(std::slice::from_ref(&f)),
-            "Echo VR Launcher 0.11.0 is out"
+            "Echo VR Launcher 0.11.0 is available"
         );
         assert_eq!(status_text(&[f.clone(), f]), "2 updates available");
         assert!(icon_rgba().is_some_and(|(w, h, px)| px.len() == (w * h * 4) as usize));

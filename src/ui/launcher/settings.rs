@@ -3,7 +3,7 @@
 //! About) in the right-hand panel.
 
 use super::install::{myriad, text_link};
-use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg, Page, Res};
+use super::{hero, panel, setup, Dashboard, JobKind, JobResult, LauncherUpdate, Msg, Res};
 use crate::core::launcher::relay;
 use crate::core::launcher::store::{Runtime, SteamVrVia, VdVia};
 use crate::core::launcher::update_check::Channel;
@@ -15,7 +15,7 @@ use crate::ui::kit::Kit;
 use crate::ui::markdown;
 use crate::ui::parts;
 use crate::ui::style::Icon;
-use crate::ui::widgets::{Tone, BTN_H};
+use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 
 // Geometry in design pixels: the cards where Play and Install have theirs.
 const GAME: Dr = Dr::new(137.0, 80.0, 1146.0, 346.0);
@@ -29,6 +29,7 @@ const PANEL_W: f32 = 492.0;
 
 const CACHE_KEY: &str = "settings-delete-cache";
 const STEAM_KEY: &str = "settings-add-to-steam";
+const CHANNEL_KEY: &str = "settings-channel";
 const UPLOAD_TEXT: &str = "This sends the logs checked above to the developer, marshmallow-mia, and selected Echo VR Lounge moderators, to help with a problem. Only they can see them, and they're deleted after 30 days. Your EchoVRCE account's ID, its Discord ID and this PC's Echo VR account (OVR-ORG) go with them, so they know whose logs they are.\n\n\
 They can contain your computer's user name (in folder paths), where Echo VR and the launcher are installed, your headset's model and serial number, your Echo VR account name and the matches you joined, the versions and options you use, and error messages. The server also sees your IP address.\n\n\
 To have them deleted, message marshmallow-mia on Discord or email echo@mia-hentschel.de.";
@@ -149,85 +150,122 @@ fn game(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         return;
     }
-    // SteamVR through Revive (on Windows; EchoXR instead is its switch on the Mods
-    // page): Revive's own options.
-    if cfg!(windows) || d.demo {
-        if d.state.profile.runtime != Runtime::Revive {
-            return;
-        }
-        let ay = top + dz(TILE_H) + dz(24.0);
-        // Through EchoXR: Revive's options don't apply; where that's switched.
-        if d.state.profile.steamvr_via != SteamVrVia::Revive {
-            let text = "SteamVR plays through EchoXR. Revive's options (artwork, SteamVR's library) come back when EchoXR is removed on the Mods page.";
-            let lw = kit.link_width("Mods page", 14.0);
-            let th = kit.caps_text(x, ay, w - lw - dz(20.0), text, 14.0, design::GREY, 0.0);
-            if kit
-                .link(
-                    "settings-to-mods",
-                    x + w - lw,
-                    ay + (th - dz(18.0)).max(0.0) / 2.0,
-                    "Mods page",
-                    14.0,
-                    "Open the Mods page (EchoXR's row)",
-                )
-                .clicked
-            {
-                d.page = Page::Mods;
-            }
-            return;
-        }
-        let cx = x;
-        let cy = ay;
-        if kit.check(
-            "artwork",
-            &mut d.state.revive_artwork,
-            "Game artwork",
-            cx,
-            cy,
-            true,
-            "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library",
-        ) {
-            d.save();
-        }
-        // Revive was there before (PLAY never prepared it): the artwork from here.
-        let present = cfg!(windows) && !d.demo && !d.revive_missing();
-        let vr_busy = d.busy_with(&[Res::Vr]);
-        if present && d.state.revive_artwork && vr_busy.is_none() && !revive::artwork_installed() {
-            let lx = cx + dz(250.0);
-            if kit
-                .link(
-                    "artwork-install",
-                    lx,
-                    cy + dz(2.0),
-                    "Install it",
-                    14.0,
-                    "The artwork isn't installed yet (asks for administrator rights)",
-                )
-                .clicked
-            {
-                setup::revive_artwork(d, ctx);
-            }
-        }
-        // Beside the artwork's, on the same row.
-        let tip = vr_busy.as_deref().unwrap_or(
-            "Echo VR in SteamVR's library starts the version PLAY starts, with your launch options. After switching versions, tick this off and on to update it.",
-        );
-        if kit.check(
-            "steamvr-library",
-            &mut d.state.revive_library,
-            "Echo VR in SteamVR's library",
-            cx + (x + w - cx) * 0.4,
-            cy,
+    // SteamVR (on Windows): through Revive or EchoXR, and Revive's own options in a menu
+    // on the same row.
+    if (cfg!(windows) || d.demo) && d.state.profile.runtime == Runtime::Revive {
+        steamvr_through(d, kit, ctx, x, top + dz(TILE_H) + dz(24.0), w);
+    }
+}
+
+/// SteamVR's "Through": Revive or EchoXR, and with Revive its options (artwork, SteamVR's
+/// library) behind a menu at the row's end.
+fn steamvr_through(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, ry: f32, w: f32) {
+    let vr_busy = d.busy_with(&[Res::Vr]);
+    let cap = kit.caption(x, ry + dz(8.0), "Through");
+    let mut rx = cap.max.x + dz(28.0);
+    for via in [SteamVrVia::Revive, SteamVrVia::EchoXr] {
+        let (label, tip) = match via {
+            SteamVrVia::Revive => (
+                "Revive",
+                "Revive's injector runs Echo VR on SteamVR (the first start installs it and asks for administrator rights)",
+            ),
+            SteamVrVia::EchoXr => (
+                "EchoXR",
+                "EchoXR's OpenXR layer in the game's folder: no injection, no administrator rights. Live build only.",
+            ),
+        };
+        let tip = vr_busy.as_deref().unwrap_or(tip);
+        let on = d.state.profile.steamvr_via == via;
+        if kit.radio(
+            &format!("settings-steamvr-{via:?}"),
+            on,
+            label,
+            rx,
+            ry,
             vr_busy.is_none(),
             tip,
-        ) {
+        ) && !on
+        {
+            match via {
+                SteamVrVia::Revive => {
+                    let v = d
+                        .state
+                        .selected
+                        .as_deref()
+                        .and_then(|id| d.state.version(id))
+                        .cloned();
+                    super::mods::through_revive(d, v.as_ref());
+                }
+                SteamVrVia::EchoXr => {
+                    d.state.profile.steamvr_via = via;
+                    d.save();
+                    d.notify("SteamVR plays through EchoXR now: PLAY sets it up at the next start");
+                }
+            }
+        }
+        let g = kit.label_galley(label, design::din(16.0), design::BODY, f32::INFINITY);
+        rx += 26.0 + g.size().x + dz(44.0);
+    }
+    if d.state.profile.steamvr_via != SteamVrVia::Revive {
+        return;
+    }
+    // Revive was there before (PLAY never prepared it): the artwork from here.
+    let present = cfg!(windows) && !d.demo && !d.revive_missing();
+    let install_art =
+        present && d.state.revive_artwork && vr_busy.is_none() && !revive::artwork_installed();
+    let mut items = vec![
+        MenuItem::Pick {
+            label: "Game artwork".into(),
+            detail: String::new(),
+            detail_color: design::GREY,
+            checked: d.state.revive_artwork,
+            tip: "When setting up SteamVR, also install Echo VR's artwork for the SteamVR library".into(),
+        },
+        MenuItem::Pick {
+            label: "Echo VR in SteamVR's library".into(),
+            detail: String::new(),
+            detail_color: design::GREY,
+            checked: d.state.revive_library,
+            tip: "Echo VR in SteamVR's library starts the version PLAY starts, with your launch options. When you pick another version, the launcher offers to update it.".into(),
+        },
+    ];
+    if install_art {
+        items.push(MenuItem::row(
+            "Install the artwork now",
+            "The artwork isn't installed yet (asks for administrator rights)",
+        ));
+    }
+    let label = "Revive options";
+    let bw = kit.button_width(label, None, BTN_H) + dz(40.0);
+    let picked = kit.menu_button(
+        "settings-revive-options",
+        label,
+        &items,
+        x + w - bw,
+        ry - dz(6.0),
+        bw,
+        BTN_H,
+        vr_busy
+            .as_deref()
+            .unwrap_or("Revive's artwork and Echo VR's entry in SteamVR's library"),
+    );
+    match picked {
+        _ if vr_busy.is_some() => {}
+        Some(0) => {
+            d.state.revive_artwork = !d.state.revive_artwork;
             d.save();
-            // Once SteamVR is set up, the entry follows the box (setup adds it otherwise);
-            // if that fails, the box goes back.
+        }
+        Some(1) => {
+            d.state.revive_library = !d.state.revive_library;
+            d.save();
+            // Once SteamVR is set up, the entry follows the choice (setup adds it
+            // otherwise); if that fails, it goes back.
             if cfg!(windows) && !d.revive_missing() {
                 setup::steamvr_library(d, ctx, d.state.revive_library);
             }
         }
+        Some(2) => setup::revive_artwork(d, ctx),
+        _ => {}
     }
 }
 
@@ -319,6 +357,11 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
     );
     if changed {
         d.save();
+    }
+    // The servers, together: the live build's (when a plugin chose one), the classic
+    // lobbies', the content packs'.
+    if d.state.game_server.is_some() {
+        y = live_server(d, kit, x, y + dz(26.0), w);
     }
     if d.state.has_event_builds() {
         y = classic_lobbies(d, kit, x, y + dz(26.0), w);
@@ -438,7 +481,7 @@ fn pack_server(
         .filter(|s| !s.address.trim().is_empty());
     let text = match set {
         Some(s) => s.address.trim().to_string(),
-        None => "EchoVRCE, as without it".to_string(),
+        None => "Default (EchoVRCE)".to_string(),
     };
     let tw = w - bw - dz(14.0);
     let g = kit.label_galley(&text, design::din(16.0), design::BODY, tw);
@@ -463,6 +506,45 @@ fn pack_server(
             name: name.to_string(),
             server: d.state.pack_servers.get(id).cloned().unwrap_or_default(),
         });
+    }
+    fy + BTN_H
+}
+
+/// The server a plugin set for the live build, which plugin did, and EchoVRCE again.
+/// Returns where the next part starts.
+fn live_server(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
+    let Some(g) = d.state.game_server.clone() else {
+        return y;
+    };
+    kit.caption(x, y, "Live build server");
+    let fy = y + dz(30.0);
+    let label = "EchoVRCE again";
+    let bw = kit.button_width(label, None, BTN_H).max(dz(150.0));
+    let place = if g.name.is_empty() {
+        g.server.address.clone()
+    } else {
+        g.name.clone()
+    };
+    let text = format!("{place} (set by {})", super::plugins::name_of(d, &g.plugin));
+    let tw = w - bw - dz(14.0);
+    let tg = kit.label_galley(&text, design::din(16.0), design::BODY, tw);
+    kit.put(x, fy + (BTN_H - tg.size().y) / 2.0, tg);
+    if kit
+        .button(
+            "live-server-reset",
+            x + w - bw,
+            fy,
+            bw,
+            BTN_H,
+            Tone::Dark,
+            None,
+            label,
+            true,
+            "The live build plays on EchoVRCE again (the plugin can set its server again)",
+        )
+        .clicked
+    {
+        super::plugins::reset_game_server(d);
     }
     fy + BTN_H
 }
@@ -676,7 +758,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         "desktop-notifications",
         &mut d.state.desktop_notifications,
         "Update notifications",
-        "A desktop notification when the launcher, Echo VR or a mod has an update (the launcher looks every 15 minutes, for new mods and plugins every 30 seconds).",
+        "A desktop notification when the launcher, Echo VR, a mod or a plugin has an update.",
         x,
         y,
         w,
@@ -691,8 +773,8 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         kit,
         "tray",
         &mut d.state.tray,
-        "Keep looking in the tray",
-        "While the launcher is closed, its icon in the tray looks for updates and opens it.",
+        "Check for updates when closed",
+        "While the launcher is closed, its icon in the tray keeps checking for updates; click it to open the launcher.",
         x,
         y,
         w,
@@ -717,13 +799,13 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         kit,
         "tray-login",
         &mut login,
-        "Start the tray at login",
+        "Start the tray icon at login",
         "Updates are found from the moment you log in, without opening the launcher.",
         x,
         y,
         w,
         d.state.tray,
-        "Needs \"Keep looking in the tray\"",
+        "Needs \"Check for updates when closed\"",
     );
     if flipped && !d.demo {
         match tray::set_autostart(login) {
@@ -802,7 +884,7 @@ pub(super) fn uninstall_card(d: &mut Dashboard, k: &mut Kit) {
         x,
         ry,
         cw,
-        "Choose what goes. The launcher's program file stays: delete it yourself afterwards.",
+        "Choose what to remove. The launcher's program file stays: delete it yourself afterwards.",
         16.0,
         design::BODY,
         0.0,
@@ -960,7 +1042,7 @@ pub(super) fn uninstalled(d: &mut Dashboard, o: crate::core::uninstall::Outcome)
         d.dialogs.options(
             UNINSTALLED_KEY,
             "Uninstalled",
-            &format!("The launcher's things are gone. It closes now; delete its program file yourself:\n\n{exe}{notes}"),
+            &format!("The launcher's data is removed. It closes now; delete its program file yourself:\n\n{exe}{notes}"),
             DlgIcon::Info,
             &["Close the launcher"],
         );
@@ -1030,58 +1112,29 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         y += h + dz(6.0);
     }
 
-    // Updates: found every 15 minutes; how they are announced.
+    // Updates: how they are announced; undoing one; the channel.
+    y += markdown::draw(kit, x, y, w, "__**Updates**__", &look) + dz(10.0);
     if cfg!(any(windows, target_os = "linux")) || d.demo {
         y = update_options(d, kit, x, y, w);
-    }
-
-    // Support.
-    y += markdown::draw(kit, x, y, w, "__**Support**__", &look) + dz(10.0);
-    let (label, tip) = if d.uploading_logs {
-        ("Uploading logs…", "Your logs are on their way")
-    } else {
-        (
-            "Upload logs",
-            "Asks first, and says which logs go and what they contain",
-        )
-    };
-    // Two side by side: upload logs, and go back to the version before an update.
-    let half = (w - dz(14.0)) / 2.0;
-    if kit
-        .button(
-            "upload-logs",
-            x,
-            y,
-            half,
-            BTN_H,
-            Tone::Panel,
-            Some(Icon::Info),
-            label,
-            !d.uploading_logs,
-            tip,
-        )
-        .clicked
-    {
-        ask_upload(d);
     }
     if kit
         .button(
             "go-back",
-            x + w - half,
+            x,
             y,
-            half,
+            w,
             BTN_H,
             Tone::Panel,
             Some(Icon::Refresh),
-            "Go back",
+            "Undo an update",
             true,
-            "An update broke something? Put back the version before: the launcher, a game update, a mod or a plugin",
+            "Did an update break something? Put back the version you had before: the launcher, a game update, a mod or a plugin",
         )
         .clicked
     {
         super::goback::open(d, ctx);
     }
-    y += BTN_H + dz(14.0);
+    y += BTN_H + dz(10.0);
     if kit
         .button(
             "advanced-settings",
@@ -1093,11 +1146,40 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Some(Icon::Gear),
             "Advanced settings",
             true,
-            "The launcher's update channel: main, beta or alpha",
+            "The launcher's update channel (main, beta or alpha), and a dev code for mod makers",
         )
         .clicked
     {
         d.overlay = Some(setup::Overlay::Advanced);
+    }
+    y += BTN_H + dz(20.0);
+
+    // Support.
+    y += markdown::draw(kit, x, y, w, "__**Support**__", &look) + dz(10.0);
+    let (label, tip) = if d.uploading_logs {
+        ("Uploading logs…", "Your logs are on their way")
+    } else {
+        (
+            "Upload logs",
+            "Asks first, and says which logs go and what they contain",
+        )
+    };
+    if kit
+        .button(
+            "upload-logs",
+            x,
+            y,
+            w,
+            BTN_H,
+            Tone::Panel,
+            Some(Icon::Info),
+            label,
+            !d.uploading_logs,
+            tip,
+        )
+        .clicked
+    {
+        ask_upload(d);
     }
 
     about(d, kit, ctx, x, w);
@@ -1186,11 +1268,13 @@ fn update_status(d: &Dashboard) -> (String, Option<(&'static str, String)>) {
             updating.as_ref().map(|j| j.step()).unwrap_or_default()
         ),
         LauncherUpdate::Checking => "checking for updates".into(),
-        LauncherUpdate::Latest if d.state.launcher_channel == Channel::Main => "the latest".into(),
-        LauncherUpdate::Latest => format!("the latest on {channel}"),
+        LauncherUpdate::Latest if d.state.launcher_channel == Channel::Main => "up to date".into(),
+        LauncherUpdate::Latest => format!("up to date on {channel}"),
         // Back from a beta: the channel's release is older.
-        LauncherUpdate::Available(r) if r.back => format!("{channel} is at {}", r.version),
-        LauncherUpdate::Available(r) => format!("{} is out", r.version),
+        LauncherUpdate::Available(r) if r.back => {
+            format!("{channel}'s version is {} (older)", r.version)
+        }
+        LauncherUpdate::Available(r) => format!("{} is available", r.version),
         LauncherUpdate::Failed => "couldn't check for updates".into(),
     };
     let self_update = crate::core::launcher::self_update::supported();
@@ -1356,7 +1440,8 @@ fn dev_code_column(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, 
     ry += BTN_H + dz(14.0);
     let (line, color) = if wrong {
         (
-            "That isn't a dev code: 26 letters and digits from 2 to 7.".to_string(),
+            "That code doesn't look right: check it and paste it again (26 letters and digits)."
+                .to_string(),
             design::QUEST_WARN,
         )
     } else {
@@ -1385,8 +1470,8 @@ pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
         x,
         ry,
         cw,
-        "Which releases the launcher updates to. Beta and alpha get main's releases too; \
-         back on main, main's newest launcher is offered again.",
+        "Which releases the launcher updates to. Beta and alpha also get every main release. \
+         Picking one switches right away (it asks first).",
         16.0,
         design::BODY,
         0.0,
@@ -1403,11 +1488,7 @@ pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
             !updating,
             "",
         ) {
-            d.state.launcher_channel = c;
-            d.save();
-            d.check_launcher_update(ctx);
-            // The live build's files follow the channel too (its overlay on main's).
-            d.updates.check_soon();
+            ask_channel(d, c);
         }
         let nh = k.caps_text(
             x + indent,
@@ -1468,6 +1549,59 @@ pub(super) fn advanced_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context)
     }
 }
 
+/// Asks before following channel `c`: the launcher and the game's files switch at once.
+pub(super) fn ask_channel(d: &mut Dashboard, c: Channel) {
+    let from = d.state.launcher_channel;
+    if c == from {
+        return;
+    }
+    let msg = if c == Channel::Main {
+        format!(
+            "{}\n\nThe launcher downloads Main's newest release (it can be older than this one) \
+             and restarts into it. Echo VR's game files go back to Main's where {} has its own.",
+            c.note(),
+            from.label()
+        )
+    } else {
+        format!(
+            "{}\n\nThe launcher downloads {}'s newest release and restarts into it. Echo VR's \
+             game files follow the channel where it has its own: they update first.",
+            c.note(),
+            c.label()
+        )
+    };
+    d.channel_asked = Some(c);
+    d.dialogs.options(
+        CHANNEL_KEY,
+        &format!("Switch to {}?", c.label()),
+        &msg,
+        DlgIcon::Question,
+        &["Switch now", "Cancel"],
+    );
+}
+
+/// Every frame: the answer to [`ask_channel`].
+pub(super) fn channel_answers(d: &mut Dashboard, ctx: &egui::Context) {
+    let Some(answer) = d.dialogs.take(CHANNEL_KEY) else {
+        return;
+    };
+    let Some(c) = d.channel_asked.take() else {
+        return;
+    };
+    if answer != crate::ui::dialogs::Answer::Button(0) {
+        return;
+    }
+    d.state.launcher_channel = c;
+    d.save();
+    // The launcher installs what its check finds once the game updates the full check
+    // finds are done (the live build's files follow the channel: its overlay on main's).
+    d.launcher_when_found = true;
+    d.games_when_found = true;
+    d.check_launcher_update(ctx);
+    d.updates.check_soon();
+    d.notify(&format!("Switching to {}…", c.label()));
+}
+
 /// Asks before deleting the cache, saying how much goes.
 pub(super) fn ask_delete_cache(d: &mut Dashboard) {
     let amount = d
@@ -1491,17 +1625,16 @@ pub(super) fn ask_upload(d: &mut Dashboard) {
             // Signed in, with the session due for renewal: renewed first.
             tracing::info!("logs: the EchoVRCE session is due, renewing it first");
             d.vrce.check_soon();
-            d.dialogs.info(
-                "Renewing your EchoVRCE sign-in",
-                "Your EchoVRCE session is being renewed: upload your logs again in a moment.",
-            );
+            d.notify("Renewing your EchoVRCE sign-in: the upload goes on in a moment");
+            d.upload_after_sign_in = Some(std::time::Instant::now());
             return;
         }
         tracing::info!("logs: not signed in with EchoVRCE, can't upload");
-        d.page = super::Page::EchoVrce;
+        d.sign_in_from(super::Page::Settings);
+        d.upload_after_sign_in = Some(std::time::Instant::now());
         d.dialogs.info(
             "Sign in with EchoVRCE first",
-            "Logs can be uploaded by players signed in with EchoVRCE: sign in here, then upload them again from Settings.",
+            "Logs can be uploaded by players signed in with EchoVRCE: sign in here, and the upload goes on.",
         );
         return;
     }
@@ -1866,6 +1999,11 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
 
 /// The EchoVRCE session's token while signed in (kept renewed by the EchoVRCE page),
 /// good by EchoVRCE's clock.
+/// Whether logs can be uploaded now (signed in, the session fresh).
+pub(super) fn can_upload(d: &Dashboard) -> bool {
+    upload_token(d).is_some()
+}
+
 fn upload_token(d: &Dashboard) -> Option<String> {
     let now = crate::core::echovrce::now();
     d.vrce.account.as_ref()?;

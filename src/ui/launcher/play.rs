@@ -30,8 +30,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 const LAUNCH_ANYWAY: &str = "launch-anyway";
+/// A JOIN with an event build picked: the live build instead?
+const JOIN_LIVE: &str = "join-live";
+/// A JOIN of an EchoVRCE match while a plugin's server is chosen: back to EchoVRCE?
+const JOIN_ECHOVRCE: &str = "join-echovrce";
 /// Virtual Desktop's Oculus mode failed: through EchoXR instead?
 const VD_SWITCH: &str = "vd-switch";
+/// An event build on Linux while Settings says "No headset": which VR to play it in.
+const EVENT_VR: &str = "event-vr";
 /// Echo VR's mod loader (`BugSplat64.dll`) was removed or blocked: allow it and repair?
 const NEVR_BLOCKED: &str = "nevr-blocked";
 /// PLAY on Linux would add Echo VR to Steam (Steam restarts): asked once.
@@ -117,6 +123,21 @@ pub(super) fn answers(d: &mut Dashboard, ctx: &egui::Context) {
         setup::linux_setup(d, ctx);
         d.play_after_prep = d.jobs.contains_key(setup::LINUX_JOB);
     }
+    if let Some(answer) = d.dialogs.take(JOIN_LIVE) {
+        let lobby = d.pending_lobby.take();
+        if let (Answer::Button(0), Some(lobby), Some(live)) = (answer, lobby, live_build(d)) {
+            d.state.selected = Some(live.id);
+            d.save();
+            join(d, ctx, lobby);
+        }
+    }
+    if let Some(answer) = d.dialogs.take(JOIN_ECHOVRCE) {
+        let lobby = d.pending_lobby.take();
+        if let (Answer::Button(0), Some(lobby)) = (answer, lobby) {
+            super::plugins::back_to_echovrce(d);
+            try_start(d, ctx, Some(lobby));
+        }
+    }
     if let Some(answer) = d.dialogs.take(LAUNCH_ANYWAY) {
         let lobby = d.pending_lobby.take();
         if answer.is_yes() {
@@ -147,21 +168,51 @@ pub(super) fn answers(d: &mut Dashboard, ctx: &egui::Context) {
             _ => {}
         }
     }
+    if let Some(Answer::Button(i)) = d.dialogs.take(EVENT_VR) {
+        let runtime = match i {
+            0 => Some(Runtime::Revive),
+            1 => Some(Runtime::Wivrn),
+            _ => None,
+        };
+        if let Some(runtime) = runtime {
+            d.state.profile.runtime = runtime;
+            d.save();
+            let main = pc_action(d).main;
+            if !matches!(main, Main::PickVr) {
+                press_play(d, ctx, main);
+            }
+        }
+    }
     if let Some(Answer::Button(i)) = d.dialogs.take(VD_SWITCH) {
         let via = match i {
-            0 => Some(VdVia::SteamVr),
-            1 => Some(VdVia::VdXr),
+            0 => Some(VdVia::VdXr),
+            1 => Some(VdVia::SteamVr),
             _ => None,
         };
         if let Some(via) = via {
             d.state.profile.vd_via = via;
             d.save();
             d.notify(match via {
-                VdVia::SteamVr => "Virtual Desktop plays through SteamVR (EchoXR) now: PLAY again",
-                _ => {
-                    "Virtual Desktop plays through its own OpenXR runtime (EchoXR) now: PLAY again"
+                VdVia::SteamVr => {
+                    "Virtual Desktop plays through SteamVR now: starting Echo VR again"
                 }
+                _ => "Virtual Desktop plays directly now: starting Echo VR again",
             });
+            // Once the game that couldn't start VR has closed.
+            d.play_when_closed = Some(std::time::Instant::now());
+        }
+    }
+    if let Some(at) = d.play_when_closed {
+        if at.elapsed() > std::time::Duration::from_secs(30) {
+            d.play_when_closed = None;
+        } else if !d.game().is_running() && d.busy_any().is_none() {
+            d.play_when_closed = None;
+            let main = pc_action(d).main;
+            if !matches!(main, Main::Stop | Main::ToInstall | Main::Nothing) {
+                press_play(d, ctx, main);
+            }
+        } else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
 }
@@ -170,6 +221,8 @@ pub(super) fn answers(d: &mut Dashboard, ctx: &egui::Context) {
 enum Main {
     Play,
     Stop,
+    /// Closes the other build PLAY started, then plays this one.
+    SwitchTo,
     Patch(String),
     /// PLAY, after installing Revive (SteamVR on Windows).
     PrepareRevive,
@@ -183,6 +236,8 @@ enum Main {
     QuestStop,
     /// Nothing to play yet: open the Install page.
     ToInstall,
+    /// An event build with "No headset" picked (Linux): asks which VR to play it in.
+    PickVr,
     Nothing,
 }
 
@@ -399,8 +454,16 @@ fn pc_action(d: &mut Dashboard) -> Action {
                     a.line.parts.push(format!("{n}…"));
                 }
             } else if let Some(o) = &other {
-                (a.main, a.enabled, a.grey) = (Main::Play, false, true);
-                a.tip = format!("{o} is running: close it first to play this one");
+                // Another build PLAY started: closed first, then this one starts.
+                if local.ours.is_some() {
+                    (a.main, a.enabled) = (Main::SwitchTo, true);
+                    a.tip = format!("Close {o} and play this one");
+                } else {
+                    (a.main, a.enabled, a.grey) = (Main::Play, false, true);
+                    a.tip = format!(
+                        "{o} is running (started outside the launcher): close it first to play this one"
+                    );
+                }
             } else if setup::needs_patch(d, &v) {
                 (a.label, a.main) = ("PATCH", Main::Patch(v.id.clone()));
                 a.tip =
@@ -409,26 +472,27 @@ fn pc_action(d: &mut Dashboard) -> Action {
             } else if needs_steamvr && echoxr {
                 a.main = Main::PrepareEchoXr;
                 a.tip = if vd {
-                    "Start Echo VR through Virtual Desktop: EchoXR's OpenXR runtime goes into the game's folder first"
+                    "Start Echo VR through Virtual Desktop: the first start sets up VR support in the game's folder"
                 } else {
-                    "Start Echo VR on SteamVR: EchoXR's OpenXR runtime goes into the game's folder first"
+                    "Start Echo VR on SteamVR: the first start sets up VR support in the game's folder"
                 }
                 .into();
                 a.wait_for(d, &[Res::Vr, Res::Version(v.id.clone())]);
             } else if needs_steamvr {
                 a.main = Main::PrepareRevive;
-                a.tip = "Start Echo VR on SteamVR: Revive, which runs it there, is installed first (asks for administrator rights)".into();
+                a.tip = "Start Echo VR on SteamVR: the first start installs Revive, which runs it there (asks for administrator rights)".into();
                 a.wait_for(d, &[Res::Vr]);
             } else if cfg!(target_os = "linux")
                 && v.publisher_lock.is_some()
                 && d.state.profile.runtime == Runtime::Flat
             {
-                (a.main, a.enabled, a.grey) = (Main::Play, false, true);
+                a.main = Main::PickVr;
                 a.tip =
-                    "Event builds always start in VR: choose SteamVR or WiVRn in Settings".into();
+                    "Event builds always start in VR: PLAY asks whether through SteamVR or WiVRn"
+                        .into();
             } else if cfg!(target_os = "linux") && !setup::pc_play_supported(d) {
                 a.main = Main::PrepareLinux;
-                a.tip = "Start Echo VR: GE-Proton and EchoXR's OpenXR runtime are downloaded or updated first (about 0.5 GB the first time), and Echo VR is added to Steam once".into();
+                a.tip = "Start Echo VR: the first start downloads what it needs to run on Linux (about 0.5 GB) and adds Echo VR to Steam once".into();
                 a.wait_for(d, &[Res::Vr]);
             } else if !setup::pc_play_supported(d) {
                 (a.main, a.enabled, a.grey) = (Main::Play, false, true);
@@ -463,7 +527,9 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 a.update_tip = why.into();
             }
             if !updates && !launcher {
-                a.update_tip = "Event builds don't get updates: REINSTALL on the Install page checks their files".into();
+                a.update_tip =
+                    "Event builds don't get updates: REPAIR on the Install page checks their files"
+                        .into();
             }
             a.update_alert = d
                 .update_note
@@ -629,15 +695,15 @@ pub(super) fn job_state(job: &JobView) -> String {
     use super::JobKind;
     match job.kind {
         JobKind::Install | JobKind::QuestInstall => "Installing".into(),
-        JobKind::Reinstall => "Reinstalling".into(),
+        JobKind::Reinstall => "Repairing".into(),
         JobKind::Update => "Updating".into(),
-        JobKind::Verify => "Verifying".into(),
+        JobKind::Verify => "Checking files".into(),
         JobKind::Patch => "Patching".into(),
         JobKind::Unpatch => "Removing the patch".into(),
         JobKind::Licence => "Licence patch".into(),
         JobKind::Uninstall => "Uninstalling".into(),
         JobKind::Remove => "Removing".into(),
-        JobKind::GoBack => "Going back".into(),
+        JobKind::GoBack => "Undoing update".into(),
         JobKind::Revive | JobKind::QuestUpdate | JobKind::Mods | JobKind::LauncherUpdate => {
             job.title.clone()
         }
@@ -660,7 +726,7 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
         side: if a.update_ready && !a.update_alert {
             Side::Blue {
                 icon: Icon::Download,
-                label: "Update ready",
+                label: "Update now",
                 ready: true,
             }
         } else {
@@ -673,73 +739,132 @@ fn buttons(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, a: Action) {
     };
     let (main, update) = hero::row(kit, "play", 0.0, &row);
     if main {
-        match a.main {
-            Main::Play => try_start(d, ctx, None),
-            Main::Stop => stop(d),
-            Main::Patch(id) => d.overlay = Some(setup::licence(&id)),
-            Main::PrepareRevive => {
-                d.pending_lobby = None;
-                setup::revive(d, ctx);
-                d.play_after_prep = d.jobs.contains_key(setup::REVIVE_JOB);
-            }
-            Main::PrepareEchoXr => {
-                d.pending_lobby = None;
-                setup::echoxr_windows(d, ctx);
-                d.play_after_prep = d.jobs.contains_key(setup::ECHOXR_JOB);
-            }
-            Main::PrepareLinux if setup::linux_needs_shortcut() => {
-                d.pending_lobby = None;
-                d.dialogs.confirm(
-                    PREPARE_LINUX,
-                    "Add Echo VR to Steam",
-                    &setup::linux_setup_question(),
-                    crate::ui::dialogs::Icon::Info,
-                )
-            }
-            Main::PrepareLinux => {
-                d.pending_lobby = None;
-                setup::linux_setup(d, ctx);
-                d.play_after_prep = d.jobs.contains_key(setup::LINUX_JOB);
-            }
-            Main::QuestConnect => d.check_quest(ctx, true),
-            Main::QuestPlay => quest_launch(d, ctx),
-            Main::QuestStop => quest_stop(d, ctx),
-            Main::ToInstall => {
-                // The Install page opens on the version picked here.
-                d.install_pick = match d.target() {
-                    Target::Available(e) => Some(e.id),
-                    Target::Missing(v) => v.catalog_id,
-                    _ => None,
-                };
-                d.page = Page::Install;
-            }
-            Main::Nothing => {}
-        }
+        press_play(d, ctx, a.main);
     }
     if update {
-        // The launcher last: it restarts.
-        let launcher = d.launcher_ready().then_some(QueuedUpdate::Launcher);
-        match a.update {
-            Update::Pc(v) => {
-                let plugins =
-                    (d.updates.plugins_for(&v.id) > 0).then(|| QueuedUpdate::Plugins(v.id.clone()));
-                let held = d.state.holds.contains_key(&format!("game:{}", v.id));
-                if held {
-                    // Gone back from its update: only a newer one is offered; this button
-                    // doesn't bring the one gone back from again.
-                    d.updates.check_soon();
-                    d.notify("Kept at the update before: Settings → Go back → Use newest gets the newest");
-                } else if crate::core::launcher::versions::has_updates(&v) {
-                    versions::update(d, ctx, *v);
-                }
-                d.queue_updates(ctx, plugins.into_iter().chain(launcher).collect());
-            }
-            Update::Quest => {
-                setup::quest_update(d, ctx);
-                d.queue_updates(ctx, launcher.into_iter().collect());
-            }
-            Update::Nothing => {}
+        run_update(d, ctx, a.update);
+    }
+}
+
+/// What PLAY's button does now (`main`, from [`pc_action`] or [`quest_action`]).
+fn press_play(d: &mut Dashboard, ctx: &egui::Context, main: Main) {
+    match main {
+        Main::Play => try_start(d, ctx, None),
+        Main::Stop => stop(d),
+        Main::SwitchTo => {
+            stop(d);
+            d.play_when_closed = Some(std::time::Instant::now());
         }
+        Main::Patch(id) => {
+            d.play_after_patch = Some((id.clone(), None));
+            d.overlay = Some(setup::licence(&id));
+        }
+        Main::PrepareRevive => {
+            d.pending_lobby = None;
+            setup::revive(d, ctx);
+            d.play_after_prep = d.jobs.contains_key(setup::REVIVE_JOB);
+        }
+        Main::PrepareEchoXr => {
+            d.pending_lobby = None;
+            setup::echoxr_windows(d, ctx);
+            d.play_after_prep = d.jobs.contains_key(setup::ECHOXR_JOB);
+        }
+        Main::PrepareLinux if setup::linux_needs_shortcut() => {
+            d.pending_lobby = None;
+            d.dialogs.confirm(
+                PREPARE_LINUX,
+                "Add Echo VR to Steam",
+                &setup::linux_setup_question(),
+                crate::ui::dialogs::Icon::Info,
+            )
+        }
+        Main::PrepareLinux => {
+            d.pending_lobby = None;
+            setup::linux_setup(d, ctx);
+            d.play_after_prep = d.jobs.contains_key(setup::LINUX_JOB);
+        }
+        Main::QuestConnect => d.check_quest(ctx, true),
+        Main::QuestPlay => quest_launch(d, ctx),
+        Main::QuestStop => quest_stop(d, ctx),
+        Main::ToInstall => {
+            // The Install page opens on the version picked here, with its install's
+            // questions when it can be installed straight away.
+            let target = d.target();
+            d.install_pick = match &target {
+                Target::Available(e) => Some(e.id.clone()),
+                Target::Missing(v) => v.catalog_id.clone(),
+                _ => None,
+            };
+            d.page = Page::Install;
+            if let Target::Available(e) = target {
+                if d.busy_any().is_none() {
+                    setup::ask_install(d, e);
+                }
+            }
+        }
+        Main::PickVr => d.dialogs.options(
+            EVENT_VR,
+            "Play in VR",
+            "Event builds always start in VR, and Settings says you play without a headset. Which VR should Echo VR use? Settings keeps your choice, and can change it back.",
+            crate::ui::dialogs::Icon::Info,
+            &["Use SteamVR", "Use WiVRn", "Cancel"],
+        ),
+        Main::Nothing => {}
+    }
+}
+
+/// A notice's "Play": picks installed version `id` on the Play page, and starts it when
+/// PLAY would (else its next step, such as the licence patch, waits there).
+pub(super) fn play_version(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
+    if d.state.version(id).is_none() {
+        return;
+    }
+    d.platform = Platform::Pc;
+    d.state.selected = Some(id.to_string());
+    d.save();
+    d.page = Page::Play;
+    let main = pc_action(d).main;
+    if matches!(
+        main,
+        Main::Play
+            | Main::Patch(_)
+            | Main::PrepareRevive
+            | Main::PrepareEchoXr
+            | Main::PrepareLinux
+    ) {
+        press_play(d, ctx, main);
+    }
+}
+
+/// Play's update button: the game's update, then its mods', then the launcher's.
+fn run_update(d: &mut Dashboard, ctx: &egui::Context, update: Update) {
+    // The launcher last: it restarts.
+    let launcher = d.launcher_ready().then_some(QueuedUpdate::Launcher);
+    match update {
+        Update::Pc(v) => {
+            let plugins =
+                (d.updates.plugins_for(&v.id) > 0).then(|| QueuedUpdate::Plugins(v.id.clone()));
+            let held = d.state.holds.contains_key(&format!("game:{}", v.id));
+            if held {
+                // Gone back from its update: only a newer one is offered; this button
+                // doesn't bring the one gone back from again.
+                d.updates.check_soon();
+                let key = format!("game:{}", v.id);
+                d.notify_with(
+                    "You undid this version's last update, so it isn't installed again",
+                    "Install it anyway",
+                    super::notices::Action::UseNewest(key),
+                );
+            } else if crate::core::launcher::versions::has_updates(&v) {
+                versions::update(d, ctx, *v);
+            }
+            d.queue_updates(ctx, plugins.into_iter().chain(launcher).collect());
+        }
+        Update::Quest => {
+            setup::quest_update(d, ctx);
+            d.queue_updates(ctx, launcher.into_iter().collect());
+        }
+        Update::Nothing => {}
     }
 }
 
@@ -999,8 +1124,8 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
                 // An update is out for it (the rail's badge counts every version's).
                 let ready = d.updates.game(&v.id) || d.updates.plugins_for(&v.id) > 0;
                 match (ready, size) {
-                    (true, Some(s)) => (format!("Update ready  ·  {s}"), design::QUEST_ON),
-                    (true, None) => ("Update ready".into(), design::QUEST_ON),
+                    (true, Some(s)) => (format!("Update available  ·  {s}"), design::QUEST_ON),
+                    (true, None) => ("Update available".into(), design::QUEST_ON),
                     (false, s) => (s.unwrap_or_default(), design::GREY),
                 }
             };
@@ -1271,6 +1396,25 @@ fn quest_stop(d: &mut Dashboard, ctx: &egui::Context) {
     });
 }
 
+/// Closes the Echo VR PLAY started and starts that version again.
+pub(super) fn restart(d: &mut Dashboard) {
+    let Some(id) = d.local().ours else {
+        return;
+    };
+    d.platform = Platform::Pc;
+    d.state.selected = Some(id);
+    d.save();
+    stop(d);
+    d.play_when_closed = Some(std::time::Instant::now());
+}
+
+/// Starts Echo VR on the Quest, from another page: Play shows it.
+pub(super) fn play_quest(d: &mut Dashboard, ctx: &egui::Context) {
+    d.platform = Platform::Quest;
+    d.page = Page::Play;
+    quest_launch(d, ctx);
+}
+
 fn quest_launch(d: &mut Dashboard, ctx: &egui::Context) {
     d.quest_busy = true;
     d.worker.spawn(ctx, |tx| {
@@ -1317,14 +1461,32 @@ pub(super) fn join(d: &mut Dashboard, ctx: &egui::Context, lobby: Join) {
     match a.main {
         // An event build plays the classic lobbies: these matches are the live build's.
         Main::Play if matches!(d.target(), Target::Installed(v) if v.publisher_lock.is_some()) => {
-            d.dialogs.info(
-                "Choose the live build to join",
-                "Event builds play on the classic lobbies server, not in these matches. Choose the live build next to PLAY, then join again.",
-            )
+            match live_build(d) {
+                Some(live) => {
+                    d.pending_lobby = Some(lobby);
+                    d.dialogs.options(
+                        JOIN_LIVE,
+                        "Join with the live build?",
+                        &format!(
+                            "The event build picked next to PLAY plays on the classic lobbies \
+                             server, not in these matches. {} can join it.",
+                            live.name
+                        ),
+                        DlgIcon::Question,
+                        &[&format!("Switch to {} and join", live.name), "Cancel"],
+                    );
+                }
+                None => d.dialogs.info(
+                    "Install the live build to join",
+                    "Event builds play on the classic lobbies server, not in these matches: \
+                     the live build of Echo VR joins them. Install it on the Install page.",
+                ),
+            }
         }
         Main::Play => try_start(d, ctx, Some(lobby)),
         Main::Patch(id) => {
-            d.notify("Your licence patch first: then join again");
+            d.notify("Your licence patch first: Echo VR joins once it's in");
+            d.play_after_patch = Some((id.clone(), Some(lobby)));
             d.overlay = Some(setup::licence(&id));
         }
         Main::PrepareRevive => prepare(d, ctx, setup::REVIVE_JOB, setup::revive),
@@ -1340,11 +1502,25 @@ pub(super) fn join(d: &mut Dashboard, ctx: &egui::Context, lobby: Join) {
         }
         Main::PrepareLinux => prepare(d, ctx, setup::LINUX_JOB, setup::linux_setup),
         Main::ToInstall => {
-            d.notify("Install Echo VR first: then join again");
-            d.page = Page::Install;
+            d.notify("Install Echo VR first to join matches");
+            press_play(d, ctx, Main::ToInstall);
         }
         _ => d.notify(&a.tip),
     }
+}
+
+/// The installed live build (no event build), the one picked first.
+fn live_build(d: &Dashboard) -> Option<crate::core::launcher::store::InstalledVersion> {
+    let live = |v: &&crate::core::launcher::store::InstalledVersion| {
+        v.publisher_lock.is_none() && v.present()
+    };
+    d.state
+        .versions
+        .iter()
+        .filter(live)
+        .find(|v| v.id == "pc-latest")
+        .or_else(|| d.state.versions.iter().find(live))
+        .cloned()
 }
 
 /// Starts the PC game (joining a match when given), after warning about anything that
@@ -1390,7 +1566,24 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
     if let Target::Installed(v) = d.target() {
         let echorelay = crate::core::launcher::mods::echorelay_for(&d.state, &v).is_some();
         if echorelay && lobby.is_some() {
-            d.notify("That match is on EchoVRCE: Echo VR plays on an EchoRelay server now (Back to EchoVRCE in its plugin)");
+            let place = d
+                .state
+                .game_server
+                .as_ref()
+                .map(|g| g.name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_else(|| "another server".into());
+            d.pending_lobby = lobby;
+            d.dialogs.options(
+                JOIN_ECHOVRCE,
+                "This match is on EchoVRCE",
+                &format!(
+                    "Echo VR plays on {place} now: a plugin chose it. Switch back to EchoVRCE \
+                     to join this match? The plugin can choose {place} again later."
+                ),
+                DlgIcon::Question,
+                &["Back to EchoVRCE and join", "Cancel"],
+            );
             return;
         }
         if echorelay && !relay::live_in_place(&v) {
@@ -1516,10 +1709,10 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     // preparation does it.
     if let Err(f) = ready::prepare(&d.state, &v) {
         if f.step == ready::Part::EchoXr && revive::needs_elevation(&f.error) {
-            d.notify(
-                "EchoXR needs administrator rights for this folder: PLAY again once it's set up",
-            );
+            d.notify("EchoXR needs administrator rights for this folder: Echo VR starts once it's set up");
             setup::echoxr_windows(d, ctx);
+            d.pending_lobby = lobby;
+            d.play_after_prep = d.jobs.contains_key(setup::ECHOXR_JOB);
         } else {
             d.dialogs.error(
                 f.step.title(),
@@ -1813,7 +2006,7 @@ fn allow_and_repair(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
                 });
             match r {
                 Ok(()) => super::JobResult::Updated,
-                Err(e) => versions::job_err(e, "Couldn't Allow Echo VR"),
+                Err(e) => versions::job_err(e, "Couldn't allow Echo VR"),
             }
         },
     );
@@ -1825,9 +2018,9 @@ pub(super) fn ask_vd_switch(d: &mut Dashboard) {
     d.dialogs.options(
         VD_SWITCH,
         "Virtual Desktop couldn't start VR",
-        "Echo VR got no headset, or no picture for it, in Virtual Desktop's Oculus mode, so the game stopped and was closed. Is Virtual Desktop connected from your headset?\n\nOr play through EchoXR: SteamVR (EchoXR) needs SteamVR installed; VD's OpenXR (EchoXR) needs neither SteamVR nor Meta's runtime. Settings has this choice under Virtual Desktop.",
+        "Echo VR got no headset picture in Virtual Desktop's Oculus mode, so the game was closed. Is Virtual Desktop connected from your headset?\n\nOr play another way: straight through Virtual Desktop (nothing else needed), or through SteamVR (needs SteamVR installed). Echo VR starts again the new way; Settings can change it back.",
         DlgIcon::Warning,
-        &["SteamVR (EchoXR)", "VD's OpenXR (EchoXR)", "Keep Oculus mode"],
+        &["Use Virtual Desktop directly", "Use SteamVR", "Keep Oculus mode"],
     );
 }
 

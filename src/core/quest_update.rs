@@ -379,7 +379,7 @@ pub fn apply(
 ) -> Result<()> {
     let Some(root) = manifest.target_root.clone() else {
         return Err(UiError::new(
-            "Update Failed",
+            "Couldn't update",
             "The Quest update manifest is missing its target location.\nUpdate aborted.",
         )
         .into());
@@ -438,7 +438,7 @@ pub fn apply(
                 .with_context(|| format!("Downloading {} failed", e.path))?;
             if !sha256_matches(&local, sha) {
                 return Err(UiError::new(
-                    format!("Hash mismatch for {}", e.path),
+                    format!("A download came out damaged: {}", e.path),
                     format!(
                         "The downloaded file {} does not match the expected SHA-256 checksum.\nUpdate aborted.",
                         e.path

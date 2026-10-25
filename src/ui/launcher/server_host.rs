@@ -32,6 +32,7 @@ const LINE_H: f32 = 22.0;
 const STOP_KEY: &str = "server-host-stop";
 const RESTART_KEY: &str = "server-host-restart";
 const DELETE_KEY: &str = "server-host-delete";
+const SIGN_OUT_KEY: &str = "server-host-sign-out";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum Tab {
@@ -363,6 +364,17 @@ fn answers(d: &mut Dashboard, ctx: &egui::Context) {
         if let (true, Some(name)) = (a.is_yes(), d.server_host.asked.take()) {
             delete(d, &name);
         }
+    }
+    if d.dialogs.take(SIGN_OUT_KEY).is_some_and(|a| a.is_yes()) {
+        let r = account::forget(d.server_host.cfg());
+        save(d);
+        d.server_host.account_note = Some(match r {
+            Ok(()) => (
+                "Signed out. Running servers keep going until they start again.".into(),
+                true,
+            ),
+            Err(e) => (format!("{e:#}"), false),
+        });
     }
 }
 
@@ -723,7 +735,11 @@ fn servers_tab(
             Some(Icon::Plus),
             "Add",
             !full,
-            "Add servers with the defaults, on the next free ports",
+            if full {
+                "This PC has as many servers as the launcher runs: delete one first"
+            } else {
+                "Add servers with the defaults, on the next free ports"
+            },
         )
         .clicked
     {
@@ -1396,7 +1412,7 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
         a.username.clone()
     };
     let state = match a.sign_in {
-        SignIn::None => "The servers aren't signed in. They need an EchoVRCE account of their own (not the one you play with, unless it has no password).".to_string(),
+        SignIn::None => "The servers aren't signed in yet: link an EchoVRCE account for them below. Use an account of their own, or the one you play with if it has no password.".to_string(),
         SignIn::Device => format!("The servers sign in as {who} (linked, no password)."),
         SignIn::Password => format!("The servers sign in as {who} with its Discord ID and password."),
     };
@@ -1580,15 +1596,12 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
         )
         .clicked
         {
-            let r = account::forget(d.server_host.cfg());
-            save(d);
-            d.server_host.account_note = Some(match r {
-                Ok(()) => (
-                    "Signed out. Running servers keep going until they start again.".into(),
-                    true,
-                ),
-                Err(e) => (format!("{e:#}"), false),
-            });
+            d.dialogs.confirm_danger(
+                SIGN_OUT_KEY,
+                "Sign the servers out?",
+                "The servers forget their EchoVRCE account: they can't host until one is linked again. Running servers keep going until they start again.",
+                "Sign out",
+            );
         }
         y += BTN_H + dz(14.0);
     }
@@ -1608,7 +1621,7 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
         ) + dz(12.0);
     }
     if y < bottom - dz(60.0) {
-        k.caps_text(x, y, w, "A linked account must have no password on EchoVRCE (/reset-password in the Echo VR Lounge Discord clears it), else EchoVRCE refuses the servers' sign-in.", 14.0, design::GREY, 0.0);
+        k.caps_text(x, y, w, "A linked account must have no password on EchoVRCE, or EchoVRCE refuses the servers' sign-in. To remove it: /reset-password in the Echo VR Lounge Discord.", 14.0, design::GREY, 0.0);
     }
 }
 
@@ -1618,7 +1631,7 @@ fn background_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
         Some(true) => {
             "The server host is running: the servers keep going with the launcher closed."
         }
-        Some(false) => "The server host isn't running. Start a server and it starts.",
+        Some(false) => "The server host isn't running: it starts with the first server you start.",
         None => "Looking…",
     };
     y += k.caps_text(x, y, w, text, 15.0, design::BODY, 0.0) + dz(14.0);
