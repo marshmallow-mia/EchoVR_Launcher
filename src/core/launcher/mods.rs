@@ -846,7 +846,13 @@ pub struct PackView {
 
 /// The folder its plugins are in.
 pub fn plugins_dir(v: &InstalledVersion) -> PathBuf {
-    v.bin_dir().join(PLUGINS)
+    plugins_in(&v.bin_dir())
+}
+
+/// The folder nEVR loads plugins from, for the game whose `bin/win10` is `bin`. Every place
+/// that reads or writes it goes through here (a test keeps it so): where nEVR looks is one line.
+pub fn plugins_in(bin: &Path) -> PathBuf {
+    bin.join(PLUGINS)
 }
 
 /// The folder its plugins log to (each in a folder of its own).
@@ -3975,7 +3981,7 @@ pub(crate) mod tests {
     pub(crate) fn live(dir: &Path) -> InstalledVersion {
         let root = dir.join("pc");
         let bin = root.join(paths::ARENA_DIR).join("bin/win10");
-        std::fs::create_dir_all(bin.join("plugins")).unwrap();
+        std::fs::create_dir_all(plugins_in(&bin)).unwrap();
         std::fs::write(bin.join("echovr.exe"), "MZ").unwrap();
         std::fs::write(bin.join(SLOT), "MZ [NEVR.BOOT] \x004.0.0+1.abcdef0\0").unwrap();
         // 1.2.0 on: it takes required_only.
@@ -4162,7 +4168,7 @@ pub(crate) mod tests {
 
     /// Puts catalogue mod `id` `version` into `v` as an install would note it.
     fn put_catalogue_mod(v: &InstalledVersion, id: &str, file: &str, version: &str, added: Added) {
-        let path = v.bin_dir().join("plugins").join(file);
+        let path = plugins_dir(v).join(file);
         std::fs::write(&path, format!("MZ {id} {version}")).unwrap();
         let sha = download::sha256_file(&path).unwrap();
         edit_overlay(v, |o| {
@@ -5224,5 +5230,56 @@ pub(crate) mod tests {
         let offered = c.mods[0].choose_with(false, &|_| false).unwrap();
         assert!(offered.entry.release.is_some());
         assert!(offered.entry.downloadable() && offered.entry.url.is_empty());
+    }
+
+    #[test]
+    fn the_plugins_folder_is_named_in_one_place() {
+        let v = live(tempfile::tempdir().unwrap().path());
+        assert_eq!(plugins_dir(&v), plugins_in(&v.bin_dir()));
+        assert_eq!(
+            plugins_in(Path::new("bin")),
+            ["bin", "plugins"].iter().collect::<PathBuf>()
+        );
+
+        // Where nEVR looks for plugins is `plugins_in`'s one line: no other place of the
+        // launcher joins it by hand. (A pack's zip, and the launcher's own plugins folder
+        // in its data folder, are not the game's.)
+        fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    rs_files(&path, out);
+                } else if path.extension().is_some_and(|x| x == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        rs_files(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut files,
+        );
+        let by_name = format!("join(\"{}\")", "plugins");
+        let by_const = format!("join({})", "PLUGINS");
+        let mut stray = Vec::new();
+        for f in &files {
+            let name = f.file_name().unwrap().to_string_lossy();
+            let text = std::fs::read_to_string(f).unwrap();
+            for (n, line) in text.lines().enumerate() {
+                let own = matches!(&*name, "packs.rs" | "plugins.rs");
+                let staged = line.contains("staging.join(");
+                let def = line.contains("bin.join(PLUGINS)");
+                if (line.contains(&by_name) && !own && !staged)
+                    || (line.contains(&by_const) && !(staged || def))
+                {
+                    stray.push(format!("{}:{}: {}", name, n + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            stray.is_empty(),
+            "use mods::plugins_in:\n{}",
+            stray.join("\n")
+        );
     }
 }

@@ -52,8 +52,6 @@ const RATING_FILE: &str = "NvrGpuRating-1.0.0.dll";
 const RATING_SHA256: &str = "78c047ea68c363550d8c2c7b802fcd4e025fc9b092e086bf37a733e3d91f1d71";
 /// Halloween 2017's lock: the build NvrMissingTextures is for.
 const TEXTURES_LOCK: &str = "release4_5";
-/// Where the loader finds its plugins, beside the exe.
-const PLUGINS: &str = "plugins";
 /// EchoRelay's patch, as a plugin.
 pub const PATCH_PLUGIN: &str = "EchoRelay.Patch.dll";
 /// The loader's settings, beside it: its log and plugins folders (every DLL there loads).
@@ -107,9 +105,9 @@ fn plugin_names(v: &InstalledVersion) -> Vec<(&'static str, &'static str)> {
 pub fn in_place(v: &InstalledVersion) -> bool {
     let bin = v.bin_dir();
     download::sha256_matches(&bin.join(SLOT), LOADER_SHA256)
-        && plugin_names(v)
-            .iter()
-            .all(|(name, sha)| download::sha256_matches(&bin.join(PLUGINS).join(name), sha))
+        && plugin_names(v).iter().all(|(name, sha)| {
+            download::sha256_matches(&super::mods::plugins_in(&bin).join(name), sha)
+        })
         && bin.join(LOADER_CONFIG).is_file()
         && !old_patch_in(&bin, rad14(v))
 }
@@ -179,7 +177,7 @@ fn install(bin: &Path, rad14: bool, loader: &[u8], plugins: &[(&str, Vec<u8>)]) 
             "Couldn't take EchoRelay's old patch out. Please close Echo VR and try again.",
         )?;
     }
-    let dir = bin.join(PLUGINS);
+    let dir = super::mods::plugins_in(bin);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     for (name, dll) in plugins {
         write_atomic(&dir.join(name), dll)?;
@@ -757,7 +755,7 @@ mod tests {
         );
         assert_eq!(std::fs::read(bin.join(SLOT)).unwrap(), b"loader");
         assert_eq!(
-            std::fs::read(bin.join("plugins").join(PATCH_PLUGIN)).unwrap(),
+            std::fs::read(crate::core::launcher::mods::plugins_in(bin).join(PATCH_PLUGIN)).unwrap(),
             b"patch"
         );
         let config: serde_json::Value =

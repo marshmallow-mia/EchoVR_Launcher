@@ -569,9 +569,7 @@ pub fn play_from_steam(ask: &crate::core::launcher::headless::Ask) -> i32 {
         .then(|| CompositorLog::mark(&steam_root));
     // A Low preset the failed GPU rating saved: rated again this once, now that
     // NvrGpuRating answers (only with it in place, else the game picks Low again).
-    let rerate = v
-        .bin_dir()
-        .join("plugins")
+    let rerate = crate::core::launcher::mods::plugins_dir(&v)
         .join(crate::core::launcher::graphics::PLUGIN)
         .is_file()
         .then(|| {

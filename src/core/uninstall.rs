@@ -101,7 +101,7 @@ pub fn clean_version(v: &InstalledVersion) -> Vec<String> {
     let mut files: Vec<PathBuf> = vec![
         bin.join(echoxr::LAUNCHER),
         bin.join(paths::OPENXR_EXE),
-        bin.join("plugins").join(echoxr_hands::PLUGIN),
+        crate::core::launcher::mods::plugins_in(&bin).join(echoxr_hands::PLUGIN),
     ];
     files.extend(super::launcher::mods::launcher_files(v));
     // The content packs it installed (read before its choices file, which names them, goes).
@@ -456,7 +456,7 @@ mod tests {
         };
         let bin = v.bin_dir();
         std::fs::create_dir_all(bin.join("EchoXR/Hands")).unwrap();
-        std::fs::create_dir_all(bin.join("plugins")).unwrap();
+        std::fs::create_dir_all(crate::core::launcher::mods::plugins_in(&bin)).unwrap();
         for f in [
             "echovr.exe",
             "EchoXR.exe",

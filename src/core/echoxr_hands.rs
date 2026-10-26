@@ -92,7 +92,9 @@ pub fn dir_in(bin: &Path) -> PathBuf {
 
 /// Whether the plugin is in the game's `plugins/` (hand tracking on for that version).
 pub fn installed_in(bin: &Path) -> bool {
-    bin.join("plugins").join(PLUGIN).is_file()
+    crate::core::launcher::mods::plugins_in(bin)
+        .join(PLUGIN)
+        .is_file()
 }
 
 /// Puts the package into `bin` and the plugin into `plugins/`. Its settings go there
@@ -145,7 +147,7 @@ fn unpack(zip: impl std::io::Read + std::io::Seek, bin: &Path) -> Result<()> {
 /// The packaged plugin (and, the first time, its settings) into `bin`'s `plugins` folder.
 fn plugin_into(bin: &Path) -> Result<()> {
     let from = dir_in(bin).join(PACKAGED_PLUGIN);
-    let plugins = bin.join("plugins");
+    let plugins = crate::core::launcher::mods::plugins_in(bin);
     std::fs::create_dir_all(&plugins)?;
     let dll = plugins.join(PLUGIN);
     let ours = std::fs::read(from.join(PLUGIN)).context("the package has no plugin")?;
@@ -168,7 +170,7 @@ fn plugin_into(bin: &Path) -> Result<()> {
 
 /// Takes the plugin out of `plugins/` (hand tracking off); its settings stay.
 pub fn remove_from(bin: &Path) -> Result<()> {
-    let dll = bin.join("plugins").join(PLUGIN);
+    let dll = crate::core::launcher::mods::plugins_in(bin).join(PLUGIN);
     match std::fs::remove_file(&dll) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -233,7 +235,9 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         unpack(std::fs::File::open(&zip).unwrap(), &bin).unwrap();
         plugin_into(&bin).unwrap();
-        assert!(bin.join("plugins").join(PLUGIN).is_file());
+        assert!(crate::core::launcher::mods::plugins_in(&bin)
+            .join(PLUGIN)
+            .is_file());
         assert!(dir_in(&bin).join("layer").is_dir());
     }
 
@@ -275,12 +279,22 @@ mod tests {
         let bin = dir.path();
         assert!(!installed_in(bin));
         remove_from(bin).unwrap();
-        std::fs::create_dir_all(bin.join("plugins")).unwrap();
-        std::fs::write(bin.join("plugins").join(PLUGIN), b"x").unwrap();
-        std::fs::write(bin.join("plugins").join(SETTINGS), "Network = 1\n").unwrap();
+        std::fs::create_dir_all(crate::core::launcher::mods::plugins_in(bin)).unwrap();
+        std::fs::write(
+            crate::core::launcher::mods::plugins_in(bin).join(PLUGIN),
+            b"x",
+        )
+        .unwrap();
+        std::fs::write(
+            crate::core::launcher::mods::plugins_in(bin).join(SETTINGS),
+            "Network = 1\n",
+        )
+        .unwrap();
         assert!(installed_in(bin));
         remove_from(bin).unwrap();
         assert!(!installed_in(bin));
-        assert!(bin.join("plugins").join(SETTINGS).exists());
+        assert!(crate::core::launcher::mods::plugins_in(bin)
+            .join(SETTINGS)
+            .exists());
     }
 }

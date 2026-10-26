@@ -23,7 +23,9 @@ pub fn bin_in(root: &Path) -> PathBuf {
 pub const NETCONFIG: &str = "sourcedb/rad15/json/r14/config/netconfig_dedicatedserver.json";
 /// Folders in `bin/win10` the server writes to: its own, never links.
 const BIN_OWN: &[&str] = &["logs", "_temp", "plugin_logs"];
-/// Copied (with what is in them) rather than linked: they are loaded and held.
+/// Copied (with what is in them) rather than linked: they are loaded and held. The game's
+/// plugins folder ([`crate::core::launcher::mods::plugins_in`]) is one of them while it is
+/// in `bin/win10`.
 const BIN_COPIED: &[&str] = &["plugins"];
 /// Never taken from the game: nEVR refuses to start beside a `dbgcore.dll`.
 const BIN_SKIP: &[&str] = &["dbgcore.dll"];
@@ -485,8 +487,9 @@ mod tests {
         );
         assert!(!is_link(&bin.join("echovr.exe")));
         assert!(!bin.join("dbgcore.dll").exists());
-        assert!(!is_link(&bin.join("plugins")));
-        assert!(bin.join("plugins/sub/s.json").is_file());
+        let plugins = crate::core::launcher::mods::plugins_in(&bin);
+        assert!(!is_link(&plugins));
+        assert!(plugins.join("sub/s.json").is_file());
         assert!(is_link(&bin.join("content")));
         assert!(bin.join("logs").is_dir() && !is_link(&bin.join("logs")));
         assert!(is_link(&root.join("_data")));
@@ -508,7 +511,7 @@ mod tests {
         std::fs::remove_file(g.join("bin/win10/plugins/A.dll")).unwrap();
         std::fs::write(g.join("bin/win10/BugSplat64.dll"), "nevr 2").unwrap();
         farm.build().unwrap();
-        assert!(!bin.join("plugins/A.dll").exists());
+        assert!(!plugins.join("A.dll").exists());
         assert_eq!(
             std::fs::read_to_string(bin.join("BugSplat64.dll")).unwrap(),
             "nevr 2"

@@ -992,7 +992,7 @@ mod tests {
         // plugins, and the game's own dbghelp.dll back (the archive has the patch as it).
         assert!(super::super::relay::in_place(&v));
         assert!(download::sha256_matches(
-            &bin.join("plugins").join(super::super::relay::PATCH_PLUGIN),
+            &crate::core::launcher::mods::plugins_in(&bin).join(super::super::relay::PATCH_PLUGIN),
             super::super::relay::PATCH_SHA256
         ));
         assert!(bin.join("plugins/NvrMissingTextures.dll").is_file());

@@ -1697,7 +1697,7 @@ mod tests {
         use crate::core::paths;
         let root = dir.join("pc");
         let bin = root.join(paths::ARENA_DIR).join("bin/win10");
-        std::fs::create_dir_all(bin.join("plugins")).unwrap();
+        std::fs::create_dir_all(mods::plugins_in(&bin)).unwrap();
         std::fs::write(bin.join("echovr.exe"), "MZ").unwrap();
         std::fs::write(bin.join(mods::SLOT), "MZ [NEVR.BOOT] \x004.0.0+1.abcdef0\0").unwrap();
         std::fs::write(bin.join("plugins/NvrAssetPatches.dll"), "MZ").unwrap();
