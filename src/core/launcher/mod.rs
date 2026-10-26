@@ -27,6 +27,7 @@ pub mod quest_net;
 pub mod ready;
 pub mod relay;
 pub mod self_update;
+pub mod signed_plugin;
 pub mod store;
 pub mod update_check;
 pub mod versions;
