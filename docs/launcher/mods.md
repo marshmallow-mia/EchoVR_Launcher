@@ -214,6 +214,49 @@ fields beside a `mods.json` entry's (and the mod's `publisher`, its GitHub accou
   whether to start without them (`runs` in `launcher-mods.json`); nothing is turned off
   without that click.
 
+### A release in the signed-plugin shape
+
+A mod whose plugin is signed ships as a release of three files
+([release-signer's `docs/plugin-release.md`](https://github.com/thesprockee/release-signer/blob/teth/plugin-release-spec/docs/plugin-release.md),
+section 4): `<id>-v<version>-windows.zip` (the DLL, `LICENSE`, `NOTICE` and, with settings,
+`<Stem>.plugin.json`, flat, and a `SHA256SUMS` over them), `echo-mod.json` and `SHA256SUMS`
+(a line for the zip, one for the manifest). Its entry has a `release` object in place of
+`url` and `sha256`; it is the version object of the mod's echo-mods entry (`tag`, `assets`,
+`signer`) and a `base`:
+
+```json
+{ "id": "foo", "name": "Foo", "version": "1.2.0", "file": "Foo.dll",
+  "release": {
+    "base": "https://github.com/EchoTools/foo/releases/download/v1.2.0", "tag": "v1.2.0",
+    "assets": { "package":  { "name": "foo-v1.2.0-windows.zip", "sha256": "…", "size": 44100 },
+                "manifest": { "name": "echo-mod.json", "sha256": "…", "size": 611 },
+                "sums":     { "name": "SHA256SUMS", "sha256": "…", "size": 182 } },
+    "signer": { "status": "signed", "record": "https://…", "signed_at": "2026-10-27T09:30:00Z",
+                "package": { "sha256": "…", "size": 44100 }, "sums": { "sha256": "…", "size": 182 } } } }
+```
+
+- `base`: where the three files are: relative to the download mirrors, `https` on a trusted
+  host, or the EchoTools fork's GitHub release of `tag` (`https://github.com/EchoTools/<repo>/releases/download/<tag>`).
+- The names are the spec's (`<id>-v<version>-windows.zip`, `echo-mod.json`, `SHA256SUMS`) and
+  `tag` is `v<version>`; an entry that differs is left out.
+- What each file must hash to: `assets.*.sha256` (what the release workflow attested), except
+  that with `signer.status` `signed` (or `revoked`) the zip and the sums are `signer.package`
+  and `signer.sums`: signing replaces the DLL and regenerates both sums files. The manifest
+  passes through signing untouched.
+- Install downloads the three files and checks, before anything is put into `plugins/`: each
+  against the pin above; the zip and the manifest against the release's `SHA256SUMS`;
+  `echo-mod.json`'s `id`, `version`, `file` and `package` against the entry; the zip's entries
+  (exactly the DLL, `LICENSE`, `NOTICE`, `<Stem>.plugin.json` and `SHA256SUMS`; flat; none over
+  16 MiB) against the zip's own `SHA256SUMS`. Then the DLL (and its settings file) go into
+  `plugins/` and the DLL is noted with its checksum, as for a loose DLL. A mismatch stops
+  the install with nothing changed.
+- `signer.status` (`unsigned`, `pending`, `approved`, `signed`, `revoked`) is the listing's
+  record of the release in signing. A `revoked` release isn't installed, nor one with a
+  status this launcher doesn't know.
+- An entry with a `release` and a `url` uses the release; the loose DLL (`url`, `sha256`)
+  stays for entries without one, and for launchers that predate it. A version in
+  `catalogue.json` is such an entry too, so it may carry a `release` the same way.
+
 ### Content packs
 
 A mod that brings game data as well as plugins (EchoCombat: new gear, scripts, larger

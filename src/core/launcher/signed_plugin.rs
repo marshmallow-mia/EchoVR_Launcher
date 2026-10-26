@@ -10,18 +10,18 @@
 //! [`verify_files`] checks the three downloads against the top `SHA256SUMS`, [`unpack`]
 //! checks the zip's entries against its own, and [`check_manifest`] checks the manifest
 //! says what the catalogue entry says. Signing replaces the DLL and regenerates both sums
-//! files, so a signed release's sums are not the attested ones: what the catalogue pins is
-//! decided by the caller. The older layout, a loose DLL, is [`super::mods::install`]'s.
-
-#![allow(dead_code)] // nothing calls this until the install change that follows
+//! files, so a signed release's sums are not the attested ones: [`ReleaseSpec::pins`] is
+//! what the catalogue pins each file to. The older layout, a loose DLL, stays
+//! [`super::mods::install`]'s.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
+use super::catalog;
 use crate::core::download;
 
 /// The sums file's name, in the release and in the zip.
@@ -229,6 +229,187 @@ pub fn unpack(zip: impl Read + Seek, dll: &str, staging: &Path) -> Result<Unpack
             .then(|| write(&settings_name))
             .transpose()?,
     })
+}
+
+// ---- the catalogue's record of a release ----
+
+/// One of a release's three files, as echo-mods' entry records it (`assets.*`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Asset {
+    pub name: String,
+    /// What the release workflow built and attested.
+    pub sha256: String,
+    pub size: Option<u64>,
+}
+
+/// A digest the signer recorded (`signer.package`, `signer.sums`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Digest {
+    pub sha256: String,
+    pub size: Option<u64>,
+}
+
+/// Where a release is in signing (echo-mods' `signer.status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SignerStatus {
+    /// Listed before signing existed.
+    #[default]
+    Unsigned,
+    /// The draft release exists, no pin yet.
+    Pending,
+    /// The signer's pin is merged; the live run hasn't replaced the zip yet.
+    Approved,
+    /// The signer replaced the DLL and regenerated the sums.
+    Signed,
+    /// Signed once, no longer to be trusted.
+    Revoked,
+    /// A status this launcher doesn't know.
+    #[serde(other)]
+    Unknown,
+}
+
+/// `signer` of a release in echo-mods' entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Signer {
+    pub status: SignerStatus,
+    /// The signer's public record of the run.
+    pub record: Option<String>,
+    pub signed_at: Option<String>,
+    /// The signed zip's and the regenerated sums' digests (`signed` and `revoked` only).
+    pub package: Option<Digest>,
+    pub sums: Option<Digest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Assets {
+    pub package: Asset,
+    pub manifest: Asset,
+    pub sums: Asset,
+}
+
+/// A catalogue mod's release in the signed-plugin shape: the `tag`, `assets` and `signer`
+/// of an echo-mods version, and `base`, where the three files are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ReleaseSpec {
+    /// The folder of the three files: relative to the download mirrors, or https on a
+    /// trusted host, or the fork's GitHub release, `https://github.com/EchoTools/<repo>/
+    /// releases/download/<tag>`.
+    pub base: String,
+    pub tag: String,
+    pub assets: Assets,
+    pub signer: Signer,
+}
+
+/// What the three files must hash to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pins {
+    pub package: String,
+    pub manifest: String,
+    pub sums: String,
+}
+
+fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Pure: `base` is somewhere a release may be fetched from: the mirrors, a trusted host,
+/// or the EchoTools fork's GitHub release of `tag` (where the signer's source lives).
+fn is_release_base(base: &str, tag: &str) -> bool {
+    if catalog::is_safe_url(base) {
+        return true;
+    }
+    let Ok(u) = url::Url::parse(base) else {
+        return false;
+    };
+    let parts: Vec<&str> = u.path().trim_matches('/').split('/').collect();
+    u.scheme() == "https"
+        && u.host_str() == Some("github.com")
+        && u.query().is_none()
+        && u.fragment().is_none()
+        && parts.len() == 5
+        && parts[0] == "EchoTools"
+        && is_plain_name(parts[1])
+        && parts[2..4] == ["releases", "download"]
+        && parts[4] == tag
+}
+
+impl ReleaseSpec {
+    /// Whether the entry `id` at `version` carries a release the launcher can read: the
+    /// spec's names (section 4), the digests, and a place to fetch it from.
+    pub fn validate(&self, id: &str, version: &str) -> Result<()> {
+        let want = [
+            (&self.assets.package, format!("{id}-v{version}-windows.zip")),
+            (&self.assets.manifest, MANIFEST.to_string()),
+            (&self.assets.sums, SUMS.to_string()),
+        ];
+        for (asset, name) in &want {
+            if &asset.name != name {
+                bail!(
+                    "{id}'s release names {:?}, the spec's is {name:?}",
+                    asset.name
+                );
+            }
+            if !is_sha256(&asset.sha256) {
+                bail!("{id}'s release has no valid sha256 for {name}");
+            }
+        }
+        if self.tag != format!("v{version}") {
+            bail!("{id}'s release tag {:?} isn't v{version}", self.tag);
+        }
+        if !is_release_base(&self.base, &self.tag) {
+            bail!("untrusted download for {id}: {}", self.base);
+        }
+        if let Some(r) = &self.signer.record {
+            if !r.starts_with("https://") {
+                bail!("{id}'s signer record isn't an https address");
+            }
+        }
+        self.pins().map(|_| ())
+    }
+
+    /// What the three files must hash to. A signed (or revoked) release's zip and sums are
+    /// the signer's; the manifest passes through signing untouched. Anything not yet signed
+    /// is what the release workflow attested.
+    pub fn pins(&self) -> Result<Pins> {
+        let (package, sums) = match self.signer.status {
+            SignerStatus::Signed | SignerStatus::Revoked => {
+                let (Some(p), Some(s)) = (&self.signer.package, &self.signer.sums) else {
+                    bail!("a signed release without the signer's digests");
+                };
+                (&p.sha256, &s.sha256)
+            }
+            _ => (&self.assets.package.sha256, &self.assets.sums.sha256),
+        };
+        if !is_sha256(package) || !is_sha256(sums) {
+            bail!("the release's digests aren't sha256");
+        }
+        Ok(Pins {
+            package: package.to_ascii_lowercase(),
+            manifest: self.assets.manifest.sha256.to_ascii_lowercase(),
+            sums: sums.to_ascii_lowercase(),
+        })
+    }
+
+    /// Whether the launcher installs it: not one the signer revoked, nor a status this
+    /// launcher can't read.
+    pub fn installable(&self) -> Result<()> {
+        match self.signer.status {
+            SignerStatus::Revoked => bail!("its signature was revoked: it isn't installed"),
+            SignerStatus::Unknown => bail!("its signer status isn't one this launcher knows"),
+            _ => Ok(()),
+        }
+    }
+
+    /// Where file `name` of the release is.
+    pub fn url_of(&self, name: &str) -> String {
+        format!("{}/{name}", self.base.trim_end_matches('/'))
+    }
 }
 
 #[cfg(test)]
