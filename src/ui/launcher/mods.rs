@@ -15,12 +15,12 @@ use super::{
 };
 use crate::core::launcher::catalog::Platform;
 use crate::core::launcher::catalogue;
+use crate::core::launcher::mod_release::{ReleaseSpec, Signer, SignerStatus};
 use crate::core::launcher::mods::{
     self, AssetPatch, Loader, ModCatalog, ModEntry, ModView, Plugin, PluginStatus, Source, Status,
 };
 use crate::core::launcher::nevr;
 use crate::core::launcher::plugin_settings;
-use crate::core::launcher::signed_plugin::{ReleaseSpec, Signer, SignerStatus};
 use crate::core::launcher::store::{InstalledVersion, Target};
 use crate::core::platform;
 use crate::ui::design::{self, dz, Dr};
@@ -1141,26 +1141,28 @@ fn update_for(p: &Plugin, c: Option<&ModCatalog>) -> Option<(ModEntry, catalogue
     Some((m.clone(), catalogue::offer(version, &m.version)?))
 }
 
-/// Where the release a catalogue plugin was installed from is in signing: only for the
-/// catalogue's own version of it (an older one installed says nothing about this one's
-/// signature), and only for a mod that has a release.
+/// Where the release a catalogue plugin was installed from is in signing: only for a copy
+/// installed from the release (not a loose DLL of the same version), of the catalogue's own
+/// version (an older one installed says nothing about this one's signature).
 fn signer_of(p: &Plugin, c: Option<&ModCatalog>) -> Option<SignerStatus> {
     let Source::Catalog { version, .. } = &p.source else {
         return None;
     };
+    if !p.release {
+        return None;
+    }
     let m = c?.entry_for(&p.file).filter(|m| m.version == *version)?;
     m.release.as_ref().map(|r| r.signer.status)
 }
 
-/// The chip of a signer status: green for signed, amber for one that isn't to be trusted,
-/// quiet for the ones on the way.
-fn signer_tag(status: SignerStatus) -> (&'static str, Color32) {
-    let color = match status {
-        SignerStatus::Signed => design::QUEST_ON,
-        SignerStatus::Revoked | SignerStatus::Unknown => design::QUEST_WARN,
-        _ => design::SUBTLE,
-    };
-    (status.label(), color)
+/// The chip of a signer status: green for signed, amber for revoked. The ones on the way
+/// get none (More mods' info line says where signing is).
+fn signer_tag(status: SignerStatus) -> Option<(&'static str, Color32)> {
+    match status {
+        SignerStatus::Signed => Some(("Signed", design::QUEST_ON)),
+        SignerStatus::Revoked => Some(("Revoked", design::QUEST_WARN)),
+        _ => None,
+    }
 }
 
 /// [`update_for`], unless it's the version the player went back from in version `vid`.
@@ -1938,7 +1940,7 @@ fn plugin_row(
     let tags = [
         Some(source),
         prerelease.then_some(("Prerelease", design::QUEST_WARN)),
-        look.signer.map(signer_tag),
+        look.signer.and_then(signer_tag),
         p.required.then_some(("Required", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
     ];
@@ -3805,6 +3807,7 @@ fn made_up_plugins() -> Vec<Plugin> {
         status: Some(st),
         settings: None,
         pack: None,
+        release: false,
     };
     vec![
         plugin(
@@ -3828,12 +3831,42 @@ fn made_up_plugins() -> Vec<Plugin> {
                 "missing NvrPluginGetInfo export",
             ),
         ),
+        Plugin {
+            release: true,
+            ..plugin(
+                "MatchTimer.dll",
+                "match_timer",
+                Source::Catalog {
+                    id: "match-timer".into(),
+                    version: "1.1.0".into(),
+                },
+                status("MatchTimer.dll", "match_timer", "1.1.0", "loaded", ""),
+            )
+        },
     ]
 }
 
-/// The catalogue entries of [`made_up_plugins`] (an update for one, one not installed).
+/// The catalogue entries of [`made_up_plugins`] (an update for one, one installed from its
+/// signed release, one not installed).
 fn made_up_catalog() -> Vec<ModEntry> {
     vec![
+        ModEntry {
+            id: "match-timer".into(),
+            name: "Match Timer".into(),
+            summary: "The round's time left on your wrist.".into(),
+            author: "community".into(),
+            version: "1.1.0".into(),
+            file: "MatchTimer.dll".into(),
+            size: Some(96_000),
+            release: Some(ReleaseSpec {
+                signer: Signer {
+                    status: SignerStatus::Signed,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
         ModEntry {
             id: "combat-stats".into(),
             name: "Combat Stats".into(),
@@ -3894,6 +3927,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         status: st,
         settings: None,
         pack: None,
+        release: false,
     };
     let bare = variant == Some(SnapVariant::ModsNoLoader);
     let long = variant == Some(SnapVariant::ModsLongText);
@@ -4096,6 +4130,7 @@ mod tests {
             status: None,
             settings: None,
             pack: None,
+            release: false,
         };
         let rows = [
             Row::Vr(VrPart::EchoXr, None),
@@ -4134,6 +4169,7 @@ mod tests {
             status: None,
             settings: None,
             pack: None,
+            release: false,
         };
         // Not started yet: nothing to say.
         assert_eq!(state(&p), None);
@@ -4231,6 +4267,7 @@ mod tests {
             status: None,
             settings: None,
             pack: None,
+            release: true,
         }
     }
 
@@ -4258,20 +4295,24 @@ mod tests {
             ..Default::default()
         };
         let p = catalog_plugin("1.2.0");
-        for (status, label) in [
-            (SignerStatus::Signed, "Signed"),
-            (SignerStatus::Unsigned, "Unsigned"),
-            (SignerStatus::Pending, "Signing pending"),
-            (SignerStatus::Approved, "Approved"),
-            (SignerStatus::Revoked, "Revoked"),
-            (SignerStatus::Unknown, "Signer unknown"),
+        // Only signed and revoked get a chip.
+        for (status, chip) in [
+            (SignerStatus::Signed, Some(("Signed", design::QUEST_ON))),
+            (SignerStatus::Revoked, Some(("Revoked", design::QUEST_WARN))),
+            (SignerStatus::Unsigned, None),
+            (SignerStatus::Pending, None),
+            (SignerStatus::Approved, None),
+            (SignerStatus::Unknown, None),
         ] {
-            let got = signer_of(&p, Some(&c(status))).map(signer_tag);
-            assert_eq!(got.map(|t| t.0), Some(label));
+            assert_eq!(signer_of(&p, Some(&c(status))), Some(status));
+            assert_eq!(signer_tag(status), chip, "{status:?}");
         }
-        assert_eq!(signer_tag(SignerStatus::Signed).1, design::QUEST_ON);
-        assert_eq!(signer_tag(SignerStatus::Revoked).1, design::QUEST_WARN);
-        assert_eq!(signer_tag(SignerStatus::Unsigned).1, design::SUBTLE);
+        // The same version installed as a loose DLL: what the release says isn't about it.
+        let loose_copy = Plugin {
+            release: false,
+            ..p.clone()
+        };
+        assert_eq!(signer_of(&loose_copy, Some(&c(SignerStatus::Signed))), None);
 
         // An older version installed says nothing about the catalogue's newer one; a mod
         // without a release, one that isn't the catalogue's, or no catalogue: no chip.

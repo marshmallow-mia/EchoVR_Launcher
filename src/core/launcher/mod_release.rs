@@ -1,5 +1,6 @@
-//! A plugin release in the signed-plugin shape (release-signer's `docs/plugin-release.md`,
-//! section 4): three files, and nothing is installed before every one is checked.
+//! A mod's release in release-signer's shape (its `docs/plugin-release.md`, section 4,
+//! where it is called a plugin release): three files, and nothing is installed before
+//! every one is checked.
 //!
 //! - `<id>-v<version>-windows.zip`: flat, no folders: `<file>.dll`, `LICENSE`, `NOTICE`
 //!   when the repo has one, `<Stem>.plugin.json` when the plugin has settings, and a
@@ -272,15 +273,14 @@ pub enum SignerStatus {
 }
 
 impl SignerStatus {
-    /// What the Mods page calls it.
+    /// What More mods' info line calls it (approved is still on its way to signed).
     pub fn label(self) -> &'static str {
         match self {
-            SignerStatus::Unsigned => "Unsigned",
-            SignerStatus::Pending => "Signing pending",
-            SignerStatus::Approved => "Approved",
+            SignerStatus::Unsigned => "Not signed yet",
+            SignerStatus::Pending | SignerStatus::Approved => "Signing pending",
             SignerStatus::Signed => "Signed",
-            SignerStatus::Revoked => "Revoked",
-            SignerStatus::Unknown => "Signer unknown",
+            SignerStatus::Revoked => "Signature revoked",
+            SignerStatus::Unknown => "Signing status unknown",
         }
     }
 }
@@ -306,7 +306,7 @@ pub struct Assets {
     pub sums: Asset,
 }
 
-/// A catalogue mod's release in the signed-plugin shape: the `tag`, `assets` and `signer`
+/// A catalogue mod's release in release-signer's shape: the `tag`, `assets` and `signer`
 /// of an echo-mods version, and `base`, where the three files are.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]

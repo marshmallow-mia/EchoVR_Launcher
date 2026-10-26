@@ -523,6 +523,7 @@ mod tests {
             status: None,
             settings: None,
             pack: None,
+            release: false,
         }
     }
 

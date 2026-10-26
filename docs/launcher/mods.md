@@ -219,7 +219,7 @@ fields beside a `mods.json` entry's (and the mod's `publisher`, its GitHub accou
   whether to start without them (`runs` in `launcher-mods.json`); nothing is turned off
   without that click.
 
-### A release in the signed-plugin shape
+### A release in release-signer's shape
 
 A mod whose plugin is signed ships as a release of three files
 ([release-signer's `docs/plugin-release.md`](https://github.com/thesprockee/release-signer/blob/teth/plugin-release-spec/docs/plugin-release.md),
@@ -257,10 +257,23 @@ section 4): `<id>-v<version>-windows.zip` (the DLL, `LICENSE`, `NOTICE` and, wit
   the install with nothing changed.
 - `signer.status` (`unsigned`, `pending`, `approved`, `signed`, `revoked`) is the listing's
   record of the release in signing. A `revoked` release isn't installed, nor one with a
-  status this launcher doesn't know.
+  status this launcher doesn't know. The Mods page shows it: More mods' info line says
+  where signing is (Not signed yet, Signing pending, Signed, Signature revoked), and an
+  installed mod gets a chip only for `signed` (green) or `revoked` (amber), and only when
+  the launcher installed that very copy from the release (`"release": true` in its
+  `launcher` note in `launcher-mods.json`), never for a loose DLL of the same version.
+- Blocks (`rollback.json`): by id and version as for any mod. A block by `sha` alone
+  matches a release entry by its zip, as attested (`assets.package.sha256`) or as signed
+  (`signer.package.sha256`); an installed copy is checked at every start by the checksum
+  of its DLL as placed. Files on GitHub can't be withdrawn by release.echovr.de, so a
+  block of such a release names its versions.
 - An entry with a `release` and a `url` uses the release; the loose DLL (`url`, `sha256`)
   stays for entries without one, and for launchers that predate it. A version in
   `catalogue.json` is such an entry too, so it may carry a `release` the same way.
+- Where to publish one: `catalogue.json` (0.13+). Launchers before 0.13.0-alpha.4 don't read
+  `release` and leave an entry without `url` out; a first-party entry in the live
+  `mods.json` keeps its `url` and `sha256` beside a `release`, so older launchers still get
+  the loose DLL.
 
 ### Content packs
 

@@ -353,10 +353,7 @@ pub fn may_go_back_to(id: &str, version: &str) -> bool {
 /// Pure but for the prerelease choice: a history entry to go back to, neither blocked nor an
 /// unwanted prerelease.
 fn fits_back(rollback: &Rollback, e: &super::mods::ModEntry) -> bool {
-    rollback
-        .block_for(Some(&e.id), &e.file, &e.version, e.sha256.as_deref())
-        .is_none()
-        && may_go_back_to(&e.id, &e.version)
+    rollback.blocks_entry(e).is_none() && may_go_back_to(&e.id, &e.version)
 }
 
 // ---- release.echovr.de's pulled versions ----
@@ -507,6 +504,28 @@ impl Rollback {
         self.blocked
             .iter()
             .find(|b| b.covers(id, file, version, sha))
+    }
+
+    /// The block that covers catalogue entry `e`, if any. A loose DLL's file is its
+    /// `sha256`; a release's ([`super::mod_release`]) its zip, as attested or as signed
+    /// (its DLL's checksum is only known once unpacked).
+    pub fn blocks_entry(&self, e: &super::mods::ModEntry) -> Option<&Block> {
+        let zips = e.release.iter().flat_map(|r| {
+            [
+                Some(&r.assets.package.sha256),
+                r.signer.package.as_ref().map(|p| &p.sha256),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .map(String::as_str)
+        });
+        e.sha256
+            .as_deref()
+            .into_iter()
+            .chain(zips)
+            .find_map(|sha| self.block_for(Some(&e.id), &e.file, &e.version, Some(sha)))
+            .or_else(|| self.block_for(Some(&e.id), &e.file, &e.version, None))
     }
 }
 
@@ -672,5 +691,50 @@ mod tests {
         assert_eq!(hit[1].note, "crashes on start");
         // Nothing listed, nothing pulled.
         assert!(affected(&Rollback::default(), &ways, &game, &mod_id).is_empty());
+    }
+
+    #[test]
+    fn a_block_by_checksum_covers_a_release_by_its_zip() {
+        use super::super::mod_release::{Digest, ReleaseSpec, SignerStatus};
+        use super::super::mods::ModEntry;
+        let (attested, signed) = ("a".repeat(64), "b".repeat(64));
+        let mut e = ModEntry {
+            id: "foo".into(),
+            file: "Foo.dll".into(),
+            version: "1.2.0".into(),
+            release: Some(ReleaseSpec::default()),
+            ..Default::default()
+        };
+        let r = e.release.as_mut().unwrap();
+        r.assets.package.sha256 = attested.clone();
+        r.signer.status = SignerStatus::Signed;
+        r.signer.package = Some(Digest {
+            sha256: signed.clone(),
+            size: None,
+        });
+        let by = |sha: &str, versions: &str| Rollback {
+            blocked: vec![Block {
+                part: "mod".into(),
+                id: "foo".into(),
+                versions: versions.into(),
+                sha: sha.into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(by(&attested, "").blocks_entry(&e).is_some());
+        assert!(by(&signed, "").blocks_entry(&e).is_some());
+        assert!(by(&"c".repeat(64), "").blocks_entry(&e).is_none());
+        // By version, as for a loose DLL.
+        assert!(by("", "1.2.0").blocks_entry(&e).is_some());
+        assert!(by("", "<1.2.0").blocks_entry(&e).is_none());
+        // A loose DLL still by its own checksum.
+        let loose = ModEntry {
+            release: None,
+            sha256: Some("c".repeat(64)),
+            ..e
+        };
+        assert!(by(&"c".repeat(64), "").blocks_entry(&loose).is_some());
+        assert!(by(&attested, "").blocks_entry(&loose).is_none());
     }
 }

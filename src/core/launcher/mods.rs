@@ -23,10 +23,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::catalog;
+use super::mod_release::{self, ReleaseSpec};
 use super::nevr::{self, PluginLine};
 use super::packs::{self, PackRecord, PackSpec};
 use super::plugin_settings;
-use super::signed_plugin::{self, ReleaseSpec};
 use super::store::{InstalledVersion, LauncherState, PackServer, RelayAccount};
 use super::versions::Step;
 use crate::core::{download, paths};
@@ -163,6 +163,10 @@ pub struct Added {
     /// Mods that can't be on beside it (ids).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub conflicts: Vec<String>,
+    /// Installed from its release in release-signer's shape ([`super::mod_release`]), not
+    /// as a loose DLL: what the release says about signing is about this copy.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub release: bool,
 }
 
 impl Added {
@@ -179,6 +183,7 @@ impl Added {
             },
             requires: e.requires.clone(),
             conflicts: e.conflicts.clone(),
+            release: false,
         }
     }
 }
@@ -769,6 +774,8 @@ pub struct Plugin {
     /// The name of the pack it is part of ([`super::packs`]): it is on, off and removed
     /// with the pack.
     pub pack: Option<String>,
+    /// The launcher installed it from its release ([`Added::release`]).
+    pub release: bool,
 }
 
 impl Plugin {
@@ -1160,8 +1167,10 @@ pub fn plugins(
             // Required by its name, however it got there (the update, or added by hand).
             let mut e = e;
             e.required |= known.is_some_and(|m| m.required);
+            let release = e.launcher.as_ref().is_some_and(|a| a.release);
             let mut p = plugin(e, source, defaults, has, status);
             p.verified = verified;
+            p.release = release;
             p.pack = packs
                 .iter()
                 .find(|r| r.has_plugin(&p.file))
@@ -1204,6 +1213,7 @@ fn plugin(
         status: st,
         settings: None,
         pack: None,
+        release: false,
         file: e.file,
     }
 }
@@ -1484,10 +1494,7 @@ fn needs_ok_with(
     m: &ModEntry,
     rollback: &super::goback::Rollback,
 ) -> Option<String> {
-    if rollback
-        .block_for(Some(&m.id), &m.file, &m.version, m.sha256.as_deref())
-        .is_some()
-    {
+    if rollback.blocks_entry(m).is_some() {
         return Some(format!("{} {} is blocked", m.name, m.version));
     }
     if let (Some(range), Some(have)) = (m.requires.nevr.as_deref(), nevr) {
@@ -2418,7 +2425,7 @@ pub fn install(
     })
 }
 
-/// Installs mod `e` from its release in the signed-plugin shape ([`signed_plugin`]): the
+/// Installs mod `e` from its release in release-signer's shape ([`mod_release`]): the
 /// three files downloaded, then [`install_fetched`]. A release whose signature was
 /// revoked isn't installed.
 fn install_release(
@@ -2440,8 +2447,8 @@ fn install_release(
         let get = |name: &str, sha: &str, on: &mut dyn FnMut(download::Progress)| {
             download::fetch_pinned(&spec.url_of(name), &dir, name, sha, cancel, on)
         };
-        get(signed_plugin::SUMS, &pins.sums, &mut |_| {})?;
-        get(signed_plugin::MANIFEST, &pins.manifest, &mut |_| {})?;
+        get(mod_release::SUMS, &pins.sums, &mut |_| {})?;
+        get(mod_release::MANIFEST, &pins.manifest, &mut |_| {})?;
         get(&spec.assets.package.name, &pins.package, &mut |p| {
             if let download::Progress::Percent(p) = p {
                 on(Step::Percent(p));
@@ -2476,13 +2483,13 @@ fn install_fetched(
     let pins = spec.pins()?;
     let package = &spec.assets.package.name;
     let (sums, manifest, zip) = (
-        dir.join(signed_plugin::SUMS),
-        dir.join(signed_plugin::MANIFEST),
+        dir.join(mod_release::SUMS),
+        dir.join(mod_release::MANIFEST),
         dir.join(package),
     );
     for (name, path, pin) in [
-        (signed_plugin::SUMS, &sums, &pins.sums),
-        (signed_plugin::MANIFEST, &manifest, &pins.manifest),
+        (mod_release::SUMS, &sums, &pins.sums),
+        (mod_release::MANIFEST, &manifest, &pins.manifest),
         (package.as_str(), &zip, &pins.package),
     ] {
         if !download::sha256_matches(path, pin) {
@@ -2494,11 +2501,11 @@ fn install_fetched(
         }
     }
     let text = std::fs::read_to_string(&sums).context("read SHA256SUMS")?;
-    signed_plugin::verify_files(
-        &signed_plugin::Sums::parse(&text)?,
-        &[(package, &zip), (signed_plugin::MANIFEST, &manifest)],
+    mod_release::verify_files(
+        &mod_release::Sums::parse(&text)?,
+        &[(package, &zip), (mod_release::MANIFEST, &manifest)],
     )?;
-    signed_plugin::check_manifest(
+    mod_release::check_manifest(
         &std::fs::read(&manifest)?,
         &e.id,
         &e.version,
@@ -2506,7 +2513,7 @@ fn install_fetched(
         package,
     )?;
     check_free(v, &e.file)?;
-    let unpacked = signed_plugin::unpack(
+    let unpacked = mod_release::unpack(
         std::io::BufReader::new(std::fs::File::open(&zip).context("open the release's zip")?),
         &e.file,
         &dir.join("unpacked"),
@@ -2534,7 +2541,10 @@ fn install_fetched(
             enabled: true,
             args: e.args.clone(),
             sha256: Some(sha),
-            launcher: Some(Added::from_entry(e)),
+            launcher: Some(Added {
+                release: true,
+                ..Added::from_entry(e)
+            }),
             required: false,
         });
         o.set_quarantined(&e.file, None);
@@ -2988,7 +2998,7 @@ pub struct ModEntry {
     /// Private: added by its id, for the accounts its maker allowed (with `unlisted`).
     #[serde(skip)]
     pub private: bool,
-    /// A release in the signed-plugin shape ([`super::signed_plugin`]): a zip, its manifest
+    /// A release in release-signer's shape ([`super::mod_release`]): a zip, its manifest
     /// and its sums, each checked before anything is installed. It is used in place of
     /// `url` and `sha256`, which an entry may keep for launchers that don't read it.
     pub release: Option<ReleaseSpec>,
@@ -3232,11 +3242,7 @@ impl ModCatalog {
         rollback: &super::goback::Rollback,
     ) -> ModCatalog {
         self.has_catalogue = true;
-        let blocked = |e: &ModEntry| {
-            rollback
-                .block_for(Some(&e.id), &e.file, &e.version, e.sha256.as_deref())
-                .is_some()
-        };
+        let blocked = |e: &ModEntry| rollback.blocks_entry(e).is_some();
         for m in mods {
             self.listed.insert(m.id.clone());
             if m.has_prereleases() {
@@ -4621,6 +4627,7 @@ pub(crate) mod tests {
             status: None,
             settings: None,
             pack: None,
+            release: false,
         };
         let m = ModEntry {
             id: "cool".into(),
@@ -5015,7 +5022,7 @@ pub(crate) mod tests {
         assert!(ModCatalog::builtin().builtin);
     }
 
-    // ---- releases in the signed-plugin shape ----
+    // ---- releases in release-signer's shape ----
 
     fn sha_of(bytes: &[u8]) -> String {
         download::sha256_reader(&mut &bytes[..]).unwrap()
@@ -5100,6 +5107,7 @@ pub(crate) mod tests {
             Some(sha_of(b"MZ signed foo").as_str())
         );
         assert_eq!(foo.launcher.as_ref().unwrap().version, "1.2.0");
+        assert!(foo.launcher.as_ref().unwrap().release);
         assert_eq!(installed_version(&v, "Foo.dll").as_deref(), Some("1.2.0"));
         // Removing it takes the settings file along.
         remove(&v, "Foo.dll").unwrap();
@@ -5169,7 +5177,7 @@ pub(crate) mod tests {
     #[test]
     fn a_revoked_release_is_not_installed() {
         let (_dir, v, mut e, _files) = fixture(b"MZ foo");
-        e.release.as_mut().unwrap().signer.status = signed_plugin::SignerStatus::Revoked;
+        e.release.as_mut().unwrap().signer.status = mod_release::SignerStatus::Revoked;
         let err = install(&v, &e, &AtomicBool::new(false), &mut |_| {})
             .unwrap_err()
             .to_string();
