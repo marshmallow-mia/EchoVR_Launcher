@@ -279,21 +279,21 @@ mod tests {
         let bin = dir.path();
         assert!(!installed_in(bin));
         remove_from(bin).unwrap();
-        std::fs::create_dir_all(crate::core::launcher::mods::plugins_in(&bin)).unwrap();
+        std::fs::create_dir_all(crate::core::launcher::mods::plugins_in(bin)).unwrap();
         std::fs::write(
-            crate::core::launcher::mods::plugins_in(&bin).join(PLUGIN),
+            crate::core::launcher::mods::plugins_in(bin).join(PLUGIN),
             b"x",
         )
         .unwrap();
         std::fs::write(
-            crate::core::launcher::mods::plugins_in(&bin).join(SETTINGS),
+            crate::core::launcher::mods::plugins_in(bin).join(SETTINGS),
             "Network = 1\n",
         )
         .unwrap();
         assert!(installed_in(bin));
         remove_from(bin).unwrap();
         assert!(!installed_in(bin));
-        assert!(crate::core::launcher::mods::plugins_in(&bin)
+        assert!(crate::core::launcher::mods::plugins_in(bin)
             .join(SETTINGS)
             .exists());
     }

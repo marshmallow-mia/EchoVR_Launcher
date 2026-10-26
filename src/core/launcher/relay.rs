@@ -755,8 +755,7 @@ mod tests {
         );
         assert_eq!(std::fs::read(bin.join(SLOT)).unwrap(), b"loader");
         assert_eq!(
-            std::fs::read(crate::core::launcher::mods::plugins_in(&bin).join(PATCH_PLUGIN))
-                .unwrap(),
+            std::fs::read(crate::core::launcher::mods::plugins_in(bin).join(PATCH_PLUGIN)).unwrap(),
             b"patch"
         );
         let config: serde_json::Value =

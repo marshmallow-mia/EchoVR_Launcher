@@ -848,8 +848,8 @@ pub fn plugins_dir(v: &InstalledVersion) -> PathBuf {
 
 /// The folder nEVR loads plugins from, for the game whose `bin/win10` is `bin`. Every place
 /// that reads or writes it goes through here (a test keeps it so): where nEVR looks is one line.
-pub fn plugins_in(bin: impl AsRef<Path>) -> PathBuf {
-    bin.as_ref().join(PLUGINS)
+pub fn plugins_in(bin: &Path) -> PathBuf {
+    bin.join(PLUGINS)
 }
 
 /// The folder its plugins log to (each in a folder of its own).
@@ -3850,7 +3850,7 @@ pub(crate) mod tests {
 
     /// Puts catalogue mod `id` `version` into `v` as an install would note it.
     fn put_catalogue_mod(v: &InstalledVersion, id: &str, file: &str, version: &str, added: Added) {
-        let path = plugins_dir(&v).join(file);
+        let path = plugins_dir(v).join(file);
         std::fs::write(&path, format!("MZ {id} {version}")).unwrap();
         let sha = download::sha256_file(&path).unwrap();
         edit_overlay(v, |o| {
@@ -4700,7 +4700,7 @@ pub(crate) mod tests {
     #[test]
     fn the_plugins_folder_is_named_in_one_place() {
         let v = live(tempfile::tempdir().unwrap().path());
-        assert_eq!(plugins_dir(&v), plugins_in(v.bin_dir()));
+        assert_eq!(plugins_dir(&v), plugins_in(&v.bin_dir()));
         assert_eq!(
             plugins_in(Path::new("bin")),
             ["bin", "plugins"].iter().collect::<PathBuf>()
@@ -4733,7 +4733,7 @@ pub(crate) mod tests {
             for (n, line) in text.lines().enumerate() {
                 let own = matches!(&*name, "packs.rs" | "plugins.rs");
                 let staged = line.contains("staging.join(");
-                let def = line.contains("bin.as_ref().join(");
+                let def = line.contains("bin.join(PLUGINS)");
                 if (line.contains(&by_name) && !own && !staged)
                     || (line.contains(&by_const) && !(staged || def))
                 {
