@@ -271,6 +271,20 @@ pub enum SignerStatus {
     Unknown,
 }
 
+impl SignerStatus {
+    /// What the Mods page calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            SignerStatus::Unsigned => "Unsigned",
+            SignerStatus::Pending => "Signing pending",
+            SignerStatus::Approved => "Approved",
+            SignerStatus::Signed => "Signed",
+            SignerStatus::Revoked => "Revoked",
+            SignerStatus::Unknown => "Signer unknown",
+        }
+    }
+}
+
 /// `signer` of a release in echo-mods' entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
