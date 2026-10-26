@@ -572,7 +572,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         let previous = dir.path().join("_local/previous-update");
-        std::fs::create_dir_all(bin.join("plugins")).unwrap();
+        std::fs::create_dir_all(crate::core::launcher::mods::plugins_in(&bin)).unwrap();
         std::fs::write(bin.join("BugSplat64.dll"), "old nevr").unwrap();
         std::fs::write(bin.join("plugins/Gone.dll"), "deleted by the update").unwrap();
         // What apply_keeping does: one replaced, one deleted, one new.
