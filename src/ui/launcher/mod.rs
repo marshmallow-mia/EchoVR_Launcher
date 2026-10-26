@@ -11,11 +11,13 @@ mod install;
 mod install_panel;
 mod keeper;
 mod mods;
+mod notices;
 mod now;
 mod panel;
 mod play;
 mod plugin_form;
 mod plugins;
+mod server_host;
 mod servers;
 mod settings;
 mod setup;
@@ -31,6 +33,7 @@ use super::dialogs::DialogHost;
 use super::kit::Kit;
 use super::parts::{QuestConn, Worker};
 use super::style::{self, Icon};
+use super::widgets::Tone;
 use crate::core::adb::devices::Status;
 use crate::core::error::UiError;
 
@@ -365,13 +368,20 @@ impl UpdatesFound {
     }
 }
 
-/// What Play's update button does after the game's update, one job after the other.
+/// What Play's update button (or an update notice's) does after the game's update, one
+/// job after the other.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum QueuedUpdate {
+    /// Installed version `id`'s game update.
+    Game(String),
+    /// Launcher plugin `id`'s catalogue version.
+    LauncherPlugin(String),
     /// The catalogue plugins of installed version `id` that have a newer version.
     Plugins(String),
     /// The launcher (last: it restarts).
     Launcher,
+    /// The launcher, also back to an older channel's release (the player picked it).
+    LauncherAny,
 }
 
 #[derive(Default)]
@@ -612,7 +622,7 @@ pub enum SnapVariant {
     BetaChannel,
     /// The rail unfolded.
     RailOpen,
-    /// Updates found: the rail's dots, Play's "Update ready".
+    /// Updates found: the rail's dots, Play's "Update now".
     UpdatesFound,
     /// Settings: what to uninstall.
     Uninstall,
@@ -646,6 +656,12 @@ pub enum SnapVariant {
     SettingsVirtualDesktop,
     /// Play: Virtual Desktop's Oculus mode couldn't start VR, EchoXR instead?
     DialogVdSwitch,
+    /// A notice with a button (an update just made, "Undo"), one more waiting.
+    NoticeAction,
+    /// A notice about something that went wrong (red, with a close).
+    NoticeError,
+    /// Advanced settings: "Switch to Beta?" asked.
+    DialogChannel,
     /// Play: Windows blocked the mod loader, allow it?
     DialogNevrBlocked,
     /// Servers: signed in, the live list (and you in a party queueing).
@@ -725,6 +741,13 @@ pub enum SnapVariant {
     ManyPlugins,
     ManyPluginsOpen,
     ManyPluginsMenu,
+    /// The Server host plugin installed (its tab second): its servers, a console, the
+    /// Doctor, and a server's settings card.
+    ServerHost,
+    ServerHostConsole,
+    ServerHostDoctor,
+    ServerHostEdit,
+    ServerHostSettings,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -782,6 +805,18 @@ pub struct Dashboard {
     login_watch: Option<play::LoginWatching>,
     /// The lobby to join once "Launch anyway" is answered.
     pending_lobby: Option<play::Join>,
+    /// The version SteamVR's library entry was last offered for (Windows): another one
+    /// picked offers to update it.
+    library_for: Option<Option<String>>,
+    /// The page a sign-in with EchoVRCE was started from: back there once it went through.
+    back_after_sign_in: Option<Page>,
+    /// "Upload logs" waits for the EchoVRCE sign-in (or its renewal): since when.
+    upload_after_sign_in: Option<std::time::Instant>,
+    /// A start waits for the game that is closing (Virtual Desktop's answer): since when.
+    play_when_closed: Option<std::time::Instant>,
+    /// PLAY (or a JOIN, with its lobby) asked for the licence patch of this version first:
+    /// the game starts once it is in. Gone when the licence card is cancelled.
+    play_after_patch: Option<(String, Option<play::Join>)>,
     /// The version whose mod loader the "Windows blocked" question is about.
     nevr_blocked: Option<String>,
     /// Copies elsewhere looked at this run, whether they are the live build.
@@ -860,6 +895,8 @@ pub struct Dashboard {
     mods: mods::Mods,
     /// The launcher plugins: their tabs and the Plugins page.
     plugins: plugins::PluginsUi,
+    /// The Server host plugin's page: the game servers on this PC.
+    server_host: server_host::HostUi,
     /// Who opens spark:// links (Windows, Linux), once read.
     link_handler: Option<links::Handler>,
     /// When a link handed over by another launcher was last looked for.
@@ -910,6 +947,14 @@ pub struct Dashboard {
     goback: goback::GoBack,
     /// The updates Play's update button started that wait for the job before them.
     update_queue: Vec<QueuedUpdate>,
+    /// The launcher's update check asked for runs: install what it finds (the player
+    /// asked for the newest, or picked another channel).
+    launcher_when_found: bool,
+    /// The channel the player was asked to switch to, until the answer.
+    channel_asked: Option<update_check::Channel>,
+    /// Another channel was picked: the game updates the next full check finds install
+    /// (the live build's files follow the channel), before the launcher restarts.
+    games_when_found: bool,
     /// What the uninstall card asked to remove, until its confirmation is answered.
     uninstall_parts: Vec<crate::core::uninstall::Part>,
     /// What can be updated, as the last check found it.
@@ -925,8 +970,9 @@ pub struct Dashboard {
     /// The logs "Upload logs" asked about.
     upload_sources: Vec<crate::core::logs::Source>,
     feed: Feed,
-    /// Something that went well, shown in the status bar for a few seconds.
-    notice: Option<(String, std::time::Instant)>,
+    /// What just happened, in the status bar, with a button when there is something to
+    /// do about it ([`notices`]).
+    notices: notices::Notices,
     /// A new player's patch on its way into the version being installed.
     pending_patch: Option<setup::PendingPatch>,
     /// Pages drawn at least once, seen or not (`prewarm`).
@@ -1391,7 +1437,7 @@ impl Dashboard {
                     }
                     versions::job_err(
                         e.context("You can also download it yourself: github.com/marshmallow-mia/EchoVR_Launcher/releases"),
-                        "Launcher Update Failed",
+                        "Couldn't update the launcher",
                     )
                 }
             },
@@ -1405,11 +1451,60 @@ impl Dashboard {
             && crate::core::launcher::self_update::supported()
     }
 
+    /// What the check [`Dashboard::launcher_when_found`] waited for found: installed once
+    /// no job runs (it restarts), else why not.
+    fn install_found_launcher(&mut self, ctx: &egui::Context) {
+        match &self.launcher_update {
+            LauncherUpdate::Available(_) if crate::core::launcher::self_update::supported() => {
+                // `back` too: the player picked that channel.
+                if !self.update_queue.contains(&QueuedUpdate::LauncherAny) {
+                    self.update_queue.push(QueuedUpdate::LauncherAny);
+                }
+                self.run_update_queue(ctx);
+            }
+            LauncherUpdate::Available(r) => {
+                let url = r.url.clone();
+                self.notify_with(
+                    "This launcher can't update itself: download the new one",
+                    "Download",
+                    notices::Action::OpenUrl(url),
+                );
+            }
+            LauncherUpdate::Failed => self.notify_error(
+                "Couldn't look for the launcher's update: check your connection and try again",
+            ),
+            _ => self.notify("The launcher is up to date"),
+        }
+    }
+
     /// Play's update button: `queue` runs after the job it started (if any), one update
-    /// after the other.
+    /// after the other (after what is queued already).
     fn queue_updates(&mut self, ctx: &egui::Context, queue: Vec<QueuedUpdate>) {
-        self.update_queue = queue;
+        for q in queue {
+            if !self.update_queue.contains(&q) {
+                self.update_queue.push(q);
+            }
+        }
+        // The launcher last: it restarts.
+        self.update_queue
+            .sort_by_key(|q| matches!(q, QueuedUpdate::Launcher | QueuedUpdate::LauncherAny));
         self.run_update_queue(ctx);
+    }
+
+    /// An update notice's button: what was found, one after the other.
+    fn update_findings(&mut self, ctx: &egui::Context, found: Vec<crate::core::updates::Finding>) {
+        use crate::core::updates::Finding;
+        let queue = found
+            .into_iter()
+            .filter_map(|f| match f {
+                Finding::Launcher { .. } => Some(QueuedUpdate::Launcher),
+                Finding::Game { id, .. } => Some(QueuedUpdate::Game(id)),
+                Finding::Plugin { version_id, .. } => Some(QueuedUpdate::Plugins(version_id)),
+                Finding::LauncherPlugin { id, .. } => Some(QueuedUpdate::LauncherPlugin(id)),
+                Finding::NewPlugin { .. } => None,
+            })
+            .collect();
+        self.queue_updates(ctx, queue);
     }
 
     /// Starts the next queued update once no job runs (a step with nothing to do is
@@ -1418,19 +1513,42 @@ impl Dashboard {
         while let Some(next) = self.update_queue.first().cloned() {
             // A version's mods wait for the jobs on it; the launcher (it restarts) for all.
             let waits = match &next {
+                QueuedUpdate::Game(id) => self.blocker(&[Res::Version(id.clone())]).is_some(),
                 QueuedUpdate::Plugins(id) => self
                     .blocker(&[Res::Version(id.clone()), Res::Mods])
                     .is_some(),
-                QueuedUpdate::Launcher => self.any_job(),
+                QueuedUpdate::LauncherPlugin(_) => self.plugins.busy.is_some(),
+                // And for the game updates a channel switch waits to find.
+                QueuedUpdate::Launcher | QueuedUpdate::LauncherAny => {
+                    self.any_job() || self.plugins.busy.is_some() || self.games_when_found
+                }
             };
             if waits {
                 break;
             }
             self.update_queue.remove(0);
             match next {
+                QueuedUpdate::Game(id) => {
+                    let v = self.state.versions.iter().find(|v| v.id == id).cloned();
+                    if let Some(v) = v.filter(crate::core::launcher::versions::has_updates) {
+                        if self.files_in_use(&v).is_none() {
+                            versions::update(self, ctx, v);
+                        }
+                    }
+                }
+                QueuedUpdate::LauncherPlugin(id) => {
+                    plugins::update_newest(self, ctx, &id);
+                }
                 QueuedUpdate::Plugins(id) => mods::update_all(self, ctx, &id),
                 QueuedUpdate::Launcher if self.launcher_ready() => self.update_launcher(ctx),
                 QueuedUpdate::Launcher => {}
+                QueuedUpdate::LauncherAny => {
+                    if let LauncherUpdate::Available(r) = &self.launcher_update {
+                        let v = r.version.clone();
+                        self.goback.launcher_back = false;
+                        self.install_launcher(ctx, v, "Updating the launcher to");
+                    }
+                }
             }
         }
     }
@@ -1501,7 +1619,7 @@ impl Dashboard {
     }
 
     /// An update check is done: what it learned is kept, what it found shown.
-    fn updates_done(&mut self, check: crate::core::updates::Check) {
+    fn updates_done(&mut self, ctx: &egui::Context, check: crate::core::updates::Check) {
         use crate::core::updates::Finding;
         let now = std::time::Instant::now();
         if check.catalogs_only {
@@ -1539,16 +1657,39 @@ impl Dashboard {
             .iter()
             .filter(|f| self.updates.shown.insert(f.key()))
             .collect();
+        let all: Vec<Finding> = new.iter().map(|f| (*f).clone()).collect();
         match new.as_slice() {
             [] => {}
-            [one] => self.notify(&one.text()),
-            more => self.notify(&format!("{} updates available", more.len())),
+            [one @ Finding::NewPlugin { .. }] => {
+                self.notify_with(&one.text(), "See it", notices::Action::Page(Page::Plugins))
+            }
+            [one] => self.notify_with(&one.text(), "Update", notices::Action::Update(all)),
+            more => self.notify_with(
+                &format!("{} updates available", more.len()),
+                "Update all",
+                notices::Action::Update(all),
+            ),
         }
         if !check.catalogs_only {
             self.goback.pulled = check.pulled.clone();
         }
         if let Some(alerts) = check.alerts.clone() {
             self.alerts_found(alerts);
+        }
+        // A channel switch: its game updates install now (the launcher waits for them).
+        if !check.catalogs_only
+            && check.launcher_channel == self.state.launcher_channel
+            && std::mem::take(&mut self.games_when_found)
+        {
+            let games = check
+                .findings
+                .iter()
+                .filter(|f| matches!(f, Finding::Game { .. }))
+                .cloned()
+                .collect();
+            self.update_findings(ctx, games);
+            // Nothing to wait for any more: the launcher's turn.
+            self.run_update_queue(ctx);
         }
         if check.catalogs_only {
             // The launcher's and the games' stay as the last full check found them.
@@ -1636,7 +1777,7 @@ impl Dashboard {
         crate::ui::uwu::set(self.snap_variant == Some(SnapVariant::Uwu));
         self.jobs.clear();
         self.overlay = None;
-        self.notice = None;
+        self.notices.clear();
         self.dialogs = DialogHost::default();
         self.state.owner = Some(true);
         self.state.selected = Some("pc-latest".into());
@@ -1677,6 +1818,7 @@ impl Dashboard {
             self,
             self.snap_variant == Some(SnapVariant::PluginControllers),
         );
+        server_host::snap(self, self.snap_variant);
         self.state.rail_open = demo_state().rail_open;
         self.state.rail_order.clear();
         self.state.rail_unpinned.clear();
@@ -1741,7 +1883,7 @@ impl Dashboard {
                 crate::core::error::HelpLink::UsbDebugging,
             ),
             Some(SnapVariant::DialogInstallError) => self.dialogs.error(
-                "Install Failed",
+                "Couldn't install",
                 "Couldn't create the folder C:/EchoVR/versions/pc-34.4: Access is denied. (os error 5)\n\nPick another library in Settings, or check the folder's permissions.",
                 Default::default(),
             ),
@@ -1955,6 +2097,21 @@ impl Dashboard {
                 self.state.profile.vd_via = crate::core::launcher::store::VdVia::SteamVr;
             }
             Some(SnapVariant::DialogVdSwitch) => play::ask_vd_switch(self),
+            Some(SnapVariant::NoticeAction) => {
+                self.notify_with(
+                    "NvrGpuRating is updated to 1.1.0",
+                    "Undo",
+                    notices::Action::UndoCard,
+                );
+                self.notify("Invited Mia");
+            }
+            Some(SnapVariant::NoticeError) => {
+                self.notify_error("Couldn't invite Mia: EchoVRCE didn't answer. Try again in a moment")
+            }
+            Some(SnapVariant::DialogChannel) => {
+                self.overlay = Some(setup::Overlay::Advanced);
+                settings::ask_channel(self, update_check::Channel::Beta);
+            }
             Some(SnapVariant::DialogNevrBlocked) => {
                 let id = self.state.versions.first().map(|v| v.id.clone()).unwrap_or_default();
                 play::ask_nevr_blocked(
@@ -2145,6 +2302,11 @@ impl Dashboard {
                 | SnapVariant::PluginGameServerAsk
                 | SnapVariant::PluginGameServerSet
                 | SnapVariant::PluginControllers
+                | SnapVariant::ServerHost
+                | SnapVariant::ServerHostConsole
+                | SnapVariant::ServerHostDoctor
+                | SnapVariant::ServerHostEdit
+                | SnapVariant::ServerHostSettings
                 | SnapVariant::ManyPlugins
                 | SnapVariant::ManyPluginsOpen
                 | SnapVariant::ManyPluginsMenu,
@@ -2509,7 +2671,7 @@ impl Dashboard {
                             Step::Percent(p) => {
                                 j.fraction = Some(p as f32 / 100.0);
                                 let verb = match j.kind {
-                                    JobKind::Verify => "Verifying",
+                                    JobKind::Verify => "Checking files",
                                     _ => "Downloading",
                                 };
                                 j.label = format!("{verb}... {p:.1}%");
@@ -2725,12 +2887,15 @@ impl Dashboard {
                             tracing::info!("launcher update check failed: {e}");
                             LauncherUpdate::Failed
                         }
+                    };
+                    if std::mem::take(&mut self.launcher_when_found) {
+                        self.install_found_launcher(ctx);
                     }
                 }
-                Msg::Updates(check) => self.updates_done(check),
+                Msg::Updates(check) => self.updates_done(ctx, check),
                 Msg::ModView(gen, id, view) => self.mods.read_done(gen, id, view),
                 Msg::ModCatalog(c) => self.mods.catalog_done(c),
-                Msg::WaysBack(ways) => self.goback.ways = ways,
+                Msg::WaysBack(ways) => goback::read(self, ways),
                 Msg::Revive(dir) => self.revive.done((), dir),
                 Msg::UnlistedChecked(id, found) => mods::unlisted_checked(self, &id, found),
                 Msg::DevCode(code, status) => {
@@ -2770,9 +2935,10 @@ impl Dashboard {
             crate::core::platform::open_url(crate::core::oauth::PATCHER_INVITE);
         }
         self.quest_conn.poll(&mut self.dialogs);
-        if let Some(notice) = self.vrce.tick(ctx, self.demo) {
-            self.notify(&notice);
+        if let Some(n) = self.vrce.tick(ctx, self.demo) {
+            self.notices.push(n);
         }
+        self.after_sign_in();
         echovrce::site_linked(self);
         let session = self.vrce.session();
         self.game_sign_in
@@ -2784,10 +2950,21 @@ impl Dashboard {
             Page::Friends => servers::Shown::Friends,
             _ => servers::Shown::Neither,
         };
-        if let Some(notice) = self.servers.tick(ctx, session, shown) {
-            self.notify(&notice);
+        for n in self.servers.tick(ctx, session, shown) {
+            // An invite reaches the desktop too, as updates do.
+            if self.state.desktop_notifications
+                && matches!(n.action, Some((_, notices::Action::JoinInvite(_))))
+            {
+                crate::core::desktop_notify::show("Echo VR", &n.text);
+            }
+            self.notices.push(n);
         }
         servers::follow_up(self, ctx);
+        self.library_follows(ctx);
+        // Queued updates waiting for a plugin's install (its end isn't a job's).
+        if !self.update_queue.is_empty() {
+            self.run_update_queue(ctx);
+        }
         plugins::tick(self, ctx);
         play::watch_login(self, ctx);
         self.take_link(ctx);
@@ -2845,7 +3022,28 @@ impl Dashboard {
     }
 
     fn notify(&mut self, text: &str) {
-        self.notice = Some((text.to_string(), std::time::Instant::now()));
+        self.notices.push(notices::Notice::info(text));
+    }
+
+    /// What changed loads at the game's next start: with "Restart Echo VR" while the one
+    /// PLAY started runs.
+    fn notify_next_start(&mut self, text: &str) {
+        if self.local().ours.is_some() {
+            self.notify_with(text, "Restart Echo VR", notices::Action::RestartGame);
+        } else {
+            self.notify(text);
+        }
+    }
+
+    /// A notice with a button that does something about it.
+    fn notify_with(&mut self, text: &str, label: &str, action: notices::Action) {
+        self.notices
+            .push(notices::Notice::info(text).with(label, action));
+    }
+
+    /// Something that went wrong: red, until it is closed.
+    fn notify_error(&mut self, text: &str) {
+        self.notices.push(notices::Notice::error(text));
     }
 
     fn job_done(
@@ -2870,6 +3068,10 @@ impl Dashboard {
                 tracing::warn!("job {id}: Discord authorization failed: {e:?}")
             }
             _ => tracing::info!("job {id}: done"),
+        }
+        // A patch that didn't go in: PLAY doesn't wait for it any more.
+        if kind == Some(JobKind::Patch) && !matches!(r, JobResult::Patched) {
+            self.play_after_patch = None;
         }
         // A new player's patch: gone with its fetch, or with its version's install.
         if id == setup::LICENCE_JOB && !matches!(r, JobResult::LicenceFetched(_)) {
@@ -2942,10 +3144,16 @@ impl Dashboard {
                     self.update_note.remove(id);
                 }
                 match update_failed {
-                    None if elsewhere => self.notify(&format!(
-                        "{name} is installed: choose it next to PLAY to play it"
-                    )),
-                    None => self.notify(&format!("{name} is installed. Have fun!")),
+                    None if elsewhere => self.notify_with(
+                        &format!("{name} is installed"),
+                        "Play it",
+                        notices::Action::Play(installed.clone()),
+                    ),
+                    None => self.notify_with(
+                        &format!("{name} is installed. Have fun!"),
+                        "Play",
+                        notices::Action::Play(installed.clone()),
+                    ),
                     Some(why) => {
                         self.update_note
                             .insert(id.to_string(), "Last update failed".into());
@@ -2953,9 +3161,14 @@ impl Dashboard {
                             "Installed, but not updated",
                             &format!(
                                 "{name} is installed, but its update failed:\n\n{why}\n\n\
-                                 Use Update in its MANAGE menu on the Install page to try again."
+                                 \"Try again\" at the top of the window updates it again."
                             ),
                             Default::default(),
+                        );
+                        self.notify_with(
+                            &format!("{name}'s update failed"),
+                            "Try again",
+                            notices::Action::UpdateVersion(installed.clone()),
                         );
                     }
                 }
@@ -2982,9 +3195,14 @@ impl Dashboard {
                             "Reinstalled, but not updated",
                             &format!(
                                 "{name}'s files are all right again, but its update failed:\n\n{why}\n\n\
-                                 Use Update in its MANAGE menu on the Install page to try again."
+                                 \"Try again\" at the top of the window updates it again."
                             ),
                             Default::default(),
+                        );
+                        self.notify_with(
+                            &format!("{name}'s update failed"),
+                            "Try again",
+                            notices::Action::UpdateVersion(id.to_string()),
                         );
                     }
                     (None, 0) => self.notify(&format!("{name}: every game file was intact")),
@@ -3002,7 +3220,7 @@ impl Dashboard {
                 self.check_slot_soon(ctx, id);
                 self.updates.check_soon();
                 self.mods.changed();
-                goback::refresh(self, ctx);
+                goback::refresh_after_update(self, ctx);
                 self.update_note.insert(id.to_string(), "Up to date".into());
                 self.notify("Echo VR is up to date");
             }
@@ -3028,7 +3246,13 @@ impl Dashboard {
                     v.patched = true;
                 }
                 self.save();
-                self.notify("Your licence patch is in place. Have fun!");
+                match self.play_after_patch.take() {
+                    Some((patched, lobby)) if patched == id => {
+                        self.notify("Your licence patch is in place: starting Echo VR");
+                        play::try_start(self, ctx, lobby);
+                    }
+                    _ => self.notify("Your licence patch is in place. Have fun!"),
+                }
             }
             JobResult::LicenceFetched(dll) => {
                 if let Some(p) = &mut self.pending_patch {
@@ -3068,9 +3292,9 @@ impl Dashboard {
                 goback::went_back(self, ctx, key, from, &text);
             }
             JobResult::ModsChanged(notice) => {
-                goback::refresh(self, ctx);
+                goback::refresh_after_update(self, ctx);
                 self.mods.changed();
-                self.notify(&notice);
+                self.notify_next_start(&notice);
                 self.updates.check_soon();
             }
             JobResult::HandsInstalled => {
@@ -3175,9 +3399,10 @@ impl Dashboard {
                 self.notify("Echo VR is installed on your Quest and up to date")
             }
             JobResult::QuestInstalled(crate::core::launcher::quest::Installed::NotChecked) => {
-                self.dialogs.info(
-                    "Installed, but not checked for updates",
-                    "Echo VR is installed on your Quest, but the update server couldn't be reached, so it may not be the latest version.\n\nUse Update on the Quest side of the Install page later.",
+                self.notify_with(
+                    "Echo VR is on your Quest, but the update server couldn't be reached: it may not be the latest",
+                    "Try again",
+                    notices::Action::UpdateQuest,
                 )
             }
             JobResult::QuestUpdated => self.notify("Your Quest has the latest update"),
@@ -3197,6 +3422,11 @@ impl Dashboard {
                 if kind == Some(JobKind::Update) {
                     self.update_note
                         .insert(id.to_string(), "Last update failed".into());
+                    self.notify_with(
+                        "The update failed",
+                        "Try again",
+                        notices::Action::UpdateVersion(id.to_string()),
+                    );
                 }
                 self.dialogs.error_ui(&e);
             }
@@ -3335,6 +3565,7 @@ impl Dashboard {
         }
         versions::handle_answers(self, &ctx);
         settings::uninstall_answers(self, &ctx);
+        settings::channel_answers(self, &ctx);
         goback::answers(self, &ctx);
         alerts::answers(self);
         play::answers(self, &ctx);
@@ -3493,12 +3724,12 @@ impl Dashboard {
         match games.as_slice() {
             [] => {}
             [(id, _)] if self.state.selected.as_deref() == Some(*id) => {
-                out.push((Page::Play, "Update ready".into(), design::QUEST_ON))
+                out.push((Page::Play, "Update available".into(), design::QUEST_ON))
             }
             [(_, name)] => out.push((Page::Play, format!("Update for {name}"), design::QUEST_ON)),
             more => out.push((
                 Page::Play,
-                format!("{} updates ready", more.len()),
+                format!("{} updates available", more.len()),
                 design::QUEST_ON,
             )),
         }
@@ -3515,6 +3746,21 @@ impl Dashboard {
             ));
         }
         out
+    }
+
+    /// The one version with an update, when it isn't the one picked on Play (the rail's
+    /// "Update for X").
+    fn other_version_update(&self) -> Option<String> {
+        let mut games = self.updates.findings.iter().filter_map(|f| match f {
+            crate::core::updates::Finding::Game { id, .. } => Some(id),
+            _ => None,
+        });
+        match (games.next(), games.next()) {
+            (Some(id), None) if self.state.selected.as_deref() != Some(id.as_str()) => {
+                Some(id.clone())
+            }
+            _ => None,
+        }
     }
 
     /// How much wider than its icons the rail is right now (logical pixels): the unfolded
@@ -3795,6 +4041,11 @@ impl Dashboard {
                 kit.ui.set_clip_rect(clip);
             }
             match r.page {
+                // "Update for X": Play opens on X, its update button ready.
+                Page::Play if resp.clicked => match self.other_version_update() {
+                    Some(id) => install::play_version(self, &id),
+                    None => self.page = Page::Play,
+                },
                 p if resp.clicked => self.page = p,
                 Page::Plugin(i) if resp.secondary => {
                     menu_for = Some(self.plugins.list[i as usize].page.id.clone());
@@ -4229,17 +4480,14 @@ impl Dashboard {
             .then(|| self.quest_game())
             .filter(GameState::is_running);
         let busy = self.any_job() || self.quest_busy || self.quest_conn.checking;
-        const NOTICE_FOR: std::time::Duration = std::time::Duration::from_secs(8);
-        let notice = self
-            .notice
-            .as_ref()
-            .filter(|(_, at)| at.elapsed() < NOTICE_FOR)
-            .map(|(text, at)| {
-                ctx.request_repaint_after(NOTICE_FOR.saturating_sub(at.elapsed()));
-                text.clone()
-            });
-        let status = if let Some(text) = &notice {
-            text.clone()
+        // A notice first: its button (and a close for an error or one with a button) at
+        // the line's end.
+        let notice = self.notice_now(ctx);
+        if let Some((n, _)) = &notice {
+            status_end = self.notice_buttons(kit, ctx, n, status_end, bar.y + bar.h / 2.0);
+        }
+        let status = if let Some((n, more)) = &notice {
+            notice_text(n, *more)
         } else if let Some((j, more)) = self
             .jobs_in_order()
             .split_first()
@@ -4283,7 +4531,12 @@ impl Dashboard {
         } else {
             game.label()
         };
-        let color = if notice.is_some() || game.is_running() || quest_game.is_some() {
+        let color = if notice
+            .as_ref()
+            .is_some_and(|(n, _)| n.kind == notices::Kind::Error)
+        {
+            design::DANGER
+        } else if notice.is_some() || game.is_running() || quest_game.is_some() {
             design::QUEST_ON
         } else if busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -4307,9 +4560,193 @@ impl Dashboard {
         );
         let y = dz(bar.y + bar.h / 2.0) - g.size().y / 2.0;
         let max_w = dz(status_end) - x;
+        // A notice cut short: all of it on hover.
+        if let Some((n, _)) = &notice {
+            let r = kit.rect(x, dz(bar.y), max_w, dz(bar.h));
+            kit.hot("notice-text", r, false, &n.text);
+        }
         kit.clipped(x, 0.0, max_w, dz(bar.bottom()), |kit| {
             kit.put(x, y, g);
         });
+    }
+
+    /// Opens the EchoVRCE page to sign in, coming back to `from` once that went through.
+    pub(super) fn sign_in_from(&mut self, from: Page) {
+        if from != Page::EchoVrce {
+            self.back_after_sign_in = Some(from);
+        }
+        self.page = Page::EchoVrce;
+    }
+
+    /// Signed in: back to the page the sign-in was started from, and the upload that
+    /// waited for it goes on.
+    fn after_sign_in(&mut self) {
+        if std::mem::take(&mut self.vrce.just_signed_in) {
+            if let Some(p) = self.back_after_sign_in.take() {
+                if self.page == Page::EchoVrce {
+                    self.page = p;
+                }
+            }
+        }
+        if let Some(at) = self.upload_after_sign_in {
+            if at.elapsed() > std::time::Duration::from_secs(15 * 60) {
+                self.upload_after_sign_in = None;
+            } else if settings::can_upload(self) && self.overlay.is_none() {
+                self.upload_after_sign_in = None;
+                settings::ask_upload(self);
+            }
+        }
+    }
+
+    /// Windows: another version picked while Echo VR is in SteamVR's library: the entry
+    /// still starts the one before, so a notice offers to update it.
+    fn library_follows(&mut self, _ctx: &egui::Context) {
+        if !cfg!(windows) || self.demo || !self.state.revive_library {
+            return;
+        }
+        let now = self.state.selected.clone();
+        match &self.library_for {
+            None => self.library_for = Some(now),
+            Some(before) if *before != now => {
+                self.library_for = Some(now);
+                if !self.revive_missing() {
+                    self.notify_with(
+                        "SteamVR's library still starts the version picked before",
+                        "Update it",
+                        notices::Action::SteamVrLibrary,
+                    );
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// The notice shown now and how many wait (its time counted while the window is in
+    /// front).
+    fn notice_now(&mut self, ctx: &egui::Context) -> Option<(notices::Notice, usize)> {
+        let focused = ctx.input(|i| i.viewport().focused) != Some(false);
+        if let Some(wait) = self.notices.tick(std::time::Instant::now(), focused) {
+            ctx.request_repaint_after(wait);
+        }
+        self.notices.current().map(|(n, more)| (n.clone(), more))
+    }
+
+    /// The EchoVRCE page's strip, where the status bar isn't: the notice shown, right-aligned
+    /// between `start` and `end` around `cy` (design pixels). False when there is none.
+    pub(super) fn header_notice(
+        &mut self,
+        kit: &mut Kit,
+        ctx: &egui::Context,
+        start: f32,
+        end: f32,
+        cy: f32,
+    ) -> bool {
+        let Some((n, more)) = self.notice_now(ctx) else {
+            return false;
+        };
+        let end = self.notice_buttons(kit, ctx, &n, end, cy);
+        let color = match n.kind {
+            notices::Kind::Error => design::DANGER,
+            notices::Kind::Info => design::QUEST_ON,
+        };
+        let g = kit.spaced_fit(
+            &notice_text(&n, more).to_uppercase(),
+            design::din(13.8),
+            color,
+            dz(0.5),
+            false,
+            dz(end - start),
+        );
+        let (x, y) = (dz(end) - g.size().x, dz(cy) - g.size().y / 2.0);
+        let r = kit.rect(x, y, g.size().x, g.size().y);
+        kit.hot("notice-text", r, false, &n.text);
+        kit.put(x, y, g);
+        true
+    }
+
+    /// A notice's button and close, right-aligned before `end` around `cy` (design
+    /// pixels); returns where the text has to end.
+    fn notice_buttons(
+        &mut self,
+        kit: &mut Kit,
+        ctx: &egui::Context,
+        n: &notices::Notice,
+        end: f32,
+        cy: f32,
+    ) -> f32 {
+        const H: f32 = 29.0;
+        let y = dz(cy - H / 2.0);
+        let mut end = end;
+        if n.kind == notices::Kind::Error || n.action.is_some() {
+            let x = end - H;
+            if kit
+                .button(
+                    "notice-close",
+                    dz(x),
+                    y,
+                    dz(H),
+                    dz(H),
+                    Tone::Dark,
+                    Some(Icon::Close),
+                    "",
+                    true,
+                    "Close",
+                )
+                .clicked
+            {
+                self.notices.next();
+            }
+            end = x - 8.0;
+        }
+        if let Some((label, action)) = &n.action {
+            let w = kit.button_width(label, None, dz(H)) / dz(1.0) + 8.0;
+            let x = end - w;
+            let tone = match n.kind {
+                notices::Kind::Error => Tone::Danger,
+                notices::Kind::Info => Tone::Blue,
+            };
+            if kit
+                .button(
+                    "notice-action",
+                    dz(x),
+                    y,
+                    dz(w),
+                    dz(H),
+                    tone,
+                    None,
+                    label,
+                    true,
+                    "",
+                )
+                .clicked
+            {
+                self.notices.next();
+                self.notice_action(ctx, action.clone());
+            }
+            end = x - 12.0;
+        }
+        end
+    }
+
+    /// What a notice's button does.
+    fn notice_action(&mut self, ctx: &egui::Context, action: notices::Action) {
+        use notices::Action;
+        match action {
+            Action::Undo(w) => goback::ask(self, w),
+            Action::UndoCard => goback::open(self, ctx),
+            Action::UseNewest(key) => goback::use_newest(self, ctx, &key),
+            Action::Update(found) => self.update_findings(ctx, found),
+            Action::UpdateVersion(id) => self.queue_updates(ctx, vec![QueuedUpdate::Game(id)]),
+            Action::Page(Page::EchoVrce) => self.sign_in_from(self.page),
+            Action::Page(p) => self.page = p,
+            Action::Play(id) => play::play_version(self, ctx, &id),
+            Action::RestartGame => play::restart(self),
+            Action::FixSteamEntry => setup::windows_steam(self, ctx, true),
+            Action::UpdateQuest => setup::quest_update(self, ctx),
+            Action::SteamVrLibrary => setup::steamvr_library(self, ctx, true),
+            Action::OpenUrl(url) => crate::core::platform::open_url(&url),
+            Action::JoinInvite(id) => servers::join_invite(self, ctx, &id),
+        }
     }
 }
 
@@ -4333,6 +4770,19 @@ fn browser_dialog(id: &str) -> (&'static str, String) {
 
 /// A centred card for pages that are not built yet.
 fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
+    let (x, y, w, h) = empty_panel(kit, icon, title, text);
+    let cw = kit.chip_width("Coming soon");
+    kit.chip(
+        x + (w - cw) / 2.0,
+        y + h - dz(62.0),
+        "Coming soon",
+        design::BLUE,
+    );
+}
+
+/// [`empty_state`]'s panel with its icon, title and text, without the chip: its place
+/// (x, y, w, h), for what goes at its foot.
+fn empty_panel(kit: &mut Kit, icon: Icon, title: &str, text: &str) -> (f32, f32, f32, f32) {
     let (w, h) = (dz(780.0), dz(336.0));
     let x = X0 + (CW + kit.ex - w) / 2.0;
     let y = dz(300.0) + kit.ey / 2.0;
@@ -4356,13 +4806,7 @@ fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
         let gx = x + (w - g.size().x) / 2.0;
         ty += kit.put(gx, ty, g).height();
     }
-    let cw = kit.chip_width("Coming soon");
-    kit.chip(
-        x + (w - cw) / 2.0,
-        y + h - dz(62.0),
-        "Coming soon",
-        design::BLUE,
-    );
+    (x, y, w, h)
 }
 
 /// Two made-up versions for UI snapshots.
@@ -4391,6 +4835,14 @@ fn demo_state() -> LauncherState {
     s.profile.windowed = false;
     s.quest_ip = Some("192.168.178.45".into());
     s
+}
+
+/// A notice's line: its text, and how many wait behind it.
+fn notice_text(n: &notices::Notice, more: usize) -> String {
+    match more {
+        0 => n.text.clone(),
+        m => format!("{}   ·   +{m} more", n.text),
+    }
 }
 
 /// The Unuwufy button (while uwu mode is on): a real button, its right edge at design x

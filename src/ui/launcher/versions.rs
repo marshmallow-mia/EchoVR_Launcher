@@ -78,11 +78,11 @@ pub(super) fn reinstall(
         JobKind::Reinstall,
         &id,
         res(&v.id, v.publisher_lock.is_some()),
-        &format!("Reinstalling {}", v.name),
+        &format!("Repairing {}", v.name),
         "Reading the build's checksums...",
         move |cancel, on| match versions::reinstall(&e, &v, keep_patch, cancel, on, &mut consent) {
             Ok(r) => JobResult::Reinstalled(r),
-            Err(err) => job_err(err, "Reinstall Failed"),
+            Err(err) => job_err(err, "Couldn't repair"),
         },
     );
 }
@@ -95,11 +95,11 @@ fn verify(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion) {
         JobKind::Verify,
         &id,
         res(&v.id, false),
-        &format!("Verifying {}", v.name),
-        "Verifying game files...",
+        &format!("Checking the files of {}", v.name),
+        "Checking game files...",
         move |cancel, on| match versions::verify(&v, entry.as_ref(), cancel, on) {
             Ok(found) => JobResult::Verified(found),
-            Err(e) => job_err(e, "Verify Failed"),
+            Err(e) => job_err(e, "Couldn't check the game files"),
         },
     );
 }
@@ -130,7 +130,7 @@ pub(super) fn install(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry) {
         "Preparing download...",
         move |cancel, on| match versions::install(&e, &library, cancel, on, &mut consent) {
             Ok(i) => JobResult::Installed(i.version, i.update_failed),
-            Err(err) => job_err(err, "Install Failed"),
+            Err(err) => job_err(err, "Couldn't install"),
         },
     );
 }
@@ -168,13 +168,13 @@ pub(super) fn adopt(
         "Checking the game files...",
         move |cancel, on| match versions::adopt(&e, &norm, &id, cancel, on, &mut consent) {
             Ok(i) => JobResult::Installed(i.version, i.update_failed),
-            Err(err) => job_err(err, "Couldn't Add Echo VR"),
+            Err(err) => job_err(err, "Couldn't add Echo VR"),
         },
     );
     job
 }
 
-/// Repairs version `id`'s game files (REINSTALL's check, the changed ones fetched again)
+/// Repairs version `id`'s game files (REPAIR's check, the changed ones fetched again)
 /// without going to the Install page: for a content pack whose game data an older
 /// installer changed. A licence patch in it stays.
 pub(super) fn repair_game(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
@@ -184,7 +184,7 @@ pub(super) fn repair_game(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     let Some(e) = d.entry_for(&v) else {
         d.dialogs.error(
             "Couldn't repair the game files",
-            "The launcher hasn't read its list of builds yet (is the internet connection up?). Try again in a moment, or use REINSTALL on the Install page.",
+            "The launcher hasn't read its list of builds yet (is the internet connection up?). Try again in a moment, or use REPAIR on the Install page.",
             Default::default(),
         );
         return;
@@ -202,11 +202,11 @@ pub(super) fn repair_game(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
 }
 
 /// Copy elsewhere `id`, found to be `e`'s build (the live one), gets what an install
-/// gets: it counts as that build from now on (its update, REINSTALL, repairs), then its
+/// gets: it counts as that build from now on (its update, REPAIR, repairs), then its
 /// files are checked against the build's checksums and the broken ones fetched again
 /// (through the admin helper where the folder needs it), with its update. A licence patch
 /// in it stays; it keeps its name. While Echo VR runs from it or a job has it, only the
-/// first part: REINSTALL, or a content pack's question, does the rest.
+/// first part: REPAIR, or a content pack's question, does the rest.
 pub(super) fn check_existing(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry, id: &str) {
     let Some(v) = d.state.versions.iter_mut().find(|v| v.id == id) else {
         return;
@@ -340,7 +340,7 @@ fn remove(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
             "Deleting the game files...",
             move |_, _| match versions::remove(&job_v, &library) {
                 Ok(()) => JobResult::Removed(job_v.id.clone()),
-                Err(e) => job_err(e, "Remove Failed"),
+                Err(e) => job_err(e, "Couldn't remove"),
             },
         );
         return;
@@ -429,7 +429,7 @@ pub(super) fn manage_menu(
     let in_use = d.files_in_use(v);
     let changes = missing.or(busy.as_deref()).or(in_use);
     let mut menu = Vec::new();
-    // Event builds get no updates (REINSTALL checks their files).
+    // Event builds get no updates (REPAIR checks their files).
     if versions::has_updates(v) {
         menu.push((
             MenuItem::row("Update", "Download any changed game files").unless(changes),
@@ -444,20 +444,20 @@ pub(super) fn manage_menu(
         menu.push((
             match back {
                 Some(w) => MenuItem::row(
-                    &format!("Go back to {}", w.before),
+                    &format!("Undo update (back to {})", w.before),
                     "Put back the files the last update replaced",
                 )
                 .unless(changes),
-                None => MenuItem::row("Go back", "").unless(Some(
-                    "No earlier files kept: no update since this launcher keeps them",
+                None => MenuItem::row("Undo update", "").unless(Some(
+                    "Nothing to undo: no update has replaced files here yet",
                 )),
             },
             Some(Act::GoBack),
         ));
         menu.push((
             MenuItem::row(
-                "Verify files",
-                "Check every game file against the build and its update",
+                "Check files",
+                "Check every game file against the build and its update; asks before repairing broken ones",
             )
             .unless(missing.or(busy.as_deref())),
             Some(Act::Verify),

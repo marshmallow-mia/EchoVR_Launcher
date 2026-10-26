@@ -37,6 +37,12 @@ const ROW_GAP: f32 = 10.0;
 const REMOVE_KEY: &str = "plugins-remove";
 /// "Play on another server?" (a plugin's `server` step).
 const SERVER_KEY: &str = "plugins-server";
+/// "Set up a game server?" (a plugin's `host` step).
+const HOST_KEY: &str = "plugins-host";
+/// "Get <plugin>?" / "Update <plugin>?": what it can do (that it couldn't before).
+const CONSENT_KEY: &str = "plugins-consent";
+/// "Allow <plugin>?": a changed or hand-copied plugin's page.
+const ALLOW_KEY: &str = "plugins-allow";
 /// A settings form's button that asks first.
 const FORM_ACTION_KEY: &str = "plugins-form-action";
 /// "Replace your preset?" and "Delete this preset?".
@@ -61,7 +67,7 @@ pub(super) struct PluginsUi {
     views: HashMap<String, View>,
     worker: Worker<Msg>,
     /// The plugin being installed, updated or removed.
-    busy: Option<String>,
+    pub(super) busy: Option<String>,
     /// The catalogue is being read again (Refresh).
     loading: bool,
     /// Debug builds: the plugin ECHOVR_PAGE named, opened once it is read.
@@ -70,6 +76,15 @@ pub(super) struct PluginsUi {
     /// The server a plugin's `server` step asked to play on (its id, the server), while the
     /// question is up.
     server_asked: Option<(String, GameServer)>,
+    /// The game server setup a plugin's `host` step asked to write, while the question is up.
+    host_asked: Option<HostAsked>,
+    /// A plugin downloaded and waiting for the player to allow what it can do (and what
+    /// to say once it is in place).
+    staged: Option<(core::Staged, String)>,
+    /// The plugin whose "Allow" question is up.
+    allow_asked: Option<String>,
+    /// Plugins the signed catalogue turned off this run (told once).
+    blocked_told: std::collections::BTreeSet<String>,
     /// A plugin page's question that is up (its id, what was asked).
     asked: Option<(String, Asked)>,
     /// The plugin whose rail menu (right click) is open.
@@ -80,6 +95,15 @@ pub(super) struct PluginsUi {
     pub rail_seen: Option<Page>,
     /// The plugin the Plugins page scrolls to and marks (Plugin details).
     pub focus: Option<String>,
+}
+
+/// A `host` step waiting for the player's yes.
+struct HostAsked {
+    plugin: String,
+    host: crate::core::launcher::host::Host,
+    version: crate::core::launcher::store::InstalledVersion,
+    /// Where what it wrote goes (`save`).
+    save: String,
 }
 
 /// What a plugin page's settings blocks asked.
@@ -113,6 +137,8 @@ enum Msg {
         plugin: String,
         result: Result<Value, String>,
     },
+    /// Downloaded and checked, waiting to be put in place (what to say once it is).
+    Staged(Result<Box<core::Staged>, String>, String),
     Done(String, Result<(), String>),
 }
 
@@ -231,7 +257,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     }
                     d.save();
                     back_to_nevr(d);
-                    d.notify("Echo VR plays on EchoVRCE again");
+                    d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
                 }
             }
             Msg::Catalog(c) => catalog_done(d, c),
@@ -254,22 +280,32 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                 }
             }
             Msg::Answered { plugin, result } => answered(d, ctx, &plugin, result),
+            Msg::Staged(Err(e), _) => {
+                d.plugins.busy = None;
+                d.dialogs
+                    .error("Couldn't change the plugin", &e, Default::default());
+            }
+            Msg::Staged(Ok(s), done) => staged(d, ctx, *s, done),
             Msg::Done(what, result) => {
                 d.plugins.busy = None;
                 match result {
                     Ok(()) => d.notify(&what),
-                    Err(e) => d.dialogs.error("Plugins", &e, Default::default()),
+                    Err(e) => d
+                        .dialogs
+                        .error("Couldn't change the plugin", &e, Default::default()),
                 }
                 reread(d, ctx);
-                super::goback::refresh(d, ctx);
+                super::goback::refresh_after_update(d, ctx);
             }
         }
     }
+    consent_answers(d, ctx);
     if let Some(ans) = d.dialogs.take(REMOVE_KEY) {
         if let (true, Some(id)) = (ans.is_yes(), d.plugins.remove_asked.take()) {
-            // Got again later, it starts on the rail.
+            // Got again later, it starts on the rail, and is asked about again.
             d.state.rail_order.retain(|o| *o != id);
             d.state.rail_unpinned.remove(&id);
+            d.state.plugin_grants.remove(&id);
             d.save();
             d.plugins.busy = Some(id.clone());
             d.plugins.worker.spawn(ctx, move |tx| {
@@ -293,13 +329,50 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                     if to_nakama {
                         back_to_nevr(d);
                     }
-                    d.notify("Echo VR's server changed");
+                    d.notify_next_start("Echo VR's server changed: from its next start");
                     if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
                         r.waiting = false;
                     }
                     advance(d, ctx, &p);
                 }
                 _ => fail(d, &id, "Echo VR's server wasn't changed.".into()),
+            }
+        }
+    }
+    if let Some(ans) = d.dialogs.take(HOST_KEY) {
+        if let Some(a) = d.plugins.host_asked.take() {
+            let p = d
+                .plugins
+                .list
+                .iter()
+                .find(|p| p.page.id == a.plugin)
+                .cloned();
+            match p {
+                Some(p) if ans.is_yes() => {
+                    match crate::core::launcher::host::write(&a.version, &a.host) {
+                        Ok(written) => {
+                            tracing::info!(
+                                "plugin {}: a game server's setup in {} (the player said yes)",
+                                a.plugin,
+                                written.dir.display()
+                            );
+                            if !a.save.is_empty() {
+                                set_bound(d, &p, &a.save, written.to_value());
+                            }
+                            if let Some(r) = d
+                                .plugins
+                                .views
+                                .get_mut(&a.plugin)
+                                .and_then(|v| v.runner.as_mut())
+                            {
+                                r.waiting = false;
+                            }
+                            advance(d, ctx, &p);
+                        }
+                        Err(e) => fail(d, &a.plugin, format!("{e:#}")),
+                    }
+                }
+                _ => fail(d, &a.plugin, "The game server wasn't set up.".into()),
             }
         }
     }
@@ -315,7 +388,29 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
 /// check): the Plugins page offers what they list. Advanced settings' line about the
 /// dev folder is read again too.
 pub(super) fn catalog_done(d: &mut Dashboard, c: PluginCatalog) {
+    // What the signed catalogue turns off is turned off here (and stays off while listed).
+    let blocked: Vec<(String, String, String)> = d
+        .plugins
+        .list
+        .iter()
+        .filter_map(|p| {
+            let why = c.blocked_reason(&p.page.id, &p.page.version)?;
+            Some((p.page.id.clone(), p.page.name.clone(), why.to_string()))
+        })
+        .collect();
     d.plugins.catalog = Some(c);
+    for (id, name, why) in blocked {
+        if !is_off(d, &id) {
+            tracing::warn!("plugin {id}: turned off by the signed catalogue: {why}");
+            set_off(d, &id, true);
+        }
+        if d.plugins.blocked_told.insert(id) {
+            d.dialogs.info(
+                &format!("{name} was turned off"),
+                &blocked_text(&name, &why),
+            );
+        }
+    }
     d.plugins.catalog_at = Some(std::time::Instant::now());
     d.plugins.loading = false;
     for status in d.dev_statuses.values_mut() {
@@ -388,6 +483,14 @@ impl Failure {
     /// says "server responded with <status>" for an error answer.
     fn of_get(e: &anyhow::Error) -> Failure {
         let message = format!("{e:#}");
+        if e.downcast_ref::<crate::core::http::RedirectRefused>()
+            .is_some()
+        {
+            return Failure {
+                message,
+                kind: "refused",
+            };
+        }
         let no_answer = e
             .chain()
             .any(|c| c.downcast_ref::<reqwest::Error>().is_some());
@@ -413,17 +516,44 @@ fn send(
     c: &Value,
     f: impl FnOnce(Result<Value, Failure>) -> Msg + Send + 'static,
 ) {
-    let url = pp::render(&r.url, c);
-    let body = r.body.as_ref().map(|b| pp::render_body(b, c));
+    let url = match core::request_url(&r.url, c) {
+        Ok(u) => u,
+        Err(message) => {
+            tracing::warn!("plugin request {}: {message}", r.url);
+            let failure = Failure {
+                message,
+                kind: "refused",
+            };
+            d.plugins
+                .worker
+                .spawn(ctx, move |tx| tx.send(f(Err(failure))));
+            return;
+        }
+    };
+    // The player's classic lobbies password goes to that server only.
+    let body = r.body.as_ref().map(|b| {
+        if core::to_relay(&d.state, &url) {
+            pp::render_body(b, &core::with_relay_password(c, &d.state))
+        } else {
+            pp::render_body(b, c)
+        }
+    });
     let method = r.method;
     d.plugins.worker.spawn(ctx, move |tx| {
         let result = match method {
-            Method::Get => crate::core::http::get_text(&url).map_err(|e| Failure::of_get(&e)),
-            // post_json fails only when no answer came back.
-            Method::Post => crate::core::http::post_json(&url, &body.unwrap_or(Value::Null))
+            Method::Get => crate::core::http::plugin_get(&url).map_err(|e| Failure::of_get(&e)),
+            // plugin_post fails only when no answer came back, or it was sent elsewhere.
+            Method::Post => crate::core::http::plugin_post(&url, &body.unwrap_or(Value::Null))
                 .map_err(|e| Failure {
                     message: format!("{e:#}"),
-                    kind: "unreachable",
+                    kind: if e
+                        .downcast_ref::<crate::core::http::RedirectRefused>()
+                        .is_some()
+                    {
+                        "refused"
+                    } else {
+                        "unreachable"
+                    },
                 })
                 .and_then(|(status, text)| {
                     if status >= 500 {
@@ -442,6 +572,9 @@ fn send(
 }
 
 fn fetch_due(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
+    if !runs(d, p) {
+        return;
+    }
     view(d, p);
     let c = context(d, p);
     let mut due = Vec::new();
@@ -490,6 +623,9 @@ fn act(d: &mut Dashboard, ctx: &egui::Context, p: &Installed, name: &str, item: 
     let Some(steps) = p.page.actions.get(name).cloned() else {
         return;
     };
+    if !runs(d, p) {
+        return;
+    }
     let v = view(d, p);
     if v.runner.is_some() {
         return;
@@ -550,7 +686,7 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                         d,
                         &id,
                         if why.is_empty() {
-                            "That didn't work.".into()
+                            "The plugin couldn't do that: check its settings and try again, or ask its author.".into()
                         } else {
                             why
                         },
@@ -659,18 +795,25 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                         "Install the live build first: a game server runs from it.".into(),
                     );
                 };
-                match crate::core::launcher::host::write(&v, &host) {
-                    Ok(written) => {
-                        tracing::info!(
-                            "plugin {id}: a game server's setup in {}",
-                            written.dir.display()
-                        );
-                        if !save.is_empty() {
-                            set_bound(d, p, &save, written.to_value());
-                        }
-                    }
-                    Err(e) => return fail(d, &id, format!("{e:#}")),
+                // It writes a server account into the game's folder: the player says yes first.
+                let message = host_question(&p.page.name, &v.name, &host);
+                if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
+                    r.waiting = true;
                 }
+                d.plugins.host_asked = Some(HostAsked {
+                    plugin: id.clone(),
+                    host,
+                    version: v,
+                    save,
+                });
+                d.dialogs.options(
+                    HOST_KEY,
+                    "Set up a game server?",
+                    &message,
+                    crate::ui::dialogs::Icon::Warning,
+                    &["Set it up", "Cancel"],
+                );
+                return;
             }
             Step::Server {
                 kind,
@@ -685,6 +828,15 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                     ServerKind::EchoRelay
                 } else {
                     ServerKind::Nakama
+                };
+                // The player's classic lobbies account signs in on that server only.
+                let address_text = pp::render(&address, &c).trim().to_string();
+                let c = if kind == ServerKind::EchoRelay
+                    && core::to_relay(&d.state, &format!("http://{address_text}"))
+                {
+                    core::with_relay_password(&c, &d.state)
+                } else {
+                    c
                 };
                 let server = GameServer {
                     name: pp::render(&name, &c).trim().to_string(),
@@ -707,7 +859,7 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                         );
                         d.save();
                         back_to_nevr(d);
-                        d.notify("Echo VR plays on EchoVRCE again");
+                        d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
                     }
                     continue;
                 }
@@ -719,6 +871,24 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                             format!(
                                 "{address} isn't an EchoRelay address: host:port, e.g. {}.",
                                 relay::DEFAULT_SERVER
+                            ),
+                        );
+                    }
+                    let launchers = d
+                        .state
+                        .relay_account
+                        .as_ref()
+                        .is_some_and(|a| !a.password.is_empty());
+                    if account.password.is_empty()
+                        && launchers
+                        && !core::to_relay(&d.state, &format!("http://{address}"))
+                    {
+                        return fail(
+                            d,
+                            &id,
+                            format!(
+                                "Your classic lobbies password goes only to the classic lobbies server the launcher's settings name: for {address}, type your password there in {}.",
+                                p.page.name
                             ),
                         );
                     }
@@ -766,6 +936,33 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
 
 /// The live builds set up for an EchoRelay server get nEVR back now (the next start would
 /// otherwise), unless Echo VR runs from them.
+/// "Back to EchoVRCE and join": the server a plugin chose is let go of, nEVR back in its
+/// place.
+pub(super) fn back_to_echovrce(d: &mut Dashboard) {
+    if let Some(g) = d.state.game_server.take() {
+        tracing::info!(
+            "Echo VR plays on EchoVRCE again (was {}, the player joined an EchoVRCE match)",
+            g.server.address
+        );
+        d.save();
+        back_to_nevr(d);
+        d.notify("Echo VR plays on EchoVRCE again");
+    }
+}
+
+/// Settings' "EchoVRCE again" for the server a plugin set.
+pub(super) fn reset_game_server(d: &mut Dashboard) {
+    if let Some(g) = d.state.game_server.take() {
+        tracing::info!(
+            "Echo VR plays on EchoVRCE again (was {}, reset in Settings)",
+            g.server.address
+        );
+        d.save();
+        back_to_nevr(d);
+        d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
+    }
+}
+
 fn back_to_nevr(d: &mut Dashboard) {
     let local = d.local();
     for v in d
@@ -783,6 +980,33 @@ fn back_to_nevr(d: &mut Dashboard) {
             Err(e) => tracing::warn!("{}: {e:#}", v.id),
         }
     }
+}
+
+/// Pure: what the player is asked before plugin `plugin` writes a game server's setup into
+/// `version`.
+fn host_question(plugin: &str, version: &str, h: &crate::core::launcher::host::Host) -> String {
+    let folder = if h.folder.is_empty() {
+        "server"
+    } else {
+        &h.folder
+    };
+    let account = if h.discord_id.is_empty() {
+        String::new()
+    } else {
+        format!(", signed in as {}", h.discord_id)
+    };
+    let to = [&h.socket_uri, &h.serverdb_uri]
+        .into_iter()
+        .filter_map(|u| core::origin(&u.replace("ws://", "http://").replace("wss://", "https://")))
+        .map(|o| o.split("://").nth(1).unwrap_or_default().to_string())
+        .next()
+        .map(|o| format!(", registering with {o}"))
+        .unwrap_or_default();
+    format!(
+        "{plugin} wants to set up a game server in {version}: its own setup and a start \
+         script in _local/{folder}{account}{to}. The server runs when you start \
+         that script. Only say yes if you asked {plugin} for this."
+    )
 }
 
 /// Pure: what the player is asked before plugin `plugin` sets the game's server.
@@ -861,7 +1085,13 @@ fn set_bound(d: &mut Dashboard, p: &Installed, bind: &str, value: Value) {
 /// player ordered, then the ones installed since. Unpinned ones are left out.
 pub(super) fn pinned(d: &Dashboard) -> Vec<u8> {
     let ids: Vec<&str> = d.plugins.list.iter().map(|p| p.page.id.as_str()).collect();
-    rail_order(&ids, &d.state.rail_order, &d.state.rail_unpinned)
+    let hidden: std::collections::BTreeSet<String> = d
+        .state
+        .rail_unpinned
+        .union(&d.state.plugins_off)
+        .cloned()
+        .collect();
+    rail_order(&ids, &d.state.rail_order, &hidden)
 }
 
 /// [`pinned`] for these installed ids.
@@ -880,6 +1110,163 @@ fn rail_order(
         }
     }
     out
+}
+
+/// Whether the player turned the plugin off.
+pub(super) fn is_off(d: &Dashboard, id: &str) -> bool {
+    d.state.plugins_off.contains(id)
+}
+
+/// Whether plugin `p` does anything: turned on, and allowed all it can do.
+fn runs(d: &Dashboard, p: &Installed) -> bool {
+    d.demo || (!is_off(d, &p.page.id) && core::allowed(&d.state, p))
+}
+
+/// Why the signed catalogue turned plugin `p` off (it can't be turned on while listed).
+fn blocked(d: &Dashboard, p: &Installed) -> Option<String> {
+    d.plugins
+        .catalog
+        .as_ref()?
+        .blocked_reason(&p.page.id, &p.page.version)
+        .map(str::to_string)
+}
+
+fn blocked_text(name: &str, why: &str) -> String {
+    let why = if why.trim().is_empty() {
+        String::new()
+    } else {
+        format!(" {}", why.trim())
+    };
+    format!(
+        "This version of {name} was turned off by the launcher's makers, for everyone who has it.{why} Update it once a fixed version is out, or remove it."
+    )
+}
+
+/// What the player allowed plugin `id` so far: kept, else what one installed before the
+/// launcher asked has.
+fn granted(d: &Dashboard, id: &str) -> crate::core::launcher::plugin_permissions::Permissions {
+    if let Some(g) = d.state.plugin_grants.get(id) {
+        return g.clone();
+    }
+    d.plugins
+        .list
+        .iter()
+        .find(|p| p.page.id == id && core::allowed(&d.state, p))
+        .map(|p| p.needs.clone())
+        .unwrap_or_default()
+}
+
+/// The player allowed all plugin `p` can do now (its page): it runs.
+fn allow(d: &mut Dashboard, p: &Installed) {
+    let g = granted(d, &p.page.id).with(&p.needs);
+    d.state.plugin_grants.insert(p.page.id.clone(), g);
+    d.save();
+    tracing::info!("plugin {}: the player allowed what it does", p.page.id);
+    let text = echoxr_settings::current(&d.state);
+    echoxr_settings::apply_all(&d.state.versions, text.as_deref());
+    d.notify("Plugin allowed");
+}
+
+/// A plugin is downloaded: in place at once when it can do nothing the player hasn't
+/// allowed, else after asking.
+fn staged(d: &mut Dashboard, ctx: &egui::Context, s: core::Staged, done: String) {
+    let added = s.needs.missing(&granted(d, &s.entry.id));
+    if added.is_empty() {
+        return commit(d, ctx, s, done);
+    }
+    let update = d.plugins.list.iter().any(|p| p.page.id == s.entry.id);
+    let lines: String = added.lines().iter().map(|l| format!("\n• {l}")).collect();
+    let (title, message, yes) = if update {
+        (
+            format!("Update {}?", s.entry.name),
+            format!("Version {} can also:{lines}", s.entry.version),
+            "Update",
+        )
+    } else {
+        (
+            format!("Get {}?", s.entry.name),
+            format!("{} can:{lines}", s.entry.name),
+            "Get it",
+        )
+    };
+    d.dialogs.options(
+        CONSENT_KEY,
+        &title,
+        &message,
+        crate::ui::dialogs::Icon::Info,
+        &[yes, "Cancel"],
+    );
+    d.plugins.staged = Some((s, done));
+}
+
+/// The answers to "Get <plugin>?" and "Allow <plugin>?".
+fn consent_answers(d: &mut Dashboard, ctx: &egui::Context) {
+    if let Some(ans) = d.dialogs.take(CONSENT_KEY) {
+        if let Some((s, done)) = d.plugins.staged.take() {
+            if ans.is_yes() {
+                commit(d, ctx, s, done);
+            } else {
+                tracing::info!(
+                    "plugin {} {}: the player didn't allow it",
+                    s.entry.id,
+                    s.entry.version
+                );
+                let update = d.plugins.list.iter().any(|p| p.page.id == s.entry.id);
+                s.discard();
+                d.plugins.busy = None;
+                d.notify(if update {
+                    "The update wasn't installed"
+                } else {
+                    "The plugin wasn't added"
+                });
+            }
+        }
+    }
+    if let Some(ans) = d.dialogs.take(ALLOW_KEY) {
+        if let (true, Some(id)) = (ans.is_yes(), d.plugins.allow_asked.take()) {
+            if let Some(p) = d.plugins.list.iter().find(|p| p.page.id == id).cloned() {
+                allow(d, &p);
+            }
+        }
+    }
+}
+
+/// Puts a staged plugin in place; what it can do is allowed from now on.
+fn commit(d: &mut Dashboard, ctx: &egui::Context, s: core::Staged, done: String) {
+    let g = granted(d, &s.entry.id).with(&s.needs);
+    d.state.plugin_grants.insert(s.entry.id.clone(), g);
+    d.save();
+    d.plugins.worker.spawn(ctx, move |tx| {
+        let r = core::commit(s).map_err(|err| format!("{err:#}"));
+        tx.send(Msg::Done(done, r));
+    });
+}
+
+/// Turns the plugin off (no tab, nothing fetched, the game's server it chose and EchoXR's
+/// settings it keeps let go of) or on again.
+pub(super) fn set_off(d: &mut Dashboard, id: &str, off: bool) {
+    if off {
+        d.state.plugins_off.insert(id.to_string());
+        if d.state.game_server.as_ref().is_some_and(|g| g.plugin == id) {
+            reset_game_server(d);
+        }
+        if let Some(v) = d.plugins.views.get_mut(id) {
+            v.runner = None;
+        }
+    } else {
+        d.state.plugins_off.remove(id);
+    }
+    d.save();
+    if !d.demo {
+        let text = echoxr_settings::current(&d.state);
+        echoxr_settings::apply_all(&d.state.versions, text.as_deref());
+    }
+    tracing::info!("plugin {id}: turned {}", if off { "off" } else { "on" });
+    d.notify(if off {
+        "Plugin turned off"
+    } else {
+        "Plugin turned on"
+    });
 }
 
 /// Whether the plugin is on the rail.
@@ -941,6 +1328,56 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
     let Some(p) = d.plugins.list.get(i as usize).cloned() else {
         return empty_state(kit, Icon::Plus, "Plugins", "This plugin was removed.");
     };
+    if is_off(d, &p.page.id) {
+        let why = blocked(d, &p);
+        let text = match &why {
+            Some(why) => blocked_text(&p.page.name, why),
+            None => "This plugin is turned off: it has no tab, and does nothing until it is turned on again.".to_string(),
+        };
+        if panel_button(kit, &p, &text, "Turn on", why.is_none()) {
+            set_off(d, &p.page.id, false);
+        }
+        return;
+    }
+    let not_allowed = core::not_allowed(&d.state, &p);
+    if !d.demo && !not_allowed.is_empty() {
+        let how = match p.trust {
+            _ if p.from_catalog.is_none() => "was put here by hand, so",
+            core::Trust::Changed => "changed since it was installed, so",
+            _ => "was updated and can do more now, so",
+        };
+        let text = format!(
+            "{} {how} it does nothing until you allow what it can do.",
+            p.page.name
+        );
+        if panel_button(kit, &p, &text, "Review and allow", true) {
+            let lines: String = not_allowed
+                .lines()
+                .iter()
+                .map(|l| format!("\n• {l}"))
+                .collect();
+            d.plugins.allow_asked = Some(p.page.id.clone());
+            d.dialogs.options(
+                ALLOW_KEY,
+                &format!("Allow {}?", p.page.name),
+                &format!("{} can:{lines}", p.page.name),
+                crate::ui::dialogs::Icon::Warning,
+                &["Allow", "Cancel"],
+            );
+        }
+        return;
+    }
+    if p.page.builtin == "server-host" && p.page.id == crate::core::server_host::PLUGIN_ID {
+        if !p.may_use_builtin() {
+            let text = "Server host runs game servers on this PC, so the launcher opens it only as signed by its makers, and this copy isn't: update it, or remove it and get it again.";
+            if panel_button(kit, &p, text, "Open Plugins", true) {
+                d.plugins.focus = Some(p.page.id.clone());
+                d.page = Page::Plugins;
+            }
+            return;
+        }
+        return super::server_host::show(d, kit, ctx);
+    }
     view(d, &p);
     answers(d, &p);
     let c = context(d, &p);
@@ -977,6 +1414,26 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
             });
         }
     }
+}
+
+/// A plugin page that shows only why it doesn't run, with one button at its foot: whether
+/// it was clicked.
+fn panel_button(kit: &mut Kit, p: &Installed, text: &str, label: &str, enabled: bool) -> bool {
+    let (x, y, w, h) = super::empty_panel(kit, rail_icon(&p.page), &p.page.name, text);
+    let bw = kit.button_width(label, None, BTN_H).max(dz(160.0));
+    kit.button(
+        "plugin-panel-button",
+        x + (w - bw) / 2.0,
+        y + h - dz(40.0) - BTN_H,
+        bw,
+        BTN_H,
+        Tone::Blue,
+        None,
+        label,
+        enabled,
+        "",
+    )
+    .clicked
 }
 
 /// A column of cards in `r`, scrolled when it is taller.
@@ -1522,6 +1979,8 @@ fn write_form(d: &mut Dashboard, p: &Installed, changes: Vec<(String, String)>) 
 /// a change reaches a game that is running.
 fn keep_echoxr(d: &Dashboard, p: &Installed) {
     if d.demo
+        || !runs(d, p)
+        || !p.may_keep_echoxr()
         || !p
             .page
             .settings
@@ -2181,7 +2640,7 @@ pub(super) fn show_manage(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context)
     if cards.is_empty() {
         let text = match (d.plugins.filter, catalog.is_some()) {
             (Filter::Installed, _) => {
-                "None yet. Plugins add apps to the launcher. Get one under Available, and pin the ones you use to the rail."
+                "None yet. Plugins add apps to the launcher. Get one under Available, and pin the ones you use to the rail (the bar on the left)."
             }
             (_, false) => "Reading the plugins list…",
             _ => "You have every plugin there is.",
@@ -2305,6 +2764,21 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
         meta.push("added by hand".into());
     }
     let mut tags = Vec::new();
+    if is_off(d, &p.page.id) {
+        tags.push(("Turned off".to_string(), design::GREY));
+    }
+    if blocked(d, p).is_some() {
+        tags.push(("Turned off by its makers".to_string(), design::QUEST_WARN));
+    }
+    if p.trust == core::Trust::Changed {
+        tags.push(("Changed since install".to_string(), design::QUEST_WARN));
+    }
+    if !p.page.builtin.is_empty() && !p.may_use_builtin() {
+        tags.push(("Not signed".to_string(), design::QUEST_WARN));
+    }
+    if !d.demo && !core::allowed(&d.state, p) {
+        tags.push(("Needs your OK".to_string(), design::QUEST_WARN));
+    }
     if update {
         tags.push(("Update".to_string(), design::QUEST_ON));
     }
@@ -2327,7 +2801,7 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
         summary: p.page.summary.clone(),
         two_buttons: update,
         note: (!p.warnings.is_empty())
-            .then(|| "Its description has problems: the launcher's log lists them.".into()),
+            .then(|| "This plugin may not work right: tell its author (the launcher's log lists what's wrong).".into()),
     }
 }
 
@@ -2578,7 +3052,7 @@ fn installed_card(
     let (pin_icon, pin_tip) = if pin {
         (Icon::Pinned, "In the rail: click to unpin it")
     } else {
-        (Icon::Pin, "Pin it to the rail")
+        (Icon::Pin, "Pin it to the rail (the bar on the left)")
     };
     if icon_button(
         kit,
@@ -2618,7 +3092,7 @@ fn installed_card(
     let idle = busy.is_none();
     let busy_tip = busy
         .as_ref()
-        .map(|b| format!("Wait: {b} is being installed or updated"));
+        .map(|b| format!("Wait: {} is being installed or updated", name_of(d, b)));
     let stacked = buttons_stacked(kit, info, inner);
     let (open_w, open_y) = match (&update, stacked) {
         (Some(_), false) => ((inner - dz(10.0)) / 2.0, by),
@@ -2698,10 +3172,10 @@ fn offered_card(
         .plugins
         .busy
         .as_ref()
-        .map(|id| format!("Wait: {id} is being installed"));
+        .map(|id| format!("Wait: {} is being installed", name_of(d, id)));
     let tip = busy_tip
         .as_deref()
-        .unwrap_or("Download and add it: it gets a tab in the rail");
+        .unwrap_or("Download and add it: it gets a tab in the rail (the bar on the left)");
     if kit
         .button(
             &format!("plugins-get-{}", e.id),
@@ -2735,6 +3209,7 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let entry = catalog.plugins.iter().find(|e| e.id == id).cloned();
     let homepage = entry.map(|e| e.homepage).unwrap_or_default();
     let pin = is_pinned(d, &id);
+    let off = is_off(d, &id);
     let idle = d.plugins.busy.is_none();
     let wait = (!idle).then_some("Wait: a plugin is being installed or updated");
     let back = super::goback::way_of(d, &Part::Plugin { id: id.clone() }).cloned();
@@ -2749,12 +3224,12 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         },
         match &back {
             Some(w) => MenuItem::row(
-                &format!("Go back to {}", w.before),
+                &format!("Undo update (back to {})", w.before),
                 "Put back the version it had before its last update",
             )
             .unless(wait),
-            None => MenuItem::row("Go back", "")
-                .unless(Some("No earlier version kept: it wasn't updated since")),
+            None => MenuItem::row("Undo update", "")
+                .unless(Some("Nothing to undo: it hasn't been updated yet")),
         },
         if pin {
             MenuItem::row(
@@ -2762,7 +3237,23 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 "Its tab leaves the rail: open it from here",
             )
         } else {
-            MenuItem::row("Pin to the rail", "Its tab goes in the rail")
+            MenuItem::row(
+                "Pin to the rail",
+                "Its tab goes in the rail, the bar on the left",
+            )
+        }
+        .unless(off.then_some("It's turned off: no tab until it is turned on")),
+        if off {
+            MenuItem::row("Turn on", "Its tab and page are back").unless(
+                blocked(d, &p)
+                    .is_some()
+                    .then_some("Its makers turned this version off"),
+            )
+        } else {
+            MenuItem::row(
+                "Turn off",
+                "No tab, and it does nothing until it is turned on again",
+            )
         },
         MenuItem::row("Remove", "Remove it and its settings").unless(wait),
         MenuItem::Divider,
@@ -2783,21 +3274,52 @@ fn card_menu(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             }
         }
         Some(2) => set_pinned(d, &id, !pin),
-        Some(3) => {
+        Some(3) => set_off(d, &id, !off),
+        Some(4) => {
             d.plugins.remove_asked = Some(id.clone());
+            // The game's server it chose goes with it.
+            let server = d
+                .state
+                .game_server
+                .as_ref()
+                .filter(|g| g.plugin == id)
+                .map(|g| {
+                    format!(
+                        "\n\nEcho VR plays on {} because of it: without it, Echo VR goes back to EchoVRCE.",
+                        if g.name.is_empty() { &g.server.address } else { &g.name }
+                    )
+                })
+                .unwrap_or_default();
             d.dialogs.confirm_danger(
                 REMOVE_KEY,
-                "Remove plugin",
-                &format!("Remove {} and its settings?", p.page.name),
+                &format!("Remove {}?", p.page.name),
+                &format!("{} and its settings are removed.{server}", p.page.name),
                 "Remove",
             );
         }
-        Some(5) => crate::core::platform::open_url(&homepage),
+        Some(6) => crate::core::platform::open_url(&homepage),
         _ => {}
     }
     if !kit.menu_open(CARD_MENU) {
         d.plugins.card_menu = None;
     }
+}
+
+/// What plugin `id` is called (installed, or in the catalogue), for the player.
+pub(super) fn name_of(d: &Dashboard, id: &str) -> String {
+    d.plugins
+        .list
+        .iter()
+        .find(|p| p.page.id == id)
+        .map(|p| p.page.name.clone())
+        .or_else(|| {
+            d.plugins
+                .catalog
+                .as_ref()
+                .and_then(|c| c.plugins.iter().find(|e| e.id == id))
+                .map(|e| e.name.clone())
+        })
+        .unwrap_or_else(|| id.to_string())
 }
 
 /// The catalogue's other version of `p`, unless it's the one the player went back from.
@@ -2812,13 +3334,36 @@ fn update_of<'a>(
     core::update_for(p, catalog).filter(|e| !goback::held(&d.state.holds, &part, &e.version))
 }
 
+/// "Update now" on an undone update: the catalogue's version of plugin `id`. False when
+/// there's none (or a plugin is being installed).
+pub(super) fn update_newest(d: &mut Dashboard, ctx: &egui::Context, id: &str) -> bool {
+    let Some(p) = d.plugins.list.iter().find(|p| p.page.id == id) else {
+        return false;
+    };
+    let entry = d
+        .plugins
+        .catalog
+        .as_ref()
+        .and_then(|c| core::update_for(p, c))
+        .cloned();
+    match entry {
+        Some(e) if d.plugins.busy.is_none() => {
+            get(d, ctx, e, "Plugin updated");
+            true
+        }
+        _ => false,
+    }
+}
+
 fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str) {
     d.plugins.busy = Some(e.id.clone());
     let done = done.to_string();
     d.plugins.worker.spawn(ctx, move |tx| {
-        let r = core::install(&e, &std::sync::atomic::AtomicBool::new(false), &mut |_| {})
-            .map_err(|err| format!("{err:#}"));
-        tx.send(Msg::Done(done, r));
+        let r =
+            core::stage_from_catalog(&e, &std::sync::atomic::AtomicBool::new(false), &mut |_| {})
+                .map(Box::new)
+                .map_err(|err| format!("{err:#}"));
+        tx.send(Msg::Staged(r, done));
     });
 }
 
@@ -2876,6 +3421,7 @@ fn demo() -> PluginsUi {
         dir: std::path::PathBuf::new(),
         from_catalog: Some(page_version),
         warnings: Vec::new(),
+        ..Default::default()
     });
     let mut v = View {
         page: json!({"build": "halloween", "region": "EU"}),
@@ -2985,12 +3531,29 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
             page: std::sync::Arc::new(page),
             dir: std::path::PathBuf::new(),
             warnings,
+            ..Default::default()
         });
     }
     // The second one off the rail.
     if let Some(p) = d.plugins.list.get(2) {
         d.state.rail_unpinned.insert(p.page.id.clone());
     }
+}
+
+/// Snapshots: the plugin `text` describes installed, after the others.
+pub(super) fn snap_install(d: &mut Dashboard, text: &str) {
+    let (page, _) = core::read_description(text);
+    let Some(page) = page else {
+        return;
+    };
+    d.plugins.list.retain(|p| p.page.id != page.id);
+    d.plugins.list.push(Installed {
+        from_catalog: Some(page.version.clone()),
+        page: std::sync::Arc::new(page),
+        dir: std::path::PathBuf::new(),
+        warnings: Vec::new(),
+        ..Default::default()
+    });
 }
 
 pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
@@ -3018,6 +3581,7 @@ pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
+        ..Default::default()
     });
     let mut view = View {
         page: json!({}),
@@ -3057,6 +3621,7 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
         page: std::sync::Arc::new(page),
         dir: std::path::PathBuf::new(),
         warnings: Vec::new(),
+        ..Default::default()
     });
     let settings = [
         ("relay_address", "203.0.113.7:6800"),
@@ -3104,7 +3669,8 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
 
 #[cfg(test)]
 mod tests {
-    use super::Failure;
+    use super::*;
+    use crate::core::launcher::plugin_permissions::Permissions;
 
     /// The library: the pinned plugins in the rail's order, the unpinned ones, then the
     /// catalogue's others; the filters keep either part.
@@ -3200,6 +3766,87 @@ mod tests {
         assert_eq!(rail_order(&installed, &order, &unpinned), [2, 1]);
     }
 
+    /// A zip of plugin description `desc`.
+    fn zip_of(desc: &str) -> tempfile::NamedTempFile {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let mut z = ::zip::ZipWriter::new(std::fs::File::create(f.path()).unwrap());
+        z.start_file("plugin.json", ::zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut z, desc.as_bytes()).unwrap();
+        z.finish().unwrap();
+        f
+    }
+
+    #[test]
+    fn getting_a_plugin_asks_what_it_can_do_and_an_update_what_it_adds() {
+        use crate::ui::dialogs::Answer;
+        let root = tempfile::tempdir().unwrap();
+        let no = std::sync::atomic::AtomicBool::new(false);
+        // Snapshot mode: nothing is saved to the real launcher state.
+        let mut d = Dashboard {
+            demo: true,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        let desc = include_str!("../../../docs/plugins/event-lobbies/plugin.json");
+        let entry = |v: &str| core::PluginEntry {
+            id: "event-lobbies".into(),
+            name: "Event lobbies".into(),
+            version: v.into(),
+            ..Default::default()
+        };
+        let zip = zip_of(desc);
+        let stage = |v: &str| core::stage(root.path(), &entry(v), zip.path(), &no).unwrap();
+        let installed = root.path().join("event-lobbies");
+
+        // Cancel: not added, nothing allowed.
+        staged(&mut d, &ctx, stage("0.1.0"), "Plugin added".into());
+        assert_eq!(d.dialogs.open_keys(), vec![CONSENT_KEY]);
+        d.dialogs.press(CONSENT_KEY, Answer::Button(1));
+        consent_answers(&mut d, &ctx);
+        assert!(d.plugins.staged.is_none() && d.state.plugin_grants.is_empty());
+        assert!(!root.path().join(".event-lobbies.new").exists() && !installed.exists());
+
+        // Get it: allowed what it can do, and put in place.
+        staged(&mut d, &ctx, stage("0.1.0"), "Plugin added".into());
+        d.dialogs.press(CONSENT_KEY, Answer::Button(0));
+        consent_answers(&mut d, &ctx);
+        let needs = Permissions::of(&core::read_description(desc).0.unwrap());
+        assert_eq!(d.state.plugin_grants.get("event-lobbies"), Some(&needs));
+        let start = Instant::now();
+        while !installed.join("plugin.json").exists() {
+            assert!(start.elapsed().as_secs() < 10, "it wasn't put in place");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        while d.plugins.worker.drain().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        d.plugins.list = core::installed_in(root.path());
+
+        // An update that can do no more: no question.
+        staged(&mut d, &ctx, stage("0.1.1"), "Plugin updated".into());
+        assert!(d.dialogs.open_keys().is_empty());
+        while d.plugins.worker.drain().is_empty() {
+            assert!(start.elapsed().as_secs() < 10, "it wasn't updated");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        // One that can do more: asked about only that.
+        let more = desc.replacen(
+            "\"get\": \"http://{settings.server|launcher.relay.server}/api/matches\"",
+            "\"get\": \"https://stats.example.com/api/matches\"",
+            1,
+        );
+        assert_ne!(more, desc);
+        let zip2 = zip_of(&more);
+        let s = core::stage(root.path(), &entry("0.2.0"), zip2.path(), &no).unwrap();
+        staged(&mut d, &ctx, s, "Plugin updated".into());
+        assert_eq!(d.dialogs.open_keys(), vec![CONSENT_KEY]);
+        let (s, _) = d.plugins.staged.as_ref().unwrap();
+        let added = s.needs.missing(&needs);
+        assert_eq!(added.lines(), ["Talk to stats.example.com"]);
+    }
+
     #[test]
     fn failures_by_kind() {
         // Nothing listens there: no answer at all.
@@ -3212,5 +3859,8 @@ mod tests {
             "GET http://x/api/matches: server responded with 500 Internal Server Error"
         );
         assert_eq!(Failure::of_get(&e).kind, "server");
+        // Sent on to another server: not followed.
+        let e = anyhow::Error::new(crate::core::http::RedirectRefused).context("GET http://x/a");
+        assert_eq!(Failure::of_get(&e).kind, "refused");
     }
 }

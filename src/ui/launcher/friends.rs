@@ -10,7 +10,6 @@ use crate::core::echovrce::game::{self, FriendState};
 use crate::core::echovrce::Account;
 use crate::core::launcher::feed;
 use crate::ui::design::{self, dz, Dr};
-use crate::ui::dialogs::Icon as DlgIcon;
 use crate::ui::kit::Kit;
 use crate::ui::widgets::{Tone, BTN_H};
 
@@ -212,7 +211,13 @@ fn find_card(
             None,
             "Search",
             can,
-            "Find players with this name",
+            if d.servers.searching {
+                "Searching…"
+            } else if can {
+                "Find players with this name"
+            } else {
+                "Type at least 2 letters of a name first"
+            },
         )
         .clicked;
     if can && (clicked || enter) {
@@ -235,7 +240,13 @@ fn find_card(
             return;
         }
         Some((_, Err(e))) => {
-            note(k, x, top, w, &format!("Couldn't search: {e}"));
+            note(
+                k,
+                x,
+                top,
+                w,
+                &format!("Couldn't search right now. Check your connection and try again. ({e})"),
+            );
             return;
         }
         Some((text, Ok(v))) if v.is_empty() => {
@@ -396,13 +407,13 @@ fn list_card(
     );
     d.servers.friends_page_scroll[2] = scroll;
     if let Some((user, name)) = d.servers.remove_clicked.take() {
-        d.dialogs.confirm(
+        d.dialogs.confirm_danger(
             REMOVE_KEY,
-            &format!("Remove {name}?"),
+            &format!("Remove {name} from your friends?"),
             &format!(
                 "{name} is taken off your friends, and you off theirs. You can ask again later."
             ),
-            DlgIcon::Question,
+            "Remove",
         );
         d.servers.remove_asked = Some((user, name));
     }

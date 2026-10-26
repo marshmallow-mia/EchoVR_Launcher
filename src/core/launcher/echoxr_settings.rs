@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use super::plugin_settings::{Settings, Store, ECHOXR_FILE};
 use super::plugins;
-use super::store::InstalledVersion;
+use super::store::{InstalledVersion, LauncherState};
 
 /// The first line of a copy the launcher keeps.
 pub const MARKER: &str = "# Kept by the Echo VR launcher's Controllers plugin: change it there.";
@@ -27,19 +27,22 @@ pub fn is_echoxr(s: &Settings) -> bool {
 
 /// The settings text of the installed plugin that keeps EchoXR's, found without logging
 /// what descriptions get wrong (the plugins page does that): for preparing a version and
-/// its fingerprint (file I/O).
-pub fn current() -> Option<String> {
+/// its fingerprint (file I/O). Only a plugin as the launcher installed it from a catalogue
+/// or signed may ([`plugins::Installed::may_keep_echoxr`]), and none the player turned off
+/// or didn't allow all it does ([`plugins::allowed`]).
+pub fn current(state: &LauncherState) -> Option<String> {
     let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(plugins::dir())
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.'))
         .filter_map(|e| {
-            let text = std::fs::read_to_string(e.path().join(plugins::DESCRIPTION)).ok()?;
-            let page = plugins::read_description(&text).0?;
-            (e.file_name().to_str() == Some(page.id.as_str())
-                && page.settings.as_ref().is_some_and(is_echoxr))
-            .then(|| (page.name.to_lowercase(), e.path()))
+            let p = plugins::read_quietly(&e.path())?;
+            (!state.plugins_off.contains(&p.page.id)
+                && p.page.settings.as_ref().is_some_and(is_echoxr)
+                && p.may_keep_echoxr()
+                && plugins::allowed(state, &p))
+            .then(|| (p.page.name.to_lowercase(), e.path()))
         })
         .collect();
     found.sort();

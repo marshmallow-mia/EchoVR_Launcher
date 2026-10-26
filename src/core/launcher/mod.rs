@@ -21,6 +21,7 @@ pub mod nevr;
 pub mod packs;
 pub mod patch;
 pub mod plugin_page;
+pub mod plugin_permissions;
 pub mod plugin_settings;
 pub mod plugins;
 pub mod prefs;

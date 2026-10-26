@@ -221,7 +221,7 @@ pub enum UpdateError {
 impl UpdateError {
     pub fn title(&self) -> String {
         match self {
-            UpdateError::HashMismatch(p) => format!("Hash mismatch for {p}"),
+            UpdateError::HashMismatch(p) => format!("A download came out damaged: {p}"),
             UpdateError::FileInUse { .. } => "Please close Echo VR first".into(),
         }
     }
@@ -231,7 +231,7 @@ impl UpdateError {
 pub fn error_title(e: &anyhow::Error) -> String {
     match e.downcast_ref::<UpdateError>() {
         Some(u) => u.title(),
-        None => "Update Failed".into(),
+        None => "Couldn't update".into(),
     }
 }
 
@@ -446,6 +446,8 @@ pub fn apply_manifest(
         }
     }
     result?;
+    // What it shipped into plugins/ is verified by its checksum from now on.
+    super::launcher::mods::note_shipped(bin_path, adds.iter().copied());
     tracing::info!("UpdateService: update complete");
     Ok(())
 }
@@ -553,6 +555,8 @@ pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
             .with_context(|| format!("put back {p}"))?;
     }
     let _ = std::fs::remove_dir_all(previous);
+    // The plugins put back aren't the ones the update noted.
+    super::launcher::mods::forget_shipped(bin_path);
     tracing::info!(
         "UpdateService: went back ({} files put back, {} removed)",
         record.replaced.len(),

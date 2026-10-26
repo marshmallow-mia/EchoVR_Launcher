@@ -84,7 +84,7 @@ fn list(text: &str) -> Option<String> {
 
 /// A value as nEVR reads it: JSON-quoted, and `${` as the literal `$${` (nEVR reads `${…}`
 /// as an environment variable, and drops the whole file when one isn't set).
-fn quote(text: &str) -> String {
+pub(crate) fn quote(text: &str) -> String {
     serde_json::to_string(&text.replace("${", "$${")).unwrap_or_else(|_| "\"\"".into())
 }
 
@@ -104,11 +104,17 @@ pub fn render(h: &Host, plugins: &[PluginLine], local: bool) -> String {
             out.push_str(&format!("  {k}: {}\n", quote(v.trim())));
         }
     };
+    // A server without a login address never signs in (nEVR refuses to boot it): EchoVRCE's
+    // when the plugin left it empty.
+    let socket_uri = match h.socket_uri.trim() {
+        "" => crate::core::server_host::SOCKET_URI,
+        s => s,
+    };
     section(
         &mut out,
         "services",
         &[
-            ("socket_uri", &h.socket_uri),
+            ("socket_uri", socket_uri),
             ("serverdb_uri", &h.serverdb_uri),
         ],
     );
@@ -367,6 +373,20 @@ mod tests {
             port: "6792".into(),
             mods: true,
         }
+    }
+
+    #[test]
+    fn a_server_always_has_its_login_address() {
+        let text = render(
+            &Host {
+                socket_uri: " ".into(),
+                serverdb_uri: String::new(),
+                ..host()
+            },
+            &[],
+            false,
+        );
+        assert!(text.contains("services:\n  socket_uri: \"ws://g.echovrce.com:80/spr\"\n"));
     }
 
     #[test]

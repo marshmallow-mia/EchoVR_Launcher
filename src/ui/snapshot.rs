@@ -104,6 +104,31 @@ pub fn shots() -> Vec<Shot> {
             Page::Plugin(1),
             SnapVariant::PluginControllers,
         ),
+        (
+            "plugin_server_host",
+            Page::Plugin(1),
+            SnapVariant::ServerHost,
+        ),
+        (
+            "plugin_server_host_console",
+            Page::Plugin(1),
+            SnapVariant::ServerHostConsole,
+        ),
+        (
+            "plugin_server_host_doctor",
+            Page::Plugin(1),
+            SnapVariant::ServerHostDoctor,
+        ),
+        (
+            "plugin_server_host_edit",
+            Page::Plugin(1),
+            SnapVariant::ServerHostEdit,
+        ),
+        (
+            "plugin_server_host_settings",
+            Page::Plugin(1),
+            SnapVariant::ServerHostSettings,
+        ),
         ("dialog_error", Page::Play, SnapVariant::DialogError),
         (
             "dialog_install_error",
@@ -271,6 +296,22 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("mods_vd", Page::Mods, SnapVariant::SettingsVirtualDesktop),
         ("play_vd_switch", Page::Play, SnapVariant::DialogVdSwitch),
+        ("play_notice_action", Page::Play, SnapVariant::NoticeAction),
+        (
+            "servers_notice_error",
+            Page::Servers,
+            SnapVariant::NoticeError,
+        ),
+        (
+            "echovrce_notice_action",
+            Page::EchoVrce,
+            SnapVariant::NoticeAction,
+        ),
+        (
+            "settings_channel_ask",
+            Page::Settings,
+            SnapVariant::DialogChannel,
+        ),
         (
             "play_nevr_blocked",
             Page::Play,

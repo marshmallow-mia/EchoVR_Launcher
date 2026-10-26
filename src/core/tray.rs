@@ -21,6 +21,8 @@ pub const FLAG: &str = "--tray";
 enum Role {
     Tray,
     Window,
+    /// The game servers' supervisor (`--server-host`).
+    ServerHost,
     /// Linux' PLAY through Steam, or the elevated helper: no window of their own.
     Other,
 }
@@ -29,6 +31,7 @@ enum Role {
 fn role(args: &[OsString]) -> Role {
     match args.first().and_then(|a| a.to_str()) {
         Some(FLAG) => Role::Tray,
+        Some(super::server_host::FLAG) => Role::ServerHost,
         Some(a) if a == super::linux::PLAY_FLAG || a == super::elevation::HELPER_FLAG => {
             Role::Other
         }
@@ -90,6 +93,11 @@ pub fn running() -> bool {
     others().iter().any(|(_, r)| *r == Role::Tray)
 }
 
+/// Whether the game servers' supervisor runs (another process than this one).
+pub fn server_host_running() -> bool {
+    others().iter().any(|(_, r)| *r == Role::ServerHost)
+}
+
 /// Whether a launcher window runs (another process than this one).
 pub fn window_running() -> bool {
     others().iter().any(|(_, r)| *r == Role::Window)
@@ -104,6 +112,12 @@ fn exe() -> Option<PathBuf> {
     {
         std::env::current_exe().ok()
     }
+}
+
+/// This executable, as the tray and the server host are started from it (Linux: the
+/// AppImage's path when it runs as one).
+pub fn exe_path() -> Option<PathBuf> {
+    exe()
 }
 
 /// Starts the tray unless it runs (not on macOS: no tray there).
@@ -122,6 +136,22 @@ pub fn start() {
     match cmd.spawn() {
         Ok(_) => tracing::info!("tray started"),
         Err(e) => tracing::warn!("tray: couldn't start it: {e}"),
+    }
+}
+
+/// Starts this executable with `flag` in the background (no window, no output).
+pub fn start_with(flag: &str) {
+    let Some(exe) = exe() else {
+        return;
+    };
+    let mut cmd = super::process::command(&exe);
+    cmd.arg(flag)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    match cmd.spawn() {
+        Ok(_) => tracing::info!("started {flag}"),
+        Err(e) => tracing::warn!("couldn't start {flag}: {e}"),
     }
 }
 
@@ -291,6 +321,7 @@ mod tests {
     fn tells_trays_from_windows() {
         let args = |a: &[&str]| a.iter().map(OsString::from).collect::<Vec<_>>();
         assert_eq!(role(&args(&["--tray"])), Role::Tray);
+        assert_eq!(role(&args(&["--server-host"])), Role::ServerHost);
         assert_eq!(role(&args(&[])), Role::Window);
         assert_eq!(role(&args(&["spark://c/x"])), Role::Window);
         assert_eq!(role(&args(&[crate::core::linux::PLAY_FLAG])), Role::Other);

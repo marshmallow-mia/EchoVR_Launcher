@@ -403,12 +403,38 @@ fn newest_in_dirs(dir: &Path) -> Option<(PathBuf, SystemTime)> {
 
 /// Every log there is to send for these installed versions.
 pub fn collect(versions: &[InstalledVersion]) -> Vec<Source> {
-    collect_from(
+    let mut out = collect_from(
         &paths::log_dir(),
         nevr::log_dir().as_deref(),
         versions,
         SystemTime::now(),
-    )
+    );
+    out.extend(server_consoles(
+        &crate::core::server_host::dir().join("servers"),
+    ));
+    out.truncate(MAX_FILES);
+    out
+}
+
+/// The game servers' consoles (Server host plugin; nEVR's lines of each), newest first, at
+/// most 4: with the plugins' logs.
+fn server_consoles(dir: &Path) -> Vec<Source> {
+    let mut found: Vec<(PathBuf, SystemTime, String)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path().join(crate::core::server_host::status::CONSOLE);
+            let t = modified(&p)?;
+            Some((p, t, e.file_name().to_string_lossy().to_string()))
+        })
+        .collect();
+    found.sort_by_key(|f| std::cmp::Reverse(f.1));
+    found
+        .into_iter()
+        .take(4)
+        .filter_map(|(p, _, name)| source(Kind::Plugin, &format!("server-{name}-console.log"), p))
+        .collect()
 }
 
 /// Pure: `text`'s newest part of at most `max` bytes, starting at a character, and at a
@@ -705,6 +731,19 @@ mod tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn takes_the_servers_consoles() {
+        let dir = tempfile::tempdir().unwrap();
+        for (n, text) in [("echo-1", "a\n"), ("echo-2", "")] {
+            std::fs::create_dir_all(dir.path().join(n)).unwrap();
+            std::fs::write(dir.path().join(n).join("console.log"), text).unwrap();
+        }
+        let s = server_consoles(dir.path());
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "server-echo-1-console.log");
+        assert_eq!(s[0].kind, Kind::Plugin);
     }
 
     #[test]

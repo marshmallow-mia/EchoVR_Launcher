@@ -440,6 +440,9 @@ fn poll_answer(status: u16, body: &Value) -> Result<Poll> {
             Ok(Poll::Pending)
         }
         (s, _) if unavailable_status(s) => Err(unavailable(s, body)),
+        (200, None) if body.get("status").and_then(Value::as_str) == Some("expired") => {
+            bail!("The sign-in code ran out. Try again.")
+        }
         _ => bail!(
             "The sign-in code didn't work ({status}: {}). Try again.",
             message(body)
@@ -502,6 +505,18 @@ pub fn link_device(token: &str) -> Result<Tokens> {
         std::thread::sleep(Duration::from_secs(2));
     }
     bail!("EchoVRCE didn't hand over the linked session. Try again.")
+}
+
+/// A JWT's claims (its payload), `Null` when it isn't one.
+pub fn jwt_claims(token: &str) -> Value {
+    let Some(payload) = token.split('.').nth(1) else {
+        return Value::Null;
+    };
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null)
 }
 
 /// The script that signs echovrce.com in with `tokens` (a session linked for it) before
@@ -849,6 +864,11 @@ mod tests {
     fn poll_answers() {
         let pending = json!({ "status": "pending" });
         assert_eq!(poll_answer(200, &pending).unwrap(), Poll::Pending);
+        let expired = json!({ "status": "expired" });
+        assert!(poll_answer(200, &expired)
+            .unwrap_err()
+            .to_string()
+            .contains("ran out"));
         let approved = json!({ "token": "t", "refresh_token": "r" });
         assert!(matches!(
             poll_answer(200, &approved).unwrap(),

@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use super::notices::{Action, Notice};
 use super::{hero, panel, setup, Dashboard, Page};
 use crate::core::echovrce::{self as vrce, Account, DeviceCode, Poll, Tokens};
 use crate::core::launcher::game_sign_in;
@@ -118,6 +119,8 @@ pub(super) struct Vrce {
     pub signing: Option<Signing>,
     /// The session ended and couldn't be renewed: sign in again.
     pub ended: bool,
+    /// A sign-in just went through (the page it was started from takes over again).
+    pub just_signed_in: bool,
     /// EchoVRCE isn't answering right now (why): the session stays, checks go on.
     pub down: Option<String>,
     /// Why the last sign-in didn't work, until the next one.
@@ -136,7 +139,7 @@ pub(super) struct Vrce {
 impl Vrce {
     /// Every frame: loads the saved session once, takes in what the workers found, and
     /// checks the session when due. Returns a notice for the status bar.
-    pub(super) fn tick(&mut self, ctx: &egui::Context, demo: bool) -> Option<String> {
+    pub(super) fn tick(&mut self, ctx: &egui::Context, demo: bool) -> Option<Notice> {
         if demo {
             return None;
         }
@@ -181,7 +184,7 @@ impl Vrce {
                         self.down = Some(f.why.clone());
                     }
                     self.failed = Some(f.why.clone());
-                    notice = Some(f.why);
+                    notice = Some(Notice::error(&f.why));
                 }
                 Msg::Polling(down) => self.down = down,
                 Msg::SignedIn(Ok((tokens, account))) => {
@@ -190,7 +193,11 @@ impl Vrce {
                     self.ended = false;
                     self.down = None;
                     self.failed = None;
-                    notice = Some(format!("Signed in to EchoVRCE as {}", account.name()));
+                    notice = Some(Notice::info(&format!(
+                        "Signed in to EchoVRCE as {}",
+                        account.name()
+                    )));
+                    self.just_signed_in = true;
                     self.tokens = Some(tokens);
                     self.account = Some(account);
                     self.next_check = Some(next_check(self.tokens.as_ref()));
@@ -210,7 +217,10 @@ impl Vrce {
                     self.account = None;
                     self.ended = true;
                     self.next_check = None;
-                    notice = Some("Your EchoVRCE session has ended: sign in again".into());
+                    notice = Some(
+                        Notice::info("Your EchoVRCE sign-in has ended")
+                            .with("Sign in", Action::Page(Page::EchoVrce)),
+                    );
                 }
                 Msg::SiteLinked(r) => {
                     self.linking_site = false;
@@ -230,7 +240,7 @@ impl Vrce {
                 .and_then(vrce::clock_off)
             {
                 self.clock_told = true;
-                notice = Some(clock_notice(&off));
+                notice = Some(Notice::info(&clock_notice(&off)));
             }
         }
         let due = self.next_check.is_some_and(|t| Instant::now() >= t);
@@ -689,7 +699,7 @@ pub(super) fn sign_in_button(
         )
         .clicked
     {
-        d.page = super::Page::EchoVrce;
+        d.sign_in_from(d.page);
         d.vrce.sign_in(ctx);
     }
 }
@@ -1053,15 +1063,18 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     ) {
         zoom(d, web::Zoom::Out);
     }
-    let who = kit.spaced_galley(
-        &format!("Signed in as {}", account.name()).to_uppercase(),
-        design::din(14.0),
-        design::GREY,
-        dz(0.5),
-        false,
-    );
-    let wx = dz(right) - who.size().x;
-    kit.put(wx, dz(cy) - who.size().y / 2.0, who);
+    // What just happened, as the status bar elsewhere says it; else who is signed in.
+    if !d.header_notice(kit, ctx, header.x + 300.0, right, cy) {
+        let who = kit.spaced_galley(
+            &format!("Signed in as {}", account.name()).to_uppercase(),
+            design::din(14.0),
+            design::GREY,
+            dz(0.5),
+            false,
+        );
+        let wx = dz(right) - who.size().x;
+        kit.put(wx, dz(cy) - who.size().y / 2.0, who);
+    }
 
     let area = SITE.wider(kit.dx()).taller(kit.dy());
     kit.image_d("card_bg.png", area);
@@ -1082,7 +1095,7 @@ fn site(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         d.web.place(inner);
         kit.caps_text(tx, ty, tw, "Opening echovrce.com…", 17.0, design::BODY, 0.0);
     } else if let Some(err) = d.web.error.clone() {
-        let text = format!("echovrce.com couldn't be shown here: {err}");
+        let text = format!("echovrce.com couldn't be shown here. Try again, or open it in your browser.\n\n({err})");
         let h = kit.caps_text(tx, ty, tw, &text, 17.0, design::DANGER, 0.0);
         if kit
             .link(
@@ -1364,7 +1377,7 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
                 x,
                 ty,
                 w,
-                "Sign in with your EchoVRCE account. The launcher shows a code, you approve it on echovrce.com, and it stays signed in: the session renews by itself.\n\nOr paste tokens you already have.",
+                "Sign in with your EchoVRCE account: approve a short code on echovrce.com, and the launcher stays signed in.\n\nNew to EchoVRCE? Open EchoVRCE to see how to get started.",
                 17.0,
                 design::BODY,
                 dz(18.0),
@@ -1399,9 +1412,9 @@ fn account_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, r: Dr) {
                 "vrce-tokens",
                 Tone::Dark,
                 None,
-                "Enter tokens…",
+                "Paste tokens (advanced)…",
                 !busy,
-                "Paste a refresh token, a token, or an authorization header",
+                "For those who have them already: a refresh token, a token, or an authorization header",
             ) {
                 d.overlay = Some(setup::Overlay::VrceTokens {
                     input: String::new(),

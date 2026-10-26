@@ -166,8 +166,10 @@ A launcher plugin (Plugins rail) may mark `EchoXR.txt` in the `keyvalue` format 
 EchoXR in every installed version (`bin/win10/EchoXR/`, `bin/win7/EchoXR/`), also in one that
 is running, so a change reaches the game within half a second. The copies start with a marker
 line; a file without it (written by hand) is kept as `EchoXR.txt.bak` the first time. When the
-plugin is removed, the marked copies go. The Controllers plugin
-(`docs/plugins/controllers/plugin.json`) is the one that does.
+plugin is removed or turned off, the marked copies go. The Controllers plugin
+(`docs/plugins/controllers/plugin.json`) is the one that does. Only a plugin as the launcher
+installed it from a catalogue does (0.12.4 on): one added by hand, or whose files changed since,
+only in debug builds.
 
 - `file`: a plain name in `plugins/` ending in `.txt`, `.ini`, `.cfg` or `.json`. No
   folders, no DLLs, not a `.plugin.json`.

@@ -26,6 +26,8 @@ pub mod quest_update;
 pub mod remote_zip;
 pub mod revive;
 pub mod semver;
+pub mod server_host;
+pub mod signing;
 pub mod sources;
 pub mod tray;
 pub mod uninstall;

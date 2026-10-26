@@ -286,7 +286,7 @@ fn fetch_licence(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: Sourc
             match patch::fetch(&source, cancel, on) {
                 Ok(dll) => JobResult::LicenceFetched(dll),
                 Err(FetchError::OAuth(e)) => JobResult::OAuthFailed(e),
-                Err(FetchError::Other(e)) => job_err(e, "Licence Patch Failed"),
+                Err(FetchError::Other(e)) => job_err(e, "Couldn't get the licence patch"),
             }
         },
     );
@@ -396,7 +396,9 @@ pub(super) fn patch(d: &mut Dashboard, ctx: &egui::Context, id: &str, source: So
                 match patch::fetch(&source, cancel, on) {
                     Ok(p) => p,
                     Err(FetchError::OAuth(e)) => return JobResult::OAuthFailed(e),
-                    Err(FetchError::Other(e)) => return job_err(e, "Licence Patch Failed"),
+                    Err(FetchError::Other(e)) => {
+                        return job_err(e, "Couldn't get the licence patch")
+                    }
                 }
             };
             on(Step::Status("Applying the patch...".into()));
@@ -470,7 +472,7 @@ pub(super) fn revive_artwork(d: &mut Dashboard, ctx: &egui::Context) {
         "Downloading the artwork...",
         move |_, _| match elevation::install_artwork(&mut consent) {
             Ok(()) => JobResult::ArtworkInstalled,
-            Err(e) => job_err(e, "Game Artwork"),
+            Err(e) => job_err(e, "Couldn't install the game artwork"),
         },
     );
 }
@@ -503,7 +505,7 @@ pub(super) fn steamvr_library(d: &mut Dashboard, ctx: &egui::Context, add: bool)
             };
             match elevation::set_library_entry(exe, args, &mut consent) {
                 Ok(()) => JobResult::LibraryEntry(add),
-                Err(e) => job_err(e, "SteamVR Library"),
+                Err(e) => job_err(e, "Couldn't change SteamVR's library"),
             }
         },
     );
@@ -558,10 +560,10 @@ pub(super) fn echoxr_windows(d: &mut Dashboard, ctx: &egui::Context) {
     let (title, failed) = if d.state.profile.runtime == Runtime::VirtualDesktop {
         (
             "Preparing EchoXR for Virtual Desktop",
-            "EchoXR Setup Failed",
+            "Couldn't set up EchoXR",
         )
     } else {
-        ("Preparing SteamVR (EchoXR)", "SteamVR Setup Failed")
+        ("Preparing SteamVR (EchoXR)", "Couldn't set up SteamVR")
     };
     d.start_job(
         ctx,
@@ -610,20 +612,20 @@ pub(super) fn revive(d: &mut Dashboard, ctx: &egui::Context) {
                     }
                 }) {
                     Ok(p) => p,
-                    Err(e) => return job_err(e, "SteamVR Setup Failed"),
+                    Err(e) => return job_err(e, "Couldn't set up SteamVR"),
                 };
                 on(Step::Status("Installing Revive...".into()));
                 if let Err(e) = elevation::run_revive_installer(&installer, &mut consent) {
                     return job_err(
                         e.context("Installing Revive failed"),
-                        "SteamVR Setup Failed",
+                        "Couldn't set up SteamVR",
                     );
                 }
             }
             on(Step::Status("Waiting for Revive...".into()));
             if revive::wait_for_revive_dir(std::time::Duration::from_secs(8)).is_none() {
                 return JobResult::Failed(Some(UiError::new(
-                    "SteamVR Setup Failed",
+                    "Couldn't set up SteamVR",
                     "Revive does not appear to be installed (was the installer cancelled?).",
                 )));
             }
@@ -863,14 +865,14 @@ pub(super) fn windows_steam(d: &mut Dashboard, ctx: &egui::Context, add: bool) {
             }
             match changed {
                 Ok(appid) => JobResult::WindowsSteam(appid),
-                Err(e) => job_err(e, "Steam"),
+                Err(e) => job_err(e, "Couldn't change Echo VR's entry in Steam"),
             }
         },
     );
 }
 
 /// Windows, at the start: Echo VR's entry in Steam starts this launcher still (it was
-/// moved: the box goes off, ticking it again updates it).
+/// moved: the box goes off, and the notice's "Fix it" adds it again for this one).
 pub(super) fn windows_steam_current(d: &mut Dashboard) {
     use crate::core::linux::steam;
     if !cfg!(windows) || d.demo || d.state.windows_appid.is_none() {
@@ -885,7 +887,11 @@ pub(super) fn windows_steam_current(d: &mut Dashboard) {
             "Echo VR's Steam entry doesn't start this launcher: Settings can add it again"
         );
         d.state.windows_appid = None;
-        d.notify("Echo VR's entry in Steam starts another copy of the launcher: tick it again in Settings");
+        d.notify_with(
+            "Echo VR's entry in Steam starts another copy of the launcher",
+            "Fix it",
+            super::notices::Action::FixSteamEntry,
+        );
     }
 }
 
@@ -944,15 +950,15 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
         "Preparing...",
         move |cancel, on| {
             if let Err(e) = echoxr::setup(&root, cancel, on) {
-                return job_err(e, "Linux Setup Failed");
+                return job_err(e, "Couldn't set up Echo VR on Linux");
             }
             if let Err(e) = linux::refresh_play_script(&root) {
-                return job_err(e, "Linux Setup Failed");
+                return job_err(e, "Couldn't set up Echo VR on Linux");
             }
             let Some(shortcut) = linux::steam_shortcut(&root) else {
                 return job_err(
                     anyhow::anyhow!("the launcher's own path is unknown"),
-                    "Linux Setup Failed",
+                    "Couldn't set up Echo VR on Linux",
                 );
             };
             // The Flatpak Steam gets its permission while it is closed: it applies from its
@@ -979,7 +985,7 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
                     appid,
                     flatpak_override: allow,
                 },
-                Err(e) => job_err(e, "Linux Setup Failed"),
+                Err(e) => job_err(e, "Couldn't set up Echo VR on Linux"),
             }
         },
     );
@@ -1012,7 +1018,7 @@ pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, source: ApkS
         move |cancel, on| match quest_core::install(&source, fallback.as_deref(), cancel, on) {
             Ok(outcome) => JobResult::QuestInstalled(outcome),
             Err(JobError::OAuth(e)) => JobResult::OAuthFailed(e),
-            Err(JobError::Other(e)) => job_err(e, "Installation Failed"),
+            Err(JobError::Other(e)) => job_err(e, "Couldn't install"),
         },
     );
 }
@@ -1028,7 +1034,7 @@ pub(super) fn quest_update(d: &mut Dashboard, ctx: &egui::Context) {
         move |cancel, on| match quest_core::update(cancel, on) {
             Ok(UpdateOutcome::Updated) => JobResult::QuestUpdated,
             Ok(UpdateOutcome::NeedsReinstall(detail)) => JobResult::QuestNeedsReinstall(detail),
-            Err(e) => job_err(e, "Update Failed"),
+            Err(e) => job_err(e, "Couldn't update"),
         },
     );
 }
@@ -1640,6 +1646,7 @@ fn owner_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     if own {
         super::play::try_start(d, ctx, lobby);
     } else if let Target::Installed(v) = d.target() {
+        d.play_after_patch = Some((v.id.clone(), lobby));
         d.overlay = Some(licence(&v.id));
     }
 }
@@ -1696,6 +1703,7 @@ fn licence_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     let (id, from) = (id.clone(), link.then(|| url.trim().to_string()));
     if cancel {
         d.overlay = None;
+        d.play_after_patch = None;
     } else if go {
         d.overlay = None;
         patch(d, ctx, &id, from.map_or(Source::Discord, Source::Url));

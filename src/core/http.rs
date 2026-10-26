@@ -291,6 +291,86 @@ fn file_of(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or(url)
 }
 
+/// The client for launcher plugins' requests: it follows a redirect only on the same
+/// server (scheme, host and port), so a server can't send a plugin's request, and what it
+/// carries, somewhere else; and it keeps no cookies.
+fn plugin_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+        Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(20))
+            .read_timeout(STALL_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::custom(|a| {
+                let same = a
+                    .previous()
+                    .first()
+                    .is_some_and(|first| first.origin() == a.url().origin());
+                if a.previous().len() > 5 {
+                    a.error("too many redirects")
+                } else if same {
+                    a.follow()
+                } else {
+                    let to = a.url().origin().ascii_serialization();
+                    a.error(format!("it redirects to another server ({to})"))
+                }
+            }))
+            .build()
+            .expect("HTTP client")
+    })
+}
+
+/// A launcher plugin's request that its server redirected to another one ([`plugin_get`],
+/// [`plugin_post`]): not followed.
+#[derive(Debug, thiserror::Error)]
+#[error("its server sends it on to another server, which a plugin's request doesn't follow")]
+pub struct RedirectRefused;
+
+/// A plugin's request that got no answer: [`RedirectRefused`] for a redirect elsewhere.
+fn plugin_error(method: &str, url: &str, e: reqwest::Error) -> anyhow::Error {
+    if e.is_redirect() {
+        anyhow::Error::new(RedirectRefused).context(format!("{method} {url}"))
+    } else {
+        anyhow::Error::new(e).context(format!("{method} {url}"))
+    }
+}
+
+/// A launcher plugin's GET: the answer's text, or an error ("server responded with
+/// <status>" for an error answer, as [`get_text`] says it).
+pub fn plugin_get(url: &str) -> Result<String> {
+    block_on(async {
+        let resp = plugin_client()
+            .get(url)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .map_err(|e| plugin_error("GET", url, e))?;
+        if !resp.status().is_success() {
+            bail!("GET {url}: server responded with {}", resp.status());
+        }
+        Ok(resp.text().await?)
+    })
+}
+
+/// A launcher plugin's POST of JSON: (status, body), as [`post_json`].
+pub fn plugin_post(url: &str, body: &serde_json::Value) -> Result<(u16, String)> {
+    block_on(async {
+        let resp = plugin_client()
+            .post(url)
+            .timeout(Duration::from_secs(120))
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| plugin_error("POST", url, e))?;
+        let status = resp.status().as_u16();
+        Ok((status, resp.text().await.unwrap_or_default()))
+    })
+}
+
 /// POSTs JSON and returns (status, body).
 pub fn post_json(url: &str, body: &serde_json::Value) -> Result<(u16, String)> {
     block_on(async {
@@ -304,4 +384,54 @@ pub fn post_json(url: &str, body: &serde_json::Value) -> Result<(u16, String)> {
         let status = resp.status().as_u16();
         Ok((status, resp.text().await.unwrap_or_default()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A server answering `/ok` with `name`, `/same` with a redirect to its own `/ok`, and
+    /// `/away` with one to `away`.
+    fn serve(name: &'static str, away: Option<String>) -> String {
+        let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", server.server_addr());
+        let own = base.clone();
+        std::thread::spawn(move || {
+            for req in server.incoming_requests() {
+                let to = match req.url() {
+                    "/same" => Some(format!("{own}/ok")),
+                    "/away" => away.clone(),
+                    _ => None,
+                };
+                let resp = match to {
+                    Some(to) => tiny_http::Response::from_string("")
+                        .with_status_code(307)
+                        .with_header(tiny_http::Header::from_bytes("Location", to).unwrap()),
+                    None => tiny_http::Response::from_string(name),
+                };
+                let _ = req.respond(resp);
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn a_plugins_request_follows_redirects_on_its_server_only() {
+        let other = serve("other", None);
+        let mine = serve("mine", Some(format!("{other}/ok")));
+        assert_eq!(plugin_get(&format!("{mine}/same")).unwrap(), "mine");
+        let err = plugin_get(&format!("{mine}/away")).unwrap_err();
+        assert!(err.downcast_ref::<RedirectRefused>().is_some(), "{err:#}");
+        assert!(format!("{err:#}").contains("another server"), "{err:#}");
+        // A POST (whose body a 307 would carry along) the same.
+        let (status, text) =
+            plugin_post(&format!("{mine}/same"), &serde_json::json!({"a": 1})).unwrap();
+        assert_eq!((status, text.as_str()), (200, "mine"));
+        let err = plugin_post(
+            &format!("{mine}/away"),
+            &serde_json::json!({"password": "pw"}),
+        )
+        .unwrap_err();
+        assert!(err.downcast_ref::<RedirectRefused>().is_some(), "{err:#}");
+    }
 }

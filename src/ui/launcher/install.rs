@@ -316,31 +316,45 @@ fn pc_hero(d: &mut Dashboard) -> Hero {
             h.line.parts.push("Installed".into());
             h.line.path = Some(v.root.clone());
             h.line.path_click = PathClick::Open;
-            // Installed: REINSTALL checks it (the card asks first, as for an install).
+            // Installed: REPAIR checks it (the card asks first, as for an install).
             let in_use = d.files_in_use(&v);
-            h.face = Face::Label("REINSTALL");
+            h.face = Face::Label("REPAIR");
             h.main = Main::Install(Box::new(e.clone()));
             h.enabled = in_use.is_none() && busy.is_none();
             h.grey = !h.enabled;
             h.tip = match (&busy, in_use) {
                 (Some(b), _) => b.clone(),
                 (None, Some(why)) => why.into(),
-                (None, None) => "Check every game file against the server's checksums and fetch only the broken ones again".into(),
+                (None, None) => "Check every game file and download only the broken or missing ones again. Your settings and mods stay".into(),
             };
-            h.side = Side::Updates {
-                alert: d
-                    .update_note
-                    .get(&v.id)
-                    .is_some_and(|n| n.contains("failed")),
+            let alert = d
+                .update_note
+                .get(&v.id)
+                .is_some_and(|n| n.contains("failed"));
+            // As on Play: an update found turns the button into "Update now".
+            let found = d.updates.findings.iter().any(
+                |f| matches!(f, crate::core::updates::Finding::Game { id, .. } if *id == v.id),
+            );
+            if found {
+                h.chips.push(("Update available", design::QUEST_ON));
+                h.line.parts.push("Update available".into());
+            }
+            h.side = if found && !alert {
+                Side::Blue {
+                    icon: Icon::Download,
+                    label: "Update now",
+                    ready: true,
+                }
+            } else {
+                Side::Updates { alert }
             };
             let updates = crate::core::launcher::versions::has_updates(&v);
             h.side_enabled = updates && in_use.is_none() && busy.is_none();
             h.side_tip = match (&busy, in_use, updates) {
-                (_, _, false) => {
-                    "Event builds don't get updates: REINSTALL checks their files".into()
-                }
+                (_, _, false) => "Event builds don't get updates: REPAIR checks their files".into(),
                 (Some(b), _, _) => b.clone(),
                 (None, Some(why), _) => why.into(),
+                (None, None, _) if found => "Download the update now".into(),
                 (None, None, _) => "Download any changed game files".into(),
             };
             h.side_act = SideAct::UpdatePc(Box::new(v));
@@ -498,8 +512,12 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
             };
         }
     } else {
-        (h.face, h.main, h.enabled) = (Face::Label("PLAY"), Main::QuestPlay, true);
-        h.tip = "Go to Play".into();
+        (h.face, h.main, h.enabled) = (Face::Label("PLAY"), Main::QuestPlay, !busy);
+        h.tip = if busy {
+            busy_tip.clone()
+        } else {
+            "Start Echo VR on your Quest".into()
+        };
         (h.side_act, h.side_enabled) = (SideAct::QuestUpdate, !busy);
         h.side_tip = if busy {
             busy_tip
@@ -518,7 +536,7 @@ fn do_main(d: &mut Dashboard, ctx: &egui::Context, main: Main) {
         }
         Main::QuestConnect => d.check_quest(ctx, true),
         Main::QuestInstall => setup::ask_quest_install(d, false),
-        Main::QuestPlay => d.page = Page::Play,
+        Main::QuestPlay => play::play_quest(d, ctx),
         Main::Nothing => {}
     }
 }

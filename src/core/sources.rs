@@ -38,6 +38,9 @@ use anyhow::Result;
 use serde::Deserialize;
 use time::OffsetDateTime;
 
+// `index.json.sig` has the plugins' `.sig` format: one check serves both.
+use crate::core::signing::signed;
+
 /// release.echovr.de: the source of truth, and the fallback.
 pub const ORIGIN: &str = "https://release.echovr.de/";
 /// The Bunny pull zone in front of the synced copy of [`ORIGIN`].
@@ -95,51 +98,6 @@ pub struct Index {
     /// lowercase SHA-256.
     #[serde(default)]
     pub files: HashMap<String, String>,
-}
-
-/// `index.json.sig`: the signatures of the index now and of the one before it (the CDN may
-/// have either).
-#[derive(Debug, Deserialize)]
-struct Signatures {
-    #[serde(default)]
-    signatures: Vec<Signature>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Signature {
-    /// The first 16 hex digits of the public key's SHA-256.
-    key: String,
-    /// Of the index it signs.
-    sha256: String,
-    /// Base64, 64 bytes.
-    sig: String,
-}
-
-/// Pure: whether `sigs` (an `index.json.sig`) holds a valid signature of exactly `text` by one
-/// of `keys`.
-fn signed(text: &str, sigs: &str, keys: &[[u8; 32]]) -> bool {
-    use base64::Engine;
-    use ed25519_dalek::{Signature as Sig, Verifier, VerifyingKey};
-    let Ok(sigs) = serde_json::from_str::<Signatures>(sigs) else {
-        return false;
-    };
-    let sha = sha256_hex(text.as_bytes());
-    sigs.signatures
-        .iter()
-        .filter(|s| s.sha256.eq_ignore_ascii_case(&sha))
-        .any(|s| {
-            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&s.sig) else {
-                return false;
-            };
-            let Ok(sig) = Sig::from_slice(&bytes) else {
-                return false;
-            };
-            keys.iter().any(|k| {
-                sha256_hex(k)[..16].eq_ignore_ascii_case(&s.key)
-                    && VerifyingKey::from_bytes(k)
-                        .is_ok_and(|vk| vk.verify(text.as_bytes(), &sig).is_ok())
-            })
-        })
 }
 
 impl Index {

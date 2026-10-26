@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "controllers",
   "name": "Controllers",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "marshmallow-mia",
   "summary": "Set up your controllers for Echo VR through EchoXR: the angle and position of your hands, stick and trigger deadzones, vibration and a Menu button combination. Presets to pick from, your own presets, and preset files to pass on.",
   "icon": "controller",
