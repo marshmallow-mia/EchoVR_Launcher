@@ -20,6 +20,7 @@ use crate::core::launcher::mods::{
 };
 use crate::core::launcher::nevr;
 use crate::core::launcher::plugin_settings;
+use crate::core::launcher::signed_plugin::{ReleaseSpec, Signer, SignerStatus};
 use crate::core::launcher::store::{InstalledVersion, Target};
 use crate::core::platform;
 use crate::ui::design::{self, dz, Dr};
@@ -1027,6 +1028,7 @@ fn plugins_card(
                                 .map(|m| m.author.clone())
                                 .filter(|a| !a.is_empty()),
                             update: unheld_update(d, &v.id, p),
+                            signer: signer_of(p, d.mods.catalog.as_ref()),
                             editable,
                             locked,
                             current,
@@ -1137,6 +1139,28 @@ fn update_for(p: &Plugin, c: Option<&ModCatalog>) -> Option<(ModEntry, catalogue
     };
     let m = c?.entry_for(&p.file).filter(|m| m.downloadable())?;
     Some((m.clone(), catalogue::offer(version, &m.version)?))
+}
+
+/// Where the release a catalogue plugin was installed from is in signing: only for the
+/// catalogue's own version of it (an older one installed says nothing about this one's
+/// signature), and only for a mod that has a release.
+fn signer_of(p: &Plugin, c: Option<&ModCatalog>) -> Option<SignerStatus> {
+    let Source::Catalog { version, .. } = &p.source else {
+        return None;
+    };
+    let m = c?.entry_for(&p.file).filter(|m| m.version == *version)?;
+    m.release.as_ref().map(|r| r.signer.status)
+}
+
+/// The chip of a signer status: green for signed, amber for one that isn't to be trusted,
+/// quiet for the ones on the way.
+fn signer_tag(status: SignerStatus) -> (&'static str, Color32) {
+    let color = match status {
+        SignerStatus::Signed => design::QUEST_ON,
+        SignerStatus::Revoked | SignerStatus::Unknown => design::QUEST_WARN,
+        _ => design::SUBTLE,
+    };
+    (status.label(), color)
 }
 
 /// [`update_for`], unless it's the version the player went back from in version `vid`.
@@ -1480,6 +1504,8 @@ struct Look {
     author: Option<String>,
     /// The catalogue's version of it to offer: newer, or back to stable.
     update: Option<(ModEntry, catalogue::Offer)>,
+    /// Where the release it was installed from is in signing.
+    signer: Option<SignerStatus>,
     /// The launcher can change the mods (nEVR is there).
     editable: bool,
     /// Mods are off, or can't be changed: the switches don't work.
@@ -1912,6 +1938,7 @@ fn plugin_row(
     let tags = [
         Some(source),
         prerelease.then_some(("Prerelease", design::QUEST_WARN)),
+        look.signer.map(signer_tag),
         p.required.then_some(("Required", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
     ];
@@ -3534,7 +3561,11 @@ fn meta(m: &ModEntry) -> String {
     } else {
         None
     };
-    [kind, author, size, caps]
+    let signer = m
+        .release
+        .as_ref()
+        .map(|r| r.signer.status.label().to_string());
+    [kind, author, size, caps, signer]
         .into_iter()
         .flatten()
         .collect::<Vec<_>>()
@@ -3823,10 +3854,15 @@ fn made_up_catalog() -> Vec<ModEntry> {
             author: "community".into(),
             version: "1.0.0".into(),
             file: "ReplayRecorder.dll".into(),
-            url: "mods/ReplayRecorder-1.0.0.dll".into(),
-            sha256: Some("11".repeat(32)),
             size: Some(1_830_000),
             capabilities: vec!["observes-only".into(), "network".into()],
+            release: Some(ReleaseSpec {
+                signer: Signer {
+                    status: SignerStatus::Signed,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
             ..Default::default()
         },
     ]
@@ -4174,5 +4210,99 @@ mod tests {
             update_for(combat.unwrap(), Some(&catalog)).map(|(m, _)| m.version),
             Some("0.3.1".to_string())
         );
+    }
+
+    fn catalog_plugin(version: &str) -> Plugin {
+        Plugin {
+            file: "Foo.dll".into(),
+            name: "foo".into(),
+            version: version.into(),
+            source: Source::Catalog {
+                id: "foo".into(),
+                version: version.into(),
+            },
+            enabled: true,
+            added: true,
+            required: false,
+            verified: true,
+            args: Default::default(),
+            defaults: Default::default(),
+            present: true,
+            status: None,
+            settings: None,
+            pack: None,
+        }
+    }
+
+    fn release_entry(version: &str, status: SignerStatus) -> ModEntry {
+        ModEntry {
+            id: "foo".into(),
+            name: "Foo".into(),
+            version: version.into(),
+            file: "Foo.dll".into(),
+            release: Some(ReleaseSpec {
+                signer: Signer {
+                    status,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn an_installed_release_shows_its_signer_status() {
+        let c = |status| ModCatalog {
+            mods: vec![release_entry("1.2.0", status)],
+            ..Default::default()
+        };
+        let p = catalog_plugin("1.2.0");
+        for (status, label) in [
+            (SignerStatus::Signed, "Signed"),
+            (SignerStatus::Unsigned, "Unsigned"),
+            (SignerStatus::Pending, "Signing pending"),
+            (SignerStatus::Approved, "Approved"),
+            (SignerStatus::Revoked, "Revoked"),
+            (SignerStatus::Unknown, "Signer unknown"),
+        ] {
+            let got = signer_of(&p, Some(&c(status))).map(signer_tag);
+            assert_eq!(got.map(|t| t.0), Some(label));
+        }
+        assert_eq!(signer_tag(SignerStatus::Signed).1, design::QUEST_ON);
+        assert_eq!(signer_tag(SignerStatus::Revoked).1, design::QUEST_WARN);
+        assert_eq!(signer_tag(SignerStatus::Unsigned).1, design::SUBTLE);
+
+        // An older version installed says nothing about the catalogue's newer one; a mod
+        // without a release, one that isn't the catalogue's, or no catalogue: no chip.
+        assert_eq!(
+            signer_of(&catalog_plugin("1.1.0"), Some(&c(SignerStatus::Signed))),
+            None
+        );
+        let loose = ModCatalog {
+            mods: vec![ModEntry {
+                release: None,
+                ..release_entry("1.2.0", SignerStatus::Signed)
+            }],
+            ..Default::default()
+        };
+        assert_eq!(signer_of(&p, Some(&loose)), None);
+        let local = Plugin {
+            source: Source::Local,
+            ..p.clone()
+        };
+        assert_eq!(signer_of(&local, Some(&c(SignerStatus::Signed))), None);
+        assert_eq!(signer_of(&p, None), None);
+    }
+
+    #[test]
+    fn the_catalogue_line_says_where_signing_is() {
+        let signed = release_entry("1.2.0", SignerStatus::Signed);
+        assert!(meta(&signed).ends_with("Signed"), "{}", meta(&signed));
+        let loose = ModEntry {
+            release: None,
+            ..signed
+        };
+        assert!(!meta(&loose).contains("igned"));
     }
 }
