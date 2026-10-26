@@ -26,6 +26,7 @@ use super::catalog;
 use super::nevr::{self, PluginLine};
 use super::packs::{self, PackRecord, PackSpec};
 use super::plugin_settings;
+use super::signed_plugin::{self, ReleaseSpec};
 use super::store::{InstalledVersion, LauncherState, PackServer, RelayAccount};
 use super::versions::Step;
 use crate::core::{download, paths};
@@ -1661,6 +1662,19 @@ pub fn left_out(v: &InstalledVersion) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The catalogue version the launcher installed plugin `file` of `v` as, if it did, and
+/// the file still is what it placed.
+fn installed_version(v: &InstalledVersion, file: &str) -> Option<String> {
+    let added = Overlay::read(&choices_path(v))
+        .added()
+        .into_iter()
+        .find(|a| a.file.eq_ignore_ascii_case(file))?;
+    let sha = added.sha256.as_deref()?;
+    let launcher = added.launcher?;
+    (!launcher.local && download::sha256_matches(&plugins_dir(v).join(file), sha))
+        .then_some(launcher.version)
+}
+
 /// Installs the catalogue's required mods that don't come with the community update (a
 /// file `v` lacks, or one that isn't the catalogue's version), as the Mods page would. One
 /// the player went back from (`holds`, [`super::goback`]) stays at the version gone back
@@ -1670,16 +1684,20 @@ pub fn ensure_required(
     catalog: &ModCatalog,
     holds: &BTreeMap<String, String>,
 ) -> Result<()> {
-    let plugins = v.bin_dir().join(PLUGINS);
+    let plugins = plugins_dir(v);
     for e in catalog
         .mods
         .iter()
         .filter(|e| e.required && e.downloadable())
     {
-        let Some(sha) = e.sha256.as_deref() else {
-            continue;
+        let current = match (&e.release, e.sha256.as_deref()) {
+            // A release has no one checksum (signing changes the DLL): it is the file the
+            // launcher placed for this version.
+            (Some(_), _) => installed_version(v, &e.file).is_some_and(|have| have == e.version),
+            (None, Some(sha)) => download::sha256_matches(&plugins.join(&e.file), sha),
+            (None, None) => continue,
         };
-        if download::sha256_matches(&plugins.join(&e.file), sha) {
+        if current && plugins.join(&e.file).is_file() {
             continue;
         }
         let part = super::goback::Part::Mod {
@@ -2351,6 +2369,9 @@ pub fn install(
     if let Some(spec) = &e.pack {
         return install_pack(v, e, spec, cancel, on);
     }
+    if let Some(spec) = &e.release {
+        return install_release(v, e, spec, cancel, on);
+    }
     let Some(sha) = e.sha256.as_deref().filter(|_| e.downloadable()) else {
         bail!(
             "{} can't be downloaded: it comes with the community update.",
@@ -2384,6 +2405,129 @@ pub fn install(
             enabled: true,
             args: e.args.clone(),
             sha256: Some(sha.to_ascii_lowercase()),
+            launcher: Some(Added::from_entry(e)),
+            required: false,
+        });
+        o.set_quarantined(&e.file, None);
+    })
+}
+
+/// Installs mod `e` from its release in the signed-plugin shape ([`signed_plugin`]): the
+/// three files downloaded, then [`install_fetched`]. A release whose signature was
+/// revoked isn't installed.
+fn install_release(
+    v: &InstalledVersion,
+    e: &ModEntry,
+    spec: &ReleaseSpec,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(Step),
+) -> Result<()> {
+    spec.installable()
+        .map_err(|why| anyhow::anyhow!("{} {} can't be installed: {why}.", e.name, e.version))?;
+    let pins = spec.pins()?;
+    let dir = paths::downloads_dir()
+        .join("mods")
+        .join(format!(".{}-release", e.id));
+    let _ = std::fs::remove_dir_all(&dir);
+    on(Step::Status(format!("Downloading {}...", e.name)));
+    let result = (|| -> Result<()> {
+        let get = |name: &str, sha: &str, on: &mut dyn FnMut(download::Progress)| {
+            download::fetch_pinned(&spec.url_of(name), &dir, name, sha, cancel, on)
+        };
+        get(signed_plugin::SUMS, &pins.sums, &mut |_| {})?;
+        get(signed_plugin::MANIFEST, &pins.manifest, &mut |_| {})?;
+        get(&spec.assets.package.name, &pins.package, &mut |p| {
+            if let download::Progress::Percent(p) = p {
+                on(Step::Percent(p));
+            }
+        })?;
+        on(Step::Status(format!("Installing {}...", e.name)));
+        install_fetched(v, e, spec, &dir)
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(err) = &result {
+        tracing::warn!(
+            "mods: {} {} from its release failed: {err:#}",
+            e.id,
+            e.version
+        );
+    }
+    result
+}
+
+/// Puts the release in `dir` (its zip, `echo-mod.json` and `SHA256SUMS`, as downloaded)
+/// into `v`. Each file must be the catalogue's pin and listed in `SHA256SUMS`, the
+/// manifest must be `e`'s and the zip must check against its own sums; only then the DLL
+/// goes into the plugins folder (with its settings file) and is added, on, with the
+/// checksum of the file as placed, which [`prepare`] checks again. Until then nothing in
+/// `v` has changed.
+fn install_fetched(
+    v: &InstalledVersion,
+    e: &ModEntry,
+    spec: &ReleaseSpec,
+    dir: &Path,
+) -> Result<()> {
+    let pins = spec.pins()?;
+    let package = &spec.assets.package.name;
+    let (sums, manifest, zip) = (
+        dir.join(signed_plugin::SUMS),
+        dir.join(signed_plugin::MANIFEST),
+        dir.join(package),
+    );
+    for (name, path, pin) in [
+        (signed_plugin::SUMS, &sums, &pins.sums),
+        (signed_plugin::MANIFEST, &manifest, &pins.manifest),
+        (package.as_str(), &zip, &pins.package),
+    ] {
+        if !download::sha256_matches(path, pin) {
+            bail!(
+                "{name} isn't the file the catalogue names for {} {}.",
+                e.name,
+                e.version
+            );
+        }
+    }
+    let text = std::fs::read_to_string(&sums).context("read SHA256SUMS")?;
+    signed_plugin::verify_files(
+        &signed_plugin::Sums::parse(&text)?,
+        &[(package, &zip), (signed_plugin::MANIFEST, &manifest)],
+    )?;
+    signed_plugin::check_manifest(
+        &std::fs::read(&manifest)?,
+        &e.id,
+        &e.version,
+        &e.file,
+        package,
+    )?;
+    check_free(v, &e.file)?;
+    let unpacked = signed_plugin::unpack(
+        std::io::BufReader::new(std::fs::File::open(&zip).context("open the release's zip")?),
+        &e.file,
+        &dir.join("unpacked"),
+    )?;
+    keep_previous(v, &e.file, &e.version);
+    place(v, &unpacked.dll, &e.file)?;
+    if let Some(settings) = &unpacked.settings {
+        place(v, settings, &plugin_settings::sidecar_name(&e.file))?;
+    }
+    let sha = download::sha256_file(&plugins_dir(v).join(&e.file))?;
+    tracing::info!(
+        "mods: installed {} {} into {} from its release {} (signer: {:?}, dll sha256 {sha})",
+        e.id,
+        e.version,
+        v.id,
+        spec.tag,
+        spec.signer.status
+    );
+    // A blocked copy set aside before is done with: this one replaces it.
+    let _ = std::fs::remove_file(quarantine_dir(v).join(&e.file));
+    edit_overlay(v, |o| {
+        o.add(&Entry {
+            file: e.file.clone(),
+            name: e.name.clone(),
+            enabled: true,
+            args: e.args.clone(),
+            sha256: Some(sha),
             launcher: Some(Added::from_entry(e)),
             required: false,
         });
@@ -2614,6 +2758,10 @@ pub fn remove(v: &InstalledVersion, file: &str) -> Result<()> {
         }
         Err(e) => return Err(anyhow::Error::from(e).context(format!("delete {}", path.display()))),
     }
+    // A release's settings file goes with its DLL (a loose plugin never had one from us).
+    if matches!(p.source, Source::Catalog { .. }) {
+        let _ = std::fs::remove_file(plugins_dir(v).join(plugin_settings::sidecar_name(&p.file)));
+    }
     let _ = std::fs::remove_dir_all(previous_dir(v).join(file));
     let _ = std::fs::remove_file(quarantine_dir(v).join(file));
     edit_overlay(v, |o| {
@@ -2834,6 +2982,10 @@ pub struct ModEntry {
     /// Private: added by its id, for the accounts its maker allowed (with `unlisted`).
     #[serde(skip)]
     pub private: bool,
+    /// A release in the signed-plugin shape ([`super::signed_plugin`]): a zip, its manifest
+    /// and its sums, each checked before anything is installed. It is used in place of
+    /// `url` and `sha256`, which an entry may keep for launchers that don't read it.
+    pub release: Option<ReleaseSpec>,
     /// From the dev folder of a dev code in use ([`super::dev_code`]), not published.
     #[serde(skip)]
     pub dev: bool,
@@ -2849,7 +3001,7 @@ pub struct ModEntry {
 
 impl ModEntry {
     pub fn downloadable(&self) -> bool {
-        !self.shipped && (!self.url.is_empty() || self.pack.is_some())
+        !self.shipped && (!self.url.is_empty() || self.pack.is_some() || self.release.is_some())
     }
 
     /// Whether it is a sound entry: a safe id and file name, a download on a trusted host
@@ -2866,7 +3018,12 @@ impl ModEntry {
         } else if !is_plugin_file(&self.file) || self.file.eq_ignore_ascii_case(SLOT) {
             bail!("invalid plugin file for {}: {:?}", self.id, self.file);
         }
-        if !self.shipped && self.pack.is_none() {
+        if let Some(release) = &self.release {
+            if self.shipped || self.pack.is_some() {
+                bail!("{} has a release: never shipped, and not a pack", self.id);
+            }
+            release.validate(&self.id, &self.version)?;
+        } else if !self.shipped && self.pack.is_none() {
             if self.url.is_empty() || !catalog::is_safe_url(&self.url) {
                 bail!("untrusted download for {}: {}", self.id, self.url);
             }
@@ -2959,9 +3116,16 @@ impl ModCatalog {
                             pack.url =
                                 super::dev_code::resolve(code, &pack.url).ok_or_else(outside)?
                         }
-                        None => {
-                            m.url = super::dev_code::resolve(code, &m.url).ok_or_else(outside)?
-                        }
+                        None => match &mut m.release {
+                            Some(r) => {
+                                r.base =
+                                    super::dev_code::resolve(code, &r.base).ok_or_else(outside)?
+                            }
+                            None => {
+                                m.url =
+                                    super::dev_code::resolve(code, &m.url).ok_or_else(outside)?
+                            }
+                        },
                     }
                     m.shipped = false;
                     m.dev = true;
@@ -4843,5 +5007,222 @@ pub(crate) mod tests {
         let c = ModCatalog::parse(draft).unwrap();
         assert_eq!(c.mods.len(), raw["mods"].as_array().unwrap().len());
         assert!(ModCatalog::builtin().builtin);
+    }
+
+    // ---- releases in the signed-plugin shape ----
+
+    fn sha_of(bytes: &[u8]) -> String {
+        download::sha256_reader(&mut &bytes[..]).unwrap()
+    }
+
+    /// A release of `foo` 1.2.0 written into `dir` as downloaded (zip, echo-mod.json,
+    /// SHA256SUMS), and the catalogue's entry for it, signed: the entry's `assets` hold
+    /// made-up attested digests, the `signer` the real ones of what is in `dir`.
+    fn release_in(dir: &Path, dll: &[u8]) -> ModEntry {
+        use std::io::Write;
+        let inner = [
+            ("Foo.dll", dll),
+            ("LICENSE", b"MIT"),
+            ("Foo.plugin.json", br#"{"settings":{}}"#),
+        ];
+        let mut sums: String = inner
+            .iter()
+            .map(|(n, b)| format!("{}  {n}\n", sha_of(b)))
+            .collect();
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (n, b) in &inner {
+            w.start_file(*n, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            w.write_all(b).unwrap();
+        }
+        w.start_file("SHA256SUMS", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        w.write_all(sums.as_bytes()).unwrap();
+        let zip = w.finish().unwrap().into_inner();
+        let manifest = br#"{"id":"foo","version":"1.2.0","file":"Foo.dll","package":"foo-v1.2.0-windows.zip"}"#;
+        sums = format!(
+            "{}  foo-v1.2.0-windows.zip\n{}  echo-mod.json\n",
+            sha_of(&zip),
+            sha_of(manifest)
+        );
+        std::fs::write(dir.join("foo-v1.2.0-windows.zip"), &zip).unwrap();
+        std::fs::write(dir.join("echo-mod.json"), manifest).unwrap();
+        std::fs::write(dir.join("SHA256SUMS"), &sums).unwrap();
+        let text = format!(
+            r#"{{"mods": [{{"id": "foo", "name": "Foo", "version": "1.2.0", "file": "Foo.dll",
+              "release": {{
+                "base": "https://github.com/EchoTools/foo/releases/download/v1.2.0", "tag": "v1.2.0",
+                "assets": {{
+                  "package": {{"name": "foo-v1.2.0-windows.zip", "sha256": "{a}", "size": 1}},
+                  "manifest": {{"name": "echo-mod.json", "sha256": "{m}", "size": 1}},
+                  "sums": {{"name": "SHA256SUMS", "sha256": "{a}", "size": 1}}}},
+                "signer": {{"status": "signed", "record": "https://example.com/r",
+                  "signed_at": "2026-10-27T09:30:00Z",
+                  "package": {{"sha256": "{p}", "size": 1}}, "sums": {{"sha256": "{s}", "size": 1}}}}}}}}]}}"#,
+            a = "a".repeat(64),
+            m = sha_of(manifest),
+            p = sha_of(&zip),
+            s = sha_of(sums.as_bytes()),
+        );
+        ModCatalog::parse(&text).unwrap().mods.remove(0)
+    }
+
+    fn fixture(dll: &[u8]) -> (tempfile::TempDir, InstalledVersion, ModEntry, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        let files = dir.path().join("release");
+        std::fs::create_dir_all(&files).unwrap();
+        let e = release_in(&files, dll);
+        (dir, v, e, files)
+    }
+
+    #[test]
+    fn a_signed_release_is_installed_with_its_settings() {
+        let (_dir, v, e, files) = fixture(b"MZ signed foo");
+        let spec = e.release.as_ref().unwrap();
+        install_fetched(&v, &e, spec, &files).unwrap();
+        assert_eq!(
+            std::fs::read(plugins_dir(&v).join("Foo.dll")).unwrap(),
+            b"MZ signed foo"
+        );
+        assert!(plugins_dir(&v).join("Foo.plugin.json").is_file());
+        // Noted as the catalogue's, with the checksum of the placed file.
+        let added = Overlay::read(&choices_path(&v)).added();
+        let foo = added.iter().find(|a| a.file == "Foo.dll").unwrap();
+        assert_eq!(
+            foo.sha256.as_deref(),
+            Some(sha_of(b"MZ signed foo").as_str())
+        );
+        assert_eq!(foo.launcher.as_ref().unwrap().version, "1.2.0");
+        assert_eq!(installed_version(&v, "Foo.dll").as_deref(), Some("1.2.0"));
+        // Removing it takes the settings file along.
+        remove(&v, "Foo.dll").unwrap();
+        assert!(!plugins_dir(&v).join("Foo.dll").exists());
+        assert!(!plugins_dir(&v).join("Foo.plugin.json").exists());
+    }
+
+    /// Each of these breaks one check; the plugins folder is as it was.
+    #[test]
+    fn a_release_that_fails_a_check_installs_nothing() {
+        let before = |v: &InstalledVersion| {
+            let mut names: Vec<_> = std::fs::read_dir(plugins_dir(v))
+                .unwrap()
+                .map(|f| f.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        for what in [
+            "zip",
+            "manifest",
+            "sums",
+            "sums line",
+            "manifest version",
+            "forged release",
+        ] {
+            let (_dir, v, mut e, files) = fixture(b"MZ foo");
+            let had = before(&v);
+            match what {
+                // Changed after the catalogue pinned it.
+                "zip" => std::fs::write(files.join("foo-v1.2.0-windows.zip"), b"PK other").unwrap(),
+                "manifest" => std::fs::write(files.join("echo-mod.json"), b"{}").unwrap(),
+                "sums" => std::fs::write(files.join("SHA256SUMS"), b"").unwrap(),
+                // Pinned right, but the release's own sums disagree with the zip.
+                "sums line" => {
+                    let text = std::fs::read_to_string(files.join("SHA256SUMS")).unwrap();
+                    let bad = text.replacen(&text[..64], &"0".repeat(64), 1);
+                    std::fs::write(files.join("SHA256SUMS"), &bad).unwrap();
+                    let spec = e.release.as_mut().unwrap();
+                    spec.signer.sums.as_mut().unwrap().sha256 = sha_of(bad.as_bytes());
+                }
+                // All three replaced by files that agree with each other: not the pinned ones.
+                "forged release" => {
+                    release_in(&files, b"MZ evil");
+                }
+                // The manifest isn't this version's.
+                _ => {
+                    let m = std::fs::read(files.join("echo-mod.json")).unwrap();
+                    let m = String::from_utf8(m).unwrap().replace("1.2.0\"", "1.2.1\"");
+                    std::fs::write(files.join("echo-mod.json"), &m).unwrap();
+                    e.release.as_mut().unwrap().assets.manifest.sha256 = sha_of(m.as_bytes());
+                }
+            }
+            let spec = e.release.clone().unwrap();
+            assert!(
+                install_fetched(&v, &e, &spec, &files).is_err(),
+                "{what} was installed"
+            );
+            assert_eq!(before(&v), had, "{what} left files behind");
+            assert!(
+                Overlay::read(&choices_path(&v)).added().is_empty(),
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_revoked_release_is_not_installed() {
+        let (_dir, v, mut e, _files) = fixture(b"MZ foo");
+        e.release.as_mut().unwrap().signer.status = signed_plugin::SignerStatus::Revoked;
+        let err = install(&v, &e, &AtomicBool::new(false), &mut |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("revoked"), "{err}");
+        assert!(!plugins_dir(&v).join("Foo.dll").exists());
+    }
+
+    #[test]
+    fn the_catalogue_reads_both_layouts_and_refuses_a_bad_release() {
+        let (_dir, _v, good, _files) = fixture(b"MZ foo");
+        assert!(good.downloadable() && good.url.is_empty() && good.sha256.is_none());
+
+        // The loose DLL, as before: url and sha256, no release.
+        let sha = "a".repeat(64);
+        let loose = ModCatalog::parse(&format!(
+            r#"{{"mods": [{{"id": "bar", "name": "Bar", "file": "Bar.dll",
+                "url": "mods/Bar.dll", "sha256": "{sha}"}}]}}"#
+        ))
+        .unwrap();
+        assert_eq!(loose.mods.len(), 1);
+        assert!(loose.mods[0].release.is_none() && loose.mods[0].downloadable());
+
+        // One field wrong each: the entry is left out, the others stay.
+        let broken = |from: &str, to: &str| {
+            let mut e = good.clone();
+            let mut v = serde_json::to_string(&e).unwrap();
+            assert!(v.contains(from), "{from}");
+            v = v.replace(from, to);
+            e = serde_json::from_str(&v).unwrap();
+            e.validate().is_err()
+        };
+        assert!(broken("foo-v1.2.0-windows.zip", "other.zip"));
+        assert!(broken("\"tag\":\"v1.2.0\"", "\"tag\":\"v1.2.1\""));
+        assert!(broken("github.com/EchoTools/foo", "github.com/someone/foo"));
+        assert!(broken("https://github.com", "http://github.com"));
+        let mut unsigned_digests = good.clone();
+        unsigned_digests.release.as_mut().unwrap().signer.package = None;
+        assert!(unsigned_digests.validate().is_err());
+        // Not signed yet: the attested digests are the pins.
+        let mut pending = good.clone();
+        pending.release.as_mut().unwrap().signer = Default::default();
+        pending.validate().unwrap();
+        assert_eq!(
+            pending.release.unwrap().pins().unwrap().package,
+            "a".repeat(64)
+        );
+    }
+
+    #[test]
+    fn a_catalogue_json_version_may_carry_a_release() {
+        let (_dir, _v, e, _files) = fixture(b"MZ foo");
+        let text = format!(
+            r#"{{"mods": [{{"id": "foo", "name": "Foo", "publisher": "someone", "repo": "EchoTools/foo",
+                "versions": [{}]}}]}}"#,
+            serde_json::to_string(&e).unwrap()
+        );
+        let c = super::super::catalogue::Catalogue::parse(&text).unwrap();
+        let offered = c.mods[0].choose_with(false, &|_| false).unwrap();
+        assert!(offered.entry.release.is_some());
+        assert!(offered.entry.downloadable() && offered.entry.url.is_empty());
     }
 }
