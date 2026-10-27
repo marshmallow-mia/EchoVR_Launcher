@@ -155,6 +155,7 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
         }
     }
     stamp(&bin.join(mods::SLOT)).hash(&mut h);
+    stamp(&bin.join(super::nevr::RUNTIME)).hash(&mut h);
     if let Ok(entries) = std::fs::read_dir(bin.join("plugins")) {
         let mut plugins: Vec<_> = entries
             .flatten()

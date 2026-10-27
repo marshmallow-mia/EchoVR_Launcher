@@ -58,6 +58,9 @@ pub enum Loader {
     None,
     /// nEVR runtime, at this version (empty when it doesn't say).
     Nevr { version: String },
+    /// nEVR's host (5.10 on) without the runtime it loads (`nevr-runtime.dll`): missing, or
+    /// of another version. The game stops at its start like this.
+    NevrIncomplete { version: String },
     /// The launcher's EchoLoader, in nEVR's place while the live build plays on an
     /// EchoRelay server (`relay::set_up_live`).
     EchoRelay,
@@ -73,14 +76,22 @@ impl Loader {
     }
 }
 
-/// Pure: what the slot's file (`slot`, its checksum `slot_sha`) is.
-pub fn classify(slot: Option<&[u8]>, slot_sha: Option<&str>) -> Loader {
+/// Pure: what the slot's file (`slot`, its checksum `slot_sha`) is, with nEVR's runtime file
+/// beside it (`runtime`), which a nEVR host (5.10 on) needs.
+pub fn classify(slot: Option<&[u8]>, slot_sha: Option<&str>, runtime: Option<&[u8]>) -> Loader {
     let Some(bytes) = slot else {
         return Loader::None;
     };
-    if find(bytes, nevr::MARKER).is_some() {
-        return Loader::Nevr {
-            version: nevr::version_in(bytes).unwrap_or_default(),
+    if nevr::is_nevr(bytes) {
+        let version = nevr::version_in(bytes).unwrap_or_default();
+        let whole = !nevr::is_host(bytes)
+            || runtime.is_some_and(|r| {
+                nevr::contains(r, nevr::MARKER) && nevr::version_in(r).as_deref() == Some(&version)
+            });
+        return if whole {
+            Loader::Nevr { version }
+        } else {
+            Loader::NevrIncomplete { version }
         };
     }
     if slot_sha.is_some_and(|s| s.eq_ignore_ascii_case(super::relay::LOADER_SHA256)) {
@@ -93,13 +104,9 @@ pub fn classify(slot: Option<&[u8]>, slot_sha: Option<&str>) -> Loader {
     }
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
-}
-
-/// Whether nEVR is in the slot of the game in `bin`.
+/// Whether nEVR is in the slot of the game in `bin`, whole (from 5.10 on, with its runtime).
 pub fn nevr_in(bin: &Path) -> bool {
-    std::fs::read(bin.join(SLOT)).is_ok_and(|b| find(&b, nevr::MARKER).is_some())
+    matches!(slot_facts(bin).0, Loader::Nevr { .. })
 }
 
 /// Whether the game in `bin` can load what's in its slot (`BugSplat64.dll`, which the game
@@ -115,9 +122,28 @@ pub enum SlotState {
 
 /// What the slot of the game in `bin` is like now.
 pub fn slot_state(bin: &Path) -> SlotState {
+    file_state(&bin.join(SLOT))
+}
+
+/// The first of the mod loader's files in `bin` the game can't load, and why: the slot, and
+/// from nEVR 5.8 on the runtime its host loads from beside it.
+pub fn loader_problem(bin: &Path) -> Option<(&'static str, SlotState)> {
+    match slot_state(bin) {
+        SlotState::Ok => {}
+        s => return Some((SLOT, s)),
+    }
+    if !std::fs::read(bin.join(SLOT)).is_ok_and(|b| nevr::is_host(&b)) {
+        return None;
+    }
+    match file_state(&bin.join(nevr::RUNTIME)) {
+        SlotState::Ok => None,
+        s => Some((nevr::RUNTIME, s)),
+    }
+}
+
+fn file_state(path: &Path) -> SlotState {
     use std::io::Read;
-    let path = bin.join(SLOT);
-    match std::fs::File::open(&path).and_then(|mut f| f.read(&mut [0u8; 1])) {
+    match std::fs::File::open(path).and_then(|mut f| f.read(&mut [0u8; 1])) {
         Ok(_) => SlotState::Ok,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => SlotState::Missing,
         Err(e) => SlotState::Blocked(e.to_string()),
@@ -875,16 +901,21 @@ fn plugin_files(v: &InstalledVersion) -> Vec<String> {
 /// Mods page reads its version every few seconds: the DLL is read and hashed again only
 /// when its size or time changed.
 pub fn slot_facts(bin: &Path) -> (Loader, bool) {
-    type Seen = (u64, std::time::SystemTime, Loader, bool);
+    type Stamp = Option<(u64, std::time::SystemTime)>;
+    type Seen = (Stamp, Stamp, Loader, bool);
     static SEEN: std::sync::Mutex<BTreeMap<PathBuf, Seen>> = std::sync::Mutex::new(BTreeMap::new());
     let path = bin.join(SLOT);
-    let stamp = std::fs::metadata(&path)
-        .ok()
-        .and_then(|m| Some((m.len(), m.modified().ok()?)));
-    if let Some((len, time)) = stamp {
+    let runtime_path = bin.join(nevr::RUNTIME);
+    let stamp_of = |p: &Path| {
+        std::fs::metadata(p)
+            .ok()
+            .and_then(|m| Some((m.len(), m.modified().ok()?)))
+    };
+    let (stamp, runtime_stamp) = (stamp_of(&path), stamp_of(&runtime_path));
+    if stamp.is_some() {
         let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((l, t, loader, early)) = seen.get(&path) {
-            if (*l, *t) == (len, time) {
+        if let Some((s, rs, loader, early)) = seen.get(&path) {
+            if (*s, *rs) == (stamp, runtime_stamp) {
                 return (loader.clone(), *early);
             }
         }
@@ -893,12 +924,20 @@ pub fn slot_facts(bin: &Path) -> (Loader, bool) {
     let sha = slot
         .as_ref()
         .and_then(|b| download::sha256_reader(&mut b.as_slice()).ok());
-    let loader = classify(slot.as_deref(), sha.as_deref());
-    let early = slot.as_deref().is_some_and(packs::loads_early);
-    if let Some((len, time)) = stamp {
+    // A host's runtime holds what the single DLL held (the early load pass among it).
+    let runtime = slot
+        .as_deref()
+        .filter(|b| nevr::is_host(b))
+        .and_then(|_| std::fs::read(&runtime_path).ok());
+    let loader = classify(slot.as_deref(), sha.as_deref(), runtime.as_deref());
+    let early = runtime
+        .as_deref()
+        .or(slot.as_deref())
+        .is_some_and(packs::loads_early);
+    if stamp.is_some() {
         SEEN.lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(path, (len, time, loader.clone(), early));
+            .insert(path, (stamp, runtime_stamp, loader.clone(), early));
     }
     (loader, early)
 }
@@ -1159,8 +1198,7 @@ pub fn before_start(
         }
         return Ok(());
     }
-    if nevr::stray_dbgcore(&bin) {
-        let path = bin.join(nevr::DBGCORE);
+    if let Some(path) = nevr::stray_dbgcore_path(&bin) {
         std::fs::remove_file(&path).with_context(|| {
             format!(
                 "Couldn't remove {}, which nEVR won't start beside",
@@ -1517,7 +1555,7 @@ fn served_pack(v: &InstalledVersion, overlay: &Overlay, echoloader: bool) -> Opt
 
 /// Whether the NvrAssetPatches build at `path` takes `required_only` (1.2.0 on).
 fn knows_required_only(path: &Path) -> bool {
-    std::fs::read(path).is_ok_and(|b| find(&b, b"required_only").is_some())
+    std::fs::read(path).is_ok_and(|b| nevr::contains(&b, b"required_only"))
 }
 
 /// Mods on or off for `v` (the overlay's "start without mods").
@@ -1915,8 +1953,8 @@ pub fn add_local(v: &InstalledVersion, src: &Path) -> Result<String> {
     if !is_plugin_file(&file) {
         bail!("{file:?} isn't a plugin file name the launcher takes: letters, digits, '.', '-' and '_', ending in .dll.");
     }
-    if file.eq_ignore_ascii_case(SLOT) {
-        bail!("{SLOT} is the mod loader itself, not a plugin.");
+    if file.eq_ignore_ascii_case(SLOT) || file.eq_ignore_ascii_case(nevr::RUNTIME) {
+        bail!("{file} is part of the mod loader itself, not a plugin.");
     }
     if NOT_PLUGINS.iter().any(|n| n.eq_ignore_ascii_case(&file)) {
         bail!("{file} isn't a plugin nEVR loads.");
@@ -2534,28 +2572,92 @@ pub(crate) mod tests {
     fn tells_the_loaders_apart() {
         let nevr = b"MZ....[NEVR.BOOT] up\0\x014.0.0+182.e418eaa\0rest".as_slice();
         assert_eq!(
-            classify(Some(nevr), None),
+            classify(Some(nevr), None, None),
             Loader::Nevr {
                 version: "4.0.0+182.e418eaa".into()
             }
         );
-        assert!(classify(Some(nevr), None).editable());
-        assert_eq!(classify(Some(b"MZ"), Some(STOCK_SLOT_SHA256)), Loader::None);
-        assert_eq!(classify(None, None), Loader::None);
+        assert!(classify(Some(nevr), None, None).editable());
+        assert_eq!(
+            classify(Some(b"MZ"), Some(STOCK_SLOT_SHA256), None),
+            Loader::None
+        );
+        assert_eq!(classify(None, None, None), Loader::None);
         // The launcher's EchoLoader, in nEVR's place on an EchoRelay server: its mods
         // still change here.
         let echoloader = classify(
             Some(b"MZ ECHOLOADER_ID:2.0.0:open"),
             Some(&super::super::relay::LOADER_SHA256.to_uppercase()),
+            None,
         );
         assert_eq!(echoloader, Loader::EchoRelay);
         assert!(echoloader.editable());
         // Another EchoLoader build, or anything else.
         assert_eq!(
-            classify(Some(b"MZ ECHOLOADER_ID:2.0.0:open"), Some("00")),
+            classify(Some(b"MZ ECHOLOADER_ID:2.0.0:open"), Some("00"), None),
             Loader::Unknown
         );
         assert!(!Loader::Unknown.editable());
+    }
+
+    /// nEVR 5.4 (one DLL with its identity), and 5.8 on: a host in the slot that carries
+    /// only the identity, and the runtime beside it with everything else.
+    #[test]
+    fn tells_a_split_nevr() {
+        let id = "NEVR-BUILD 5.10.0 c8b9cf4c8d39627ec49446127223fdf4ad95574c";
+        let single = format!("MZ [NEVR.BOOT] \0{id}\0");
+        let host = format!("MZ host\0{id}\0");
+        let runtime = format!("MZ [NEVR.BOOT] marked early\0{id}\0");
+        let other = "MZ [NEVR.BOOT]\0NEVR-BUILD 5.9.0 4f1e543c0000000000000000000000000000000a\0";
+        let nevr = |v: &str| Loader::Nevr { version: v.into() };
+        assert_eq!(
+            classify(Some(single.as_bytes()), None, None),
+            nevr("5.10.0")
+        );
+        assert_eq!(
+            classify(Some(host.as_bytes()), None, Some(runtime.as_bytes())),
+            nevr("5.10.0")
+        );
+        let incomplete = Loader::NevrIncomplete {
+            version: "5.10.0".into(),
+        };
+        // Its runtime missing, of another version, or not a runtime at all.
+        assert_eq!(classify(Some(host.as_bytes()), None, None), incomplete);
+        assert_eq!(
+            classify(Some(host.as_bytes()), None, Some(other.as_bytes())),
+            incomplete
+        );
+        assert_eq!(
+            classify(Some(host.as_bytes()), None, Some(id.as_bytes())),
+            incomplete
+        );
+        assert!(!incomplete.editable());
+    }
+
+    #[test]
+    fn reads_a_split_nevr_from_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path();
+        let id = "NEVR-BUILD 5.10.0 c8b9cf4c8d39627ec49446127223fdf4ad95574c";
+        std::fs::write(bin.join(SLOT), format!("MZ host\0{id}\0")).unwrap();
+        assert!(!nevr_in(bin));
+        assert!(matches!(slot_facts(bin).0, Loader::NevrIncomplete { .. }));
+        // The runtime arriving is seen, though the slot didn't change.
+        std::fs::write(
+            bin.join(nevr::RUNTIME),
+            format!("MZ [NEVR.BOOT] marked early\0{id}\0"),
+        )
+        .unwrap();
+        assert!(nevr_in(bin));
+        assert_eq!(
+            slot_facts(bin),
+            (
+                Loader::Nevr {
+                    version: "5.10.0".into()
+                },
+                true
+            )
+        );
     }
 
     #[test]

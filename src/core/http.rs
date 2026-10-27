@@ -222,6 +222,56 @@ pub fn download_checked(
     download_to(url, dest, cancel)
 }
 
+/// The client for what must come from exactly the URL asked for (nEVR's signed releases):
+/// it follows no redirect.
+fn exact_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        #[cfg(not(any(windows, target_os = "macos")))]
+        {
+            let _ = rustls::crypto::ring::default_provider().install_default();
+        }
+        Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(20))
+            .read_timeout(STALL_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("HTTP client")
+    })
+}
+
+/// Writes at most `max` bytes from exactly `url` (no redirect) to `sink`; returns how many
+/// and their sha256. More than `max` is an error, whatever length the server announced.
+pub fn get_capped(
+    url: &str,
+    max: u64,
+    sink: &mut dyn std::io::Write,
+    cancel: Option<&AtomicBool>,
+) -> Result<(u64, String)> {
+    use sha2::{Digest, Sha256};
+    block_on(async {
+        let mut resp = exact_client()
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        if resp.status().as_u16() != 200 {
+            bail!("GET {url}: server responded with {}", resp.status());
+        }
+        let (mut sha, mut size) = (Sha256::new(), 0u64);
+        while let Some(chunk) = next_chunk(&mut resp, cancel).await? {
+            size += chunk.len() as u64;
+            if size > max {
+                bail!("GET {url}: the server sent more than {max} bytes");
+            }
+            sink.write_all(&chunk).context("write")?;
+            sha.update(&chunk);
+        }
+        Ok((size, hex::encode(sha.finalize())))
+    })
+}
+
 fn file_of(url: &str) -> &str {
     url.rsplit('/').next().unwrap_or(url)
 }

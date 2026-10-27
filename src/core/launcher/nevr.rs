@@ -22,8 +22,16 @@ use serde_json::{Map, Value};
 use super::store::InstalledVersion;
 use crate::core::paths;
 
-/// What every nEVR build logs at its start.
+/// What every nEVR build logs at its start (from 5.10 on, only its runtime file carries it).
 pub const MARKER: &[u8] = b"[NEVR.BOOT]";
+/// The identity every nEVR from 5.4 on carries: `NEVR-BUILD <version> <commit>`. From 5.10 on
+/// it is all the slot's file (the host) says of nEVR.
+pub const BUILD: &[u8] = b"NEVR-BUILD ";
+/// nEVR's second file from 5.10 on: the host in the slot loads it from beside itself, checks
+/// its signature first and stops the game (exit [`RUNTIME_REFUSED`]) when it's missing or refused.
+pub const RUNTIME: &str = "nevr-runtime.dll";
+/// The game's exit code when nEVR's host found no runtime it could load.
+pub const RUNTIME_REFUSED: i32 = 78;
 pub const CONFIG: &str = "config.yaml";
 pub const CREDENTIALS: &str = ".credentials.json";
 /// The game's EchoVRCE sign-in while it plays on another server ([`Backend`]): nEVR tries
@@ -45,9 +53,13 @@ const REFRESH_LIFE_S: i64 = 30 * 24 * 3600;
 
 // ---- the DLL ----
 
-/// Pure: nEVR's version in its DLL `bytes`: its build identity (`4.0.0+182.e418eaa`), else
-/// its `git describe` (`v4.0.0-182-ge418eaa-dirty`) without the `v`.
+/// Pure: nEVR's version in its DLL `bytes`: the version of its `NEVR-BUILD` identity
+/// (`5.10.0`), else its build identity (`4.0.0+182.e418eaa`), else its `git describe`
+/// (`v4.0.0-182-ge418eaa-dirty`) without the `v`.
 pub fn version_in(bytes: &[u8]) -> Option<String> {
+    if let Some(v) = build_version(bytes) {
+        return Some(v);
+    }
     let runs = || {
         bytes
             .split(|b| !(0x20..0x7f).contains(b))
@@ -58,6 +70,41 @@ pub fn version_in(bytes: &[u8]) -> Option<String> {
         .find(|s| build_identity(s))
         .or_else(|| runs().find(|s| describe(s)).map(|s| &s[1..]))
         .map(str::to_string)
+}
+
+/// Pure: the version of the first `NEVR-BUILD <version> <commit>` in `bytes`.
+fn build_version(bytes: &[u8]) -> Option<String> {
+    bytes
+        .windows(BUILD.len())
+        .enumerate()
+        .filter(|(_, w)| *w == BUILD)
+        .find_map(|(at, _)| {
+            let rest = &bytes[at + BUILD.len()..];
+            let end = rest.iter().position(|b| !(0x20..0x7f).contains(b));
+            let line = std::str::from_utf8(&rest[..end.unwrap_or(rest.len())]).ok()?;
+            let mut parts = line.split(' ');
+            let (ver, commit) = (parts.next()?, parts.next()?);
+            (semver(ver)
+                && (7..=40).contains(&commit.len())
+                && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| ver.to_string())
+        })
+}
+
+/// Whether `bytes` carries nEVR's start marker or its build identity: nEVR, or (from 5.10
+/// on) its host, which needs [`RUNTIME`] beside it.
+pub fn is_nevr(bytes: &[u8]) -> bool {
+    contains(bytes, MARKER) || contains(bytes, BUILD)
+}
+
+/// Whether `bytes` is a nEVR host that loads its runtime from [`RUNTIME`] (5.10 on): it
+/// carries the identity but not the start marker.
+pub fn is_host(bytes: &[u8]) -> bool {
+    !contains(bytes, MARKER) && contains(bytes, BUILD)
+}
+
+pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
 /// `X.Y.Z+N.hash`.
@@ -103,9 +150,24 @@ fn semver(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Whether the game folder `bin` has a `dbgcore.dll` beside the exe, which nEVR refuses.
+/// Whether the game folder `bin` has a `dbgcore.dll` beside the exe, which nEVR refuses (in
+/// any case: Wine finds `DBGCORE.DLL` too).
 pub fn stray_dbgcore(bin: &Path) -> bool {
-    bin.join(DBGCORE).is_file()
+    stray_dbgcore_path(bin).is_some()
+}
+
+/// The `dbgcore.dll` beside the exe in `bin`, as it is spelled there.
+pub fn stray_dbgcore_path(bin: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(bin)
+        .ok()?
+        .flatten()
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(DBGCORE)
+        })
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
 }
 
 // ---- where nEVR looks ----
@@ -768,6 +830,56 @@ pub fn log_dir() -> Option<PathBuf> {
     local.map(|d| d.join("EchoVR").join("logs"))
 }
 
+/// The log nEVR's host (5.8 on) keeps of every start, under `%LOCALAPPDATA%\nevr\echovr`
+/// (the Wine prefix's on Linux): which runtime it found, and whether it loaded it.
+pub fn host_log() -> Option<PathBuf> {
+    host_log_beside(&log_dir()?)
+}
+
+/// [`host_log`] for the game's log folder `logs` (`…\EchoVR\logs`, [`log_dir`]).
+pub fn host_log_beside(logs: &Path) -> Option<PathBuf> {
+    let local = logs.parent()?.parent()?;
+    Some(
+        local
+            .join("nevr")
+            .join("echovr")
+            .join("logs")
+            .join("nevr-bootstrap.jsonl"),
+    )
+}
+
+/// Pure: why the last start in a host log (`text`, [`host_log`]) didn't load nEVR's runtime,
+/// when it didn't: the check's reason, else what happened.
+pub fn runtime_refusal_in(text: &str) -> Option<String> {
+    let last = text
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|r| r["event"] == "runtime_load")?;
+    match last["outcome"].as_str()? {
+        "loaded" => None,
+        "runtime_absent" => Some(format!("{RUNTIME} is missing")),
+        outcome => Some(
+            last["verify_reason"]
+                .as_str()
+                .filter(|r| !r.is_empty())
+                .map(|r| format!("{RUNTIME} was refused: {r}"))
+                .unwrap_or_else(|| format!("{RUNTIME}: {outcome}")),
+        ),
+    }
+}
+
+/// Why the last start didn't load nEVR's runtime, from its host's log.
+pub fn runtime_refusal() -> Option<String> {
+    runtime_refusal_in(&std::fs::read_to_string(host_log()?).ok()?)
+}
+
+/// What to tell when a start ended with [`RUNTIME_REFUSED`].
+pub fn runtime_refused_message() -> String {
+    let why = runtime_refusal().unwrap_or_else(|| format!("{RUNTIME} is missing or was refused"));
+    format!("nEVR stopped Echo VR at its start: {why}. Repair game files (in PLAY's menu) downloads nEVR's files again.")
+}
+
 /// Its log of a start's first moments, beside the exe.
 pub fn boot_log(bin: &Path) -> PathBuf {
     bin.join("logs").join("nevr-boot.jsonl")
@@ -1038,6 +1150,67 @@ mod tests {
         assert_eq!(version_in(b"\0vertex\0v1.2\0"), None);
     }
 
+    #[test]
+    fn finds_the_build_identity() {
+        let id = b"\0NEVR-BUILD 5.10.0 c8b9cf4c8d39627ec49446127223fdf4ad95574c\0";
+        // Before anything else the DLL says (5.4.3's also has a stray "v3.6.4-…").
+        let mut dll = b"MZ\0/v3.6.4-101dc3df7f.clean\0".to_vec();
+        dll.extend_from_slice(id);
+        assert_eq!(version_in(&dll).as_deref(), Some("5.10.0"));
+        assert!(is_nevr(&dll) && is_host(&dll));
+        dll.extend_from_slice(MARKER);
+        assert!(is_nevr(&dll) && !is_host(&dll));
+        // Not an identity: no commit, or a version that isn't one.
+        assert_eq!(build_version(b"NEVR-BUILD 5.10.0\0"), None);
+        assert_eq!(build_version(b"NEVR-BUILD %s %s\0"), None);
+        assert!(!is_nevr(b"MZ stock"));
+    }
+
+    #[test]
+    fn reads_why_the_runtime_was_refused() {
+        let load = |outcome: &str, reason: &str| {
+            format!(
+                r#"{{"event":"runtime_load","outcome":"{outcome}","verify":"refused","verify_reason":"{reason}","tag":"NEVR.HOST"}}"#
+            )
+        };
+        let versions = r#"{"event":"versions","host_version":"5.10.0","tag":"NEVR.HOST"}"#;
+        let refused = format!(
+            "{}\n{versions}\n{}\n{}",
+            load("loaded", ""),
+            load(
+                "runtime_refused",
+                "timestamp invalid: cannot make the chain engine: error 2147942487"
+            ),
+            r#"{"event":"game_stop","exit_code":78}"#
+        );
+        assert_eq!(
+            runtime_refusal_in(&refused).as_deref(),
+            Some("nevr-runtime.dll was refused: timestamp invalid: cannot make the chain engine: error 2147942487")
+        );
+        assert_eq!(
+            runtime_refusal_in(&load("runtime_absent", "")).as_deref(),
+            Some("nevr-runtime.dll is missing")
+        );
+        // The last start counts.
+        assert_eq!(
+            runtime_refusal_in(&format!("{refused}\n{}", load("loaded", ""))),
+            None
+        );
+        assert_eq!(runtime_refusal_in("not json\n"), None);
+    }
+
+    #[test]
+    fn finds_a_dbgcore_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!stray_dbgcore(dir.path()));
+        std::fs::write(dir.path().join("DBGCORE.DLL"), "x").unwrap();
+        assert!(stray_dbgcore(dir.path()));
+        assert_eq!(
+            stray_dbgcore_path(dir.path()).unwrap().file_name().unwrap(),
+            "DBGCORE.DLL"
+        );
+    }
+
     /// The DLL Mia ships, when it's on this machine.
     #[test]
     fn reads_the_real_dll() {
@@ -1184,11 +1357,15 @@ mod tests {
             r#"{"ts":"x","level":"info","msg":"[NEVR.PLUGIN] Loaded: NvrAssetPatches v1.1.0 (API v5) caps=0x22 via plugins\\NvrAssetPatches.dll"}"#,
             "[NEVR.PLUGIN] SKIPPED log_filter — superseded by the built-in log filter.",
             r#"{"msg":"[NEVR.PLUGIN] Broken (plugins\\Broken.dll): missing NvrPluginGetInfo export"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] plugin trust: mode=unsigned-allowed source=default build=release literal=\"NEVR-PLUGIN-TRUST release\" (x)"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] plugin=NvrAssetPatches file=NvrAssetPatches.dll UNSIGNED, loaded because plugin signatures are not required in this run (plugin trust mode unsigned-allowed; start with -require-signed-plugins to refuse it)"}"#,
             r#"{"msg":"[NEVR.PLUGIN] plugin load complete: 1/3 loaded"}"#,
         ]
         .join("\n");
         let st = Status::parse(&log);
         assert!(st.complete);
+        // The trust lines (5.7 on: unsigned plugins load) are no plugins of their own.
+        assert_eq!(st.plugins.len(), 3);
         let p = st.of("NvrAssetPatches.dll").unwrap();
         assert!(p.loaded());
         assert_eq!(

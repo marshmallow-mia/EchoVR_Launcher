@@ -97,7 +97,8 @@ impl Farm<'_> {
         for e in std::fs::read_dir(&src).with_context(|| format!("read {}", src.display()))? {
             let e = e?;
             let name = e.file_name().to_string_lossy().to_string();
-            if BIN_OWN.contains(&name.as_str()) || BIN_SKIP.contains(&name.as_str()) {
+            let skip = BIN_SKIP.iter().any(|n| n.eq_ignore_ascii_case(&name));
+            if BIN_OWN.contains(&name.as_str()) || skip {
                 continue;
             }
             wanted.push(name.clone());

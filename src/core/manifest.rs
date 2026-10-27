@@ -24,6 +24,15 @@
 //!   # Root:     ready-at-dawn-echo-arena/
 //! ```
 //!
+//! The PC update (main's or a channel's overlay) may name a release of nEVR from nEVR's own
+//! signed releases ([`crate::core::nevr_release`]) per platform, which then replaces its
+//! nEVR line; `none` turns off one the overlay would inherit:
+//!
+//! ```text
+//!   # nEVR windows: 5.8.1
+//!   # nEVR linux:   none
+//! ```
+//!
 //! Manifest paths end up in `adb shell` scripts (including `rm -rf`) and in local
 //! filesystem paths, so entry paths and the target root are validated strictly here.
 //! This is the single choke point -- do not re-implement parsing elsewhere.
@@ -65,6 +74,9 @@ pub struct Manifest {
     pub archive_size: Option<u64>,
     /// ...and the one folder in it the entry paths are relative to ("name/").
     pub archive_root: Option<String>,
+    /// `# nEVR windows:` / `# nEVR linux:`: a version, or `none`.
+    pub nevr_windows: Option<String>,
+    pub nevr_linux: Option<String>,
 }
 
 /// Only unreserved path characters, no `.`/`..`/empty segments.
@@ -132,6 +144,10 @@ fn parse_archive_header(m: &mut Manifest, line: &str) {
         m.archive_size = Some(size);
     } else if let Some(name) = root_header(line) {
         m.archive_root = Some(format!("{name}/"));
+    } else if let Some(v) = nevr_header(line, "windows") {
+        m.nevr_windows = Some(v);
+    } else if let Some(v) = nevr_header(line, "linux") {
+        m.nevr_linux = Some(v);
     }
 }
 
@@ -147,6 +163,12 @@ fn root_header(line: &str) -> Option<&str> {
             .chars()
             .any(|c| matches!(c, '/' | '\\' | ':') || c.is_control());
     plain.then_some(name)
+}
+
+/// `# nEVR <platform>: <version|none>` -> the value.
+fn nevr_header(line: &str, platform: &str) -> Option<String> {
+    let v = header(line, &format!("nEVR {platform}"))?;
+    (v == "none" || crate::core::nevr_release::semver_ok(v)).then(|| v.to_string())
 }
 
 /// `# Target: <root>` -> root
@@ -243,6 +265,12 @@ impl Manifest {
     /// path (case-insensitive) or is added, and downloads from `over`'s own folder. A
     /// channel's overlay replaces main only where it has a replacement.
     pub fn overlay(&mut self, over: Manifest) {
+        if over.nevr_windows.is_some() {
+            self.nevr_windows = over.nevr_windows;
+        }
+        if over.nevr_linux.is_some() {
+            self.nevr_linux = over.nevr_linux;
+        }
         for e in over.entries {
             self.entries
                 .retain(|m| !m.path.eq_ignore_ascii_case(&e.path));
@@ -251,6 +279,17 @@ impl Manifest {
                 ..e
             });
         }
+    }
+
+    /// The nEVR release ([`crate::core::nevr_release`]) this update installs on `platform`
+    /// (`windows`, `linux`) in place of its own nEVR line, if it names one.
+    pub fn nevr_release(&self, platform: &str) -> Option<&str> {
+        let v = if platform == "linux" {
+            &self.nevr_linux
+        } else {
+            &self.nevr_windows
+        };
+        v.as_deref().filter(|v| *v != "none")
     }
 
     /// A build file manifest's archive, beside it.
@@ -319,6 +358,28 @@ mod tests {
         // Unsafe names are dropped, not used.
         let bad = Manifest::parse("# Archive: ../x.zip\n# Root: ../\n", "https://h/m").unwrap();
         assert_eq!((bad.archive, bad.archive_root), (None, None));
+    }
+
+    #[test]
+    fn reads_the_nevr_release_per_platform() {
+        let main = Manifest::parse(
+            &format!("# nEVR windows: 5.8.1\n# nEVR linux:   5.8.0\nadd BugSplat64.dll {SHA}\n"),
+            "https://h/m",
+        )
+        .unwrap();
+        assert_eq!(main.nevr_release("windows"), Some("5.8.1"));
+        assert_eq!(main.nevr_release("linux"), Some("5.8.0"));
+        // A channel's overlay replaces what it names; `none` turns one off.
+        let mut m = main.clone();
+        m.overlay(Manifest::parse("# nEVR linux: none\n", "https://h/beta/m").unwrap());
+        assert_eq!(
+            (m.nevr_release("windows"), m.nevr_release("linux")),
+            (Some("5.8.1"), None)
+        );
+        // Not a version: not taken.
+        let bad =
+            Manifest::parse("# nEVR windows: ../5\n# nEVR linux: 5.8\n", "https://h/m").unwrap();
+        assert_eq!((bad.nevr_windows, bad.nevr_linux), (None, None));
     }
 
     #[test]

@@ -2,7 +2,8 @@
 
 The live PC build's plugins are loaded by
 [nEVR runtime](https://github.com/EchoTools/nevr-runtime), which is the game's crash
-reporter, `bin/win10/BugSplat64.dll`, so it loads on every start path. Besides loading
+reporter, `bin/win10/BugSplat64.dll`, so it loads on every start path (from 5.8.1 on that
+file is nEVR's host, which loads its signed runtime `nevr-runtime.dll` beside it). Besides loading
 plugins it points the game at EchoVRCE, signs it in with Discord, and brings friends and
 parties into the game. This page covers what the launcher does with it
 (`src/core/launcher/nevr.rs`, `src/core/launcher/mods.rs`, the Mods page
@@ -13,6 +14,33 @@ parties into the game. This page covers what the launcher does with it
 The community update (`https://release.echovr.de/updates-nevr/update.manifest`: the one with nEVR, which every install and update gets; the old installer's channel without it is `updates/` on files.echovr.de) owns
 `BugSplat64.dll`, the plugins it ships and `asset_patches/manifest.json`: Update and Repair
 put them back, Verify reports any change.
+
+**nEVR from its own releases.** The update (main's manifest or a channel's overlay) may
+name a release of nEVR per platform, a header line the launcher before 0.12.5 ignores:
+
+```text
+# nEVR windows: 5.8.1
+# nEVR linux:   none
+```
+
+Where it names one for the launcher's platform (`linux` for the Proton install), Update,
+Repair and Verify take nEVR's files from that release instead of the manifest's
+`BugSplat64.dll` line (`src/core/nevr_release.rs`): nEVR's signed release manifest at
+`https://evr.echo.taxi/nevr-runtime/manifest.json` and its minisign signature, checked as
+nevr-runtime's `docs/reference/verifying-a-release.md` says (hashed signature by a pinned
+key that isn't revoked, `schema_version` and `product`, `manifest_version` never going
+down, not expired, then stored with `state.json` in the launcher's data folder
+`nevr-releases/`), then the release's Windows zip from the manifest's own folder (its size
+and sha256, every entry listed and nothing else). `BugSplat64.dll` and `nevr-runtime.dll`
+come out of it; the rest of the update stays ours. Anything that doesn't pass changes
+nothing and says which check failed. So nEVR releases what may be installed, and the
+update line says which one players get: a new release reaches nobody until it is named
+there. `none` (or no line) keeps the manifest's own `BugSplat64.dll`; a channel's overlay
+replaces main's line. `ECHOVR_NEVR_RELEASES` points the launcher at a mirror of that folder
+(only what nEVR's keys signed passes there too).
+
+An update places nEVR's two files as a pair: both are downloaded and checked first, then
+the runtime goes in before the host, and Undo update puts both back.
 
 **A test channel.** To try a community update before it goes live, point the launcher at
 another manifest: `"update_manifest": "https://release.echovr.de/updates-nevr-test/update.manifest"`
@@ -92,10 +120,21 @@ step](../plugins/pages.md#a-game-servers-setup).
 
 nEVR looks for `_local/config.yaml` beside the exe, then one and two folders up (the
 game's own `_local`); the first found wins, so one nearer the exe is kept as `.old` too. nEVR refuses to start with a `dbgcore.dll` beside the exe (the old
-loader's place): PLAY takes it out first, and the update manifest deletes it.
+loader's place, in any case of its name): PLAY takes it out first, and the update manifest deletes it.
+
+nEVR's host checks the runtime's signature before it loads it. When it refuses it, or the
+file is missing, the game ends with exit code 78; the launcher then says so with the reason
+from the host's own log (`%LOCALAPPDATA%\nevr\echovr\logs\nevr-bootstrap.jsonl`, its newest
+`runtime_load` record) and points to Repair game files. Under Proton (Wine 11.0) the host
+refuses every runtime today: its chain check passes a structure size Wine 11.0 doesn't take
+(fix pending upstream), so Linux stays on a single-file nEVR until a release with the fix is
+named for `linux`.
 
 The page tells the DLL in the slot apart: nEVR (its `[NEVR.BOOT]` log string, version from
-its build identity), the game's own crash reporter (its checksum), or something else. It
+its build identity `NEVR-BUILD <version> <commit>`), nEVR's host with its runtime (the host
+carries only the build identity; the runtime beside it has the log strings and the same
+version, else the card says **Incomplete** and Repair game files puts it back), the game's
+own crash reporter (its checksum), or something else. It
 reads what nEVR loaded and why not from nEVR's newest log
 (`%LOCALAPPDATA%\EchoVR\logs\nevr-<time>.jsonl`, the `[NEVR.PLUGIN]` lines). Mods are for
 the live build only: event builds run EchoRelay's patch in the loader's place.
@@ -119,8 +158,8 @@ it). Flat starts with `-windowed` (nEVR's: no headset, in a window) instead of `
 nEVR's logs are in the prefix's `drive_c/users/steamuser/AppData/Local/EchoVR/logs`.
 
 "Upload logs" sends nEVR's newest start logs and crash records, its
-`bin/win10/logs/nevr-boot.jsonl`, and each plugin's newest logs from its folder in
-`plugin_logs`.
+`bin/win10/logs/nevr-boot.jsonl`, the host's `nevr-bootstrap.jsonl`, and each plugin's
+newest logs from its folder in `plugin_logs`.
 
 ## The mods catalogue
 

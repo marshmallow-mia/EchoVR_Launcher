@@ -1683,15 +1683,15 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     // The live build loads BugSplat64.dll (nEVR, the mod loader) at its start: without it,
     // or blocked, Windows only says "unable to start correctly".
     if cfg!(windows) && v.publisher_lock.is_none() {
-        use crate::core::launcher::mods::{slot_state, SlotState};
-        let lead = match slot_state(&v.bin_dir()) {
-            SlotState::Ok => None,
-            SlotState::Missing => Some(format!(
-                "BugSplat64.dll, Echo VR's mod loader (nEVR), is missing from {}.",
+        use crate::core::launcher::mods::{loader_problem, SlotState};
+        let lead = match loader_problem(&v.bin_dir()) {
+            None | Some((_, SlotState::Ok)) => None,
+            Some((file, SlotState::Missing)) => Some(format!(
+                "{file}, part of Echo VR's mod loader (nEVR), is missing from {}.",
                 v.bin_dir().display()
             )),
-            SlotState::Blocked(e) => Some(format!(
-                "BugSplat64.dll, Echo VR's mod loader (nEVR), can't be read ({e})."
+            Some((file, SlotState::Blocked(e))) => Some(format!(
+                "{file}, part of Echo VR's mod loader (nEVR), can't be read ({e})."
             )),
         };
         if let Some(lead) = lead {

@@ -1,7 +1,7 @@
 # Writing a plugin and loading it from your PC
 
 A plugin is a 64-bit Windows DLL that runs inside Echo VR. The mod loader, nEVR runtime
-(the game's `BugSplat64.dll`), loads it when the game starts and calls the functions it
+(the game's `BugSplat64.dll`, with `nevr-runtime.dll` from 5.8.1 on), loads it when the game starts and calls the functions it
 exports. On Linux the same DLL runs under Proton.
 
 This guide covers plugins you build yourself and load from your own PC: how nEVR loads

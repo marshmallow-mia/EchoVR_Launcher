@@ -318,6 +318,13 @@ fn nevr_and_plugin_logs(
         source(Kind::Plugin, &name, p)
     };
     let mut out: Vec<Source> = nevr_first.into_iter().filter_map(nevr_source).collect();
+    // nEVR's host's log (5.8 on: which runtime it found, and why it didn't load it).
+    out.extend(
+        nevr_dir
+            .and_then(nevr::host_log_beside)
+            .filter(|p| modified(p).is_some_and(|t| recent(&t)))
+            .and_then(|p| source(Kind::Plugin, "nevr-bootstrap.jsonl", p)),
+    );
     // Each version's boot log, then each plugin folder's logs, newest first.
     let mut folders: Vec<VecDeque<Source>> = Vec::new();
     for v in versions {
@@ -767,6 +774,10 @@ mod tests {
         );
         write(&nevr_dir.join("nevr-crash-1.txt"), "crash\n");
         write(
+            &dir.path().join("nevr/echovr/logs/nevr-bootstrap.jsonl"),
+            "{\"event\":\"runtime_load\",\"outcome\":\"loaded\"}\n",
+        );
+        write(
             &nevr_dir.join(".credentials.json"),
             "{\"refresh_token\":\"x\"}\n",
         );
@@ -796,7 +807,7 @@ mod tests {
         assert_eq!(count(Kind::Launcher), 1, "the empty play.log is left out");
         assert_eq!(count(Kind::EchoXr), 1);
         assert_eq!(count(Kind::Echo), ECHO_FILES);
-        assert_eq!(count(Kind::Plugin), 5);
+        assert_eq!(count(Kind::Plugin), 6);
         assert_eq!(count(Kind::Quest), 1);
         let mut plugin: Vec<_> = sources
             .iter()
@@ -810,6 +821,7 @@ mod tests {
             [
                 "nevr-2026-10-04T10-00-00.000.jsonl",
                 "nevr-crash-1.txt",
+                "nevr-bootstrap.jsonl",
                 "pc-latest.nevr-boot.jsonl",
                 "pc-latest.NvrAssetPatches.NvrAssetPatches.log",
                 "pc-latest.crashes.2026-10-03T10-00-00Z.txt"

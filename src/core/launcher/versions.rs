@@ -671,6 +671,8 @@ pub fn verify(
 ) -> Result<Vec<String>> {
     ensure_present(v)?;
     let (m, _) = pc_update::fetch_manifest(&manifest_url(v).ok_or_else(|| no_updates(v))?)?;
+    // nEVR's files as its release has them, where the update takes nEVR from there.
+    let (m, _) = pc_update::with_nevr_release(&m, cancel)?;
     let bin = v.bin_dir();
     let adds: Vec<_> = m
         .adds()

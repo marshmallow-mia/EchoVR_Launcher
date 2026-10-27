@@ -30,6 +30,8 @@ egui = "0.36.2"
 wasmtime = { version = "50.0.0", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "anyhow"] }
 ed25519-dalek = { version = "2.1.1", default-features = false, features = ["std"] }
 hex = "0.4.3"
+# nEVR's signed release manifest (minisign), as nevr-runtime's verifying-a-release.md pins it.
+minisign-verify = "=0.3.0"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }
 open = "5.4.4"
 # The animated background (H.264, built from Cisco's source).

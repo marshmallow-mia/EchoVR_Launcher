@@ -84,7 +84,7 @@ fn play_here(_ask: &Ask) -> i32 {
 #[cfg(windows)]
 fn play_here(ask: &Ask) -> i32 {
     use super::launch;
-    use super::mods::{slot_state, SlotState};
+    use super::mods::loader_problem;
     use super::ready::{self, Part};
     use super::store::SteamVrVia;
     use crate::core::linux::{self as handoff, Outcome};
@@ -137,10 +137,10 @@ fn play_here(ask: &Ask) -> i32 {
     // The live build loads nEVR at its start: without it, or blocked, Windows only says
     // "unable to start correctly".
     if !event {
-        if let SlotState::Missing | SlotState::Blocked(_) = slot_state(&v.bin_dir()) {
+        if let Some((file, _)) = loader_problem(&v.bin_dir()) {
             return window(
                 "Windows blocked Echo VR's mod loader",
-                "BugSplat64.dll (nEVR) is missing or can't be read, as a rule because antivirus took it. Press PLAY in the launcher: it offers to allow and repair it.",
+                &format!("{file} (nEVR) is missing or can't be read, as a rule because antivirus took it. Press PLAY in the launcher: it offers to allow and repair it."),
             );
         }
     }
@@ -230,6 +230,12 @@ fn play_here(ask: &Ask) -> i32 {
         return window(
             "Windows blocked Echo VR's mod loader",
             &format!("Echo VR didn't start: {l} (code {:#x}), as a rule BugSplat64.dll, its mod loader (nEVR). Press PLAY in the launcher: it offers to allow and repair it.", code as u32),
+        );
+    }
+    if code == super::nevr::RUNTIME_REFUSED {
+        return window(
+            "nEVR couldn't start",
+            &super::nevr::runtime_refused_message(),
         );
     }
     if through_echoxr {

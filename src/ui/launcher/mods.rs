@@ -454,6 +454,11 @@ fn loader_card(
             "Active",
             design::QUEST_ON,
         ),
+        Loader::NevrIncomplete { version } => (
+            format!("nEVR runtime {}", short_version(version)),
+            "Incomplete",
+            design::DANGER,
+        ),
         Loader::None => ("No mod loader".into(), "Not installed", design::GREY),
         Loader::EchoRelay => ("EchoLoader".into(), "EchoRelay", design::QUEST_ON),
         Loader::Unknown => ("Unknown BugSplat64.dll".into(), "Not ours", design::DANGER),
@@ -494,8 +499,7 @@ fn loader_card(
             }
         }
         // The community update brings it: nothing to do here.
-        Loader::None => {}
-        Loader::Unknown => {}
+        Loader::None | Loader::NevrIncomplete { .. } | Loader::Unknown => {}
     }
     let bin = v.bin_dir();
     // Logs: where they are (the plugins' and nEVR's own), and how much nEVR writes.
@@ -778,6 +782,7 @@ fn loader_text(view: &ModView) -> String {
         Loader::None => "Echo VR runs without mods for now. nEVR runtime (Discord sign-in, friends and parties in the game, and mods) comes with the community update, the next time this version updates.".into(),
         Loader::EchoRelay if !view.enabled => "Echo VR plays on an EchoRelay server: EchoLoader stands in for nEVR, with EchoRelay's patch. Mods are off: it loads only the required mods. Back to EchoVRCE in the Game server plugin puts nEVR back.".into(),
         Loader::EchoRelay => "Echo VR plays on an EchoRelay server: EchoLoader stands in for nEVR, with EchoRelay's patch and the mods that are on here. Back to EchoVRCE in the Game server plugin puts nEVR back.".into(),
+        Loader::NevrIncomplete { .. } => "nEVR's second file, nevr-runtime.dll, is missing or from another version, and Echo VR doesn't start like this. Repair game files puts it back.".into(),
         Loader::Unknown => "BugSplat64.dll here is neither the game's nor nEVR runtime. Repair game files puts the right one back.".into(),
     }
 }
