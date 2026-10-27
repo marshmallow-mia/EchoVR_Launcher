@@ -6,24 +6,36 @@
       "name": "Event lobbies",
       "summary": "Play the event builds together: the public matches on the classic lobbies server, joining a friend's match by its id, and requesting a game server.",
       "author": "heisthecat31",
-      "version": "0.1.3",
-      "url": "https://release.echovr.de/launcher/plugins/event-lobbies-0.1.3.zip",
-      "sha256": "96c80e3304bae94dfc0889561ff5f622300452e292d1272d46a381a9874c8573",
+      "version": "0.2.0",
+      "url": "https://release.echovr.de/launcher/plugins/event-lobbies-0.2.0.zip",
+      "sha256": "29c12edbdeacce6860490f7a1087cfd6e007d47e5d48a5b44c9a53baccd1aa16",
       "homepage": "",
       "icon": "calendar",
-      "size": 2618
+      "size": 47952
     },
     {
       "id": "controllers",
       "name": "Controllers",
       "summary": "Set up your controllers for Echo VR through EchoXR: the angle and position of your hands, stick and trigger deadzones, vibration and a Menu button combination. Presets to pick from, your own presets, and preset files to pass on.",
       "author": "marshmallow-mia",
-      "version": "0.1.3",
-      "url": "https://release.echovr.de/launcher/plugins/controllers-0.1.3.zip",
-      "sha256": "653db34bd2f8d12fb97c5115926ada725318b4782f3ef32e24e350f5e82ed8c6",
+      "version": "0.2.0",
+      "url": "https://release.echovr.de/launcher/plugins/controllers-0.2.0.zip",
+      "sha256": "33b8419562197c3a4cdcf43f13435ab20c45f8a355ddd5e4300c178191cdaf60",
       "homepage": "",
       "icon": "controller",
-      "size": 2302
+      "size": 23870
+    },
+    {
+      "id": "server-host",
+      "name": "Server host",
+      "summary": "Run Echo VR game servers on this PC with nEVR: add servers, start and stop them, see what each one does and its live console. They sign in as their own account, register with EchoVRCE, start again after every match, and keep running while the launcher is closed. Windows, and Linux through the launcher's Proton.",
+      "author": "marshmallow-mia",
+      "version": "1.0.0",
+      "url": "https://release.echovr.de/launcher/plugins/server-host-1.0.0.zip",
+      "sha256": "dab03f9fe480e6c02439a1c4456ec06279e2a007783f8f17a6a1a58b04eaed97",
+      "homepage": "",
+      "icon": "globe",
+      "size": 68907
     }
   ]
 }

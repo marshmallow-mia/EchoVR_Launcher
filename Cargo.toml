@@ -25,6 +25,9 @@ dirs = "7.0.0"
 # persistence: the window's size, position and full screen are remembered.
 eframe = { version = "0.36.2", features = ["persistence"] }
 egui = "0.36.2"
+# Launcher plugins (plugin.json schema 2) run as WebAssembly components: no WASI, no
+# async, no compile cache of its own (`core::plugin_host` keeps one).
+wasmtime = { version = "50.0.0", default-features = false, features = ["runtime", "cranelift", "component-model", "std", "anyhow"] }
 ed25519-dalek = { version = "2.1.1", default-features = false, features = ["std"] }
 hex = "0.4.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif"] }

@@ -2,6 +2,8 @@
 //! description (the servers its requests go to, the launcher's things its steps use). The
 //! player allows it when getting the plugin, again when an update can do more, and on its
 //! page when its files changed or it was put there by hand; until then it does nothing.
+//! A schema 2 plugin (code) declares what it needs in its `plugin.json` instead, and the
+//! launcher refuses every call beyond it (`core::plugin_host`).
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -37,10 +39,17 @@ pub struct Permissions {
     /// Keeps EchoXR's settings beside the game in every version.
     #[serde(skip_serializing_if = "is_false")]
     pub echoxr: bool,
-    /// A page the launcher draws for it ([`super::plugin_page::BUILTIN`]).
-    #[serde(skip_serializing_if = "String::is_empty")]
-    pub builtin: String,
+    /// Schema 2: the launcher's services it uses ([`SERVICES`]), each only for a plugin
+    /// signed by the launcher's makers.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub services: BTreeSet<String>,
 }
+
+/// The services a schema 2 plugin can ask for: (name, what it does, for the player).
+pub const SERVICES: &[(&str, &str)] = &[(
+    "server-host",
+    "Run game servers on this PC: start and stop them, open their ports in the firewall, and link an EchoVRCE account for them",
+)];
 
 fn is_false(b: &bool) -> bool {
     !*b
@@ -49,12 +58,14 @@ fn is_false(b: &bool) -> bool {
 impl Permissions {
     /// Pure: what plugin `page` can do.
     pub fn of(page: &PluginPage) -> Permissions {
+        if page.is_code() {
+            return Permissions::declared(page);
+        }
         let mut p = Permissions {
             echoxr: page
                 .settings
                 .as_ref()
                 .is_some_and(super::echoxr_settings::is_echoxr),
-            builtin: page.builtin.clone(),
             ..Default::default()
         };
         // Every template its steps fill in.
@@ -108,6 +119,56 @@ impl Permissions {
         p
     }
 
+    /// Pure: what schema 2 plugin `page` declares (`permissions` in its `plugin.json`):
+    /// `net` (servers, `relay` for the classic lobbies server, `typed` for servers typed in
+    /// its settings), `relay_password`, `play`, `game_server`, `services`. An `echoxr`
+    /// settings store counts as `echoxr`, as for schema 1. Anything unknown is left out.
+    pub fn declared(page: &PluginPage) -> Permissions {
+        let d = &page.permissions;
+        let flag = |k: &str| d.get(k).and_then(Value::as_bool).unwrap_or(false);
+        let mut p = Permissions {
+            relay_password: flag("relay_password"),
+            play: flag("play"),
+            game_server: flag("game_server"),
+            echoxr: page
+                .settings
+                .as_ref()
+                .is_some_and(super::echoxr_settings::is_echoxr),
+            ..Default::default()
+        };
+        for n in d.get("net").and_then(Value::as_array).into_iter().flatten() {
+            match n.as_str().map(str::trim) {
+                Some("relay") => p.relay = true,
+                Some("typed") => p.typed_servers = true,
+                Some(url) => match super::plugins::origin(url) {
+                    Some(o) => {
+                        p.servers.insert(o);
+                    }
+                    None => tracing::warn!("plugin {}: net {url:?} isn't a server", page.id),
+                },
+                None => {}
+            }
+        }
+        // The password goes to the classic lobbies server only: it needs that server.
+        if p.relay_password {
+            p.relay = true;
+        }
+        for sv in d
+            .get("services")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            match sv.as_str() {
+                Some(name) if SERVICES.iter().any(|(n, _)| *n == name) => {
+                    p.services.insert(name.to_string());
+                }
+                other => tracing::warn!("plugin {}: no service {other:?}", page.id),
+            }
+        }
+        p
+    }
+
     pub fn is_empty(&self) -> bool {
         *self == Permissions::default()
     }
@@ -123,11 +184,11 @@ impl Permissions {
             host: self.host && !granted.host,
             play: self.play && !granted.play,
             echoxr: self.echoxr && !granted.echoxr,
-            builtin: if self.builtin == granted.builtin {
-                String::new()
-            } else {
-                self.builtin.clone()
-            },
+            services: self
+                .services
+                .difference(&granted.services)
+                .cloned()
+                .collect(),
         }
     }
 
@@ -142,22 +203,40 @@ impl Permissions {
             host: self.host || other.host,
             play: self.play || other.play,
             echoxr: self.echoxr || other.echoxr,
-            builtin: if other.builtin.is_empty() {
-                self.builtin.clone()
-            } else {
-                other.builtin.clone()
-            },
+            services: self.services.union(&other.services).cloned().collect(),
+        }
+    }
+
+    /// Pure: what of this `granted` covers (what a plugin may do now).
+    pub fn within(&self, granted: &Permissions) -> Permissions {
+        Permissions {
+            servers: self
+                .servers
+                .intersection(&granted.servers)
+                .cloned()
+                .collect(),
+            typed_servers: self.typed_servers && granted.typed_servers,
+            relay: self.relay && granted.relay,
+            relay_password: self.relay_password && granted.relay_password,
+            game_server: self.game_server && granted.game_server,
+            host: self.host && granted.host,
+            play: self.play && granted.play,
+            echoxr: self.echoxr && granted.echoxr,
+            services: self
+                .services
+                .intersection(&granted.services)
+                .cloned()
+                .collect(),
         }
     }
 
     /// Pure: what it can do, a line each, for the player.
     pub fn lines(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.builtin == "server-host" {
-            out.push(
-                "Run game servers on this PC: start and stop them, open their ports in the firewall, and link an EchoVRCE account for them"
-                    .to_string(),
-            );
+        for (name, line) in SERVICES {
+            if self.services.contains(*name) {
+                out.push(line.to_string());
+            }
         }
         if !self.servers.is_empty() {
             let names: Vec<String> = self.servers.iter().map(|o| shown(o)).collect();
@@ -323,7 +402,7 @@ mod tests {
         let host = of(include_str!(
             "../../../docs/plugins/server-host/plugin.json"
         ));
-        assert_eq!(host.builtin, "server-host");
+        assert!(host.services.contains("server-host"));
         assert_eq!(host.lines().len(), 1);
     }
 

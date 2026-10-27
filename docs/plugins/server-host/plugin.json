@@ -1,26 +1,13 @@
 {
-  "schema": 1,
+  "schema": 2,
   "id": "server-host",
   "name": "Server host",
-  "version": "0.2.1",
+  "version": "1.0.0",
   "author": "marshmallow-mia",
   "summary": "Run Echo VR game servers on this PC with nEVR: add servers, start and stop them, see what each one does and its live console. They sign in as their own account, register with EchoVRCE, start again after every match, and keep running while the launcher is closed. Windows, and Linux through the launcher's Proton.",
   "icon": "globe",
-  "page": {
-    "builtin": "server-host",
-    "columns": [
-      [
-        {
-          "title": "Server host",
-          "blocks": [
-            {
-              "text": "This version of the plugin needs launcher 0.12.3 or newer: Settings, Update now (the beta channel has it).",
-              "tone": "warn",
-              "when": "!{launcher.features.server_host}"
-            }
-          ]
-        }
-      ]
-    ]
+  "wasm": "plugin.wasm",
+  "permissions": {
+    "services": ["server-host"]
   }
 }

@@ -2,13 +2,17 @@
 
 A launcher plugin is an app inside the launcher. It gets its own tab in the rail's plugin
 section, above the Plugins page (the puzzle piece), and its page is what its `plugin.json` describes. The launcher draws
-it with its own cards, lists, fields and buttons. No plugin code runs in the launcher: a
-page fetches JSON over HTTP, shows it, and its buttons run the steps it lists.
+it with its own cards, lists, fields and buttons. This is schema 1: no plugin code runs in
+the launcher. A page fetches JSON over HTTP, shows it, and its buttons run the steps it
+lists.
+
+Plugins with code are schema 2 ([v2.md](v2.md)). The first-party plugins are schema 2.
 
 Mods are different: they are Echo VR add-ons, and nEVR loads them into the game
 ([../launcher/mods.md](../launcher/mods.md)).
 
-The example is the Event lobbies plugin: [event-lobbies/plugin.json](event-lobbies/plugin.json).
+The example was the Event lobbies plugin, up to version 0.1.3 (in git history:
+`git show af4a91b:docs/plugins/event-lobbies/plugin.json`).
 The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
 `src/core/launcher/plugins.rs` (installing) and `src/ui/launcher/plugins.rs` (drawing).
 
@@ -80,7 +84,7 @@ before it does anything:
 | Set up a game server in Echo VR's folder | a `host` step |
 | Change EchoXR's settings in every installed version | an `echoxr` settings store |
 | Start Echo VR | a `play` step |
-| Run game servers on this PC | `"builtin": "server-host"` |
+| Run game servers on this PC | `"services": ["server-host"]` in a schema 2 plugin's `permissions` ([v2.md](v2.md)) |
 
 - **Getting one** asks "Get <plugin>?" with that list once it is downloaded, before it is put
   in place; Cancel drops it. One that can do none of it is put in place at once.
@@ -100,8 +104,10 @@ checksum of each of its files, made with the plugins key (not the mods index's).
 checks it every time it reads the plugin; the player's settings and presets, and the
 launcher's dot files, aren't part of it.
 
-- **What it unlocks:** `"builtin": "server-host"` (Server host's page) only for a signed
-  plugin, its files as signed; an unsigned copy's page says to update it. A signed plugin
+- **What it unlocks:** the launcher's services (`server-host`, [v2.md](v2.md)) only for a
+  signed plugin, its files as signed; an unsigned copy's calls are refused and its card
+  says Not signed. Server host before 1.0 (a page the launcher drew itself, schema 1) no
+  longer opens: its page says to update it. A signed plugin
   may also keep EchoXR's settings when it wasn't installed from a catalogue. Debug builds
   don't ask for a signature.
 - **Signing one:** `scripts/sign.py plugin docs/plugins/<id> --zip <id>-<version>.zip` (the

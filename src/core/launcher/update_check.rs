@@ -179,8 +179,7 @@ pub fn newest_below<'a>(versions: impl Iterator<Item = &'a str>, current: &str) 
 }
 
 /// `candidate` is a newer version than `current` (missing parts count as 0).
-#[cfg(test)]
-fn is_newer(candidate: &str, current: &str) -> bool {
+pub fn is_newer(candidate: &str, current: &str) -> bool {
     match (Version::parse(candidate), Version::parse(current)) {
         (Some(a), Some(b)) => a > b,
         _ => false,

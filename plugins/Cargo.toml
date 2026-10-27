@@ -1,0 +1,24 @@
+# First-party launcher plugins (plugin.json schema 2): WebAssembly components built from
+# Rust. `scripts/build-plugins.sh` builds them and puts each plugin.wasm beside its
+# plugin.json in docs/plugins/<id>/. Not part of the launcher's own build.
+[workspace]
+resolver = "2"
+members = ["sdk", "example", "event-lobbies", "controllers", "game-server", "server-host"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+echovr-plugin = { path = "sdk" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

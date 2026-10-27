@@ -52,9 +52,20 @@ pub const TICK_RATE: u32 = 120;
 /// At most this many servers.
 pub const MAX_SERVERS: usize = 32;
 
+/// Snapshots: made-up servers in a folder of their own instead.
+static SNAP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Snapshots: the servers' files are in `dir` from now on (not the player's).
+pub fn snap_dir(dir: PathBuf) {
+    let _ = SNAP_DIR.set(dir);
+}
+
 /// Where everything of the servers is: `<data>/server-host`.
 pub fn dir() -> PathBuf {
-    paths::data_dir().join("server-host")
+    match SNAP_DIR.get() {
+        Some(d) => d.clone(),
+        None => paths::data_dir().join("server-host"),
+    }
 }
 
 /// The servers and their settings.

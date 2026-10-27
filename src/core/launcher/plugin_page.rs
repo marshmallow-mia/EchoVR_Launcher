@@ -3,6 +3,10 @@
 //! its own widgets. No plugin code runs in the launcher. The format:
 //! `docs/plugins/pages.md`.
 //!
+//! Schema 2 plugins are code instead (`docs/plugins/v2.md`): a WebAssembly component
+//! (`wasm`) that draws its page itself through the launcher (`core::plugin_host`), with the
+//! permissions it needs declared here. Their settings use the same format as schema 1's.
+//!
 //! Everything a page shows comes from one JSON context: `settings` (the plugin's settings),
 //! `page` (values the page sets while it is open), `data` (what its data sources fetched),
 //! `launcher` (what the launcher tells plugins) and, inside a list, `item`. Text in a
@@ -14,8 +18,9 @@ use serde_json::{Map, Value};
 
 use super::plugin_settings::{self, Settings, Warning};
 
-/// The description format this launcher reads.
-pub const SCHEMA: u64 = 1;
+/// The newest description format this launcher reads (1: a page described in JSON; 2: a
+/// WebAssembly component).
+pub const SCHEMA: u64 = 2;
 /// How often a data source may be fetched at most (seconds).
 pub const MIN_EVERY: u64 = 3;
 
@@ -34,13 +39,20 @@ pub struct PluginPage {
     pub actions: BTreeMap<String, Vec<Step>>,
     /// The page: columns of cards, left to right.
     pub columns: Vec<Vec<Card>>,
-    /// A page the launcher draws itself instead ([`BUILTIN`]), for the plugin of that
-    /// id only; launchers without it draw `columns` (a "needs a newer launcher" card).
-    pub builtin: String,
+    /// Schema 2: the plugin's code, a file in its folder (`plugin.wasm`); empty for a
+    /// schema 1 plugin.
+    pub wasm: String,
+    /// Schema 2: what it may do, as `plugin.json` declares it
+    /// ([`super::plugin_permissions::Permissions::of`] reads it).
+    pub permissions: Value,
 }
 
-/// The built-in pages: (name, the only plugin id that may ask for it).
-pub const BUILTIN: &[(&str, &str)] = &[("server-host", "server-host")];
+impl PluginPage {
+    /// A schema 2 plugin: code, not a described page.
+    pub fn is_code(&self) -> bool {
+        !self.wasm.is_empty()
+    }
+}
 
 /// The rail icons a plugin can pick.
 pub const ICONS: &[&str] = &["plugin", "calendar", "globe", "controller"];
@@ -307,6 +319,55 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
         w.extend(sw.into_iter().map(|x| format!("settings: {x}")));
         parsed
     });
+    if v.get("schema").and_then(Value::as_u64) == Some(2) {
+        let wasm = s(&v, "wasm");
+        let safe = !wasm.is_empty()
+            && wasm.ends_with(".wasm")
+            && !wasm.starts_with('.')
+            && wasm
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if !safe {
+            warn(
+                &mut w,
+                "wasm",
+                "a schema 2 plugin needs its code: a .wasm file in its folder",
+            );
+            return (None, w);
+        }
+        for old in ["data", "actions", "page"] {
+            if v.get(old).is_some() {
+                warn(
+                    &mut w,
+                    old,
+                    "a schema 2 plugin draws its page itself: left out",
+                );
+            }
+        }
+        let permissions = v.get("permissions").cloned().unwrap_or(Value::Null);
+        if !permissions.is_null() && !permissions.is_object() {
+            warn(&mut w, "permissions", "an object: left out");
+        }
+        return (
+            Some(PluginPage {
+                id,
+                name,
+                version: s(&v, "version"),
+                author: s(&v, "author"),
+                summary: s(&v, "summary"),
+                icon,
+                settings,
+                wasm,
+                permissions: if permissions.is_object() {
+                    permissions
+                } else {
+                    Value::Null
+                },
+                ..Default::default()
+            }),
+            w,
+        );
+    }
     let mut data = Vec::new();
     if let Some(obj) = v.get("data").and_then(Value::as_object) {
         for (name, d) in obj {
@@ -343,19 +404,6 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
             actions.insert(name.clone(), parsed);
         }
     }
-    let builtin = match v.get("page").map(|p| s(p, "builtin")) {
-        Some(b) if b.is_empty() => String::new(),
-        Some(b) if BUILTIN.contains(&(b.as_str(), id.as_str())) => b,
-        Some(b) => {
-            warn(
-                &mut w,
-                "page.builtin",
-                format!("no built-in page {b:?} for this plugin"),
-            );
-            String::new()
-        }
-        None => String::new(),
-    };
     let columns: Vec<Vec<Card>> = match v
         .get("page")
         .and_then(|p| p.get("columns"))
@@ -378,7 +426,6 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
                     .unwrap_or_default()
             })
             .collect(),
-        None if !builtin.is_empty() => Vec::new(),
         None => {
             warn(
                 &mut w,
@@ -444,7 +491,7 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
         data,
         actions,
         columns,
-        builtin,
+        ..Default::default()
     };
     (Some(page), w)
 }
@@ -1013,37 +1060,33 @@ mod tests {
         assert!(w.iter().any(|x| x.contains("null for EchoVRCE")), "{w:?}");
     }
 
-    /// The Game server plugin reads without a warning, and says it needs a newer launcher
-    /// only where the launcher tells plugins nothing about the game's server.
+    /// The first-party plugins read without a warning: code, each with what it declares.
     #[test]
-    fn game_server_plugin() {
-        let (p, w) = parse(include_str!(
-            "../../../docs/plugins/game-server/plugin.json"
-        ));
-        assert!(w.is_empty(), "{w:?}");
-        let p = p.unwrap();
-        assert!(matches!(
-            &p.actions["relay"][..],
-            [Step::Server { kind, .. }] if kind == "echorelay"
-        ));
-        assert!(matches!(
-            &p.actions["nakama"][..],
-            [Step::Require { .. }, Step::Server { .. }]
-        ));
-        let new = serde_json::json!({"launcher": {"features": {"echorelay": true},
-            "server": {"address": "", "kind": ""}, "relay": {"server": "h:1", "name": "N"}}});
-        let old = serde_json::json!({"launcher": {"server": {"address": ""}}});
-        assert!(!truthy("!{launcher.features.echorelay}", &new));
-        assert!(truthy("!{launcher.features.echorelay}", &old));
-        assert!(truthy("!{launcher.server.address}", &new));
-        // An empty field falls back to the classic lobbies account.
-        assert_eq!(
-            render("{settings.relay_name|launcher.relay.name}", &new),
-            "N"
-        );
+    fn first_party_plugins_are_code() {
+        for (text, perms) in [
+            (
+                include_str!("../../../docs/plugins/game-server/plugin.json"),
+                json!({"net": ["relay"], "relay_password": true, "game_server": true}),
+            ),
+            (
+                include_str!("../../../docs/plugins/event-lobbies/plugin.json"),
+                json!({"net": ["relay", "typed"], "relay_password": true, "play": true}),
+            ),
+            (
+                include_str!("../../../docs/plugins/controllers/plugin.json"),
+                Value::Null,
+            ),
+        ] {
+            let (p, w) = parse(text);
+            assert!(w.is_empty(), "{w:?}");
+            let p = p.unwrap();
+            assert!(p.is_code(), "{}", p.id);
+            assert_eq!(p.permissions, perms, "{}", p.id);
+            assert!(p.settings.is_some(), "{}", p.id);
+        }
     }
 
-    /// The Server host plugin reads without a warning; its host step has every field.
+    /// The Server host plugin reads without a warning: code, with the server-host service.
     #[test]
     fn server_host_plugin() {
         let (p, w) = parse(include_str!(
@@ -1051,13 +1094,8 @@ mod tests {
         ));
         assert!(w.is_empty(), "{w:?}");
         let p = p.unwrap();
-        assert_eq!(p.builtin, "server-host");
-        // Older launchers draw its one card: it says to update.
-        assert_eq!(p.columns.len(), 1);
-        // Another plugin can't ask for that page.
-        let (p, w) = parse(r#"{"id": "other", "name": "O", "page": {"builtin": "server-host"}}"#);
-        assert!(p.is_none() || p.unwrap().builtin.is_empty());
-        assert!(!w.is_empty());
+        assert!(p.is_code());
+        assert_eq!(p.permissions["services"][0], "server-host");
     }
 
     /// The Controllers plugin reads without a warning, with one form per section, its
@@ -1140,36 +1178,10 @@ mod tests {
             };
             assert_eq!((*min, *max), (Some(lo), Some(hi)), "{k}");
         }
-        // Every section has its form; the presets card is there.
-        let blocks: Vec<&Block> = p.columns.iter().flatten().flat_map(|c| &c.blocks).collect();
-        for sec in &s.sections {
-            assert!(
-                blocks
-                    .iter()
-                    .any(|b| matches!(b, Block::Form { section, .. } if *section == sec.id)),
-                "{}",
-                sec.id
-            );
-        }
-        assert!(blocks.iter().any(|b| matches!(b, Block::Presets { .. })));
+        // Every section has an id for its form; the presets are whole.
+        assert!(s.sections.iter().all(|sec| !sec.id.is_empty()));
         assert_eq!(s.presets.len(), 4);
         assert!(s.presets.iter().all(|p| !p.values.contains_key("PoseLog")));
-        // A launcher before 0.11.16 (no `form`/`presets` blocks, no `features` for them)
-        // shows only the card that asks for a newer launcher; this one never shows it.
-        let shown = |ctx: &Value| -> Vec<&str> {
-            p.columns
-                .iter()
-                .flatten()
-                .filter(|c| truthy(&c.when, ctx))
-                .map(|c| c.title.as_str())
-                .collect()
-        };
-        let old =
-            json!({"launcher": {"features": {"server": true, "echorelay": true, "host": true}}});
-        assert_eq!(shown(&old), ["Needs a newer launcher", "How it works"]);
-        let new = json!({"launcher": {"features": {"form": true, "presets": true}}});
-        assert!(!shown(&new).contains(&"Needs a newer launcher"));
-        assert_eq!(shown(&new).len(), 7);
     }
 
     #[test]
@@ -1209,64 +1221,5 @@ mod tests {
                 .0
                 .is_none()
         );
-    }
-
-    /// The Event lobbies page's conditions: a message per kind of failure, the plain error
-    /// for a launcher that doesn't say the kind, nothing when the list came, and the relay's
-    /// "log in once" answer turned into the page's own words.
-    #[test]
-    fn event_lobbies_conditions() {
-        let page: Value = serde_json::from_str(include_str!(
-            "../../../docs/plugins/event-lobbies/plugin.json"
-        ))
-        .unwrap();
-        let blocks = page["page"]["columns"][0][0]["blocks"].as_array().unwrap();
-        let shown = |data: Value| -> Vec<String> {
-            let c = json!({ "data": { "matches": data }, "launcher": {}, "settings": {} });
-            blocks
-                .iter()
-                .filter(|b| b.get("text").is_some() && b.get("when").is_some())
-                .filter(|b| truthy(b["when"].as_str().unwrap(), &c))
-                .map(|b| render(b["text"].as_str().unwrap(), &c))
-                .filter(|t| !t.starts_with("Install an event build"))
-                .collect()
-        };
-        assert!(shown(json!({"matches": []})).is_empty());
-        let down = shown(json!({"error": "GET …: no route", "failed": "unreachable"}));
-        assert_eq!(down.len(), 1);
-        assert!(down[0].starts_with("Can't reach"));
-        let missing = shown(json!({"error": "GET …: 404", "failed": "missing"}));
-        assert_eq!(missing.len(), 1);
-        assert!(missing[0].contains("matches API"));
-        assert_eq!(
-            shown(json!({"error": "GET …: 500", "failed": "server"})).len(),
-            1
-        );
-        // A launcher before 0.11.5 says only the error.
-        let old = shown(json!({"error": "GET …: no route"}));
-        assert_eq!(
-            old,
-            ["Couldn't load the matches list (GET …: no route). Trying again every 10 seconds."]
-        );
-
-        for (action, words) in [
-            ("request", "request a game server"),
-            ("join", "join a match"),
-        ] {
-            let steps = page["actions"][action].as_array().unwrap();
-            let check = steps
-                .iter()
-                .find(|s| s["require"].as_str().is_some_and(|r| r.contains("!=")))
-                .unwrap();
-            let relay = format!("Log in to the game on this server once first, then {words}.");
-            let c = json!({ "page": { "answer": { "ok": false, "message": relay } } });
-            assert!(!truthy(check["require"].as_str().unwrap(), &c), "{action}");
-            assert!(check["otherwise"]
-                .as_str()
-                .unwrap()
-                .starts_with("Start an event build once"));
-            let c = json!({ "page": { "answer": { "ok": true, "message": "Requested." } } });
-            assert!(truthy(check["require"].as_str().unwrap(), &c), "{action}");
-        }
     }
 }

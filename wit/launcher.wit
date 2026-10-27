@@ -1,0 +1,310 @@
+/// Launcher plugins as WebAssembly components (`plugin.json` schema 2, `docs/plugins/v2.md`).
+///
+/// A plugin runs in a sandbox of its own: no files, no network, no clock but the launcher's
+/// timers. Everything it does goes through the imports below, and the launcher checks each
+/// call against what the player allowed (the `permissions` in its `plugin.json`). Secrets
+/// (passwords, sign-ins, keys) never reach a plugin: it gets only what it needs to show.
+///
+/// The launcher calls `init` once, then `render` whenever the page has to be drawn again
+/// (after an event, a timer, an answer, or `invalidate`), and `on-event` for what happened.
+package echovr:launcher@0.1.0;
+
+interface types {
+    enum tone { normal, muted, good, warn, bad }
+
+    enum level { debug, info, warn, error }
+
+    /// A button. Its `id` comes back in `event::clicked`.
+    record button {
+        id: string,
+        label: string,
+        primary: bool,
+        /// Red: it deletes or stops something.
+        danger: bool,
+        enabled: bool,
+        /// Drawn as a small square with this icon instead of its label (`info`, `gear`,
+        /// `trash`, `folder`, `copy`, `refresh`, `plus`; anything else: the label).
+        icon: string,
+        /// Shown when the pointer rests on it (an icon button's label when empty).
+        hint: string,
+    }
+
+    /// One cell of a table row.
+    record cell {
+        text: string,
+        tone: tone,
+        /// Drawn as a coloured chip (a state) instead of plain text.
+        chip: bool,
+    }
+
+    record row {
+        /// Comes back with a row button's click: `<table id>/<row key>/<button id>`.
+        key: string,
+        cells: list<cell>,
+        /// A second, smaller line under the cells.
+        detail: string,
+        buttons: list<button>,
+    }
+
+    /// What a page is made of. A page is a flat list of nodes: containers name their
+    /// children by their index in it (WIT has no recursive types).
+    variant node {
+        /// A card with a title (empty: none), a help line and its children.
+        card(card),
+        text(text),
+        /// A label and a value, e.g. an id to give to friends.
+        value(value-row),
+        /// A text input. Its value comes back in `event::changed` when Enter is pressed or
+        /// it loses focus. A secret field's value never comes back: the launcher keeps it
+        /// for a service that takes a `secret` (see `server-host`), by the field's id.
+        field(field),
+        choice(choice),
+        toggle(toggle),
+        button(button),
+        /// Buttons side by side.
+        buttons(list<button>),
+        table(table),
+        chip(chip),
+        progress(progress),
+        /// A log the launcher draws itself from one of its streams (a server's console):
+        /// its lines never pass through the plugin.
+        log-view(log-view),
+        /// Tabs; `children` are what the selected one shows. A click on a tab comes back
+        /// as `event::tab`.
+        tabs(tabs),
+        /// One section of the plugin's settings (`plugin.json`) as a form, by its id or
+        /// title; `*` for all of them. The launcher keeps the values.
+        form(string),
+        /// The plugin's presets (`plugin.json` `presets`): pick, save, export and import.
+        presets,
+    }
+
+    record card {
+        title: string,
+        help: string,
+        children: list<u32>,
+    }
+
+    record text {
+        text: string,
+        tone: tone,
+    }
+
+    record value-row {
+        label: string,
+        value: string,
+        /// With a Copy button.
+        copy: bool,
+    }
+
+    record field {
+        id: string,
+        label: string,
+        /// Grey inside the empty field.
+        hint: string,
+        value: string,
+        secret: bool,
+        enabled: bool,
+    }
+
+    record choice {
+        id: string,
+        label: string,
+        /// (value, text) pairs.
+        options: list<tuple<string, string>>,
+        selected: string,
+        enabled: bool,
+    }
+
+    record toggle {
+        id: string,
+        label: string,
+        on: bool,
+        enabled: bool,
+    }
+
+    record table {
+        id: string,
+        rows: list<row>,
+        /// Shown when there is no row.
+        empty: string,
+    }
+
+    record chip {
+        text: string,
+        tone: tone,
+    }
+
+    record progress {
+        label: string,
+        /// 0.0 to 1.0.
+        fraction: f32,
+    }
+
+    record log-view {
+        /// A stream a service opened (`server-host.console`).
+        log: u32,
+        /// Only lines containing this (any case).
+        filter: string,
+        /// Keep the newest lines in view.
+        follow: bool,
+        /// nEVR's high-volume diagnostics too.
+        noise: bool,
+        /// Its height in lines.
+        lines: u32,
+    }
+
+    record tabs {
+        id: string,
+        labels: list<string>,
+        selected: u32,
+        children: list<u32>,
+    }
+
+    /// A page: up to two columns of cards (the first wide, the second the right-hand
+    /// panel), each a list of indices into `nodes`.
+    record page {
+        nodes: list<node>,
+        columns: list<list<u32>>,
+    }
+
+    /// A finished HTTP request.
+    record response {
+        status: u16,
+        body: string,
+    }
+
+    variant event {
+        /// A button: its id (a table row's button: `<table>/<row key>/<button>`).
+        clicked(string),
+        /// A field (Enter, or it lost focus) or a choice: its id and value. A secret field
+        /// sends an empty value: the launcher keeps what was typed.
+        changed(tuple<string, string>),
+        toggled(tuple<string, bool>),
+        /// A tab was picked: the tabs' id and the tab's index.
+        tab(tuple<string, u32>),
+        /// The answer to `host.ask`: its id and the button's index (the number of buttons
+        /// when it was closed without one).
+        dialog(tuple<string, u32>),
+        /// A request is done: its ticket and its response or why it failed.
+        net-done(tuple<u32, result<response, string>>),
+        /// A service call is done: its ticket and its answer (JSON) or why it failed.
+        service-done(tuple<u32, result<string, string>>),
+        /// The plugin's settings changed (on its form, or by a preset).
+        settings-changed,
+        /// What `host.launcher-info` answers changed (a version installed, another
+        /// classic lobbies account, ...).
+        launcher-changed,
+        /// The page is shown, or another page is.
+        shown,
+        hidden,
+    }
+}
+
+/// What every plugin may do (nothing the player is asked about).
+interface host {
+    use types.{tone, level};
+
+    log: func(level: level, message: string);
+    /// A notice at the top of the launcher.
+    notify: func(text: string, tone: tone);
+    /// The page is drawn again (`render`) soon.
+    invalidate: func();
+    /// `on-timer(id)` after `ms` milliseconds (at least 100), again every `ms` when
+    /// `repeat`. The same id replaces a timer.
+    set-timer: func(id: u32, ms: u32, repeat: bool);
+    clear-timer: func(id: u32);
+    /// The plugin's own storage: up to 5 MB in all.
+    storage-get: func(key: string) -> option<string>;
+    storage-set: func(key: string, value: string) -> result<_, string>;
+    storage-remove: func(key: string);
+    /// Its settings (`plugin.json` `settings`), defaults where none is kept.
+    settings: func() -> list<tuple<string, string>>;
+    set-settings: func(values: list<tuple<string, string>>) -> result<_, string>;
+    /// What the launcher tells plugins (JSON): its version, the platform, its features,
+    /// the installed event builds and versions, the classic lobbies server and name, the
+    /// server Echo VR plays on. Never a password or a sign-in.
+    launcher-info: func() -> string;
+    /// Copies `text`: only within a second of a click on the plugin's page.
+    copy: func(text: string) -> result<_, string>;
+    /// A question with buttons; the answer comes as `event::dialog(id, index)`.
+    ask: func(id: string, title: string, text: string, buttons: list<string>, warn: bool);
+}
+
+/// HTTP to the servers `permissions.net` names.
+interface net {
+    use types.{response};
+
+    enum method { get, post }
+
+    record request {
+        method: method,
+        url: string,
+        /// A JSON body (POST).
+        body: option<string>,
+        /// The launcher fills the player's classic lobbies account into the body's string
+        /// values `{relay.name}` and `{relay.password}`, for the classic lobbies server
+        /// only (`permissions.relay_password`).
+        relay-account: bool,
+    }
+
+    /// Sends `r`; its answer comes as `event::net-done(ticket, …)`. Refused (an error now)
+    /// for a server the plugin may not talk to.
+    fetch: func(r: request) -> result<u32, string>;
+    /// Opens an http(s) address in the browser: only on a server `permissions.net` names.
+    open-url: func(url: string) -> result<_, string>;
+}
+
+/// Echo VR itself.
+interface game {
+    record server {
+        /// `echorelay` or `nakama`.
+        kind: string,
+        name: string,
+        address: string,
+        key: string,
+        discord-id: string,
+        display-name: string,
+        password: string,
+    }
+
+    /// Starts the installed version `version` names (an event build id such as
+    /// `halloween`, a catalogue id or a version id) with `args` (`permissions.play`).
+    play: func(version: string, args: list<string>) -> result<_, string>;
+    /// Sets the server Echo VR plays on: the launcher asks the player first, and the
+    /// answer comes as `event::service-done(ticket, …)` (`permissions.game_server`).
+    set-server: func(s: server) -> result<u32, string>;
+    /// EchoVRCE again (`permissions.game_server`).
+    reset-server: func() -> result<_, string>;
+}
+
+/// Game servers on this PC (`permissions.services: ["server-host"]`): only for a plugin
+/// signed by the launcher's makers.
+///
+/// Arguments and answers are JSON (`docs/plugins/v2.md` lists each operation).
+interface server-host {
+    /// An operation that answers at once (reading the config, the servers' states).
+    call: func(op: string, args: string) -> result<string, string>;
+    /// One that takes a while (a sign-in, the Doctor, a fix): its answer comes as
+    /// `event::service-done(ticket, …)`.
+    start: func(op: string, args: string) -> result<u32, string>;
+    /// A server's console, for a `log-view`.
+    console: func(server: string) -> result<u32, string>;
+    /// The console's lines as shown (filter applied), to copy.
+    console-copy: func(log: u32, filter: string) -> result<_, string>;
+}
+
+world plugin {
+    import host;
+    import net;
+    import game;
+    import server-host;
+
+    use types.{page, event};
+
+    /// Once, after loading: the launcher's info (as `host.launcher-info`).
+    export init: func(info: string) -> result<_, string>;
+    export render: func() -> page;
+    export on-event: func(e: event);
+    export on-timer: func(id: u32);
+}

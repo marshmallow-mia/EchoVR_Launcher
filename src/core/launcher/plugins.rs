@@ -61,9 +61,9 @@ impl Installed {
         self.first_party || self.trust.may_keep_echoxr()
     }
 
-    /// Whether the launcher draws the page it asks for ([`plugin_page::BUILTIN`]): only for
-    /// a first-party plugin, its files as signed (debug builds: any).
-    pub fn may_use_builtin(&self) -> bool {
+    /// Whether it may use the launcher's services (`permissions.services`): only a
+    /// first-party plugin, its files as signed (debug builds: any).
+    pub fn may_use_services(&self) -> bool {
         self.first_party || cfg!(debug_assertions)
     }
 }
@@ -441,11 +441,17 @@ pub fn launcher_context(state: &LauncherState) -> Value {
             "plugin": server.plugin,
         },
         "event_builds": builds,
+        // The installed versions (the live build's and the event builds'), for a choice.
+        "versions": state
+            .versions
+            .iter()
+            .filter(|v| v.present())
+            .map(|v| json!({"id": v.id, "name": v.name, "live": v.publisher_lock.is_none()}))
+            .collect::<Vec<Value>>(),
         // What this launcher can do for a plugin, so one can say when it needs a newer one.
         // form: settings forms on the page; presets: the presets card; echoxr_settings: an
-        // `echoxr` store is kept beside EchoXR in every version; server_host: the Server
-        // host plugin's built-in page (`"builtin": "server-host"`).
-        "features": {"server": true, "echorelay": true, "host": true, "form": true, "presets": true, "echoxr_settings": true, "server_host": true},
+        // `echoxr` store is kept beside EchoXR in every version; code: schema 2 plugins.
+        "features": {"server": true, "echorelay": true, "host": true, "form": true, "presets": true, "echoxr_settings": true, "code": true},
     })
 }
 
@@ -712,10 +718,16 @@ impl PluginCatalog {
 }
 
 /// The catalogue entry that updates `p` (it came from the catalogue in another version).
+/// Never an older version than the one it has: a newer one put there by hand (or by a
+/// newer catalogue, while an older launcher reads the old one) stays.
 pub fn update_for<'a>(p: &Installed, c: &'a PluginCatalog) -> Option<&'a PluginEntry> {
     let have = p.from_catalog.as_deref()?;
-    c.entry(&p.page.id)
-        .filter(|e| e.downloadable() && !e.version.is_empty() && e.version != have)
+    c.entry(&p.page.id).filter(|e| {
+        e.downloadable()
+            && !e.version.is_empty()
+            && e.version != have
+            && !super::update_check::is_newer(&p.page.version, &e.version)
+    })
 }
 
 // ---- installing ----
@@ -1072,6 +1084,31 @@ mod tests {
 
         remove_from(root.path(), "event-lobbies").unwrap();
         assert!(installed_in(root.path()).is_empty());
+    }
+
+    /// A plugin newer than the catalogue's (put there by hand, or from the v2 catalogue
+    /// while the v1 one lists the version before) isn't "updated" back.
+    #[test]
+    fn an_update_never_goes_back() {
+        let p = Installed {
+            page: std::sync::Arc::new(PluginPage {
+                id: "controllers".into(),
+                version: "0.2.0".into(),
+                ..Default::default()
+            }),
+            from_catalog: Some("0.1.2".into()),
+            ..Default::default()
+        };
+        let catalog = |v: &str| PluginCatalog {
+            plugins: vec![PluginEntry {
+                url: "plugins/x.zip".into(),
+                ..entry("controllers", v)
+            }],
+            ..Default::default()
+        };
+        assert!(update_for(&p, &catalog("0.1.3")).is_none());
+        assert!(update_for(&p, &catalog("0.2.0")).is_some());
+        assert!(update_for(&p, &catalog("0.3.0")).is_some());
     }
 
     #[test]
