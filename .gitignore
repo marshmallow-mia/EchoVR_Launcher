@@ -6,3 +6,7 @@
 echo_ideas.md
 *.kate-swp
 echovr/
+/plugins/target/
+# A plugin's compiled code and storage (snapshots run the plugins in docs/plugins).
+/docs/plugins/*/.compiled/
+/docs/plugins/*/.data/

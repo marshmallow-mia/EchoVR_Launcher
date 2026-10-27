@@ -62,6 +62,21 @@ fn headless_snapshots() {
             std::thread::sleep(std::time::Duration::from_millis(100));
             harness.step();
         }
+        // A plugin's code draws its first page on a thread of its own: wait for it (at most
+        // 20 s, compiling it the first time), then for what it does after.
+        let started = std::time::Instant::now();
+        while !harness.state().menu.plugins_settled()
+            && started.elapsed() < std::time::Duration::from_secs(20)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            harness.step();
+        }
+        if started.elapsed() > std::time::Duration::from_millis(100) {
+            for _ in 0..12 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                harness.step();
+            }
+        }
         harness.run_steps(4);
         // Held down: render the frame right after the press (held for long, egui turns it
         // into a long press, which lets go of the button).

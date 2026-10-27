@@ -6,8 +6,15 @@ again after every match. The servers keep running when the launcher is closed.
 
 It runs on Windows and on Linux. On Linux, the servers run through the launcher's GE-Proton.
 
-Its page is part of the launcher: `plugin.json` asks for it with `"builtin": "server-host"`.
-It needs launcher 0.12.3 or newer. Older launchers show a card that asks you to update.
+It is a schema 2 plugin ([../v2.md](../v2.md)). Its source is `plugins/server-host`. It
+uses the launcher's `server-host` service, which only a plugin signed by the launcher's
+makers may use. It needs launcher 0.12.4 or newer. Launchers before 0.12.4 keep the older
+Server host from the v1 catalogue.
+
+The launcher does the work: the supervisor, the servers' folders, sign-ins, passwords,
+the webhook and the firewall rule. The plugin sees none of the secrets. A password or
+webhook typed into its page stays in the launcher. The plugin draws the page and asks for
+operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_services.rs`).
 
 ## The page
 
@@ -17,7 +24,8 @@ It needs launcher 0.12.3 or newer. Older launchers show a card that asks you to 
   - its port, regions and nEVR version;
   - how many matches and restarts it has had, and how long it has been up.
 
-  Its buttons are Start/Stop, Restart, its console, Edit and Delete. Stop and Restart ask
+  Its buttons are Start/Stop, Restart, and three small ones: its console (i), Edit (the
+  gear) and Delete (the bin). Stop and Restart ask
   first when the server is in a match: after the match, or now. **Add** adds servers with the
   defaults on the next free ports. **Start all** and **Stop all** do every server.
 - **Console.** The live log of one server: nEVR's log lines and the server host's own (`[host]`).

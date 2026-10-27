@@ -162,6 +162,11 @@ pub fn write(v: &InstalledVersion, h: &Host) -> Result<Written> {
     if !h.port.trim().chars().all(|c| c.is_ascii_digit()) {
         bail!("{:?} can't be a port: digits only.", h.port.trim());
     }
+    if !h.http_uri.trim().is_empty() {
+        if let Some(why) = crate::core::server_host::config::http_problem(&h.http_uri) {
+            bail!("{why}");
+        }
+    }
     if !super::mods::nevr_in(&v.bin_dir()) {
         bail!("{} has no nEVR in its slot: a server needs it.", v.name);
     }

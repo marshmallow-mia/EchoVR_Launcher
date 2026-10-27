@@ -371,6 +371,41 @@ pub fn plugin_post(url: &str, body: &serde_json::Value) -> Result<(u16, String)>
     })
 }
 
+/// What a schema 2 plugin's request may bring back, at most.
+pub const PLUGIN_BODY: usize = 4 << 20;
+
+/// A schema 2 plugin's request (`GET` or `POST` of a JSON `body`): (status, body) for any
+/// answer, an error when none came back ([`RedirectRefused`] for a redirect elsewhere) or
+/// it was longer than [`PLUGIN_BODY`].
+pub fn plugin_request(method: &str, url: &str, body: Option<&str>) -> Result<(u16, String)> {
+    block_on(async {
+        let req = match method {
+            "POST" => plugin_client()
+                .post(url)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body.unwrap_or("null").to_string()),
+            _ => plugin_client().get(url),
+        };
+        let mut resp = req
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .map_err(|e| plugin_error(method, url, e))?;
+        let status = resp.status().as_u16();
+        let mut out = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            if out.len() + chunk.len() > PLUGIN_BODY {
+                bail!(
+                    "{method} {url}: the answer is over {} MB",
+                    PLUGIN_BODY >> 20
+                );
+            }
+            out.extend_from_slice(&chunk);
+        }
+        Ok((status, String::from_utf8_lossy(&out).into_owned()))
+    })
+}
+
 /// POSTs JSON and returns (status, body).
 pub fn post_json(url: &str, body: &serde_json::Value) -> Result<(u16, String)> {
     block_on(async {

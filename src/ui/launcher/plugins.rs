@@ -27,10 +27,10 @@ use crate::ui::style::{icon_at, Icon};
 use crate::ui::widgets::{MenuItem, Tone, BTN_H};
 
 /// The page's two columns: the wide left one and the right-hand panel's.
-const LEFT: Dr = Dr::new(137.0, 156.0, 1146.0, 890.0);
-const RIGHT: Dr = Dr::new(1318.0, 156.0, 555.0, 890.0);
+pub(super) const LEFT: Dr = Dr::new(137.0, 156.0, 1146.0, 890.0);
+pub(super) const RIGHT: Dr = Dr::new(1318.0, 156.0, 555.0, 890.0);
 /// One column across the page.
-const WHOLE: Dr = Dr::new(137.0, 156.0, 1736.0, 890.0);
+pub(super) const WHOLE: Dr = Dr::new(137.0, 156.0, 1736.0, 890.0);
 const CARD_GAP: f32 = 30.0;
 const ROW_H: f32 = 68.0;
 const ROW_GAP: f32 = 10.0;
@@ -95,6 +95,10 @@ pub(super) struct PluginsUi {
     pub rail_seen: Option<Page>,
     /// The plugin the Plugins page scrolls to and marks (Plugin details).
     pub focus: Option<String>,
+    /// The schema 2 plugins started (their code runs), by id.
+    pub(super) code: HashMap<String, super::plugin_ui::CodeView>,
+    /// A schema 2 plugin's `set-server` waiting for the player's answer: (its id, ticket).
+    pub(super) server_ticket: Option<(String, u32)>,
 }
 
 /// A `host` step waiting for the player's yes.
@@ -203,6 +207,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                 password: "demo".into(),
             });
         }
+        code_tick(d, ctx);
         return;
     }
     if !d.plugins.started {
@@ -317,19 +322,22 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
     if let Some(ans) = d.dialogs.take(SERVER_KEY) {
         if let Some((id, server)) = d.plugins.server_asked.take() {
             let p = d.plugins.list.iter().find(|p| p.page.id == id).cloned();
+            // A schema 2 plugin gets the answer.
+            if let Some((tid, ticket)) = d.plugins.server_ticket.take().filter(|(t, _)| *t == id) {
+                let r = if ans.is_yes() && p.is_some() {
+                    set_server(d, &id, server);
+                    Ok("\"set\"".to_string())
+                } else {
+                    Err("Echo VR's server wasn't changed.".to_string())
+                };
+                if let Some(v) = d.plugins.code.get(&tid) {
+                    v.event(crate::core::plugin_host::UiEvent::ServiceDone(ticket, r));
+                }
+                return;
+            }
             match p {
                 Some(p) if ans.is_yes() => {
-                    tracing::info!(
-                        "plugin {id}: the live build plays on {} (the player said yes)",
-                        server.server.address
-                    );
-                    let to_nakama = server.kind == ServerKind::Nakama;
-                    d.state.game_server = Some(server);
-                    d.save();
-                    if to_nakama {
-                        back_to_nevr(d);
-                    }
-                    d.notify_next_start("Echo VR's server changed: from its next start");
+                    set_server(d, &id, server);
                     if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
                         r.waiting = false;
                     }
@@ -382,6 +390,39 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
             fetch_due(d, ctx, &p);
         }
     }
+    code_tick(d, ctx);
+}
+
+/// The schema 2 plugins that run: what they sent; hidden when their page isn't shown.
+fn code_tick(d: &mut Dashboard, ctx: &egui::Context) {
+    let shown_code = match d.page {
+        Page::Plugin(i) => d
+            .plugins
+            .list
+            .get(i as usize)
+            .filter(|p| p.page.is_code())
+            .map(|p| p.page.id.clone()),
+        _ => None,
+    };
+    if shown_code.is_none() {
+        super::plugin_ui::shown(d, None);
+    }
+    super::plugin_ui::tick(d, ctx);
+}
+
+/// The player said yes: Echo VR plays on `server` (plugin `id` asked) from its next start.
+fn set_server(d: &mut Dashboard, id: &str, server: GameServer) {
+    tracing::info!(
+        "plugin {id}: the live build plays on {} (the player said yes)",
+        server.server.address
+    );
+    let to_nakama = server.kind == ServerKind::Nakama;
+    d.state.game_server = Some(server);
+    d.save();
+    if to_nakama {
+        back_to_nevr(d);
+    }
+    d.notify_next_start("Echo VR's server changed: from its next start");
 }
 
 /// The catalogues read (at the start, by Refresh, every 30 seconds, or with an update
@@ -700,41 +741,11 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                 };
                 set_bound(d, p, &path, value);
             }
-            Step::Play { version, .. } => {
+            Step::Play { version, args } => {
                 let name = pp::render(&version, &c);
-                let event = |vid: &str| {
-                    d.state
-                        .versions
-                        .iter()
-                        .any(|v| v.id == vid && v.publisher_lock.is_some())
-                };
-                match core::version_for(&d.state, &name) {
-                    // As PLAY: on Linux they start in VR only.
-                    Some(vid)
-                        if cfg!(target_os = "linux")
-                            && event(&vid)
-                            && d.state.profile.runtime
-                                == crate::core::launcher::store::Runtime::Flat =>
-                    {
-                        return fail(
-                            d,
-                            &id,
-                            "Event builds always start in VR: choose SteamVR or WiVRn in Settings."
-                                .into(),
-                        );
-                    }
-                    Some(vid) => {
-                        d.state.selected = Some(vid);
-                        d.save();
-                        play::try_start(d, ctx, None);
-                    }
-                    None => {
-                        return fail(
-                            d,
-                            &id,
-                            format!("{name} isn't installed: the Install page has it."),
-                        )
-                    }
+                let args: Vec<String> = args.iter().map(|a| pp::render(a, &c)).collect();
+                if let Err(why) = play_version(d, ctx, &name, &args) {
+                    return fail(d, &id, why);
                 }
             }
             Step::Copy { text } => {
@@ -850,88 +861,125 @@ fn advance(d: &mut Dashboard, ctx: &egui::Context, p: &Installed) {
                     display_name: pp::render(&display_name, &c).trim().to_string(),
                     plugin: id.clone(),
                 };
-                if server.server.address.is_empty() {
-                    // Back to EchoVRCE: nothing to ask.
-                    if let Some(g) = d.state.game_server.take() {
-                        tracing::info!(
-                            "plugin {id}: Echo VR plays on EchoVRCE again (was {})",
-                            g.server.address
-                        );
-                        d.save();
-                        back_to_nevr(d);
-                        d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
+                match propose_server(d, p, server) {
+                    Ok(true) => {
+                        if let Some(r) =
+                            d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut())
+                        {
+                            r.waiting = true;
+                        }
+                        return;
                     }
-                    continue;
+                    Ok(false) => continue,
+                    Err(why) => return fail(d, &id, why),
                 }
-                if let Some((address, account)) = server.echorelay() {
-                    if !relay::valid_server(&address) {
-                        return fail(
-                            d,
-                            &id,
-                            format!(
-                                "{address} isn't an EchoRelay address: host:port, e.g. {}.",
-                                relay::DEFAULT_SERVER
-                            ),
-                        );
-                    }
-                    let launchers = d
-                        .state
-                        .relay_account
-                        .as_ref()
-                        .is_some_and(|a| !a.password.is_empty());
-                    if account.password.is_empty()
-                        && launchers
-                        && !core::to_relay(&d.state, &format!("http://{address}"))
-                    {
-                        return fail(
-                            d,
-                            &id,
-                            format!(
-                                "Your classic lobbies password goes only to the classic lobbies server the launcher's settings name: for {address}, type your password there in {}.",
-                                p.page.name
-                            ),
-                        );
-                    }
-                    if !relay::valid_account(&account) {
-                        return fail(
-                            d,
-                            &id,
-                            format!(
-                                "EchoRelay needs a display name (up to {} characters) and a password (up to {}).",
-                                relay::NAME_MAX,
-                                relay::PASSWORD_MAX
-                            ),
-                        );
-                    }
-                } else if crate::core::launcher::mods::backend_of(&server.server).is_none() {
-                    return fail(
-                        d,
-                        &id,
-                        format!(
-                            "{} isn't a server address: host[:port], or a ws:// or wss:// address.",
-                            server.server.address
-                        ),
-                    );
-                }
-                if d.state.game_server.as_ref() == Some(&server) {
-                    continue;
-                }
-                let message = server_question(&p.page.name, &server);
-                if let Some(r) = d.plugins.views.get_mut(&id).and_then(|v| v.runner.as_mut()) {
-                    r.waiting = true;
-                }
-                d.plugins.server_asked = Some((id.clone(), server));
-                d.dialogs.options(
-                    SERVER_KEY,
-                    "Play on another server?",
-                    &message,
-                    crate::ui::dialogs::Icon::Warning,
-                    &["Play there", "Cancel"],
-                );
-                return;
             }
         }
     }
+}
+
+/// Starts the installed version `name` names (a plugin's `play`), as PLAY does.
+pub(super) fn play_version(
+    d: &mut Dashboard,
+    ctx: &egui::Context,
+    name: &str,
+    _args: &[String],
+) -> Result<(), String> {
+    let event = |vid: &str| {
+        d.state
+            .versions
+            .iter()
+            .any(|v| v.id == vid && v.publisher_lock.is_some())
+    };
+    match core::version_for(&d.state, name) {
+        // As PLAY: on Linux they start in VR only.
+        Some(vid)
+            if cfg!(target_os = "linux")
+                && event(&vid)
+                && d.state.profile.runtime == crate::core::launcher::store::Runtime::Flat =>
+        {
+            Err("Event builds always start in VR: choose SteamVR or WiVRn in Settings.".into())
+        }
+        Some(vid) => {
+            d.state.selected = Some(vid);
+            d.save();
+            play::try_start(d, ctx, None);
+            Ok(())
+        }
+        None => Err(format!("{name} isn't installed: the Install page has it.")),
+    }
+}
+
+/// Asks the player whether Echo VR plays on `server` (plugin `p` asked): whether the
+/// question is up; `Ok(false)` when there is nothing to ask (EchoVRCE again, or that server
+/// already), an error when the server can't be played on.
+pub(super) fn propose_server(
+    d: &mut Dashboard,
+    p: &Installed,
+    server: GameServer,
+) -> Result<bool, String> {
+    let id = p.page.id.as_str();
+    if server.server.address.is_empty() {
+        // Back to EchoVRCE: nothing to ask.
+        if let Some(g) = d.state.game_server.take() {
+            tracing::info!(
+                "plugin {id}: Echo VR plays on EchoVRCE again (was {})",
+                g.server.address
+            );
+            d.save();
+            back_to_nevr(d);
+            d.notify_next_start("Echo VR plays on EchoVRCE again from its next start");
+        }
+        return Ok(false);
+    }
+    if let Some((address, account)) = server.echorelay() {
+        if !relay::valid_server(&address) {
+            return Err(format!(
+                "{address} isn't an EchoRelay address: host:port, e.g. {}.",
+                relay::DEFAULT_SERVER
+            ));
+        }
+        let launchers = d
+            .state
+            .relay_account
+            .as_ref()
+            .is_some_and(|a| !a.password.is_empty());
+        if account.password.is_empty()
+            && launchers
+            && !core::to_relay(&d.state, &format!("http://{address}"))
+        {
+            return Err(format!(
+                        "Your classic lobbies password goes only to the classic lobbies server the launcher's settings name: for {address}, type your password there in {}.",
+                        p.page.name
+                    ),
+                );
+        }
+        if !relay::valid_account(&account) {
+            return Err(format!(
+                "EchoRelay needs a display name (up to {} characters) and a password (up to {}).",
+                relay::NAME_MAX,
+                relay::PASSWORD_MAX
+            ));
+        }
+    } else if crate::core::launcher::mods::backend_of(&server.server).is_none() {
+        return Err(format!(
+            "{} isn't a server address: host[:port], or a ws:// or wss:// address.",
+            server.server.address
+        ));
+    }
+    if d.state.game_server.as_ref() == Some(&server) {
+        return Ok(false);
+    }
+    let message = server_question(&p.page.name, &server);
+    d.plugins.server_asked = Some((id.to_string(), server));
+    d.dialogs.options(
+        SERVER_KEY,
+        "Play on another server?",
+        &message,
+        crate::ui::dialogs::Icon::Warning,
+        &["Play there", "Cancel"],
+    );
+    Ok(true)
 }
 
 /// The live builds set up for an EchoRelay server get nEVR back now (the next start would
@@ -1115,6 +1163,22 @@ fn rail_order(
 /// Whether the player turned the plugin off.
 pub(super) fn is_off(d: &Dashboard, id: &str) -> bool {
     d.state.plugins_off.contains(id)
+}
+
+/// [`runs`], for a schema 2 plugin's thread.
+pub(super) fn runs_now(d: &Dashboard, p: &Installed) -> bool {
+    runs(d, p) && blocked(d, p).is_none()
+}
+
+/// What plugin `p` may do now: what the player allowed it.
+pub(super) fn granted_now(
+    d: &Dashboard,
+    p: &Installed,
+) -> crate::core::launcher::plugin_permissions::Permissions {
+    if d.demo {
+        return crate::core::launcher::plugin_permissions::Permissions::of(&p.page);
+    }
+    granted(d, &p.page.id)
 }
 
 /// Whether plugin `p` does anything: turned on, and allowed all it can do.
@@ -1367,16 +1431,17 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
         }
         return;
     }
-    if p.page.builtin == "server-host" && p.page.id == crate::core::server_host::PLUGIN_ID {
-        if !p.may_use_builtin() {
-            let text = "Server host runs game servers on this PC, so the launcher opens it only as signed by its makers, and this copy isn't: update it, or remove it and get it again.";
-            if panel_button(kit, &p, text, "Open Plugins", true) {
-                d.plugins.focus = Some(p.page.id.clone());
-                d.page = Page::Plugins;
-            }
-            return;
+    if p.page.is_code() {
+        return super::plugin_ui::show(d, kit, ctx, &p);
+    }
+    // Server host before 1.0 (a page the launcher drew itself): only the update opens it.
+    if p.page.id == crate::core::server_host::PLUGIN_ID {
+        let text = "This Server host is an old version this launcher can't open: update it on the Plugins page (your servers and their settings stay).";
+        if panel_button(kit, &p, text, "Open Plugins", true) {
+            d.plugins.focus = Some(p.page.id.clone());
+            d.page = Page::Plugins;
         }
-        return super::server_host::show(d, kit, ctx);
+        return;
     }
     view(d, &p);
     answers(d, &p);
@@ -1418,7 +1483,13 @@ pub(super) fn show_page(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, i
 
 /// A plugin page that shows only why it doesn't run, with one button at its foot: whether
 /// it was clicked.
-fn panel_button(kit: &mut Kit, p: &Installed, text: &str, label: &str, enabled: bool) -> bool {
+pub(super) fn panel_button(
+    kit: &mut Kit,
+    p: &Installed,
+    text: &str,
+    label: &str,
+    enabled: bool,
+) -> bool {
     let (x, y, w, h) = super::empty_panel(kit, rail_icon(&p.page), &p.page.name, text);
     let bw = kit.button_width(label, None, BTN_H).max(dz(160.0));
     kit.button(
@@ -1664,31 +1735,7 @@ fn draw_block(
     }
     match b {
         Block::Form { section, .. } => {
-            if let Some(s) = &f.settings {
-                let part = form_part(s, section);
-                let out = {
-                    let v = view(d, p);
-                    let values = v.settings.clone();
-                    plugin_form::form(
-                        k,
-                        key,
-                        &part,
-                        &values,
-                        &mut v.form,
-                        x,
-                        y,
-                        w,
-                        (f32::NEG_INFINITY, f32::INFINITY),
-                        !busy,
-                    )
-                };
-                if let Some((label, question)) = out.confirm {
-                    d.dialogs
-                        .confirm(FORM_ACTION_KEY, &label, &question, DlgIcon::Warning);
-                    d.plugins.asked = Some((p.page.id.clone(), Asked::FormAction));
-                }
-                write_form(d, p, out.changes);
-            }
+            form_at(d, k, p, f, section, x, y, w, key, !busy);
         }
         Block::Presets { .. } => draw_presets(d, k, p, f, x, y, w, key),
         Block::Text { text, tone, .. } => {
@@ -1916,10 +1963,10 @@ fn draw_button(
 /// What the settings blocks need besides the page's context, copied for this frame: the
 /// settings, their values, the forms' state and the player's presets.
 #[derive(Default)]
-struct Forms {
-    settings: Option<Settings>,
-    values: BTreeMap<String, String>,
-    state: FormState,
+pub(super) struct Forms {
+    pub settings: Option<Settings>,
+    pub values: BTreeMap<String, String>,
+    pub state: FormState,
     user: Vec<UserPreset>,
     note: String,
 }
@@ -1940,7 +1987,7 @@ fn forms(d: &mut Dashboard, p: &Installed) -> Forms {
 
 /// The part of `s` a form block shows: one section, its title left to the card (`*`:
 /// every section, with their titles).
-fn form_part(s: &Settings, section: &str) -> Settings {
+pub(super) fn form_part(s: &Settings, section: &str) -> Settings {
     let mut part = Settings {
         store: s.store.clone(),
         ..Default::default()
@@ -1954,6 +2001,103 @@ fn form_part(s: &Settings, section: &str) -> Settings {
         part.sections.push(sec);
     }
     part
+}
+
+/// A form of `p`'s settings (`section`, `*` for all) at `y`: whether a value changed.
+#[allow(clippy::too_many_arguments)]
+fn form_at(
+    d: &mut Dashboard,
+    k: &mut Kit,
+    p: &Installed,
+    f: &Forms,
+    section: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    key: &str,
+    enabled: bool,
+) -> bool {
+    let Some(s) = &f.settings else {
+        return false;
+    };
+    let part = form_part(s, section);
+    let out = {
+        let v = view(d, p);
+        let values = v.settings.clone();
+        plugin_form::form(
+            k,
+            key,
+            &part,
+            &values,
+            &mut v.form,
+            x,
+            y,
+            w,
+            (f32::NEG_INFINITY, f32::INFINITY),
+            enabled,
+        )
+    };
+    if let Some((label, question)) = out.confirm {
+        d.dialogs
+            .confirm(FORM_ACTION_KEY, &label, &question, DlgIcon::Warning);
+        d.plugins.asked = Some((p.page.id.clone(), Asked::FormAction));
+    }
+    let changed = !out.changes.is_empty();
+    write_form(d, p, out.changes);
+    changed
+}
+
+/// A schema 2 plugin's form node: whether a value changed.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_form(
+    d: &mut Dashboard,
+    k: &mut Kit,
+    p: &Installed,
+    f: &Forms,
+    section: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    key: &str,
+) -> bool {
+    answers(d, p);
+    form_at(d, k, p, f, section, x, y, w, key, true)
+}
+
+/// A schema 2 plugin's presets node: whether its settings changed.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_presets_of(
+    d: &mut Dashboard,
+    k: &mut Kit,
+    p: &Installed,
+    f: &Forms,
+    x: f32,
+    y: f32,
+    w: f32,
+    key: &str,
+) -> bool {
+    let before = view(d, p).settings.clone();
+    draw_presets(d, k, p, f, x, y, w, key);
+    view(d, p).settings != before
+}
+
+/// A schema 2 plugin's settings and presets as the forms show them.
+pub(super) fn forms_of(d: &mut Dashboard, p: &Installed) -> Forms {
+    forms(d, p)
+}
+
+/// A schema 2 plugin wrote its settings: the forms read them again, EchoXR's copies follow.
+pub(super) fn settings_changed(d: &mut Dashboard, p: &Installed) {
+    view(d, p).settings_read = false;
+    view(d, p);
+    keep_echoxr(d, p);
+}
+
+/// A schema 2 plugin's `reset-server`: EchoVRCE again, if it set the server.
+pub(super) fn reset_server_of(d: &mut Dashboard, id: &str) {
+    if d.state.game_server.as_ref().is_some_and(|g| g.plugin == id) {
+        reset_game_server(d);
+    }
 }
 
 /// Writes changes a form or a preset made, and keeps EchoXR's copies with them.
@@ -2075,7 +2219,7 @@ fn current_name(f: &Forms, typed: &str) -> String {
         .unwrap_or_else(|| "My settings".into())
 }
 
-fn presets_height(k: &Kit, f: &Forms, w: f32) -> f32 {
+pub(super) fn presets_height(k: &Kit, f: &Forms, w: f32) -> f32 {
     let gap = dz(BLOCK_GAP);
     let advanced = f.settings.as_ref().is_some_and(Settings::has_advanced);
     dz(LABEL_H)
@@ -2773,7 +2917,11 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
     if p.trust == core::Trust::Changed {
         tags.push(("Changed since install".to_string(), design::QUEST_WARN));
     }
-    if !p.page.builtin.is_empty() && !p.may_use_builtin() {
+    if !crate::core::launcher::plugin_permissions::Permissions::of(&p.page)
+        .services
+        .is_empty()
+        && !p.may_use_services()
+    {
         tags.push(("Not signed".to_string(), design::QUEST_WARN));
     }
     if !d.demo && !core::allowed(&d.state, p) {
@@ -3369,7 +3517,7 @@ fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str)
 
 // ---- snapshots ----
 
-/// The Event lobbies plugin with made-up answers.
+/// The Event lobbies plugin (its answers made up) and the catalogue's other plugins.
 fn demo() -> PluginsUi {
     let (page, _) = core::read_description(include_str!(
         "../../../docs/plugins/event-lobbies/plugin.json"
@@ -3413,40 +3561,28 @@ fn demo() -> PluginsUi {
     let Some(page) = page else {
         return ui;
     };
-    let id = page.id.clone();
-    // Installed from the catalogue at its current version, as a player has it.
+    // Installed from the catalogue at its current version, as a player has it; its code
+    // runs with made-up answers (`plugin_ui::demo_net`).
     let page_version = page.version.clone();
     ui.list.push(Installed {
         page: std::sync::Arc::new(page),
-        dir: std::path::PathBuf::new(),
+        dir: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/plugins/event-lobbies"),
         from_catalog: Some(page_version),
-        warnings: Vec::new(),
+        first_party: true,
         ..Default::default()
     });
-    let mut v = View {
-        page: json!({"build": "halloween", "region": "EU"}),
-        settings_read: true,
-        ..Default::default()
-    };
-    v.data.insert(
-        "matches".into(),
-        json!({"matches": [
-            {"id": "34bc3367-bdbf-cd42-0444-fccbe1ca795f", "build": "halloween", "build_name": "Halloween 2018", "gametype": "social_2.0", "mode": "Lobby", "level": "mpl_lobby_b2_spooky", "players": 7, "limit": 16, "joinable": true},
-            {"id": "ca51c667-ea0a-ee83-1218-e2d493e30d97", "build": "halloween", "build_name": "Halloween 2018", "gametype": "echo_arena", "mode": "Arena", "level": "mpl_arena_a", "players": 8, "limit": 16, "joinable": true},
-            {"id": "f0309645-b344-3d7d-8ff9-25db8a20e9d6", "build": "summer", "build_name": "Summer 2019", "gametype": "social_2.0", "mode": "Lobby", "level": "mpl_lobby_b2_summer", "players": 16, "limit": 16, "joinable": false}
-        ]}),
-    );
-    v.data
-        .insert("regions".into(), json!({"regions": ["EU", "US-East"]}));
-    v.data.insert(
-        "current".into(),
-        json!({"ok": true, "match": {"id": "34bc3367-bdbf-cd42-0444-fccbe1ca795f", "gametype": "social_2.0", "mode": "Lobby", "level": "mpl_lobby_b2_spooky", "private": false, "players": 7, "limit": 16}}),
-    );
-    for s in ["matches", "regions", "current"] {
-        v.fetched.insert(s.into(), Instant::now());
-    }
-    ui.views.insert(id, v);
     ui
+}
+
+/// Snapshots: a first-party plugin's folder in docs/plugins (its code), by its id or its
+/// plugin.json's text.
+fn docs_dir(id_or_text: &str) -> std::path::PathBuf {
+    let id = core::read_description(id_or_text)
+        .0
+        .map_or_else(|| id_or_text.to_string(), |p| p.id.clone());
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("docs/plugins")
+        .join(id)
 }
 
 /// Snapshots: the Game server plugin's state.
@@ -3526,10 +3662,12 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
         } else {
             Vec::new()
         };
+        let dir = docs_dir(text);
         d.plugins.list.push(Installed {
             from_catalog: Some(page.version.clone()),
             page: std::sync::Arc::new(page),
-            dir: std::path::PathBuf::new(),
+            dir,
+            first_party: true,
             warnings,
             ..Default::default()
         });
@@ -3538,22 +3676,6 @@ pub(super) fn snap_many(d: &mut Dashboard, on: bool) {
     if let Some(p) = d.plugins.list.get(2) {
         d.state.rail_unpinned.insert(p.page.id.clone());
     }
-}
-
-/// Snapshots: the plugin `text` describes installed, after the others.
-pub(super) fn snap_install(d: &mut Dashboard, text: &str) {
-    let (page, _) = core::read_description(text);
-    let Some(page) = page else {
-        return;
-    };
-    d.plugins.list.retain(|p| p.page.id != page.id);
-    d.plugins.list.push(Installed {
-        from_catalog: Some(page.version.clone()),
-        page: std::sync::Arc::new(page),
-        dir: std::path::PathBuf::new(),
-        warnings: Vec::new(),
-        ..Default::default()
-    });
 }
 
 pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
@@ -3578,9 +3700,9 @@ pub(super) fn snap_controllers(d: &mut Dashboard, on: bool) {
     settings.insert("Vibration".into(), "70".into());
     d.plugins.list.push(Installed {
         from_catalog: Some(page.version.clone()),
+        dir: docs_dir(&page.id),
         page: std::sync::Arc::new(page),
-        dir: std::path::PathBuf::new(),
-        warnings: Vec::new(),
+        first_party: true,
         ..Default::default()
     });
     let mut view = View {
@@ -3618,9 +3740,9 @@ pub(super) fn snap_game_server(d: &mut Dashboard, state: Option<SnapServer>) {
     };
     d.plugins.list.push(Installed {
         from_catalog: Some(page.version.clone()),
+        dir: docs_dir(&page.id),
         page: std::sync::Arc::new(page),
-        dir: std::path::PathBuf::new(),
-        warnings: Vec::new(),
+        first_party: true,
         ..Default::default()
     });
     let settings = [
@@ -3832,11 +3954,12 @@ mod tests {
         }
 
         // One that can do more: asked about only that.
-        let more = desc.replacen(
-            "\"get\": \"http://{settings.server|launcher.relay.server}/api/matches\"",
-            "\"get\": \"https://stats.example.com/api/matches\"",
-            1,
-        );
+        let mut v: Value = serde_json::from_str(desc).unwrap();
+        v["permissions"]["net"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!("https://stats.example.com"));
+        let more = v.to_string();
         assert_ne!(more, desc);
         let zip2 = zip_of(&more);
         let s = core::stage(root.path(), &entry("0.2.0"), zip2.path(), &no).unwrap();

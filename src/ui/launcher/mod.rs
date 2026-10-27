@@ -16,8 +16,9 @@ mod now;
 mod panel;
 mod play;
 mod plugin_form;
+mod plugin_services;
+mod plugin_ui;
 mod plugins;
-mod server_host;
 mod servers;
 mod settings;
 mod setup;
@@ -896,7 +897,6 @@ pub struct Dashboard {
     /// The launcher plugins: their tabs and the Plugins page.
     plugins: plugins::PluginsUi,
     /// The Server host plugin's page: the game servers on this PC.
-    server_host: server_host::HostUi,
     /// Who opens spark:// links (Windows, Linux), once read.
     link_handler: Option<links::Handler>,
     /// When a link handed over by another launcher was last looked for.
@@ -1818,7 +1818,7 @@ impl Dashboard {
             self,
             self.snap_variant == Some(SnapVariant::PluginControllers),
         );
-        server_host::snap(self, self.snap_variant);
+        plugin_ui::snap_server_host(self, self.snap_variant);
         self.state.rail_open = demo_state().rail_open;
         self.state.rail_order.clear();
         self.state.rail_unpinned.clear();
@@ -2377,6 +2377,12 @@ impl Dashboard {
     #[cfg(test)]
     pub fn feed_settled(&self) -> bool {
         self.feed.ready() || self.feed.status_failed || self.feed.news_failed
+    }
+
+    /// Snapshots: every plugin's code that runs drew its first page (or stopped).
+    #[cfg(test)]
+    pub fn plugins_settled(&self) -> bool {
+        self.plugins.code.values().all(plugin_ui::CodeView::settled)
     }
 
     /// Echo VR's clients on this PC (servers don't count).

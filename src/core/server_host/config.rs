@@ -66,7 +66,25 @@ pub fn check_services(c: &Config) -> Option<String> {
             "A server needs the HTTP address and its key (auth.http_uri, http_key).".into(),
         );
     }
-    None
+    http_problem(&s.http_uri)
+}
+
+/// Pure: what is wrong with `uri` as `auth.http_uri`: the server signs in there over HTTP,
+/// so a ws:// or wss:// address (the login one, put there by mistake) makes it exit at
+/// once. `None` when it is fine.
+pub fn http_problem(uri: &str) -> Option<String> {
+    let v = uri.trim();
+    match url::Url::parse(v) {
+        Ok(u) if (u.scheme() == "http" || u.scheme() == "https") && u.host_str().is_some() => None,
+        Ok(u) if u.scheme() == "ws" || u.scheme() == "wss" => Some(format!(
+            "HTTP: {v:?} is a websocket address (the login's): auth.http_uri needs the HTTP one, http:// or https://, e.g. {}.",
+            super::HTTP_URI
+        )),
+        _ => Some(format!(
+            "HTTP: {v:?} is no http:// or https:// address, e.g. {}.",
+            super::HTTP_URI
+        )),
+    }
 }
 
 /// Pure: `s`'s `config.yaml` under `c`, loading `plugins`. A password sign-in reads the
