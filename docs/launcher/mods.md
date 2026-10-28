@@ -66,7 +66,10 @@ runtime for every Echo VR on the computer, and the launcher keeps several versio
 
 From 5.13 on nEVR keeps its sign-in (`.credentials.json`, which wins over `_local`'s, and
 which it moves there once) and its logs (`logs\`) in the root too: the launcher writes the
-game's sign-in to both places, and reads, follows and uploads logs from both folders. Each
+game's sign-in to both places, and reads, follows and uploads logs from both folders. A
+version whose runtime predates that (it doesn't carry the move's `MOVED-TO-NEVR-ROOT.txt`)
+reads only `_local`, so the root's sign-in doesn't count for it: going back to 5.10 after
+5.13's move gets that version a sign-in of its own again. Each
 Server host server runs with its own `LOCALAPPDATA` (Windows) or prefix (Linux), so it has a
 root of its own: the runtime and its sign-in go there before it starts.
 

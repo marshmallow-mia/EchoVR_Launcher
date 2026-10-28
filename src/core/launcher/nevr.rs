@@ -38,6 +38,9 @@ pub const ROOT_HOST: &[u8] = b"nevr_root_override";
 /// launcher puts it into nEVR's root ([`super::nevr_root`]) before a start of it. Beside
 /// the exe it would be the old layout, which install.ps1 moves aside.
 pub const ROOT_COPY: &str = "nevr-root/nevr-runtime.dll";
+/// What a runtime that keeps its sign-in in nEVR's root (5.13 on) carries (UTF-16): the note
+/// its one-time move leaves in `_local`. Older ones read only `_local`.
+const ROOT_LOGIN: &str = "MOVED-TO-NEVR-ROOT.txt";
 /// The game's exit code when nEVR's host found no runtime it could load.
 pub const RUNTIME_REFUSED: i32 = 78;
 pub const CONFIG: &str = "config.yaml";
@@ -134,6 +137,16 @@ pub fn is_nevr(bytes: &[u8]) -> bool {
 /// carries the identity but not the start marker.
 pub fn is_host(bytes: &[u8]) -> bool {
     !contains(bytes, MARKER) && contains(bytes, BUILD)
+}
+
+/// Pure: whether runtime `bytes` keeps its sign-in in nEVR's root (5.13 on), where it wins
+/// over `_local`'s.
+pub fn reads_root_login(bytes: &[u8]) -> bool {
+    let wide: Vec<u8> = ROOT_LOGIN
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    contains(bytes, &wide)
 }
 
 /// Whether `bytes` is a host that loads its runtime only from nEVR's root (`%LOCALAPPDATA%\nevr\echovr`).
@@ -257,9 +270,16 @@ thread_local! {
     static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Where a sign-in for `v` can be: nEVR's root first, then the `_local` folders nEVR looks in.
+/// nEVR's root when `v`'s nEVR keeps its sign-in there (5.13 on): older ones read only `_local`,
+/// so the root's sign-in (another version's) is not theirs.
+fn login_root_of(v: &InstalledVersion) -> Option<PathBuf> {
+    login_root().filter(|_| super::mods::reads_root_login(&v.bin_dir()))
+}
+
+/// Where `v`'s nEVR reads a sign-in: nEVR's root first (5.13 on), then the `_local` folders
+/// it looks in.
 fn login_dirs(v: &InstalledVersion) -> Vec<PathBuf> {
-    login_root().into_iter().chain(search(v)).collect()
+    login_root_of(v).into_iter().chain(search(v)).collect()
 }
 
 /// The game sign-ins the launcher wrote for `v` (in nEVR's root and each `_local` nEVR
@@ -722,7 +742,7 @@ pub fn login_back(v: &InstalledVersion) -> Result<bool> {
 }
 
 /// Gives `v`'s game `login`: in the game's `_local`, beside `config.yaml`, and in nEVR's root
-/// (5.13 on), with any other sign-in nEVR would read first removed.
+/// when its nEVR reads it there (5.13 on), with any other sign-in nEVR would read first removed.
 pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
     let dir = local_dir(v);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
@@ -737,7 +757,7 @@ pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
     }
     let text = serde_json::to_string_pretty(login)?;
     write_private(&dir.join(CREDENTIALS), text.as_bytes())?;
-    if let Some(root) = login_root() {
+    if let Some(root) = login_root_of(v) {
         std::fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
         write_private(&root.join(CREDENTIALS), text.as_bytes())?;
     }
@@ -759,8 +779,10 @@ pub fn write_login_at(local: &Path, login: &GameLogin) -> Result<()> {
 /// Removes `v`'s game sign-ins that are `user_id`'s (signing out of the launcher signs
 /// the game out too).
 pub fn forget_login(v: &InstalledVersion, user_id: &str) {
-    for p in login_dirs(v)
+    // nEVR's root too, whichever version put it there.
+    for p in login_root()
         .into_iter()
+        .chain(search(v))
         .flat_map(|d| [d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE)])
     {
         let theirs = std::fs::read_to_string(&p)
@@ -1449,6 +1471,22 @@ mod tests {
         let root = dir.path().join("nevr/echovr");
         TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.clone()));
         let v = version_at(&dir.path().join("game"));
+        let older = version_at(&dir.path().join("older"));
+        let nevr = |v: &InstalledVersion, version: &str, root_login: bool| {
+            let id = format!("NEVR-BUILD {version} abcdef0\0");
+            let mut runtime = format!("[NEVR.BOOT] {id}").into_bytes();
+            if root_login {
+                runtime.extend(ROOT_LOGIN.encode_utf16().flat_map(u16::to_le_bytes));
+            }
+            std::fs::write(
+                v.bin_dir().join(super::super::mods::SLOT),
+                format!("MZ {id}"),
+            )
+            .unwrap();
+            std::fs::write(v.bin_dir().join(RUNTIME), runtime).unwrap();
+        };
+        nevr(&v, "5.16.0", true);
+        nevr(&older, "5.10.0", false);
         // One nEVR moved into its root, of another account: what nEVR would use.
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(
@@ -1457,6 +1495,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(read_login(&v).unwrap().user_id, "b");
+        // An older nEVR reads only `_local`: the root's sign-in isn't its (it gets its own).
+        assert!(read_login(&older).is_none());
+        let theirs = GameLogin::new("rt0", "a", "Ace", 1_000);
+        write_login(&older, &theirs).unwrap();
+        assert_eq!(read_login(&v).unwrap().user_id, "b");
+        assert_eq!(read_login(&older).unwrap(), theirs);
         let login = GameLogin::new("rt", "a", "Ace", 1_000);
         write_login(&v, &login).unwrap();
         for d in [&root, &local_dir(&v)] {
@@ -1469,8 +1513,10 @@ mod tests {
         assert!(login_back(&v).unwrap());
         assert!(root.join(CREDENTIALS).is_file());
         assert_eq!(logins(&v).len(), 2);
+        assert_eq!(logins(&older).len(), 1);
         forget_login(&v, "a");
         assert!(read_login(&v).is_none());
+        assert!(read_login(&older).is_some());
         TEST_ROOT.with(|r| *r.borrow_mut() = None);
     }
 

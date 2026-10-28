@@ -701,11 +701,16 @@ pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
         }
     }
     for p in &record.added {
-        match std::fs::remove_file(bin_path.join(p)) {
+        let target = bin_path.join(p);
+        match std::fs::remove_file(&target) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 return Err(anyhow!(e).context(format!("delete {p}")))
             }
             _ => {}
+        }
+        // A folder it came in (nevr-root/) goes too once it is empty.
+        if let Some(dir) = target.parent().filter(|d| *d != bin_path) {
+            let _ = std::fs::remove_dir(dir);
         }
     }
     for p in &record.replaced {
@@ -881,7 +886,7 @@ mod tests {
             std::fs::read_to_string(bin.join(RUNTIME)).unwrap(),
             "old runtime"
         );
-        assert!(!bin.join(ROOT_COPY).exists());
+        assert!(!bin.join("nevr-root").exists());
         // Without a record to go back to, a runtime beside a root host is renamed as install.ps1 does.
         apply(None).unwrap();
         let names: Vec<String> = std::fs::read_dir(&bin)

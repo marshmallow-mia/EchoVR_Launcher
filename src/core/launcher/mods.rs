@@ -907,8 +907,20 @@ fn plugin_files(v: &InstalledVersion) -> Vec<String> {
 /// Mods page reads its version every few seconds: the DLL is read and hashed again only
 /// when its size or time changed.
 pub fn slot_facts(bin: &Path) -> (Loader, bool) {
+    let (loader, early, _) = facts(bin);
+    (loader, early)
+}
+
+/// Whether the nEVR in `bin`'s slot keeps its sign-in in nEVR's root (5.13 on), where it
+/// wins over `_local`'s ([`nevr::reads_root_login`]).
+pub fn reads_root_login(bin: &Path) -> bool {
+    facts(bin).2
+}
+
+/// [`slot_facts`], and [`reads_root_login`].
+fn facts(bin: &Path) -> (Loader, bool, bool) {
     type Stamp = Option<(u64, std::time::SystemTime)>;
-    type Seen = (Stamp, [Stamp; 2], Loader, bool);
+    type Seen = (Stamp, [Stamp; 2], Loader, bool, bool);
     static SEEN: std::sync::Mutex<BTreeMap<PathBuf, Seen>> = std::sync::Mutex::new(BTreeMap::new());
     let path = bin.join(SLOT);
     let stamp_of = |p: &Path| {
@@ -921,9 +933,9 @@ pub fn slot_facts(bin: &Path) -> (Loader, bool) {
     let stamp = stamp_of(&path);
     if stamp.is_some() {
         let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((s, rs, loader, early)) = seen.get(&path) {
+        if let Some((s, rs, loader, early, root_login)) = seen.get(&path) {
             if (*s, *rs) == (stamp, runtime_stamp) {
-                return (loader.clone(), *early);
+                return (loader.clone(), *early, *root_login);
             }
         }
     }
@@ -941,12 +953,14 @@ pub fn slot_facts(bin: &Path) -> (Loader, bool) {
         .as_deref()
         .or(slot.as_deref())
         .is_some_and(packs::loads_early);
+    let root_login = runtime.as_deref().is_some_and(nevr::reads_root_login);
     if stamp.is_some() {
-        SEEN.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(path, (stamp, runtime_stamp, loader.clone(), early));
+        SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(
+            path,
+            (stamp, runtime_stamp, loader.clone(), early, root_login),
+        );
     }
-    (loader, early)
+    (loader, early, root_login)
 }
 
 /// Reads `v`'s mods (file I/O: on a worker).
