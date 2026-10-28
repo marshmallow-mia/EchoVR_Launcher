@@ -101,9 +101,17 @@ fn prepare_for(state: &LauncherState, v: &InstalledVersion, root: bool) -> Resul
         mods::before_start(v, hands, &mods::Servers::of(state), &state.holds)
             .map_err(fail(Part::Mods))?;
     }
-    // A root host's runtime into nEVR's root (nothing for EchoLoader or an older nEVR).
+    // A root host's runtime into nEVR's root (nothing for EchoLoader or an older nEVR), and
+    // the config.yaml just written, where its runtime reads only the root's (#1255 on).
     if root {
         super::nevr_root::put_in_place_for(&v.bin_dir()).map_err(fail(Part::Runtime))?;
+        if let Some(old) = super::nevr::config_into_root(v).map_err(fail(Part::Mods))? {
+            tracing::info!(
+                "{}: nEVR's root had a config.yaml of its own: kept as {}",
+                v.id,
+                old.display()
+            );
+        }
     }
     // nEVR's log filter, from the Logs menu's choice (where nEVR is in place).
     if mods::nevr_in(&v.bin_dir()) {

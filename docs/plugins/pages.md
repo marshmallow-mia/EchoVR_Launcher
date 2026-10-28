@@ -319,7 +319,8 @@ A `host` step writes a server's own setup into the live build, in `_local/<folde
   its `regions` and `guilds` (each comma-separated), and with `mods` (the default) the
   plugins the Mods page has on, a content pack's included.
 - **`config.json`:** the file the game's `-config-path` names. Its folder is where nEVR
-  finds that `config.yaml`.
+  finds that `config.yaml`. A runtime from nevr-runtime #1255 on refuses `-config-path`:
+  it gets `-config <config.json> -config-file <config.yaml>` instead.
 - **A start script:** `start-server.cmd` on Windows, `start-server.sh` on Linux. It runs
   `echovr.exe -server -headless -noovr -port <port> -config-path …`. nEVR ends a server
   after each match, and the script starts it again:

@@ -351,6 +351,9 @@ struct Prepared {
     exe: PathBuf,
     bin: PathBuf,
     config_json: PathBuf,
+    /// The server's `config.yaml`, named exactly for a runtime that reads it only from its
+    /// root or `-config-file` (#1255 on); None: nEVR finds it beside `config_json`.
+    config_yaml: Option<PathBuf>,
     sign_in: SignIn,
     password: String,
     /// Windows: the server's own `LOCALAPPDATA` (nEVR's log goes there).
@@ -428,6 +431,7 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
         exe: f.bin().join(v.exe_name()),
         bin: f.bin(),
         config_json: f.local().join(nevr::GAME_CONFIG),
+        config_yaml: mods::reads_root_config(&v.bin_dir()).then(|| f.local().join(nevr::CONFIG)),
         sign_in: cfg.account.sign_in,
         password,
         appdata,
@@ -436,8 +440,15 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     })
 }
 
-/// Pure: the game's arguments for `s` (`config` as the game sees the path).
-pub fn game_args(s: &Server, config: &str) -> Vec<String> {
+/// Pure: the game's arguments for `s` (`config` and `yaml` as the game sees the paths). A
+/// runtime from #1255 on reads `config.yaml` from `-config-file` and refuses `-config-path`:
+/// it gets the game's JSON as `-config`; an older one finds `config.yaml` beside the JSON
+/// `-config-path` names.
+pub fn game_args(s: &Server, config: &str, yaml: Option<&str>) -> Vec<String> {
+    let config_args = match yaml {
+        Some(yaml) => vec!["-config", config, nevr::CONFIG_FILE_ARG, yaml],
+        None => vec!["-config-path", config],
+    };
     let mut a: Vec<String> = [
         "-server",
         "-headless",
@@ -447,10 +458,9 @@ pub fn game_args(s: &Server, config: &str) -> Vec<String> {
         &s.port.to_string(),
         "-httpport",
         &s.http_port().to_string(),
-        "-config-path",
-        config,
     ]
     .iter()
+    .chain(config_args.iter())
     .map(|x| x.to_string())
     .collect();
     a.extend(s.extra_args.split_whitespace().map(str::to_string));
@@ -462,10 +472,11 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
     if cfg!(target_os = "linux") {
         use crate::core::linux::echoxr;
         let config = echoxr::wine_path(&[], &p.config_json);
+        let yaml = p.config_yaml.as_ref().map(|y| echoxr::wine_path(&[], y));
         let mut c = std::process::Command::new(echoxr::proton_script());
         c.arg("run")
             .arg(&p.exe)
-            .args(game_args(&p.server, &config))
+            .args(game_args(&p.server, &config, yaml.as_deref()))
             .current_dir(&p.bin)
             .env("STEAM_COMPAT_DATA_PATH", &p.compat)
             .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", "")
@@ -485,9 +496,17 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
         return (c, Some(wine));
     }
     let mut c = std::process::Command::new(&p.exe);
-    c.args(game_args(&p.server, &p.config_json.to_string_lossy()))
-        .current_dir(&p.bin)
-        .env("LOCALAPPDATA", &p.appdata);
+    let yaml = p
+        .config_yaml
+        .as_ref()
+        .map(|y| y.to_string_lossy().into_owned());
+    c.args(game_args(
+        &p.server,
+        &p.config_json.to_string_lossy(),
+        yaml.as_deref(),
+    ))
+    .current_dir(&p.bin)
+    .env("LOCALAPPDATA", &p.appdata);
     let _ = std::fs::create_dir_all(&p.appdata);
     if p.sign_in == SignIn::Password {
         c.env(config::PASSWORD_ENV, &p.password);
@@ -875,7 +894,7 @@ mod tests {
             extra_args: " -foo  bar ".into(),
             ..Server::default()
         };
-        let a = game_args(&s, r"Z:\x\config.json");
+        let a = game_args(&s, r"Z:\x\config.json", None);
         assert_eq!(
             a,
             [
@@ -893,5 +912,17 @@ mod tests {
                 "bar"
             ]
         );
+        // A runtime from #1255 on: the game's JSON as -config, config.yaml named exactly.
+        let a = game_args(&s, r"Z:\x\config.json", Some(r"Z:\x\config.yaml"));
+        assert_eq!(
+            a[8..12],
+            [
+                "-config",
+                r"Z:\x\config.json",
+                "-config-file",
+                r"Z:\x\config.yaml"
+            ]
+        );
+        assert!(!a.iter().any(|x| x == "-config-path"));
     }
 }

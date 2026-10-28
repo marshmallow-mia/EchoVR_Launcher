@@ -130,7 +130,8 @@ pub fn put_in_place_for(bin: &Path) -> Result<()> {
 }
 
 /// Takes the runtime the launcher put into the root away again (uninstall), when it is
-/// still the one it put there. Whether it did.
+/// still the one it put there, and the `config.yaml` it wrote there (#1255 on). Whether it
+/// took the runtime.
 pub fn take_away() -> bool {
     let Some(root) = root() else {
         return false;
@@ -139,6 +140,10 @@ pub fn take_away() -> bool {
 }
 
 fn take_away_from(root: &Path, record: &Path) -> bool {
+    let config = root.join(nevr::CONFIG);
+    if std::fs::read_to_string(&config).is_ok_and(|t| nevr::written_by_launcher(&t)) {
+        let _ = std::fs::remove_file(&config);
+    }
     let target = root.join(nevr::RUNTIME);
     let noted: Option<Record> = std::fs::read_to_string(record)
         .ok()
@@ -208,6 +213,17 @@ mod tests {
         std::fs::write(root.join(nevr::RUNTIME), "installer's").unwrap();
         assert!(!take_away_from(&root, &record));
         assert!(root.join(nevr::RUNTIME).exists());
+        // The config.yaml it wrote there goes too (#1255 on); someone's own stays.
+        std::fs::write(
+            root.join(nevr::CONFIG),
+            "# Written by the Echo VR launcher\n",
+        )
+        .unwrap();
+        take_away_from(&root, &record);
+        assert!(!root.join(nevr::CONFIG).exists());
+        std::fs::write(root.join(nevr::CONFIG), "services: {}\n").unwrap();
+        take_away_from(&root, &record);
+        assert!(root.join(nevr::CONFIG).exists());
     }
 
     /// Before a start of a real game folder (`ECHOVR_TEST_BIN`), into a root of its own

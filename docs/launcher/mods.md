@@ -150,7 +150,14 @@ folder of its own, which this leaves alone: see [the plugins' `host`
 step](../plugins/pages.md#a-game-servers-setup).
 
 nEVR looks for `_local/config.yaml` beside the exe, then one and two folders up (the
-game's own `_local`); the first found wins, so one nearer the exe is kept as `.old` too. nEVR refuses to start with a `dbgcore.dll` beside the exe (the old
+game's own `_local`); the first found wins, so one nearer the exe is kept as `.old` too.
+From nevr-runtime #1255 on, nEVR reads `config.yaml` only from its root (or the file
+`-config-file` names) and no longer from `_local`. The launcher tells such a runtime by
+that option's name in it: it still writes the version's `config.yaml` into its `_local`
+(the root is one for every version), and before every start copies it into the root, where
+one it didn't write is kept as `config.yaml.old` first. Uninstalling the versions takes its
+copy out of the root again. Its game servers name their `config.yaml` with `-config-file`
+and the game's JSON with `-config` (such a runtime refuses `-config-path`). nEVR refuses to start with a `dbgcore.dll` beside the exe (the old
 loader's place, in any case of its name): PLAY takes it out first, and the update manifest deletes it.
 
 nEVR's host checks the runtime's signature before it loads it. When it refuses it, or the

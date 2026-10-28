@@ -10,6 +10,8 @@
 //!
 //! nEVR looks for `_local` beside the game's exe, then one and two folders up (the
 //! game's own `_local`, where the launcher writes); the first `config.yaml` found wins.
+//! From nevr-runtime #1255 on it reads `config.yaml` only from its root
+//! ([`config_into_root`]) or the file `-config-file` names.
 //! It refuses to start with a `dbgcore.dll` beside the exe (EchoLoader 1's place); one in
 //! `plugins/` is fine.
 
@@ -41,6 +43,9 @@ pub const ROOT_COPY: &str = "nevr-root/nevr-runtime.dll";
 /// What a runtime that keeps its sign-in in nEVR's root (5.13 on) carries (UTF-16): the note
 /// its one-time move leaves in `_local`. Older ones read only `_local`.
 const ROOT_LOGIN: &str = "MOVED-TO-NEVR-ROOT.txt";
+/// What a runtime that reads `config.yaml` only from nEVR's root carries (nevr-runtime #1255
+/// on): its option naming the exact file, which replaces `-config-path` (refused, exit 64).
+pub const CONFIG_FILE_ARG: &str = "-config-file";
 /// The game's exit code when nEVR's host found no runtime it could load.
 pub const RUNTIME_REFUSED: i32 = 78;
 pub const CONFIG: &str = "config.yaml";
@@ -147,6 +152,17 @@ pub fn reads_root_login(bytes: &[u8]) -> bool {
         .flat_map(u16::to_le_bytes)
         .collect();
     contains(bytes, &wide)
+}
+
+/// Pure: whether runtime `bytes` reads `config.yaml` only from nEVR's root, or from the file
+/// [`CONFIG_FILE_ARG`] names (nevr-runtime #1255 on): `_local`'s is no longer read, and
+/// `-config-path` is refused.
+pub fn reads_root_config(bytes: &[u8]) -> bool {
+    let wide: Vec<u8> = CONFIG_FILE_ARG
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    contains(bytes, CONFIG_FILE_ARG.as_bytes()) || contains(bytes, &wide)
 }
 
 /// Whether `bytes` is a host that loads its runtime only from nEVR's root (`%LOCALAPPDATA%\nevr\echovr`).
@@ -298,7 +314,7 @@ const WRITTEN_BY: &str = "# Written by the Echo VR launcher";
 /// Pure: whether `text` is a `config.yaml` the launcher may write over: its own, or one
 /// that sets nothing but the local plugins' switch (as its docs say to add). Anything
 /// else is someone's own, such as a game server's.
-fn written_by_launcher(text: &str) -> bool {
+pub(super) fn written_by_launcher(text: &str) -> bool {
     let text = text.trim_start_matches('\u{feff}');
     // Its header on any line: the local plugins' switch added above it, as the docs said.
     if text.lines().any(|l| l.starts_with(WRITTEN_BY)) {
@@ -641,6 +657,38 @@ pub fn write_config(
         let _ = std::fs::remove_file(&part);
         format!("Couldn't replace {}", path.display())
     })
+}
+
+/// Before a start of `v` whose runtime reads `config.yaml` only from nEVR's root (#1255 on):
+/// the launcher's `config.yaml` for `v` (its `_local` one: the root is one for every
+/// version) goes there. One there the launcher didn't write goes to `.old` first, as
+/// someone's own in `_local` does. Where that went.
+pub fn config_into_root(v: &InstalledVersion) -> Result<Option<PathBuf>> {
+    let Some(root) = login_root().filter(|_| super::mods::reads_root_config(&v.bin_dir())) else {
+        return Ok(None);
+    };
+    let Ok(text) = std::fs::read_to_string(local_dir(v).join(CONFIG)) else {
+        return Ok(None);
+    };
+    config_into(&root, &text)
+}
+
+fn config_into(root: &Path, text: &str) -> Result<Option<PathBuf>> {
+    let path = root.join(CONFIG);
+    let mut moved = None;
+    match std::fs::read_to_string(&path) {
+        Ok(there) if there == text => return Ok(None),
+        Ok(there) if !written_by_launcher(&there) => moved = Some(keep_as_old(&path)?),
+        _ => {}
+    }
+    std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
+    let part = path.with_extension("yaml.part");
+    std::fs::write(&part, text).with_context(|| format!("Couldn't write {}", part.display()))?;
+    std::fs::rename(&part, &path).with_context(|| {
+        let _ = std::fs::remove_file(&part);
+        format!("Couldn't replace {}", path.display())
+    })?;
+    Ok(moved)
 }
 
 // ---- the game's sign-in ----
@@ -1462,6 +1510,54 @@ mod tests {
                 local.join("EchoVR").join("logs")
             ]
         );
+    }
+
+    /// From #1255 on the runtime reads config.yaml only from its root: the launcher's for the
+    /// version that starts goes there; an older runtime's root is left alone.
+    #[test]
+    fn puts_the_config_into_nevrs_root_for_a_runtime_that_reads_it_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("nevr/echovr");
+        TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.clone()));
+        let nevr = |v: &InstalledVersion, version: &str, root_config: bool| {
+            let id = format!("NEVR-BUILD {version} abcdef0\0");
+            let mut runtime = format!("[NEVR.BOOT] {id}").into_bytes();
+            if root_config {
+                runtime.extend(b"use -config-file <file>\0");
+            }
+            std::fs::write(
+                v.bin_dir().join(super::super::mods::SLOT),
+                format!("MZ {id}"),
+            )
+            .unwrap();
+            std::fs::write(v.bin_dir().join(RUNTIME), runtime).unwrap();
+        };
+        let v = version_at(&dir.path().join("game"));
+        let older = version_at(&dir.path().join("older"));
+        nevr(&v, "5.19.0", true);
+        nevr(&older, "5.18.0", false);
+        assert!(super::super::mods::reads_root_config(&v.bin_dir()));
+        assert!(!super::super::mods::reads_root_config(&older.bin_dir()));
+        let in_root = || std::fs::read_to_string(root.join(CONFIG)).ok();
+        // An older runtime reads _local's: the root stays as it is.
+        write_config(&older, &[], false, None).unwrap();
+        assert_eq!(config_into_root(&older).unwrap(), None);
+        assert_eq!(in_root(), None);
+        // One that reads only the root's gets the launcher's, again when it changes.
+        write_config(&v, &[], false, None).unwrap();
+        assert_eq!(config_into_root(&v).unwrap(), None);
+        let ours = std::fs::read_to_string(local_dir(&v).join(CONFIG)).unwrap();
+        assert_eq!(in_root().as_deref(), Some(ours.as_str()));
+        write_config(&v, &[], true, None).unwrap();
+        config_into_root(&v).unwrap();
+        assert!(local_plugins_in(&in_root().unwrap()));
+        // Someone's own there (nEVR's installer's) is kept as .old, never written over.
+        std::fs::write(root.join(CONFIG), "services:\n  socket_uri: ws://mine\n").unwrap();
+        let old = config_into_root(&v).unwrap().unwrap();
+        assert_eq!(old, root.join("config.yaml.old"));
+        assert!(std::fs::read_to_string(&old).unwrap().contains("ws://mine"));
+        assert!(written_by_launcher(&in_root().unwrap()));
+        TEST_ROOT.with(|r| *r.borrow_mut() = None);
     }
 
     /// nEVR 5.13 on keeps its sign-in in its root, and that one wins over `_local`'s.

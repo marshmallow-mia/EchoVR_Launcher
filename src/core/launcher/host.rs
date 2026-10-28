@@ -252,7 +252,11 @@ fn write_private(path: &Path, text: &str) -> Result<()> {
 /// Linux through the launcher's GE-Proton in the server's own prefix (by `folder`).
 fn start_script(v: &InstalledVersion, config_json: &Path, port: &str, folder: &str) -> String {
     use crate::core::linux::echoxr;
+    // A runtime from #1255 on reads config.yaml only from the file named (-config-file).
+    let yaml = super::mods::reads_root_config(&v.bin_dir())
+        .then(|| config_json.with_file_name(nevr::CONFIG));
     if cfg!(target_os = "linux") {
+        let yaml = yaml.as_ref().map(|y| echoxr::wine_path(&[], y));
         return linux_script(&LinuxServer {
             compat: &echoxr::server_compat_data(folder),
             proton: &echoxr::proton_script(),
@@ -260,14 +264,31 @@ fn start_script(v: &InstalledVersion, config_json: &Path, port: &str, folder: &s
             exe: &v.exe_path(),
             // `Z:` (the whole disk) is in every prefix; the game's own drives aren't.
             config: &echoxr::wine_path(&[], config_json),
+            config_yaml: yaml.as_deref(),
             port,
         });
     }
     windows_script(
         &v.exe_path().to_string_lossy(),
         &config_json.to_string_lossy(),
+        yaml.map(|y| y.to_string_lossy().into_owned()).as_deref(),
         port,
     )
+}
+
+/// Pure: the server's configs as nEVR takes them, each path through `quote`: the game's
+/// JSON as `-config-path` (nEVR finds `config.yaml` beside it), or, for a runtime from #1255
+/// on (which refuses `-config-path`), as `-config` with `config.yaml` as `-config-file`.
+fn config_args(json: &str, yaml: Option<&str>, quote: impl Fn(&str) -> String) -> String {
+    match yaml {
+        Some(yaml) => format!(
+            "-config {} {} {}",
+            quote(json),
+            nevr::CONFIG_FILE_ARG,
+            quote(yaml)
+        ),
+        None => format!("-config-path {}", quote(json)),
+    }
 }
 
 /// Pure: `-port N`, or nothing for the game's own.
@@ -282,7 +303,12 @@ fn port_arg(port: &str) -> String {
 /// Pure: the Windows start script (`cmd`). `%` doubled: a batch file reads it as a variable.
 /// The server runs in a console window of its own (nEVR's), which Ctrl+C here doesn't
 /// reach: closing that window ends it, and this one then asks before starting it again.
-pub fn windows_script(exe: &str, config_json: &str, port: &str) -> String {
+pub fn windows_script(
+    exe: &str,
+    config_json: &str,
+    config_yaml: Option<&str>,
+    port: &str,
+) -> String {
     let path = |p: &str| p.replace('/', "\\").replace('%', "%%");
     [
         "@echo off".to_string(),
@@ -295,10 +321,10 @@ pub fn windows_script(exe: &str, config_json: &str, port: &str) -> String {
         "echo Echo VR server running (its own window). To stop it: close that window, then press S here."
             .into(),
         format!(
-            "\"{}\" -server -headless -noovr{} -config-path \"{}\"",
+            "\"{}\" -server -headless -noovr{} {}",
             path(exe),
             port_arg(port),
-            path(config_json)
+            config_args(config_json, config_yaml, |p| format!("\"{}\"", path(p)))
         ),
         "choice /c SR /n /t 10 /d R /m \"The server ended. It starts again in 10 seconds: S stops, R starts it now. \""
             .into(),
@@ -318,6 +344,8 @@ pub struct LinuxServer<'a> {
     pub exe: &'a Path,
     /// The setup's `config.json` as the game sees it (`Z:\...`).
     pub config: &'a str,
+    /// Its `config.yaml` as the game sees it, for a runtime that takes it only named (#1255 on).
+    pub config_yaml: Option<&'a str>,
     pub port: &'a str,
 }
 
@@ -340,11 +368,11 @@ pub fn linux_script(s: &LinuxServer) -> String {
         "trap stop INT TERM HUP".into(),
         "while :; do".into(),
         format!(
-            "  {} run {} -server -headless -noovr{} -config-path {}",
+            "  {} run {} -server -headless -noovr{} {}",
             q(s.proton),
             q(s.exe),
             port_arg(s.port),
-            sh_quote(s.config)
+            config_args(s.config, s.config_yaml, sh_quote)
         ),
         "  sleep 5".into(),
         "done".into(),
@@ -431,6 +459,7 @@ mod tests {
         let win = windows_script(
             "C:/Games/Echo 100%/echovr.exe",
             "C:/Games/Echo 100%/_local/server/config.json",
+            None,
             "6792",
         );
         assert!(win.contains(
@@ -444,6 +473,7 @@ mod tests {
             wineserver: Path::new("/h/GE-Proton/files/bin/wineserver"),
             exe: Path::new("/g/Mia's games/echovr.exe"),
             config: r"Z:\g\_local\server\config.json",
+            config_yaml: None,
             port: "",
         });
         assert!(sh.starts_with("#!/bin/sh\n"));
@@ -452,6 +482,29 @@ mod tests {
             r"  '/h/GE-Proton/proton' run '/g/Mia'\''s games/echovr.exe' -server -headless -noovr -config-path 'Z:\g\_local\server\config.json'"
         ));
         assert!(sh.contains("trap stop INT TERM HUP\n"));
+        // A runtime from #1255 on: the game's JSON as -config, config.yaml named exactly.
+        let win = windows_script(
+            "C:/Games/Echo/echovr.exe",
+            "C:/Games/Echo/_local/server/config.json",
+            Some("C:/Games/Echo/_local/server/config.yaml"),
+            "",
+        );
+        assert!(win.contains(
+            r#""C:\Games\Echo\echovr.exe" -server -headless -noovr -config "C:\Games\Echo\_local\server\config.json" -config-file "C:\Games\Echo\_local\server\config.yaml""#
+        ));
+        let sh = linux_script(&LinuxServer {
+            compat: Path::new("/h/servers/server"),
+            proton: Path::new("/h/GE-Proton/proton"),
+            wineserver: Path::new("/h/GE-Proton/files/bin/wineserver"),
+            exe: Path::new("/g/echovr.exe"),
+            config: r"Z:\g\_local\server\config.json",
+            config_yaml: Some(r"Z:\g\_local\server\config.yaml"),
+            port: "6792",
+        });
+        assert!(sh.contains(
+            r"-noovr -port 6792 -config 'Z:\g\_local\server\config.json' -config-file 'Z:\g\_local\server\config.yaml'"
+        ));
+        assert!(!sh.contains("-config-path"));
     }
 
     #[test]
