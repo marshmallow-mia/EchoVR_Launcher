@@ -512,11 +512,11 @@ pub fn play_from_steam(ask: &crate::core::launcher::headless::Ask) -> i32 {
         profile: profile.clone(),
         ..state.clone()
     };
-    if let Err(f) = crate::core::launcher::ready::prepare(&this_start, &v) {
+    if let Err(f) = crate::core::launcher::ready::prepare_start(&this_start, &v) {
         use crate::core::launcher::ready::Part;
         match f.step {
-            // Without these the game can't reach its server.
-            Part::ClassicLobby | Part::EchoRelay => {
+            // Without these the game can't reach its server (or, nEVR's runtime, start).
+            Part::ClassicLobby | Part::EchoRelay | Part::Runtime => {
                 tracing::error!("--play: {}: {f}", v.id);
                 return 2;
             }

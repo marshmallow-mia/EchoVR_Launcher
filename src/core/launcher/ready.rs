@@ -34,6 +34,8 @@ pub enum Part {
     Mods,
     /// EchoXR in the game's folder and its copy of the game current.
     EchoXr,
+    /// nEVR's runtime in nEVR's root, where a root host loads it ([`super::nevr_root`]).
+    Runtime,
 }
 
 impl Part {
@@ -45,6 +47,7 @@ impl Part {
             Part::EchoRelayMods => "Couldn't set up the mods for EchoRelay",
             Part::Mods => "Couldn't prepare the mods",
             Part::EchoXr => "Couldn't set up EchoXR",
+            Part::Runtime => "Couldn't put nEVR's runtime in place",
         }
     }
 }
@@ -60,8 +63,20 @@ static PREPARING: Mutex<()> = Mutex::new(());
 
 /// Makes `v`'s folder ready for a start with `state`'s choices. Downloads what isn't there
 /// yet (EchoLoader, EchoRelay's patch, required mods). Stops at the first part that fails;
-/// EchoXR's part is only tried where the start goes through it.
+/// EchoXR's part is only tried where the start goes through it. nEVR's root holds one
+/// runtime for every version, so only the selected version's goes there ([`prepare_start`]
+/// for the one that starts now).
 pub fn prepare(state: &LauncherState, v: &InstalledVersion) -> Result<(), Failed> {
+    prepare_for(state, v, state.selected.as_deref() == Some(v.id.as_str()))
+}
+
+/// [`prepare`] for a start of `v` now: its runtime goes into nEVR's root, whichever version
+/// is selected.
+pub fn prepare_start(state: &LauncherState, v: &InstalledVersion) -> Result<(), Failed> {
+    prepare_for(state, v, true)
+}
+
+fn prepare_for(state: &LauncherState, v: &InstalledVersion, root: bool) -> Result<(), Failed> {
     let _one = PREPARING.lock().unwrap_or_else(|e| e.into_inner());
     let fail = |step| move |error| Failed { step, error };
     let cancel = AtomicBool::new(false);
@@ -85,6 +100,10 @@ pub fn prepare(state: &LauncherState, v: &InstalledVersion) -> Result<(), Failed
     } else {
         mods::before_start(v, hands, &mods::Servers::of(state), &state.holds)
             .map_err(fail(Part::Mods))?;
+    }
+    // A root host's runtime into nEVR's root (nothing for EchoLoader or an older nEVR).
+    if root {
+        super::nevr_root::put_in_place_for(&v.bin_dir()).map_err(fail(Part::Runtime))?;
     }
     // nEVR's log filter, from the Logs menu's choice (where nEVR is in place).
     if mods::nevr_in(&v.bin_dir()) {
@@ -171,6 +190,13 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
         }
     }
     stamp(&bin.join(mods::SLOT)).hash(&mut h);
+    stamp(&bin.join(super::nevr::RUNTIME)).hash(&mut h);
+    stamp(&bin.join(super::nevr::ROOT_COPY)).hash(&mut h);
+    // The selected version's runtime in nEVR's root (another version's start replaces it).
+    if state.selected.as_deref() == Some(v.id.as_str()) {
+        let in_root = super::nevr_root::root().map(|r| r.join(super::nevr::RUNTIME));
+        in_root.and_then(|p| stamp(&p)).hash(&mut h);
+    }
     if let Ok(entries) = std::fs::read_dir(super::mods::plugins_in(&bin)) {
         let mut plugins: Vec<_> = entries
             .flatten()

@@ -246,6 +246,8 @@ pub fn run(
                         Err(e) => out.notes.push(format!("{}: {e:#}", v.name)),
                     }
                 }
+                // nEVR's runtime it put into nEVR's root for them (one it didn't stays).
+                super::launcher::nevr_root::take_away();
                 Ok(())
             }
             Part::LinuxSetup => {

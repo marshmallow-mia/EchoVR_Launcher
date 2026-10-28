@@ -702,6 +702,8 @@ fn verify_update(
     on: &mut dyn FnMut(Step),
 ) -> Result<Vec<String>> {
     let (m, _) = pc_update::fetch_manifest(&manifest_url(v).ok_or_else(|| no_updates(v))?)?;
+    // nEVR's files as its release has them, where the update takes nEVR from there.
+    let (m, _) = pc_update::with_nevr_release(&m, cancel)?;
     let bin = v.bin_dir();
     let adds: Vec<_> = m
         .adds()
@@ -713,7 +715,12 @@ fn verify_update(
             return Err(crate::core::http::Cancelled.into());
         }
         on(Step::Percent(100.0 * i as f64 / adds.len().max(1) as f64));
-        let f = bin.join(&e.path);
+        // nEVR's runtime is where its host loads it from (a root host's: the folder's copy for the root).
+        let f = if e.path.eq_ignore_ascii_case(super::nevr::RUNTIME) {
+            super::nevr::runtime_path(&bin)
+        } else {
+            bin.join(&e.path)
+        };
         if !f.is_file() || !download::sha256_matches(&f, e.sha256.as_deref().unwrap_or_default()) {
             bad.push(e.path.clone());
         }

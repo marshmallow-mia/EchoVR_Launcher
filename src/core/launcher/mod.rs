@@ -19,6 +19,7 @@ pub mod login_watch;
 pub mod mod_release;
 pub mod mods;
 pub mod nevr;
+pub mod nevr_root;
 pub mod packs;
 pub mod patch;
 pub mod plugin_page;

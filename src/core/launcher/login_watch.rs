@@ -112,8 +112,8 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(15);
 #[derive(Debug)]
 pub struct LoginWatch {
     dir: PathBuf,
-    /// nEVR's log folder, where it confirms a failed login.
-    nevr_logs: Option<PathBuf>,
+    /// nEVR's log folders ([`super::nevr::log_dirs`]), where it confirms a failed login.
+    nevr_logs: Vec<PathBuf>,
     /// Only logs written since the start count.
     since: SystemTime,
     file: Option<PathBuf>,
@@ -126,8 +126,8 @@ pub struct LoginWatch {
 }
 
 impl LoginWatch {
-    /// For the game at install `root`, started at `since`; `nevr_logs`: nEVR's log folder.
-    pub fn new(root: &str, since: SystemTime, nevr_logs: Option<PathBuf>) -> LoginWatch {
+    /// For the game at install `root`, started at `since`; `nevr_logs`: nEVR's log folders.
+    pub fn new(root: &str, since: SystemTime, nevr_logs: Vec<PathBuf>) -> LoginWatch {
         LoginWatch {
             dir: Path::new(root)
                 .join(paths::ARENA_DIR)
@@ -170,10 +170,12 @@ impl LoginWatch {
 
     /// nEVR's log of this start (`None`: there is none yet).
     fn nevr_log(&self) -> Option<String> {
-        let dir = self.nevr_logs.as_ref()?;
-        let (log, _) = crate::core::logs::newest_in(dir, crate::core::launcher::nevr::is_run_log)
-            .into_iter()
-            .find(|(_, t)| *t >= self.since)?;
+        let (log, _) = self
+            .nevr_logs
+            .iter()
+            .flat_map(|d| crate::core::logs::newest_in(d, crate::core::launcher::nevr::is_run_log))
+            .filter(|(_, t)| *t >= self.since)
+            .max_by_key(|(_, t)| *t)?;
         std::fs::read_to_string(log).ok()
     }
 
@@ -289,7 +291,7 @@ Select code >>> 58 <<<\n";
         let logs = dir.path().join(paths::ARENA_DIR).join("_local/r14logs");
         std::fs::create_dir_all(&logs).unwrap();
         let since = SystemTime::now() - std::time::Duration::from_secs(5);
-        let mut w = LoginWatch::new(&dir.path().to_string_lossy(), since, None);
+        let mut w = LoginWatch::new(&dir.path().to_string_lossy(), since, Vec::new());
         assert!(w.poll().is_empty());
         let file = logs.join("[r14(client)]-[10-04-2026]_[16-03-37]_312.log");
         let (head, tail) = LOG.split_at(LOG.find("Check your").unwrap());
@@ -319,7 +321,7 @@ Select code >>> 58 <<<\n";
         if let Some(n) = nevr {
             std::fs::write(nevr_dir.join("nevr-2026-10-04T16-03-37.000.jsonl"), n).unwrap();
         }
-        let w = LoginWatch::new(&dir.path().to_string_lossy(), since, Some(nevr_dir));
+        let w = LoginWatch::new(&dir.path().to_string_lossy(), since, vec![nevr_dir]);
         (dir, w)
     }
 

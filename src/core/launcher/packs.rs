@@ -50,7 +50,7 @@ impl PackSpec {
             bail!("{id}'s pack has an invalid content id {:?}", self.content);
         }
         for p in &self.plugins {
-            let reserved = [super::mods::SLOT, OVERLAY_PLUGIN]
+            let reserved = [super::mods::SLOT, super::nevr::RUNTIME, OVERLAY_PLUGIN]
                 .iter()
                 .any(|r| r.eq_ignore_ascii_case(p));
             if !super::mods::is_plugin_file(p) || reserved {

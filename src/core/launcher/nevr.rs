@@ -22,8 +22,27 @@ use serde_json::{Map, Value};
 use super::store::InstalledVersion;
 use crate::core::paths;
 
-/// What every nEVR build logs at its start.
+/// What every nEVR build logs at its start (from 5.10 on, only its runtime file carries it).
 pub const MARKER: &[u8] = b"[NEVR.BOOT]";
+/// The identity every nEVR from 5.4 on carries: `NEVR-BUILD <version> <commit>`. From 5.10 on
+/// it is all the slot's file (the host) says of nEVR.
+pub const BUILD: &[u8] = b"NEVR-BUILD ";
+/// nEVR's second file from 5.10 on: the host in the slot loads it from beside itself, checks
+/// its signature first and stops the game (exit [`RUNTIME_REFUSED`]) when it's missing or refused.
+pub const RUNTIME: &str = "nevr-runtime.dll";
+/// What a host that loads its runtime from nEVR's root (nevr-runtime #1104 on, ADR 0012)
+/// carries: its name for a root moved by `NEVR_ROOT` in its log. Older hosts (5.8.1 to 5.16)
+/// load it from beside themselves.
+pub const ROOT_HOST: &[u8] = b"nevr_root_override";
+/// Where a version whose host is a root host keeps its runtime, in its game folder: the
+/// launcher puts it into nEVR's root ([`super::nevr_root`]) before a start of it. Beside
+/// the exe it would be the old layout, which install.ps1 moves aside.
+pub const ROOT_COPY: &str = "nevr-root/nevr-runtime.dll";
+/// What a runtime that keeps its sign-in in nEVR's root (5.13 on) carries (UTF-16): the note
+/// its one-time move leaves in `_local`. Older ones read only `_local`.
+const ROOT_LOGIN: &str = "MOVED-TO-NEVR-ROOT.txt";
+/// The game's exit code when nEVR's host found no runtime it could load.
+pub const RUNTIME_REFUSED: i32 = 78;
 pub const CONFIG: &str = "config.yaml";
 pub const CREDENTIALS: &str = ".credentials.json";
 /// The game's EchoVRCE sign-in while it plays on another server ([`Backend`]): nEVR tries
@@ -45,9 +64,17 @@ const REFRESH_LIFE_S: i64 = 30 * 24 * 3600;
 
 // ---- the DLL ----
 
-/// Pure: nEVR's version in its DLL `bytes`: its build identity (`4.0.0+182.e418eaa`), else
-/// its `git describe` (`v4.0.0-182-ge418eaa-dirty`) without the `v`.
+/// Pure: nEVR's version in its DLL `bytes`: the version of its `NEVR-BUILD` identity
+/// (`5.10.0`), else its build identity (`4.0.0+182.e418eaa`), else its `git describe`
+/// (`v4.0.0-182-ge418eaa-dirty`) without the `v`.
 pub fn version_in(bytes: &[u8]) -> Option<String> {
+    if let Some(v) = build_version(bytes) {
+        return Some(v);
+    }
+    // A development build's (`5.1.2-dev.279+bfe115d7`).
+    if let Some(id) = build_id(bytes) {
+        return id.split(' ').next().map(str::to_string);
+    }
     let runs = || {
         bytes
             .split(|b| !(0x20..0x7f).contains(b))
@@ -58,6 +85,93 @@ pub fn version_in(bytes: &[u8]) -> Option<String> {
         .find(|s| build_identity(s))
         .or_else(|| runs().find(|s| describe(s)).map(|s| &s[1..]))
         .map(str::to_string)
+}
+
+/// Pure: the first `NEVR-BUILD <version> <commit>` in `bytes` as `<version> <commit>`, a
+/// development build's version too (`5.1.2-dev.279+bfe115d7`): a host and its runtime carry
+/// the same one.
+pub fn build_id(bytes: &[u8]) -> Option<String> {
+    bytes
+        .windows(BUILD.len())
+        .enumerate()
+        .filter(|(_, w)| *w == BUILD)
+        .find_map(|(at, _)| {
+            let rest = &bytes[at + BUILD.len()..];
+            let end = rest.iter().position(|b| !(0x20..0x7f).contains(b));
+            let line = std::str::from_utf8(&rest[..end.unwrap_or(rest.len())]).ok()?;
+            let (ver, commit) = line.split_once(' ')?;
+            (!ver.is_empty()
+                && !ver.contains(' ')
+                && (7..=40).contains(&commit.len())
+                && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| line.to_string())
+        })
+}
+
+/// Pure: the version of the first `NEVR-BUILD <version> <commit>` in `bytes`.
+fn build_version(bytes: &[u8]) -> Option<String> {
+    bytes
+        .windows(BUILD.len())
+        .enumerate()
+        .filter(|(_, w)| *w == BUILD)
+        .find_map(|(at, _)| {
+            let rest = &bytes[at + BUILD.len()..];
+            let end = rest.iter().position(|b| !(0x20..0x7f).contains(b));
+            let line = std::str::from_utf8(&rest[..end.unwrap_or(rest.len())]).ok()?;
+            let mut parts = line.split(' ');
+            let (ver, commit) = (parts.next()?, parts.next()?);
+            (semver(ver)
+                && (7..=40).contains(&commit.len())
+                && commit.bytes().all(|b| b.is_ascii_hexdigit()))
+            .then(|| ver.to_string())
+        })
+}
+
+/// Whether `bytes` carries nEVR's start marker or its build identity: nEVR, or (from 5.10
+/// on) its host, which needs [`RUNTIME`] beside it.
+pub fn is_nevr(bytes: &[u8]) -> bool {
+    contains(bytes, MARKER) || contains(bytes, BUILD)
+}
+
+/// Whether `bytes` is a nEVR host that loads its runtime from [`RUNTIME`] (5.10 on): it
+/// carries the identity but not the start marker.
+pub fn is_host(bytes: &[u8]) -> bool {
+    !contains(bytes, MARKER) && contains(bytes, BUILD)
+}
+
+/// Pure: whether runtime `bytes` keeps its sign-in in nEVR's root (5.13 on), where it wins
+/// over `_local`'s.
+pub fn reads_root_login(bytes: &[u8]) -> bool {
+    let wide: Vec<u8> = ROOT_LOGIN
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    contains(bytes, &wide)
+}
+
+/// Whether `bytes` is a host that loads its runtime only from nEVR's root (`%LOCALAPPDATA%\nevr\echovr`).
+pub fn is_root_host(bytes: &[u8]) -> bool {
+    is_host(bytes) && contains(bytes, ROOT_HOST)
+}
+
+/// Pure: where in the game folder (`bin`-relative) the runtime of host `host` is kept:
+/// [`ROOT_COPY`] for a root host, else beside it.
+pub fn runtime_entry(host: &[u8]) -> &'static str {
+    if is_root_host(host) {
+        ROOT_COPY
+    } else {
+        RUNTIME
+    }
+}
+
+/// Where the runtime of the nEVR in `bin`'s slot is kept ([`runtime_entry`]).
+pub fn runtime_path(bin: &Path) -> PathBuf {
+    let host = std::fs::read(bin.join(super::mods::SLOT)).unwrap_or_default();
+    bin.join(runtime_entry(&host))
+}
+
+pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    hay.windows(needle.len()).any(|w| w == needle)
 }
 
 /// `X.Y.Z+N.hash`.
@@ -103,9 +217,24 @@ fn semver(s: &str) -> bool {
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Whether the game folder `bin` has a `dbgcore.dll` beside the exe, which nEVR refuses.
+/// Whether the game folder `bin` has a `dbgcore.dll` beside the exe, which nEVR refuses (in
+/// any case: Wine finds `DBGCORE.DLL` too).
 pub fn stray_dbgcore(bin: &Path) -> bool {
-    bin.join(DBGCORE).is_file()
+    stray_dbgcore_path(bin).is_some()
+}
+
+/// The `dbgcore.dll` beside the exe in `bin`, as it is spelled there.
+pub fn stray_dbgcore_path(bin: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(bin)
+        .ok()?
+        .flatten()
+        .find(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(DBGCORE)
+        })
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
 }
 
 // ---- where nEVR looks ----
@@ -123,9 +252,40 @@ fn search(v: &InstalledVersion) -> [PathBuf; 3] {
     [bin.join("_local"), up.join("_local"), up2.join("_local")]
 }
 
-/// The game sign-ins the launcher wrote for `v` (in each `_local` nEVR looks in).
+/// nEVR's root (its `%LOCALAPPDATA%\nevr\echovr`), where from 5.13 on it keeps its sign-in,
+/// which wins over one in `_local` (it moves that one there once). None while the game's
+/// `%LOCALAPPDATA%` isn't there yet (a Wine prefix not made yet).
+fn login_root() -> Option<PathBuf> {
+    #[cfg(test)]
+    return TEST_ROOT.with(|r| r.borrow().clone());
+    #[cfg(not(test))]
+    super::nevr_root::local_app_data()
+        .filter(|l| l.is_dir())
+        .map(|l| super::nevr_root::root_in(&l))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The tests' nEVR root (none unless a test sets one: never the computer's).
+    static TEST_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// nEVR's root when `v`'s nEVR keeps its sign-in there (5.13 on): older ones read only `_local`,
+/// so the root's sign-in (another version's) is not theirs.
+fn login_root_of(v: &InstalledVersion) -> Option<PathBuf> {
+    login_root().filter(|_| super::mods::reads_root_login(&v.bin_dir()))
+}
+
+/// Where `v`'s nEVR reads a sign-in: nEVR's root first (5.13 on), then the `_local` folders
+/// it looks in.
+fn login_dirs(v: &InstalledVersion) -> Vec<PathBuf> {
+    login_root_of(v).into_iter().chain(search(v)).collect()
+}
+
+/// The game sign-ins the launcher wrote for `v` (in nEVR's root and each `_local` nEVR
+/// looks in).
 pub fn logins(v: &InstalledVersion) -> Vec<PathBuf> {
-    search(v)
+    login_dirs(v)
         .into_iter()
         .map(|d| d.join(CREDENTIALS))
         .filter(|p| p.is_file())
@@ -530,12 +690,12 @@ impl GameLogin {
     }
 }
 
-/// The sign-in nEVR would use for `v` (the first `.credentials.json` in its search), or
-/// the one waiting while it plays on another server.
+/// The sign-in nEVR would use for `v` (the first `.credentials.json` in its search, nEVR's
+/// root first), or the one waiting while it plays on another server.
 pub fn read_login(v: &InstalledVersion) -> Option<GameLogin> {
     [CREDENTIALS, CREDENTIALS_ASIDE]
         .into_iter()
-        .flat_map(|name| search(v).map(|d| d.join(name)))
+        .flat_map(|name| login_dirs(v).into_iter().map(move |d| d.join(name)))
         .find(|p| p.is_file())
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| serde_json::from_str(&t).ok())
@@ -545,7 +705,7 @@ pub fn read_login(v: &InstalledVersion) -> Option<GameLogin> {
 /// beside them (nEVR would try them there first). Returns whether one did.
 pub fn login_aside(v: &InstalledVersion) -> Result<bool> {
     let mut moved = false;
-    for d in search(v) {
+    for d in login_dirs(v) {
         let (path, aside) = (d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE));
         if path.is_file() {
             // Windows won't replace a hidden file (nEVR hides it): the old one goes first.
@@ -565,7 +725,7 @@ pub fn login_aside(v: &InstalledVersion) -> Result<bool> {
 /// there already). Returns whether one came back.
 pub fn login_back(v: &InstalledVersion) -> Result<bool> {
     let mut back = false;
-    for d in search(v) {
+    for d in login_dirs(v) {
         let (path, aside) = (d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE));
         if !aside.is_file() {
             continue;
@@ -581,13 +741,12 @@ pub fn login_back(v: &InstalledVersion) -> Result<bool> {
     Ok(back)
 }
 
-/// Gives `v`'s game `login`: in the game's `_local`, beside `config.yaml`, with any other
-/// sign-in nEVR would read first removed.
+/// Gives `v`'s game `login`: in the game's `_local`, beside `config.yaml`, and in nEVR's root
+/// when its nEVR reads it there (5.13 on), with any other sign-in nEVR would read first removed.
 pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
     let dir = local_dir(v);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let ours = dir.join(CREDENTIALS);
-    for p in search(v)
+    for p in login_dirs(v)
         .into_iter()
         .flat_map(|d| [d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE)])
     {
@@ -597,7 +756,12 @@ pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
         }
     }
     let text = serde_json::to_string_pretty(login)?;
-    write_private(&ours, text.as_bytes())
+    write_private(&dir.join(CREDENTIALS), text.as_bytes())?;
+    if let Some(root) = login_root_of(v) {
+        std::fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
+        write_private(&root.join(CREDENTIALS), text.as_bytes())?;
+    }
+    Ok(())
 }
 
 /// Gives the game in a folder of its own (a game server's `_local`) `login`, beside its
@@ -615,8 +779,10 @@ pub fn write_login_at(local: &Path, login: &GameLogin) -> Result<()> {
 /// Removes `v`'s game sign-ins that are `user_id`'s (signing out of the launcher signs
 /// the game out too).
 pub fn forget_login(v: &InstalledVersion, user_id: &str) {
-    for p in search(v)
+    // nEVR's root too, whichever version put it there.
+    for p in login_root()
         .into_iter()
+        .chain(search(v))
         .flat_map(|d| [d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE)])
     {
         let theirs = std::fs::read_to_string(&p)
@@ -758,14 +924,77 @@ pub fn apply_logging(bin: &Path, l: &Logging) -> Result<LoggingStep> {
     Ok(LoggingStep::Done)
 }
 
-/// Where nEVR logs: `%LOCALAPPDATA%\EchoVR\logs` (on Linux, the Wine prefix's).
+/// The name of the log nEVR's host keeps (5.8 on), in its root's `logs`.
+pub const HOST_LOG: &str = "nevr-bootstrap.jsonl";
+
+/// Where nEVR logs a start (on Linux, in the Wine prefix): its root's `logs` from 5.13 on,
+/// `%LOCALAPPDATA%\EchoVR\logs` before (5.13 moves those logs over once).
+pub fn log_dirs() -> Vec<PathBuf> {
+    super::nevr_root::local_app_data()
+        .map(|l| log_dirs_in(&l))
+        .unwrap_or_default()
+}
+
+/// Pure: [`log_dirs`] in the `%LOCALAPPDATA%` `local`.
+pub fn log_dirs_in(local: &Path) -> Vec<PathBuf> {
+    vec![
+        super::nevr_root::root_in(local).join("logs"),
+        local.join("EchoVR").join("logs"),
+    ]
+}
+
+/// The one of [`log_dirs`] with the newest log of a start in it (the root's when neither
+/// has one yet).
 pub fn log_dir() -> Option<PathBuf> {
-    let local = if cfg!(target_os = "linux") {
-        Some(crate::core::linux::echoxr::local_app_data())
-    } else {
-        dirs::data_local_dir()
-    };
-    local.map(|d| d.join("EchoVR").join("logs"))
+    let dirs = log_dirs();
+    dirs.iter()
+        .filter_map(|d| {
+            crate::core::logs::newest_in(d, is_run_log)
+                .into_iter()
+                .next()
+                .map(|(_, t)| (d.clone(), t))
+        })
+        .max_by_key(|(_, t)| *t)
+        .map(|(d, _)| d)
+        .or_else(|| dirs.into_iter().next())
+}
+
+/// The log nEVR's host (5.8 on) keeps of every start, in its root (the Wine prefix's on
+/// Linux): which runtime it found, and whether it loaded it.
+pub fn host_log() -> Option<PathBuf> {
+    Some(super::nevr_root::root()?.join("logs").join(HOST_LOG))
+}
+
+/// Pure: why the last start in a host log (`text`, [`host_log`]) didn't load nEVR's runtime,
+/// when it didn't: the check's reason, else what happened.
+pub fn runtime_refusal_in(text: &str) -> Option<String> {
+    let last = text
+        .lines()
+        .rev()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|r| r["event"] == "runtime_load")?;
+    match last["outcome"].as_str()? {
+        "loaded" => None,
+        "runtime_absent" => Some(format!("{RUNTIME} is missing")),
+        outcome => Some(
+            last["verify_reason"]
+                .as_str()
+                .filter(|r| !r.is_empty())
+                .map(|r| format!("{RUNTIME} was refused: {r}"))
+                .unwrap_or_else(|| format!("{RUNTIME}: {outcome}")),
+        ),
+    }
+}
+
+/// Why the last start didn't load nEVR's runtime, from its host's log.
+pub fn runtime_refusal() -> Option<String> {
+    runtime_refusal_in(&std::fs::read_to_string(host_log()?).ok()?)
+}
+
+/// What to tell when a start ended with [`RUNTIME_REFUSED`].
+pub fn runtime_refused_message() -> String {
+    let why = runtime_refusal().unwrap_or_else(|| format!("{RUNTIME} is missing or was refused"));
+    format!("nEVR stopped Echo VR at its start: {why}. Repair game files (in PLAY's menu) downloads nEVR's files again.")
 }
 
 /// Its log of a start's first moments, beside the exe.
@@ -773,9 +1002,14 @@ pub fn boot_log(bin: &Path) -> PathBuf {
     bin.join("logs").join("nevr-boot.jsonl")
 }
 
-/// Whether `name` is one of nEVR's logs of a start (`nevr-<time>.jsonl`).
+/// Whether `name` is one of nEVR's logs of a start (`nevr-<time>.jsonl`), not its first
+/// moments' (`nevr-boot.jsonl`) or its host's record (`nevr-bootstrap.jsonl`, in the root's
+/// `logs` with the runs' from 5.13 on).
 pub fn is_run_log(name: &str) -> bool {
-    name.starts_with("nevr-") && name.ends_with(".jsonl") && name != "nevr-boot.jsonl"
+    name.starts_with("nevr-")
+        && name.ends_with(".jsonl")
+        && name != "nevr-boot.jsonl"
+        && name != "nevr-bootstrap.jsonl"
 }
 
 /// Pure: whether a start's log (nEVR's, which has the game's own lines) says VR didn't come
@@ -1038,6 +1272,67 @@ mod tests {
         assert_eq!(version_in(b"\0vertex\0v1.2\0"), None);
     }
 
+    #[test]
+    fn finds_the_build_identity() {
+        let id = b"\0NEVR-BUILD 5.10.0 c8b9cf4c8d39627ec49446127223fdf4ad95574c\0";
+        // Before anything else the DLL says (5.4.3's also has a stray "v3.6.4-…").
+        let mut dll = b"MZ\0/v3.6.4-101dc3df7f.clean\0".to_vec();
+        dll.extend_from_slice(id);
+        assert_eq!(version_in(&dll).as_deref(), Some("5.10.0"));
+        assert!(is_nevr(&dll) && is_host(&dll));
+        dll.extend_from_slice(MARKER);
+        assert!(is_nevr(&dll) && !is_host(&dll));
+        // Not an identity: no commit, or a version that isn't one.
+        assert_eq!(build_version(b"NEVR-BUILD 5.10.0\0"), None);
+        assert_eq!(build_version(b"NEVR-BUILD %s %s\0"), None);
+        assert!(!is_nevr(b"MZ stock"));
+    }
+
+    #[test]
+    fn reads_why_the_runtime_was_refused() {
+        let load = |outcome: &str, reason: &str| {
+            format!(
+                r#"{{"event":"runtime_load","outcome":"{outcome}","verify":"refused","verify_reason":"{reason}","tag":"NEVR.HOST"}}"#
+            )
+        };
+        let versions = r#"{"event":"versions","host_version":"5.10.0","tag":"NEVR.HOST"}"#;
+        let refused = format!(
+            "{}\n{versions}\n{}\n{}",
+            load("loaded", ""),
+            load(
+                "runtime_refused",
+                "timestamp invalid: cannot make the chain engine: error 2147942487"
+            ),
+            r#"{"event":"game_stop","exit_code":78}"#
+        );
+        assert_eq!(
+            runtime_refusal_in(&refused).as_deref(),
+            Some("nevr-runtime.dll was refused: timestamp invalid: cannot make the chain engine: error 2147942487")
+        );
+        assert_eq!(
+            runtime_refusal_in(&load("runtime_absent", "")).as_deref(),
+            Some("nevr-runtime.dll is missing")
+        );
+        // The last start counts.
+        assert_eq!(
+            runtime_refusal_in(&format!("{refused}\n{}", load("loaded", ""))),
+            None
+        );
+        assert_eq!(runtime_refusal_in("not json\n"), None);
+    }
+
+    #[test]
+    fn finds_a_dbgcore_in_any_case() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!stray_dbgcore(dir.path()));
+        std::fs::write(dir.path().join("DBGCORE.DLL"), "x").unwrap();
+        assert!(stray_dbgcore(dir.path()));
+        assert_eq!(
+            stray_dbgcore_path(dir.path()).unwrap().file_name().unwrap(),
+            "DBGCORE.DLL"
+        );
+    }
+
     /// The DLL Mia ships, when it's on this machine.
     #[test]
     fn reads_the_real_dll() {
@@ -1153,6 +1448,78 @@ mod tests {
         assert!(!login_back(&v).unwrap());
     }
 
+    /// nEVR 5.13 on logs a start in its root's `logs`, beside its host's own record.
+    #[test]
+    fn finds_a_starts_log_in_either_folder() {
+        assert!(is_run_log("nevr-2026-10-28T07-32-54.258.jsonl"));
+        assert!(!is_run_log("nevr-bootstrap.jsonl"));
+        assert!(!is_run_log("nevr-boot.jsonl"));
+        let local = Path::new("L");
+        assert_eq!(
+            log_dirs_in(local),
+            [
+                local.join("nevr").join("echovr").join("logs"),
+                local.join("EchoVR").join("logs")
+            ]
+        );
+    }
+
+    /// nEVR 5.13 on keeps its sign-in in its root, and that one wins over `_local`'s.
+    #[test]
+    fn hands_the_sign_in_to_nevrs_root_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("nevr/echovr");
+        TEST_ROOT.with(|r| *r.borrow_mut() = Some(root.clone()));
+        let v = version_at(&dir.path().join("game"));
+        let older = version_at(&dir.path().join("older"));
+        let nevr = |v: &InstalledVersion, version: &str, root_login: bool| {
+            let id = format!("NEVR-BUILD {version} abcdef0\0");
+            let mut runtime = format!("[NEVR.BOOT] {id}").into_bytes();
+            if root_login {
+                runtime.extend(ROOT_LOGIN.encode_utf16().flat_map(u16::to_le_bytes));
+            }
+            std::fs::write(
+                v.bin_dir().join(super::super::mods::SLOT),
+                format!("MZ {id}"),
+            )
+            .unwrap();
+            std::fs::write(v.bin_dir().join(RUNTIME), runtime).unwrap();
+        };
+        nevr(&v, "5.16.0", true);
+        nevr(&older, "5.10.0", false);
+        // One nEVR moved into its root, of another account: what nEVR would use.
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join(CREDENTIALS),
+            r#"{"refresh_token":"old","user_id":"b"}"#,
+        )
+        .unwrap();
+        assert_eq!(read_login(&v).unwrap().user_id, "b");
+        // An older nEVR reads only `_local`: the root's sign-in isn't its (it gets its own).
+        assert!(read_login(&older).is_none());
+        let theirs = GameLogin::new("rt0", "a", "Ace", 1_000);
+        write_login(&older, &theirs).unwrap();
+        assert_eq!(read_login(&v).unwrap().user_id, "b");
+        assert_eq!(read_login(&older).unwrap(), theirs);
+        let login = GameLogin::new("rt", "a", "Ace", 1_000);
+        write_login(&v, &login).unwrap();
+        for d in [&root, &local_dir(&v)] {
+            let t = std::fs::read_to_string(d.join(CREDENTIALS)).unwrap();
+            assert_eq!(serde_json::from_str::<GameLogin>(&t).unwrap(), login);
+        }
+        // Another server: both wait aside, and come back.
+        assert!(login_aside(&v).unwrap());
+        assert!(!root.join(CREDENTIALS).exists());
+        assert!(login_back(&v).unwrap());
+        assert!(root.join(CREDENTIALS).is_file());
+        assert_eq!(logins(&v).len(), 2);
+        assert_eq!(logins(&older).len(), 1);
+        forget_login(&v, "a");
+        assert!(read_login(&v).is_none());
+        assert!(read_login(&older).is_some());
+        TEST_ROOT.with(|r| *r.borrow_mut() = None);
+    }
+
     #[test]
     fn keeps_the_local_plugins_switch() {
         let on = render_config(&[], true, None);
@@ -1184,11 +1551,15 @@ mod tests {
             r#"{"ts":"x","level":"info","msg":"[NEVR.PLUGIN] Loaded: NvrAssetPatches v1.1.0 (API v5) caps=0x22 via plugins\\NvrAssetPatches.dll"}"#,
             "[NEVR.PLUGIN] SKIPPED log_filter — superseded by the built-in log filter.",
             r#"{"msg":"[NEVR.PLUGIN] Broken (plugins\\Broken.dll): missing NvrPluginGetInfo export"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] plugin trust: mode=unsigned-allowed source=default build=release literal=\"NEVR-PLUGIN-TRUST release\" (x)"}"#,
+            r#"{"msg":"[NEVR.PLUGIN] plugin=NvrAssetPatches file=NvrAssetPatches.dll UNSIGNED, loaded because plugin signatures are not required in this run (plugin trust mode unsigned-allowed; start with -require-signed-plugins to refuse it)"}"#,
             r#"{"msg":"[NEVR.PLUGIN] plugin load complete: 1/3 loaded"}"#,
         ]
         .join("\n");
         let st = Status::parse(&log);
         assert!(st.complete);
+        // The trust lines (5.7 on: unsigned plugins load) are no plugins of their own.
+        assert_eq!(st.plugins.len(), 3);
         let p = st.of("NvrAssetPatches.dll").unwrap();
         assert!(p.loaded());
         assert_eq!(

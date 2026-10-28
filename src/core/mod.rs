@@ -16,6 +16,7 @@ pub mod linux;
 pub mod log;
 pub mod logs;
 pub mod manifest;
+pub mod nevr_release;
 pub mod oauth;
 pub mod paths;
 pub mod pc_update;

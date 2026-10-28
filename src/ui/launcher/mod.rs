@@ -1223,7 +1223,7 @@ impl Dashboard {
     /// (`BugSplat64.dll`) is still there and readable: antivirus takes it away right after,
     /// as a rule.
     fn check_slot_soon(&mut self, ctx: &egui::Context, id: &str) {
-        use crate::core::launcher::mods::{slot_state, SlotState};
+        use crate::core::launcher::mods::{loader_problem, SlotState};
         if !cfg!(windows) || self.demo {
             return;
         }
@@ -1237,10 +1237,10 @@ impl Dashboard {
         let (id, bin) = (id.to_string(), v.bin_dir());
         self.worker.spawn(ctx, move |tx| {
             std::thread::sleep(std::time::Duration::from_secs(3));
-            let lead = match slot_state(&bin) {
-                SlotState::Ok => return,
-                SlotState::Missing => "BugSplat64.dll, Echo VR's mod loader (nEVR), was removed right after it was put in place.".to_string(),
-                SlotState::Blocked(e) => format!("BugSplat64.dll, Echo VR's mod loader (nEVR), was blocked right after it was put in place ({e})."),
+            let lead = match loader_problem(&bin) {
+                None | Some((_, SlotState::Ok)) => return,
+                Some((file, SlotState::Missing)) => format!("{file}, part of Echo VR's mod loader (nEVR), was removed right after it was put in place."),
+                Some((file, SlotState::Blocked(e))) => format!("{file}, part of Echo VR's mod loader (nEVR), was blocked right after it was put in place ({e})."),
             };
             tx.send(Msg::SlotGone(id, lead));
         });
@@ -2615,6 +2615,14 @@ impl Dashboard {
                             self,
                             &v.id,
                             &format!("Echo VR didn't start: {l} (code {c:#x}), as a rule BugSplat64.dll, its mod loader (nEVR)."),
+                        );
+                    } else if code == Some(crate::core::launcher::nevr::RUNTIME_REFUSED) && starting
+                    {
+                        self.launched = None;
+                        self.dialogs.error(
+                            "nEVR couldn't start",
+                            &crate::core::launcher::nevr::runtime_refused_message(),
+                            Default::default(),
                         );
                     } else if let Some(why) = why {
                         self.launched = None;

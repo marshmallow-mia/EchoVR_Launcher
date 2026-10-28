@@ -126,7 +126,12 @@ fn defender_check(c: &Config) -> Option<Check> {
         .iter()
         .filter(|s| {
             let bin = super::farm::bin_in(&super::farm_root(&s.dir()));
-            bin.is_dir() && !bin.join("BugSplat64.dll").is_file()
+            bin.is_dir()
+                && (!bin.join(mods::SLOT).is_file()
+                    || matches!(
+                        mods::slot_facts(&bin).0,
+                        mods::Loader::NevrIncomplete { .. }
+                    ))
         })
         .map(|s| s.name.as_str())
         .collect();
@@ -135,7 +140,7 @@ fn defender_check(c: &Config) -> Option<Check> {
             "Windows Security",
             Level::Bad,
             format!(
-                "nEVR (BugSplat64.dll) was taken out of {}'s folder: let Windows Security leave the servers' folder alone.",
+                "nEVR (BugSplat64.dll or nevr-runtime.dll) was taken out of {}'s folder: let Windows Security leave the servers' folder alone.",
                 gone.join(", ")
             ),
             Fix::Defender,

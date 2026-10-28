@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "product": "nevr-runtime",
+  "manifest_version": 1,
+  "generated": "2026-10-27T13:41:08Z",
+  "expires": "2026-11-10T13:41:08Z",
+  "channels": {
+    "beta": "5.8.1"
+  },
+  "releases": {
+    "5.8.1": {
+      "version": "5.8.1",
+      "tag": "v5.8.1",
+      "commit": "0daaf1b5f6093c2bcef5e12dddab9d61c6243159",
+      "build_id": "NEVR-BUILD 5.8.1 0daaf1b5f6093c2bcef5e12dddab9d61c6243159",
+      "published": "2026-10-27T10:03:50Z",
+      "github_release": "https://github.com/EchoTools/nevr-runtime/releases/tag/v5.8.1",
+      "artifacts": [
+        {
+          "name": "nevr-runtime-v5.8.1-quest-libovrplatformloader.so",
+          "kind": "quest-library",
+          "platform": "android-arm64",
+          "path": "v5.8.1/nevr-runtime-v5.8.1-quest-libovrplatformloader.so",
+          "sha256": "e9624f77bb7ee6e49518251321c2add60ea4d3633c189c61b31c90e2289d4580",
+          "size": 67374369
+        },
+        {
+          "name": "nevr-runtime-v5.8.1-windows.zip",
+          "kind": "windows-zip",
+          "platform": "windows-x86_64",
+          "path": "v5.8.1/nevr-runtime-v5.8.1-windows.zip",
+          "sha256": "4ea2b328a6aa36fc7fc2c2568ebb565153bc67cbcd8b46dfa051d41245d16fc7",
+          "size": 6564378,
+          "contents": [
+            {
+              "path": "BugSplat64.dll",
+              "sha256": "48139a8f3bd4877621bed9d07790cfa101d6abe613cb4361e05fa28a6191cc88",
+              "size": 562992
+            },
+            {
+              "path": "README.txt",
+              "sha256": "2892ddd09a42275b4bf7662ebf8b022a999b76c880e09b861877b08f0caa744e",
+              "size": 5546
+            },
+            {
+              "path": "SHA256SUMS",
+              "sha256": "f08324905ccc7bd78e343d4ce61489a35394a5c93b845d74d93345257de3ffc5",
+              "size": 646
+            },
+            {
+              "path": "SIGNING.txt",
+              "sha256": "9a908494e5d4bea0d33aeca086ce08bb62bb12edc5f0630cff27a3f641b3a7bb",
+              "size": 985
+            },
+            {
+              "path": "echovr_server.exe",
+              "sha256": "618504eec4b78a4fbd0eeff162d5b026eeadb5d5cb8a87ee2c7e7d24f710f4fb",
+              "size": 213296
+            },
+            {
+              "path": "install.ps1",
+              "sha256": "cce186da4cb2292c49c2283e1f02dc2c76d1ecf8e6dd113e38f31ba5322d9a07",
+              "size": 40198
+            },
+            {
+              "path": "nevr-runtime.dll",
+              "sha256": "d5bf1c2e136da39b36264164c0908d612583ad7e439f6bf1c8d347938f610710",
+              "size": 15842608
+            },
+            {
+              "path": "quest-diagnose.ps1",
+              "sha256": "12a8f693893311aa2c3c7cf1df77b8c43f62195f5af1f5c47cc25a5ebc46fd15",
+              "size": 40239
+            },
+            {
+              "path": "uninstall.ps1",
+              "sha256": "dd66bb9e5b318c33230a50e9476110de802be5fe2572e4271295635c97b18b16",
+              "size": 30577
+            }
+          ]
+        }
+      ]
+    }
+  }
+}
