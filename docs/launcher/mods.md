@@ -354,7 +354,8 @@ section 4): `<id>-v<version>-windows.zip` (the DLL, `LICENSE`, `NOTICE` and, wit
 - Where to publish one: `catalogue.json` (0.13+). Launchers before 0.13.0-alpha.4 don't read
   `release` and leave an entry without `url` out; a first-party entry in the live
   `mods.json` keeps its `url` and `sha256` beside a `release`, so older launchers still get
-  the loose DLL.
+  the loose DLL. Community mods in `catalogue.json` come only this way: each version's three
+  files at `launcher/mods/<id>/<tag>/` on the mirrors, signed or not.
 
 ### Content packs
 

@@ -4175,6 +4175,69 @@ pub(crate) mod tests {
         }
     }
 
+    /// A release the mirror published, into a real game folder: `ECHOVR_TEST_CATALOGUE` (its
+    /// catalogue.json), `ECHOVR_TEST_FILES` (its `launcher/mods/`, the files at `<id>/<tag>/`)
+    /// and `ECHOVR_TEST_ROOT` (the folder holding ready-at-dawn-echo-arena). A copy with one
+    /// byte changed is refused first, with nothing changed: `cargo test -- --ignored
+    /// a_mirrored_release_into`.
+    #[test]
+    #[ignore]
+    fn a_mirrored_release_into_a_game_folder() {
+        let text =
+            std::fs::read_to_string(std::env::var("ECHOVR_TEST_CATALOGUE").unwrap()).unwrap();
+        let catalogue = super::super::catalogue::Catalogue::parse(&text).unwrap();
+        let m = &catalogue.mods[0];
+        let e = &m.versions[0].entry;
+        let spec = e.release.as_ref().expect("a release entry");
+        spec.validate(&e.id, &e.version).unwrap();
+        let files = PathBuf::from(std::env::var("ECHOVR_TEST_FILES").unwrap())
+            .join(&e.id)
+            .join(&spec.tag);
+        let v = InstalledVersion {
+            id: "test".into(),
+            name: "Echo VR".into(),
+            root: std::env::var("ECHOVR_TEST_ROOT").unwrap(),
+            ..Default::default()
+        };
+        let before: Vec<_> = std::fs::read_dir(plugins_dir(&v))
+            .unwrap()
+            .map(|d| d.unwrap().file_name())
+            .collect();
+        let tampered = tempfile::tempdir().unwrap();
+        for f in std::fs::read_dir(&files).unwrap() {
+            let f = f.unwrap().path();
+            std::fs::copy(&f, tampered.path().join(f.file_name().unwrap())).unwrap();
+        }
+        let zip = tampered.path().join(&spec.assets.package.name);
+        let mut bytes = std::fs::read(&zip).unwrap();
+        let n = bytes.len() / 2;
+        bytes[n] ^= 1;
+        std::fs::write(&zip, bytes).unwrap();
+        let err = install_fetched(&v, e, spec, tampered.path()).unwrap_err();
+        println!("tampered: {err:#}");
+        let after: Vec<_> = std::fs::read_dir(plugins_dir(&v))
+            .unwrap()
+            .map(|d| d.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            before, after,
+            "a refused release changed the plugins folder"
+        );
+        let work = tempfile::tempdir().unwrap();
+        for f in std::fs::read_dir(&files).unwrap() {
+            let f = f.unwrap().path();
+            std::fs::copy(&f, work.path().join(f.file_name().unwrap())).unwrap();
+        }
+        install_fetched(&v, e, spec, work.path()).unwrap();
+        // What PLAY does next: config.yaml from the mods.
+        before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
+        let placed = download::sha256_file(&plugins_dir(&v).join(&e.file)).unwrap();
+        println!(
+            "installed {} {} ({:?}) as {}, sha256 {placed}",
+            e.id, e.version, spec.signer.status, e.file
+        );
+    }
+
     #[test]
     fn a_mod_update_keeps_the_version_before_to_go_back_to() {
         let dir = tempfile::tempdir().unwrap();
