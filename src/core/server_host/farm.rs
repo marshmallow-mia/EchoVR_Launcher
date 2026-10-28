@@ -10,7 +10,6 @@
 //! port. After evr-docker's farm (Echo-VR-Server-on-Docker).
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use anyhow::{bail, Context, Result};
 
@@ -403,23 +402,6 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
         let _ = std::fs::remove_file(path);
     }
     std::fs::rename(&part, path).with_context(|| format!("replace {}", path.display()))
-}
-
-/// The newest of the files in `dir` named `prefix…suffix`.
-pub fn newest(dir: &Path, prefix: &str, suffix: &str) -> Option<PathBuf> {
-    std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter(|e| {
-            let n = e.file_name().to_string_lossy().to_string();
-            n.starts_with(prefix) && n.ends_with(suffix)
-        })
-        .max_by_key(|e| {
-            e.metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-        })
-        .map(|e| e.path())
 }
 
 #[cfg(test)]

@@ -107,7 +107,7 @@ offers the EchoXR routes instead.
 ## Antivirus
 
 The live build loads nEVR (`bin\win10\BugSplat64.dll`, from 5.8.1 on with its runtime
-`nevr-runtime.dll`) at its start, and Windows only says
+`nevr-runtime.dll`, which newer releases load from `%LOCALAPPDATA%\nevr\echovr`) at its start, and Windows only says
 "unable to start correctly" (0xc0000135, 0xc0000022, 0xc0000043) when antivirus removed or
 blocked it. The launcher checks the files before PLAY and right after an update puts them in
 place, and reads those codes when a start ends. It then says so and offers **Allow and

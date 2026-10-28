@@ -84,10 +84,14 @@ pub fn classify(slot: Option<&[u8]>, slot_sha: Option<&str>, runtime: Option<&[u
     };
     if nevr::is_nevr(bytes) {
         let version = nevr::version_in(bytes).unwrap_or_default();
+        // The runtime of the same build: its whole identity (a development build's version
+        // isn't X.Y.Z), else its version.
+        let same = |r: &[u8]| match nevr::build_id(bytes) {
+            Some(id) => nevr::build_id(r).as_deref() == Some(&id),
+            None => nevr::version_in(r).as_deref() == Some(&version),
+        };
         let whole = !nevr::is_host(bytes)
-            || runtime.is_some_and(|r| {
-                nevr::contains(r, nevr::MARKER) && nevr::version_in(r).as_deref() == Some(&version)
-            });
+            || runtime.is_some_and(|r| nevr::contains(r, nevr::MARKER) && same(r));
         return if whole {
             Loader::Nevr { version }
         } else {
@@ -126,16 +130,18 @@ pub fn slot_state(bin: &Path) -> SlotState {
 }
 
 /// The first of the mod loader's files in `bin` the game can't load, and why: the slot, and
-/// from nEVR 5.8 on the runtime its host loads from beside it.
+/// from nEVR 5.8 on the runtime its host loads (from beside it, or a root host's from the
+/// folder's copy the launcher puts into nEVR's root).
 pub fn loader_problem(bin: &Path) -> Option<(&'static str, SlotState)> {
     match slot_state(bin) {
         SlotState::Ok => {}
         s => return Some((SLOT, s)),
     }
-    if !std::fs::read(bin.join(SLOT)).is_ok_and(|b| nevr::is_host(&b)) {
+    let host = std::fs::read(bin.join(SLOT)).unwrap_or_default();
+    if !nevr::is_host(&host) {
         return None;
     }
-    match file_state(&bin.join(nevr::RUNTIME)) {
+    match file_state(&bin.join(nevr::runtime_entry(&host))) {
         SlotState::Ok => None,
         s => Some((nevr::RUNTIME, s)),
     }
@@ -902,16 +908,17 @@ fn plugin_files(v: &InstalledVersion) -> Vec<String> {
 /// when its size or time changed.
 pub fn slot_facts(bin: &Path) -> (Loader, bool) {
     type Stamp = Option<(u64, std::time::SystemTime)>;
-    type Seen = (Stamp, Stamp, Loader, bool);
+    type Seen = (Stamp, [Stamp; 2], Loader, bool);
     static SEEN: std::sync::Mutex<BTreeMap<PathBuf, Seen>> = std::sync::Mutex::new(BTreeMap::new());
     let path = bin.join(SLOT);
-    let runtime_path = bin.join(nevr::RUNTIME);
     let stamp_of = |p: &Path| {
         std::fs::metadata(p)
             .ok()
             .and_then(|m| Some((m.len(), m.modified().ok()?)))
     };
-    let (stamp, runtime_stamp) = (stamp_of(&path), stamp_of(&runtime_path));
+    // The runtime is beside the host, or (a root host's) in the folder's copy for the root.
+    let runtime_stamp = [nevr::RUNTIME, nevr::ROOT_COPY].map(|r| stamp_of(&bin.join(r)));
+    let stamp = stamp_of(&path);
     if stamp.is_some() {
         let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((s, rs, loader, early)) = seen.get(&path) {
@@ -928,7 +935,7 @@ pub fn slot_facts(bin: &Path) -> (Loader, bool) {
     let runtime = slot
         .as_deref()
         .filter(|b| nevr::is_host(b))
-        .and_then(|_| std::fs::read(&runtime_path).ok());
+        .and_then(|b| std::fs::read(bin.join(nevr::runtime_entry(b))).ok());
     let loader = classify(slot.as_deref(), sha.as_deref(), runtime.as_deref());
     let early = runtime
         .as_deref()
@@ -2632,6 +2639,28 @@ pub(crate) mod tests {
             incomplete
         );
         assert!(!incomplete.editable());
+        // A development build's pair (its version isn't X.Y.Z): whole by its identity, and
+        // a runtime of another commit isn't its own.
+        let dev = "NEVR-BUILD 5.1.2-dev.279+bfe115d7 bfe115d7e31cd8bfa5964736d0d5e91d29d996ce";
+        let dev_host = format!("MZ host\0{dev}\0");
+        let dev_runtime = format!("MZ [NEVR.BOOT]\0{dev}\0");
+        assert_eq!(
+            classify(
+                Some(dev_host.as_bytes()),
+                None,
+                Some(dev_runtime.as_bytes())
+            ),
+            nevr("5.1.2-dev.279+bfe115d7")
+        );
+        let other_commit = dev_runtime.replace("bfe115d7e31c", "000000000000");
+        assert!(matches!(
+            classify(
+                Some(dev_host.as_bytes()),
+                None,
+                Some(other_commit.as_bytes())
+            ),
+            Loader::NevrIncomplete { .. }
+        ));
     }
 
     #[test]
@@ -2658,6 +2687,31 @@ pub(crate) mod tests {
                 true
             )
         );
+    }
+
+    /// A host that loads its runtime from nEVR's root: its runtime is the folder's copy for
+    /// the root, and one beside it (the old layout) doesn't count.
+    #[test]
+    fn reads_a_root_hosts_runtime_from_its_copy_for_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path();
+        let id = "NEVR-BUILD 5.17.0 c8b9cf4c8d39627ec49446127223fdf4ad95574c";
+        let runtime = format!("MZ [NEVR.BOOT]\0{id}\0");
+        std::fs::write(
+            bin.join(SLOT),
+            format!("MZ host\0nevr_root_override\0{id}\0"),
+        )
+        .unwrap();
+        std::fs::write(bin.join(nevr::RUNTIME), &runtime).unwrap();
+        assert!(!nevr_in(bin));
+        assert_eq!(
+            loader_problem(bin),
+            Some((nevr::RUNTIME, SlotState::Missing))
+        );
+        std::fs::create_dir_all(bin.join("nevr-root")).unwrap();
+        std::fs::write(bin.join(nevr::ROOT_COPY), &runtime).unwrap();
+        assert!(nevr_in(bin));
+        assert_eq!(loader_problem(bin), None);
     }
 
     #[test]

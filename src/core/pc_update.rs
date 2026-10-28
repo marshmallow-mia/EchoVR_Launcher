@@ -324,10 +324,12 @@ pub fn apply_manifest(
         .dels()
         .filter(|e| !skipped(&e.path, skip))
         .collect();
-    let adds: Vec<_> = manifest
+    let mut adds: Vec<_> = manifest
         .adds()
         .filter(|e| !skipped(&e.path, skip))
         .collect();
+    // nEVR's host first: where its runtime goes depends on it.
+    adds.sort_by_key(|e| place_order(&e.path) != 2);
     let total = dels.len() + adds.len();
     let mut current = 0;
     // What this update puts aside: gathered beside the last one, which it replaces once
@@ -380,7 +382,8 @@ pub fn apply_manifest(
         }
 
         // Every file is downloaded and checked first, so a failed download changes nothing.
-        let mut staged: Vec<(&ManifestEntry, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        // Each with its place in the game folder (nEVR's runtime: where its host loads it).
+        let mut staged: Vec<(String, std::path::PathBuf, std::path::PathBuf)> = Vec::new();
         // A nEVR release's zip, once one of its files is needed.
         let mut zip: Option<std::path::PathBuf> = None;
         let fetched = (|| -> Result<()> {
@@ -390,7 +393,12 @@ pub fn apply_manifest(
                 }
                 current += 1;
                 status(format!("Updating {current}/{total}: {}...", e.path));
-                let target = bin_path.join(&e.path);
+                let path = if e.path.eq_ignore_ascii_case(super::launcher::nevr::RUNTIME) {
+                    super::launcher::nevr::runtime_entry(&host_after(&staged, bin_path)).to_string()
+                } else {
+                    e.path.clone()
+                };
+                let target = bin_path.join(&path);
                 let sha = e.sha256.as_deref().unwrap_or_default();
                 if target.exists() && sha256_matches(&target, sha) {
                     tracing::info!("UpdateService: skipping {} (already up to date)", e.path);
@@ -439,7 +447,7 @@ pub fn apply_manifest(
                     let _ = std::fs::remove_file(&file);
                 }
                 got?;
-                staged.push((e, target, file));
+                staged.push((path, target, file));
             }
             Ok(())
         })();
@@ -454,13 +462,14 @@ pub fn apply_manifest(
         }
         // Then in place: nEVR's runtime before its host, so the host never starts beside
         // a runtime of another version.
-        staged.sort_by_key(|(e, _, _)| place_order(&e.path));
+        let root_host = super::launcher::nevr::is_root_host(&host_after(&staged, bin_path));
+        staged.sort_by_key(|(path, _, _)| place_order(path));
         let mut left = staged.into_iter();
-        while let Some((e, target, file)) = left.next() {
+        while let Some((path, target, file)) = left.next() {
             let locked = |err: std::io::Error| -> anyhow::Error {
                 if is_locked(&err) {
                     UpdateError::FileInUse {
-                        path: e.path.clone(),
+                        path: path.clone(),
                         source: err,
                     }
                     .into()
@@ -470,19 +479,17 @@ pub fn apply_manifest(
             };
             let placed = match &mut kept {
                 Some(k) if target.exists() => {
-                    k.put_aside(&e.path, &target)
-                        .map_err(locked)
-                        .and_then(|()| {
-                            std::fs::rename(&file, &target).map_err(|err| {
-                                // Put the old one back where it was.
-                                k.take_back(&e.path, &target);
-                                locked(err)
-                            })
+                    k.put_aside(&path, &target).map_err(locked).and_then(|()| {
+                        std::fs::rename(&file, &target).map_err(|err| {
+                            // Put the old one back where it was.
+                            k.take_back(&path, &target);
+                            locked(err)
                         })
+                    })
                 }
                 Some(k) => std::fs::rename(&file, &target)
                     .map_err(locked)
-                    .map(|()| k.record.added.push(e.path.clone())),
+                    .map(|()| k.record.added.push(path.clone())),
                 None => std::fs::rename(&file, &target).map_err(locked),
             };
             if let Err(err) = placed {
@@ -492,7 +499,26 @@ pub fn apply_manifest(
                 }
                 return Err(err);
             }
-            tracing::info!("UpdateService: placed {}", e.path);
+            tracing::info!("UpdateService: placed {path}");
+        }
+        // A root host never loads a runtime beside the exe: the old layout's is moved aside
+        // (into what Undo puts back, else as install.ps1 does it).
+        let beside = bin_path.join(super::launcher::nevr::RUNTIME);
+        if root_host && beside.is_file() {
+            let moved = match &mut kept {
+                Some(k) => k.put_aside(super::launcher::nevr::RUNTIME, &beside),
+                None => std::fs::rename(&beside, legacy_name(&beside)),
+            };
+            match moved {
+                Ok(()) => tracing::info!(
+                    "UpdateService: moved aside the {} beside the exe (nEVR loads it from its root)",
+                    super::launcher::nevr::RUNTIME
+                ),
+                Err(err) => tracing::warn!(
+                    "UpdateService: couldn't move aside {}: {err}",
+                    beside.display()
+                ),
+            }
         }
         Ok(())
     })();
@@ -605,6 +631,29 @@ fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     }
     std::fs::write(path, serde_json::to_vec_pretty(value)?)
         .with_context(|| format!("write {}", path.display()))
+}
+
+/// The host nEVR's slot will hold once the files `staged` so far are in place in `bin_path`.
+fn host_after(
+    staged: &[(String, std::path::PathBuf, std::path::PathBuf)],
+    bin_path: &Path,
+) -> Vec<u8> {
+    let slot = super::launcher::mods::SLOT;
+    let file = staged
+        .iter()
+        .find(|(path, _, _)| path.eq_ignore_ascii_case(slot))
+        .map_or_else(|| bin_path.join(slot), |(_, _, file)| file.clone());
+    std::fs::read(file).unwrap_or_default()
+}
+
+/// `<file>.legacy-<time>`, as nEVR's install.ps1 names a runtime it moves aside.
+fn legacy_name(file: &Path) -> std::path::PathBuf {
+    let stamp = time::OffsetDateTime::now_utc().unix_timestamp();
+    let name = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    file.with_file_name(format!("{name}.legacy-{stamp}"))
 }
 
 /// Where a file goes in the order an update places its files: nEVR's runtime first, its
@@ -768,6 +817,86 @@ mod tests {
         assert!(!bin.join("nevr-runtime.dll").exists());
     }
 
+    /// A host that loads its runtime from nEVR's root (nevr-runtime #1104 on): its runtime
+    /// goes to the folder's copy for the root, the old one beside the exe is moved aside,
+    /// and going back puts the old layout back.
+    #[test]
+    fn a_root_hosts_runtime_goes_to_the_copy_for_the_root() {
+        use crate::core::launcher::nevr::{ROOT_COPY, RUNTIME};
+        use std::sync::atomic::AtomicBool;
+        // A host by its identity alone, and a root host by its root's name.
+        let host: &'static str = "MZ nevr_root_override\0NEVR-BUILD 5.17.0 abcdef0\0";
+        let runtime = "new runtime";
+        let base = serve(vec![
+            ("BugSplat64.dll", host),
+            ("nevr-runtime.dll", runtime),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let previous = dir.path().join("previous-update");
+        std::fs::create_dir_all(&bin).unwrap();
+        // The old pair beside the exe.
+        std::fs::write(bin.join("BugSplat64.dll"), "old host").unwrap();
+        std::fs::write(bin.join(RUNTIME), "old runtime").unwrap();
+        let text = format!(
+            "add BugSplat64.dll {}\nadd nevr-runtime.dll {}\n",
+            sha(host),
+            sha(runtime)
+        );
+        let apply = |previous: Option<&std::path::Path>| {
+            let m = super::Manifest::parse(&text, &format!("{base}/update.manifest")).unwrap();
+            super::apply_manifest(
+                &m,
+                &text,
+                &bin,
+                &[],
+                previous,
+                &AtomicBool::new(false),
+                &mut |_| {},
+            )
+        };
+        apply(Some(&previous)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bin.join("BugSplat64.dll")).unwrap(),
+            host
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin.join(ROOT_COPY)).unwrap(),
+            runtime
+        );
+        assert!(!bin.join(RUNTIME).exists());
+        // Again: nothing to do, nothing moved.
+        apply(None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bin.join(ROOT_COPY)).unwrap(),
+            runtime
+        );
+        // Undo: the old host and the runtime beside it, and no copy for the root.
+        super::go_back(&previous, &bin).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bin.join("BugSplat64.dll")).unwrap(),
+            "old host"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin.join(RUNTIME)).unwrap(),
+            "old runtime"
+        );
+        assert!(!bin.join(ROOT_COPY).exists());
+        // Without a record to go back to, a runtime beside a root host is renamed as install.ps1 does.
+        apply(None).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&bin)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!bin.join(RUNTIME).exists());
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("nevr-runtime.dll.legacy-")),
+            "{names:?}"
+        );
+    }
+
     #[test]
     fn a_nevr_release_replaces_the_updates_nevr_lines() {
         let sha = |c: char| c.to_string().repeat(64);
@@ -829,13 +958,21 @@ mod tests {
             );
             return;
         }
-        let v = std::env::var("ECHOVR_TEST_NEVR").unwrap();
-        let text = format!("# nEVR {}: {v}\n", nevr_release::PLATFORM);
-        let m = Manifest::parse(
-            &text,
-            "https://release.echovr.de/updates-nevr/update.manifest",
-        )
-        .unwrap();
+        // A whole update manifest (ECHOVR_TEST_MANIFEST, its URL: a development pair), or
+        // just a release of nEVR's (ECHOVR_TEST_NEVR).
+        let (m, text) = match std::env::var("ECHOVR_TEST_MANIFEST") {
+            Ok(url) => fetch_manifest(&url).unwrap(),
+            Err(_) => {
+                let v = std::env::var("ECHOVR_TEST_NEVR").unwrap();
+                let text = format!("# nEVR {}: {v}\n", nevr_release::PLATFORM);
+                let m = Manifest::parse(
+                    &text,
+                    "https://release.echovr.de/updates-nevr/update.manifest",
+                )
+                .unwrap();
+                (m, text)
+            }
+        };
         apply_manifest(
             &m,
             &text,

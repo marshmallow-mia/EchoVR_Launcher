@@ -1707,7 +1707,7 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     // or the classic lobbies' files, EchoXR. The keeper writes it whenever it changes; once
     // more now. Where EchoXR needs administrator rights (the Meta library's), PLAY's
     // preparation does it.
-    if let Err(f) = ready::prepare(&d.state, &v) {
+    if let Err(f) = ready::prepare_start(&d.state, &v) {
         if f.step == ready::Part::EchoXr && revive::needs_elevation(&f.error) {
             d.notify("EchoXR needs administrator rights for this folder: Echo VR starts once it's set up");
             setup::echoxr_windows(d, ctx);
@@ -1870,7 +1870,7 @@ impl LoginWatching {
         // A little slack: the game may open its log in the same second PLAY ran.
         let since = std::time::SystemTime::now() - std::time::Duration::from_secs(2);
         LoginWatching {
-            watch: LoginWatch::new(root, since, crate::core::launcher::nevr::log_dir()),
+            watch: LoginWatch::new(root, since, crate::core::launcher::nevr::log_dirs()),
             at: std::time::Instant::now(),
             since: std::time::Instant::now(),
             vd_meta: profile.runtime == Runtime::VirtualDesktop && profile.vd_via == VdVia::Meta,

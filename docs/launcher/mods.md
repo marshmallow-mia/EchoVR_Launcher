@@ -43,6 +43,33 @@ replaces main's line. `ECHOVR_NEVR_RELEASES` points the launcher at a mirror of 
 An update places nEVR's two files as a pair: both are downloaded and checked first, then
 the runtime goes in before the host, and Undo update puts both back.
 
+**nEVR's root.** From nevr-runtime #1104 on (ADR 0012 there), the host loads its runtime
+only from nEVR's root, `%LOCALAPPDATA%\nevr\echovr` (the Wine prefix's on Linux), never from
+beside itself: what install.ps1 does once, the launcher does without scripts. It tells such
+a host by its own name for an overridden root (`nevr_root_override`, which older hosts
+don't carry: 5.8.1 to 5.16 still load the runtime from beside them). The root holds one
+runtime for every Echo VR on the computer, and the launcher keeps several versions, so:
+
+- an update to such a host places the runtime in the version's own copy for the root,
+  `bin/win10/nevr-root/nevr-runtime.dll`, and moves an old `nevr-runtime.dll` beside the exe
+  aside (into what Undo update puts back; without that, as install.ps1 does,
+  `nevr-runtime.dll.legacy-<time>`);
+- before every start (PLAY, `--play`), and for the selected version whenever its folder is
+  kept ready, that copy goes into the root when it differs (a copy, then a rename). A
+  runtime the launcher didn't put there (nEVR's installer) is set aside as
+  `nevr-runtime.dll.original-<time>`, never replaced; `nevr-root.json` in the launcher's
+  data folder notes what it put there. While Echo VR runs with another runtime, a start of
+  a version with another one is refused (the file is in use); uninstalling the versions
+  takes the launcher's runtime out of the root again;
+- the Mods card, Verify and Repair look at the copy for the root; the host and its runtime
+  match by their whole build identity (a development build's version isn't X.Y.Z).
+
+From 5.13 on nEVR keeps its sign-in (`.credentials.json`, which wins over `_local`'s, and
+which it moves there once) and its logs (`logs\`) in the root too: the launcher writes the
+game's sign-in to both places, and reads, follows and uploads logs from both folders. Each
+Server host server runs with its own `LOCALAPPDATA` (Windows) or prefix (Linux), so it has a
+root of its own: the runtime and its sign-in go there before it starts.
+
 **A test channel.** To try a community update before it goes live, point the launcher at
 another manifest: `"update_manifest": "https://release.echovr.de/updates-nevr-test/update.manifest"`
 in `launcher.json` (in the launcher's data folder), or the environment variable
@@ -126,7 +153,8 @@ loader's place, in any case of its name): PLAY takes it out first, and the updat
 nEVR's host checks the runtime's signature before it loads it. When it refuses it, or the
 file is missing, the game ends with exit code 78; the launcher then says so with the reason
 from the host's own log (`%LOCALAPPDATA%\nevr\echovr\logs\nevr-bootstrap.jsonl`, its newest
-`runtime_load` record) and points to Repair game files. Under Proton (Wine 11.0) the host
+`runtime_load` record) and points to Repair game files. A root host started without the
+launcher finds the runtime the launcher last put into the root (the selected version's). Under Proton (Wine 11.0) the host
 refuses every runtime today: its chain check passes a structure size Wine 11.0 doesn't take
 (fix pending upstream), so Linux stays on a single-file nEVR until a release with the fix is
 named for `linux`.
@@ -137,13 +165,15 @@ carries only the build identity; the runtime beside it has the log strings and t
 version, else the card says **Incomplete** and Repair game files puts it back), the game's
 own crash reporter (its checksum), or something else. It
 reads what nEVR loaded and why not from nEVR's newest log
-(`%LOCALAPPDATA%\EchoVR\logs\nevr-<time>.jsonl`, the `[NEVR.PLUGIN]` lines). Mods are for
+(`nevr-<time>.jsonl`, the `[NEVR.PLUGIN]` lines: in `%LOCALAPPDATA%\nevr\echovr\logs` from 5.13
+on, `%LOCALAPPDATA%\EchoVR\logs` before). Mods are for
 the live build only: event builds run EchoRelay's patch in the loader's place.
 
 ## The game's sign-in
 
 nEVR signs the game in with an EchoVRCE device code, opened in the browser at start, and
-keeps the refresh token in `_local/.credentials.json`. While the launcher is signed in
+keeps the refresh token in `_local/.credentials.json` (from 5.13 on in its root,
+`%LOCALAPPDATA%\nevr\echovr\.credentials.json`, which wins; the launcher writes both). While the launcher is signed in
 with EchoVRCE it hands every live version with nEVR a sign-in of its own instead: a
 session linked as another device of the account (as for echovrce.com inside the window),
 written as `{"refresh_token", "refresh_token_expiry", "user_id", "username"}`, so the game
@@ -156,7 +186,10 @@ it.
 
 Proton loads `BugSplat64.dll` from the game's folder by itself (Wine has no builtin of
 it). Flat starts with `-windowed` (nEVR's: no headset, in a window) instead of `-noovr`.
-nEVR's logs are in the prefix's `drive_c/users/steamuser/AppData/Local/EchoVR/logs`.
+nEVR's logs are in the prefix's `drive_c/users/steamuser/AppData/Local/EchoVR/logs` (from 5.13
+on `…/AppData/Local/nevr/echovr/logs`), and nEVR's root is the prefix's
+`…/AppData/Local/nevr/echovr`: the launcher puts the runtime there only once Proton has made
+the prefix.
 
 "Upload logs" sends nEVR's newest start logs and crash records, its
 `bin/win10/logs/nevr-boot.jsonl`, the host's `nevr-bootstrap.jsonl`, and each plugin's

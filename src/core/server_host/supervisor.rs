@@ -24,6 +24,7 @@ use anyhow::{bail, Context, Result};
 use super::events::{self, Kind, Reason};
 use super::status::{self, Command, Console, State, Status};
 use super::{account, config, farm, notify, Config, Server, SignIn};
+use crate::core::launcher::nevr_root;
 use crate::core::launcher::store::LauncherState;
 use crate::core::launcher::{mods, nevr};
 use crate::core::paths;
@@ -403,7 +404,19 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
         config_json: &json,
     };
     f.build().context("the server's game folder")?;
-    account::ensure_login(&cfg, &f.local()).context("the server's sign-in")?;
+    let appdata = dir.join("appdata");
+    let compat = crate::core::linux::echoxr::server_compat_data(&format!("host-{name}"));
+    // The server's own nEVR root (in its own LOCALAPPDATA): a root host's runtime, and the
+    // sign-in nEVR 5.13 on keeps there. A prefix Proton hasn't made yet gets them next run.
+    let local = local_app_data(&appdata, &compat);
+    let root = local
+        .filter(|l| cfg!(windows) || l.is_dir())
+        .map(|l| nevr_root::root_in(&l));
+    if let Some(root) = &root {
+        nevr_root::put_in_place(&v.bin_dir(), root, &dir.join("nevr-root.json"), false)
+            .context("nEVR's runtime for the server")?;
+    }
+    account::ensure_login(&cfg, &f.local(), root.as_deref()).context("the server's sign-in")?;
     let password = match cfg.account.sign_in {
         SignIn::Password => account::secrets::load().password,
         _ => String::new(),
@@ -417,8 +430,8 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
         config_json: f.local().join(nevr::GAME_CONFIG),
         sign_in: cfg.account.sign_in,
         password,
-        appdata: dir.join("appdata"),
-        compat: crate::core::linux::echoxr::server_compat_data(&format!("host-{name}")),
+        appdata,
+        compat,
         server,
     })
 }
@@ -487,7 +500,7 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
 /// Proton nor one on Windows (nEVR's console window has it).
 fn lines(
     child_out: Option<(std::process::ChildStdout, std::process::ChildStderr)>,
-    log_dir: PathBuf,
+    log_dirs: Vec<PathBuf>,
     since: std::time::SystemTime,
     stop: Arc<AtomicBool>,
 ) -> Receiver<String> {
@@ -514,11 +527,16 @@ fn lines(
         let mut tail: Option<status::Tail> = None;
         while !stop.load(Ordering::Relaxed) {
             // The newest of nEVR's logs since the start (it starts a new one at 50 MB).
-            if let Some(newest) = farm::newest(&log_dir, "nevr-", ".jsonl").filter(|p| {
-                p.metadata()
-                    .and_then(|m| m.modified())
-                    .is_ok_and(|t| t >= since)
-            }) {
+            if let Some((newest, _)) = log_dirs
+                .iter()
+                .filter_map(|d| {
+                    crate::core::logs::newest_in(d, nevr::is_run_log)
+                        .into_iter()
+                        .next()
+                })
+                .filter(|(_, t)| *t >= since)
+                .max_by_key(|(_, t)| *t)
+            {
                 if file.as_ref() != Some(&newest) {
                     tail = Some(status::Tail::file(&newest));
                     file = Some(newest);
@@ -537,15 +555,29 @@ fn lines(
     rx
 }
 
-/// Where nEVR writes its log for the server (`%LOCALAPPDATA%\EchoVR\logs`): on Windows
-/// the server's own `LOCALAPPDATA`, on Linux its prefix's.
-fn log_dir(p: &Prepared) -> PathBuf {
+/// The server's `%LOCALAPPDATA%`: on Windows its own (`appdata`), on Linux its prefix's
+/// (in `compat`).
+fn local_app_data(appdata: &Path, compat: &Path) -> Option<PathBuf> {
     if cfg!(target_os = "linux") {
-        p.compat
-            .join("pfx/drive_c/users/steamuser/AppData/Local/EchoVR/logs")
+        Some(compat.join("pfx/drive_c/users/steamuser/AppData/Local"))
+    } else if cfg!(windows) {
+        Some(appdata.to_path_buf())
     } else {
-        p.appdata.join("EchoVR").join("logs")
+        None
     }
+}
+
+/// Where nEVR writes its log for the server: its root's `logs` (5.13 on), else
+/// `%LOCALAPPDATA%\EchoVR\logs`, in the server's own `LOCALAPPDATA`.
+fn log_dirs(p: &Prepared) -> Vec<PathBuf> {
+    local_app_data(&p.appdata, &p.compat)
+        .map(|l| {
+            vec![
+                nevr_root::root_in(&l).join("logs"),
+                l.join("EchoVR").join("logs"),
+            ]
+        })
+        .unwrap_or_default()
 }
 
 /// One run of the game: until it ends.
@@ -588,7 +620,7 @@ fn run_once(p: &Prepared, shared: &Shared, console: &mut Console, rx: &Receiver<
     });
     let stop_tail = Arc::new(AtomicBool::new(false));
     let out = linux.then(|| game.take_output()).flatten();
-    let lines = lines(out, log_dir(p), started_at, stop_tail.clone());
+    let lines = lines(out, log_dirs(p), started_at, stop_tail.clone());
 
     let mut o = Outcome::default();
     let started = Instant::now();

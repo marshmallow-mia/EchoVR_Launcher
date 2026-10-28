@@ -148,9 +148,9 @@ fn play_here(ask: &Ask) -> i32 {
         profile: profile.clone(),
         ..state.clone()
     };
-    if let Err(f) = ready::prepare(&this_start, &v) {
+    if let Err(f) = ready::prepare_start(&this_start, &v) {
         match f.step {
-            Part::ClassicLobby | Part::EchoRelay => {
+            Part::ClassicLobby | Part::EchoRelay | Part::Runtime => {
                 tracing::error!("--play: {}: {f}", v.id);
                 return window(f.step.title(), &format!("{:#}", f.error));
             }

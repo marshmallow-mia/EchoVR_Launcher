@@ -311,17 +311,30 @@ pub fn session(c: &Config) -> Result<Tokens> {
 
 /// Before a start: the server in `local` (its `_local`) has its own sign-in (a device
 /// link), made from the servers' session unless it has a good one. A password sign-in
-/// needs none.
-pub fn ensure_login(c: &Config, local: &Path) -> Result<()> {
+/// needs none. `root`: the server's nEVR root, where nEVR 5.13 on keeps the sign-in (and
+/// takes `_local`'s once): it gets the same one.
+pub fn ensure_login(c: &Config, local: &Path, root: Option<&Path>) -> Result<()> {
     if c.account.sign_in != SignIn::Device {
         return Ok(());
     }
-    let path = local.join(nevr::CREDENTIALS);
     let now = echovrce::now();
-    let has: Option<GameLogin> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok());
-    if has.is_some_and(|l| l.good_for(&c.account.user_id, now)) {
+    let read = |dir: &Path| -> Option<GameLogin> {
+        std::fs::read_to_string(dir.join(nevr::CREDENTIALS))
+            .ok()
+            .and_then(|t| serde_json::from_str(&t).ok())
+    };
+    let good = root
+        .into_iter()
+        .chain(std::iter::once(local))
+        .filter_map(read)
+        .find(|l| l.good_for(&c.account.user_id, now));
+    if let Some(login) = good {
+        // In both places, as nEVR may have moved it.
+        for dir in root.into_iter().chain(std::iter::once(local)) {
+            if read(dir).as_ref() != Some(&login) {
+                nevr::write_login_at(dir, &login)?;
+            }
+        }
         return Ok(());
     }
     let master = session(c)?;
@@ -330,7 +343,10 @@ pub fn ensure_login(c: &Config, local: &Path) -> Result<()> {
         bail!("EchoVRCE gave the server a session it can't renew.");
     };
     let login = GameLogin::new(refresh, &c.account.user_id, &c.account.username, now);
-    nevr::write_login_at(local, &login)
+    for dir in root.into_iter().chain(std::iter::once(local)) {
+        nevr::write_login_at(dir, &login)?;
+    }
+    Ok(())
 }
 
 /// A server of this account as EchoVRCE has it registered.
