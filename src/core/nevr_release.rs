@@ -407,7 +407,20 @@ fn release_in(m: &Value, version: &str, base: &str) -> Result<Release, Refused> 
     }
     let r = &m["releases"][version];
     if !r.is_object() || r.get("version").is_some_and(|v| v != version) {
-        return Err(refused(7, format!("{version} is not in releases")));
+        // A manifest lists only the releases of its channels: say which, for the allow line.
+        let offered: Vec<&str> = m["releases"]
+            .as_object()
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        let offered = if offered.is_empty() {
+            "none".into()
+        } else {
+            offered.join(", ")
+        };
+        return Err(refused(
+            7,
+            format!("{version} is not in releases (it has {offered})"),
+        ));
     }
     let zips: Vec<&Value> = r["artifacts"]
         .as_array()
@@ -666,6 +679,9 @@ mod tests {
             r.files().map(|m| m.path.as_str()).collect::<Vec<_>>(),
             FILES
         );
+        // A version the manifest no longer lists: refused, naming what it has.
+        let r = release_in(&stored(dir.path()).unwrap(), "5.2.1", BASE).unwrap_err();
+        assert!(r.step == 7 && r.detail.contains("(it has 5.8.1)"), "{r:?}");
         // The fixtures are not signed by a pinned key.
         let (m, s) = fixture("good");
         assert_eq!(

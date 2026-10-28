@@ -19,7 +19,7 @@ put them back, Verify reports any change.
 name a release of nEVR per platform, a header line the launcher before 0.12.5 ignores:
 
 ```text
-# nEVR windows: 5.8.1
+# nEVR windows: 5.10.0
 # nEVR linux:   none
 ```
 
@@ -35,7 +35,8 @@ and sha256, every entry listed and nothing else). `BugSplat64.dll` and `nevr-run
 come out of it; the rest of the update stays ours. Anything that doesn't pass changes
 nothing and says which check failed. So nEVR releases what may be installed, and the
 update line says which one players get: a new release reaches nobody until it is named
-there. `none` (or no line) keeps the manifest's own `BugSplat64.dll`; a channel's overlay
+there. The manifest lists only the releases of its channels, so the line must name one it
+lists (a refusal says which it has). `none` (or no line) keeps the manifest's own `BugSplat64.dll`; a channel's overlay
 replaces main's line. `ECHOVR_NEVR_RELEASES` points the launcher at a mirror of that folder
 (only what nEVR's keys signed passes there too).
 
