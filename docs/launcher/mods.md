@@ -297,6 +297,11 @@ fields beside a `mods.json` entry's (and the mod's `publisher`, its GitHub accou
 
 ### A release in release-signer's shape
 
+Signing is optional. nEVR loads unsigned plugins unless it runs with
+`-require-signed-plugins`, and an entry with a loose DLL (`url`, `sha256`) stays as valid as
+ever. A release in release-signer's shape is one way to ship a mod, not a requirement; the
+launcher doesn't start nEVR with that flag.
+
 A mod whose plugin is signed ships as a release of three files
 ([release-signer's `docs/plugin-release.md`](https://github.com/thesprockee/release-signer/blob/teth/plugin-release-spec/docs/plugin-release.md),
 section 4): `<id>-v<version>-windows.zip` (the DLL, `LICENSE`, `NOTICE` and, with settings,
@@ -333,8 +338,8 @@ section 4): `<id>-v<version>-windows.zip` (the DLL, `LICENSE`, `NOTICE` and, wit
   the install with nothing changed.
 - `signer.status` (`unsigned`, `pending`, `approved`, `signed`, `revoked`) is the listing's
   record of the release in signing. A `revoked` release isn't installed, nor one with a
-  status this launcher doesn't know. The Mods page shows it: More mods' info line says
-  where signing is (Not signed yet, Signing pending, Signed, Signature revoked), and an
+  status this launcher doesn't know. The Mods page names only `signed` and `revoked`:
+  More mods' info line says Signed or Signature revoked (nothing for the others), and an
   installed mod gets a chip only for `signed` (green) or `revoked` (amber), and only when
   the launcher installed that very copy from the release (`"release": true` in its
   `launcher` note in `launcher-mods.json`), never for a loose DLL of the same version.

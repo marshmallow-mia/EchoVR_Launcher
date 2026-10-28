@@ -3571,7 +3571,8 @@ fn meta(m: &ModEntry) -> String {
     let signer = m
         .release
         .as_ref()
-        .map(|r| r.signer.status.label().to_string());
+        .and_then(|r| r.signer.status.label())
+        .map(str::to_string);
     [kind, author, size, caps, signer]
         .into_iter()
         .flatten()
@@ -4342,7 +4343,7 @@ mod tests {
     }
 
     #[test]
-    fn the_catalogue_line_says_where_signing_is() {
+    fn the_catalogue_line_names_only_signed_and_revoked() {
         let signed = release_entry("1.2.0", SignerStatus::Signed);
         assert!(meta(&signed).ends_with("Signed"), "{}", meta(&signed));
         let loose = ModEntry {
@@ -4350,5 +4351,21 @@ mod tests {
             ..signed
         };
         assert!(!meta(&loose).contains("igned"));
+        let revoked = release_entry("1.2.0", SignerStatus::Revoked);
+        assert!(
+            meta(&revoked).ends_with("Signature revoked"),
+            "{}",
+            meta(&revoked)
+        );
+        // Signing is optional: a release on its way, or never signed, says nothing.
+        for quiet in [
+            SignerStatus::Unsigned,
+            SignerStatus::Pending,
+            SignerStatus::Approved,
+            SignerStatus::Unknown,
+        ] {
+            let m = release_entry("1.2.0", quiet);
+            assert!(!meta(&m).contains("ign"), "{quiet:?}: {}", meta(&m));
+        }
     }
 }

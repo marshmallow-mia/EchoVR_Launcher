@@ -273,14 +273,13 @@ pub enum SignerStatus {
 }
 
 impl SignerStatus {
-    /// What More mods' info line calls it (approved is still on its way to signed).
-    pub fn label(self) -> &'static str {
+    /// What More mods' info line calls it. Signing is optional, so only signed and revoked
+    /// are named; a release on its way (or never signed) says nothing.
+    pub fn label(self) -> Option<&'static str> {
         match self {
-            SignerStatus::Unsigned => "Not signed yet",
-            SignerStatus::Pending | SignerStatus::Approved => "Signing pending",
-            SignerStatus::Signed => "Signed",
-            SignerStatus::Revoked => "Signature revoked",
-            SignerStatus::Unknown => "Signing status unknown",
+            SignerStatus::Signed => Some("Signed"),
+            SignerStatus::Revoked => Some("Signature revoked"),
+            _ => None,
         }
     }
 }
