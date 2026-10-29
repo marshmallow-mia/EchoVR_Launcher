@@ -551,20 +551,18 @@ pub fn apply_manifest(
         if let Some(z) = &zip {
             let _ = std::fs::remove_file(z);
         }
-        // A version on the new layout keeps it: an older nEVR would look for its plugins beside
+        // A version on the new layout keeps it: an older nEVR (its runtime, or a host that
+        // isn't one of the root's, such as a one-file nEVR) would look for its plugins beside
         // the exe (there's no way back across the move).
-        let old_runtime = staged
+        let older = staged
             .iter()
-            .find(|(path, _, _)| {
-                file_name(path).eq_ignore_ascii_case(super::launcher::nevr::RUNTIME)
-            })
             .filter(|_| home.is_some())
-            .and_then(|(_, _, file)| std::fs::read(file).ok())
-            .filter(|bytes| !super::launcher::home::needs_home(bytes))
-            .map(|bytes| super::launcher::nevr::version_in(&bytes).unwrap_or_else(|| "?".into()));
-        let fetched = fetched.and_then(|()| match old_runtime {
-            Some(v) => Err(anyhow!(
-                "This update would bring nEVR {v}, which loads its plugins from the game folder: since nEVR 6.0 the launcher keeps them in its own folder, and there is no way back. Nothing was changed."
+            .find_map(|(path, _, file)| {
+                older_than_layout(path, &std::fs::read(file).unwrap_or_default())
+            });
+        let fetched = fetched.and_then(|()| match older {
+            Some(what) => Err(anyhow!(
+                "This update would bring {what}, which loads its plugins from the game folder: since nEVR 6.0 the launcher keeps them in its own folder, and there is no way back. Nothing was changed."
             )),
             None => Ok(()),
         });
@@ -808,14 +806,16 @@ pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
     let at = |path: &str| super::launcher::home::at(bin_path, home.as_deref(), path);
     // Never back across the move to the new layout (an older nEVR's plugins are beside the exe).
     if home.is_some() {
-        let kept = files.join(super::launcher::nevr::ROOT_COPY);
-        if let Some(bytes) = std::fs::read(&kept)
-            .ok()
-            .filter(|b| !super::launcher::home::needs_home(b))
-        {
-            let v = super::launcher::nevr::version_in(&bytes).unwrap_or_else(|| "?".into());
+        let kept = [
+            super::launcher::nevr::ROOT_COPY,
+            super::launcher::nevr::RUNTIME,
+            super::launcher::mods::SLOT,
+        ]
+        .into_iter()
+        .find_map(|p| older_than_layout(p, &std::fs::read(files.join(p)).ok()?));
+        if let Some(what) = kept {
             return Err(anyhow!(
-                "Undo would bring back nEVR {v}, which loads its plugins from the game folder: since nEVR 6.0 the launcher keeps them in its own folder, and there is no way back."
+                "Undo would bring back {what}, which loads its plugins from the game folder: since nEVR 6.0 the launcher keeps them in its own folder, and there is no way back."
             ));
         }
     }
@@ -873,6 +873,25 @@ pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
 
 fn file_name(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Pure: what the file `bytes` at `path` (in the game's bin folder) would bring to a version
+/// on the new layout when it is an older nEVR, as said ("nEVR 5.18.0", or "an older nEVR"
+/// when it names no version): a runtime that loads its plugins beside the exe, or in the
+/// slot anything but a host that loads its runtime from nEVR's root (a one-file nEVR such
+/// as 5.2.1 or 5.4.3, a host before 5.18, or no nEVR at all). `None` for anything else.
+fn older_than_layout(path: &str, bytes: &[u8]) -> Option<String> {
+    use super::launcher::nevr;
+    let older = if file_name(path).eq_ignore_ascii_case(nevr::RUNTIME) {
+        !super::launcher::home::needs_home(bytes)
+    } else if path.eq_ignore_ascii_case(super::launcher::mods::SLOT) {
+        !nevr::is_root_host(bytes)
+    } else {
+        return None;
+    };
+    older.then(|| {
+        nevr::version_in(bytes).map_or_else(|| "an older nEVR".into(), |v| format!("nEVR {v}"))
+    })
 }
 
 #[cfg(test)]
@@ -1039,6 +1058,32 @@ mod tests {
             4,
             "nothing staged"
         );
+        // A one-file nEVR (main's 5.2.1, beta's 5.4.3: no root host): refused the same way,
+        // its host never placed.
+        let one_file = format!("add BugSplat64.dll {}\n", sha("one-file nevr"));
+        let base_one = serve(vec![("BugSplat64.dll", "one-file nevr")]);
+        let m = super::Manifest::parse(&one_file, &format!("{base_one}/update.manifest")).unwrap();
+        let e = super::apply_manifest(
+            &m,
+            &one_file,
+            &bin,
+            None,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("an older nEVR"), "{e:#}");
+        assert_eq!(
+            std::fs::read_to_string(bin.join("BugSplat64.dll")).unwrap(),
+            host
+        );
+        assert!(!bin.join(".BugSplat64.dll.download").exists());
+        // Undo to a one-file nEVR (its host kept, no runtime): refused.
+        let kept_host = previous.join("files").join("BugSplat64.dll");
+        std::fs::write(&kept_host, "MZ one-file NEVR-BUILD 5.4.3 abcdef0\0").unwrap();
+        let e = super::go_back(&previous, &bin).unwrap_err();
+        assert!(format!("{e:#}").contains("nEVR 5.4.3"), "{e:#}");
+        std::fs::remove_file(&kept_host).unwrap();
         // Undo to an older nEVR: refused too.
         let kept = previous.join("files").join(ROOT_COPY);
         std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
@@ -1449,6 +1494,29 @@ mod tests {
         );
         assert_eq!(with_dev(overlays(Channel::Beta), None), [BETA_OVERLAY]);
         assert!(override_ok(&dev_overlay("nevr6")));
+    }
+
+    #[test]
+    fn older_nevrs_than_the_layout() {
+        use super::older_than_layout as older;
+        let root_host = b"MZ nevr_root_override\0NEVR-BUILD 6.2.0 0123abc\0";
+        let runtime_6 = b"NEVR-BUILD 6.2.0 0123abc plugins never from the game folder";
+        assert_eq!(older("BugSplat64.dll", root_host), None);
+        assert_eq!(older("nevr-root/nevr-runtime.dll", runtime_6), None);
+        assert_eq!(older("plugins/NvrAssetPatches.dll", b"anything"), None);
+        // A one-file nEVR, a host before the root, no nEVR at all.
+        assert_eq!(
+            older("BugSplat64.dll", b"MZ stock").as_deref(),
+            Some("an older nEVR")
+        );
+        assert_eq!(
+            older("BugSplat64.dll", b"MZ NEVR-BUILD 5.10.0 abcdef0\0").as_deref(),
+            Some("nEVR 5.10.0")
+        );
+        assert_eq!(
+            older("nevr-runtime.dll", b"NEVR-BUILD 5.18.0 abcdef0\0").as_deref(),
+            Some("nEVR 5.18.0")
+        );
     }
 
     #[test]
