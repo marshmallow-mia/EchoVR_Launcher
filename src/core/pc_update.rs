@@ -85,7 +85,42 @@ pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
             over.push((o, t));
         }
     }
-    with_overlays(url, &text, &over)
+    let (mut m, mut text) = with_overlays(url, &text, &over)?;
+    // A channel of nEVR's is the release it has now, in the text too: a new one there is an
+    // update.
+    if let Some(name) = nevr_channel(&m) {
+        let v = channel_release(&name, &AtomicBool::new(false))?;
+        m.set_nevr_release(nevr_release::PLATFORM, &v);
+        text.push_str(&channel_line(&name, &v));
+    }
+    Ok((m, text))
+}
+
+/// The channel of nEVR's `m` names for this platform, when it names one and no version.
+fn nevr_channel(m: &Manifest) -> Option<String> {
+    m.nevr_release(nevr_release::PLATFORM)
+        .filter(|v| !nevr_release::semver_ok(v))
+        .map(str::to_string)
+}
+
+/// Pure: the line the release channel `name` has now (`version`) adds to an update's text.
+fn channel_line(name: &str, version: &str) -> String {
+    format!(
+        "\n# nEVR {} from {name}: {version}\n",
+        nevr_release::PLATFORM
+    )
+}
+
+/// The release nEVR's channel `name` has now.
+fn channel_release(name: &str, cancel: &AtomicBool) -> Result<String> {
+    nevr_release::channel_version(name, cancel).map_err(|e| {
+        tracing::warn!(
+            "UpdateService: nEVR's {name} channel refused at step {}: {}",
+            e.step,
+            e.detail
+        );
+        anyhow!(e).context(format!("nEVR's {name} channel couldn't be read"))
+    })
 }
 
 /// The overlays the update at `url` gets: the followed channel's for the live PC update,
@@ -552,6 +587,11 @@ pub fn with_nevr_release(
     let Some(v) = manifest.nevr_release(nevr_release::PLATFORM) else {
         return Ok((manifest.clone(), None));
     };
+    // A channel's line not yet read (an update not from [`fetch_manifest`]).
+    let channel = nevr_channel(manifest)
+        .map(|name| channel_release(&name, cancel))
+        .transpose()?;
+    let v = channel.as_deref().unwrap_or(v);
     let release = nevr_release::resolve(v, cancel).map_err(|e| {
         tracing::warn!(
             "UpdateService: nEVR {v}'s release refused at step {}: {}",
@@ -1182,6 +1222,27 @@ mod tests {
         assert_eq!(overlays(Channel::Main), &[] as &[&str]);
         assert_eq!(overlays(Channel::Beta), &[BETA_OVERLAY]);
         assert_eq!(overlays(Channel::Alpha), &[BETA_OVERLAY, ALPHA_OVERLAY]);
+    }
+
+    #[test]
+    fn an_overlay_may_follow_a_channel_of_nevrs() {
+        let main = format!("add BugSplat64.dll {}\n", "a".repeat(64));
+        let alpha = format!(
+            "# nEVR windows: beta\n# nEVR linux: beta\n# nEVR {}: beta\n",
+            nevr_release::PLATFORM
+        );
+        let (m, text) = with_overlays(PC_MANIFEST_URL, &main, &[(ALPHA_OVERLAY, alpha)]).unwrap();
+        assert_eq!(nevr_channel(&m).as_deref(), Some("beta"));
+        // The release it has goes into the text an update check hashes, as a line that is
+        // nothing when the text is read again.
+        let a = format!("{text}{}", channel_line("beta", "6.0.0"));
+        let b = format!("{text}{}", channel_line("beta", "6.0.1"));
+        assert_ne!(a, b);
+        let again = Manifest::parse(&a, PC_MANIFEST_URL).unwrap();
+        assert_eq!(again.nevr_release(nevr_release::PLATFORM), Some("beta"));
+        let mut m = m;
+        m.set_nevr_release(nevr_release::PLATFORM, "6.0.0");
+        assert_eq!(nevr_channel(&m), None);
     }
 
     #[test]

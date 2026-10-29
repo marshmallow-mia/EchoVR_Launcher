@@ -16,11 +16,12 @@ The community update (`https://release.echovr.de/updates-nevr/update.manifest`: 
 put them back, Verify reports any change.
 
 **nEVR from its own releases.** The update (main's manifest or a channel's overlay) may
-name a release of nEVR per platform, a header line the launcher before 0.12.5 ignores:
+name a release of nEVR per platform, a header line the launcher before 0.12.5 ignores, or
+one of nEVR's channels (from 0.13.0-alpha.6 on; earlier launchers ignore that line):
 
 ```text
 # nEVR windows: 5.10.0
-# nEVR linux:   none
+# nEVR linux:   beta
 ```
 
 Where it names one for the launcher's platform (`linux` for the Proton install), Update,
@@ -35,8 +36,10 @@ and sha256, every entry listed and nothing else). `BugSplat64.dll` and `nevr-run
 come out of it; the rest of the update stays ours. Anything that doesn't pass changes
 nothing and says which check failed. So nEVR releases what may be installed, and the
 update line says which one players get: a new release reaches nobody until it is named
-there. The manifest lists only the releases of its channels, so the line must name one it
-lists (a refusal says which it has). `none` (or no line) keeps the manifest's own `BugSplat64.dll`; a channel's overlay
+there. The manifest lists only the releases of its channels (their latest), so a line with
+a version must name one it still lists (a refusal says which it has), and a channel's line
+(`beta`) is the release that channel has when the update is read: that version also goes
+into what an update check compares, so a new release there shows up as an update. `none` (or no line) keeps the manifest's own `BugSplat64.dll`; a channel's overlay
 replaces main's line. `ECHOVR_NEVR_RELEASES` points the launcher at a mirror of that folder
 (only what nEVR's keys signed passes there too).
 
@@ -72,6 +75,18 @@ reads only `_local`, so the root's sign-in doesn't count for it: going back to 5
 5.13's move gets that version a sign-in of its own again. Each
 Server host server runs with its own `LOCALAPPDATA` (Windows) or prefix (Linux), so it has a
 root of its own: the runtime and its sign-in go there before it starts.
+
+From nevr-runtime #1250 on (6.0.0) the runtime loads plugins only from the root's
+`plugins\`, and its first run moves the files in `bin/win10/plugins` there. The version's
+`bin/win10/plugins` stays where the Mods page keeps them: before every start of a version
+whose runtime carries that change (its message for a run without `LOCALAPPDATA` ends in
+`never from the game folder`), the launcher makes the root's `plugins\` hold the same files
+(subfolders too, a copy then a rename each), so the runtime finds every one there and moves
+nothing. Files it put there for another version that this one lacks go; a file of the same
+name it didn't put there is set aside as `<name>.original-<time>`; anything else is left
+alone (nEVR loads only the plugins `config.yaml` lists). `nevr-root.json` notes them, and
+uninstalling takes them away. A Server host server gets its plugins (its folder's copy)
+into its own root the same way.
 
 **A test channel.** To try a community update before it goes live, point the launcher at
 another manifest: `"update_manifest": "https://release.echovr.de/updates-nevr-test/update.manifest"`

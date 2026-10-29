@@ -6,8 +6,13 @@
 //!
 //! The launcher keeps several versions, each with its own nEVR, so a root host's runtime is
 //! kept in its game folder ([`super::nevr::ROOT_COPY`]) and put into the root before a
-//! start of that version: what install.ps1 does once, before each start.
+//! start of that version: what install.ps1 does once, before each start. From nevr-runtime
+//! #1250 on the runtime loads plugins only from the root's `plugins` too, so the version's
+//! `plugins` folder (still where the Mods page keeps them) is mirrored there before each start
+//! ([`plugins_into`]): every file the runtime's one-time move would take is then there already,
+//! and it moves nothing out of the game folder.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -26,6 +31,49 @@ struct Record {
     runtime_sha256: String,
     /// The game folder it came from.
     from: String,
+    /// The files it put into the root's `plugins` (path in it, with `/`) → sha256.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    plugins: BTreeMap<String, String>,
+}
+
+fn read_record(record: &Path) -> Option<Record> {
+    std::fs::read_to_string(record)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+}
+
+fn write_record(record: &Path, noted: &Record) -> Result<()> {
+    if let Some(dir) = record.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(record, serde_json::to_vec_pretty(noted)?)
+        .with_context(|| format!("write {}", record.display()))
+}
+
+/// `from` copied to `to` beside it first, so `to` is never half a file.
+fn copy_whole(from: &Path, to: &Path) -> Result<()> {
+    let dir = to.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    let name = to.file_name().unwrap_or_default().to_string_lossy();
+    let part = dir.join(format!(".{name}.launcher"));
+    std::fs::copy(from, &part).with_context(|| format!("copy into {}", dir.display()))?;
+    if let Err(e) = std::fs::rename(&part, to) {
+        let _ = std::fs::remove_file(&part);
+        return Err(e).with_context(|| format!("Couldn't replace {}", to.display()));
+    }
+    Ok(())
+}
+
+/// `target` renamed to `<name>.original-<time>` beside it, as install.ps1 does.
+fn set_aside(target: &Path) -> Result<PathBuf> {
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    let aside = target.with_file_name(format!(
+        "{name}.original-{}",
+        time::OffsetDateTime::now_utc().unix_timestamp()
+    ));
+    std::fs::rename(target, &aside)
+        .with_context(|| format!("Couldn't set aside {}", target.display()))?;
+    Ok(aside)
 }
 
 /// The game's `%LOCALAPPDATA%`: Windows' own, or the Wine prefix's on Linux. None elsewhere.
@@ -78,40 +126,22 @@ pub fn put_in_place(bin: &Path, root: &Path, record: &Path, running: bool) -> Re
                 "Echo VR is running with another version of nEVR. Close it first: nEVR's runtime is one file for every Echo VR on this computer."
             );
         }
-        let noted: Option<Record> = std::fs::read_to_string(record)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok());
-        if noted.is_none_or(|r| &r.runtime_sha256 != there) {
-            let aside = target.with_file_name(format!(
-                "{}.original-{}",
-                nevr::RUNTIME,
-                time::OffsetDateTime::now_utc().unix_timestamp()
-            ));
-            std::fs::rename(&target, &aside)
-                .with_context(|| format!("Couldn't set aside {}", target.display()))?;
+        if read_record(record).is_none_or(|r| &r.runtime_sha256 != there) {
+            let aside = set_aside(&target)?;
             tracing::info!(
                 "nEVR's root: set aside a runtime the launcher didn't put there ({})",
                 aside.display()
             );
         }
     }
-    std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
-    // Copied beside it first, so the root never holds half a file.
-    let part = root.join(format!(".{}.launcher", nevr::RUNTIME));
-    std::fs::copy(&ours, &part).with_context(|| format!("copy into {}", root.display()))?;
-    if let Err(e) = std::fs::rename(&part, &target) {
-        let _ = std::fs::remove_file(&part);
-        return Err(e).with_context(|| format!("Couldn't replace {}", target.display()));
-    }
+    copy_whole(&ours, &target)?;
+    // The plugins it put there stay noted ([`plugins_into`] runs after this).
     let noted = Record {
         runtime_sha256: want,
         from: bin.to_string_lossy().into_owned(),
+        plugins: read_record(record).map(|r| r.plugins).unwrap_or_default(),
     };
-    if let Some(dir) = record.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(record, serde_json::to_vec_pretty(&noted)?)
-        .with_context(|| format!("write {}", record.display()))?;
+    write_record(record, &noted)?;
     tracing::info!(
         "nEVR's root: put the runtime of {} in place ({})",
         bin.display(),
@@ -120,13 +150,95 @@ pub fn put_in_place(bin: &Path, root: &Path, record: &Path, running: bool) -> Re
     Ok(())
 }
 
-/// [`put_in_place`] on this computer: for a start of the game in `bin`.
+/// [`put_in_place`] and [`plugins_into`] on this computer: for a start of the game in `bin`.
 pub fn put_in_place_for(bin: &Path) -> Result<()> {
     let Some(root) = root() else {
         return Ok(());
     };
     let running = !super::game::running_now().is_empty();
-    put_in_place(bin, &root, &paths::data_dir().join(RECORD), running)
+    let record = paths::data_dir().join(RECORD);
+    put_in_place(bin, &root, &record, running)?;
+    plugins_into(bin, &root, &record, running)
+}
+
+/// Before a start of the game in `bin`, after [`put_in_place`]: when its runtime loads plugins
+/// only from the root (nevr-runtime #1250 on), the root's `plugins` holds what `bin`'s
+/// `plugins` holds (subfolders too). What the launcher put there for another start and this
+/// one lacks goes; a file of the same name it didn't put there is set aside
+/// (`<name>.original-<time>`); anything else there is left alone (nEVR loads only the plugins
+/// `config.yaml` lists). Another set isn't put there while Echo VR runs (`running`).
+pub fn plugins_into(bin: &Path, root: &Path, record: &Path, running: bool) -> Result<()> {
+    let runtime = std::fs::read(bin.join(nevr::ROOT_COPY)).unwrap_or_default();
+    if !nevr::loads_root_plugins(&runtime) {
+        return Ok(());
+    }
+    let mut want = BTreeMap::new();
+    files_in(&super::mods::plugins_in(bin), "", &mut want)?;
+    let dest = super::mods::plugins_in(root);
+    let mut noted = read_record(record).unwrap_or_default();
+    let in_place = |rel: &str, sha: &str| {
+        sha256_of(&dest.join(rel)).is_ok_and(|s| s == sha)
+            && noted.plugins.get(rel).is_some_and(|n| n == sha)
+    };
+    let gone = noted.plugins.keys().any(|rel| !want.contains_key(rel));
+    if !gone && want.iter().all(|(rel, (_, sha))| in_place(rel, sha)) {
+        std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
+        return Ok(());
+    }
+    if running {
+        bail!(
+            "Echo VR is running with other mods. Close it first: nEVR loads one set of plugins for every Echo VR on this computer."
+        );
+    }
+    for rel in noted.plugins.keys().filter(|rel| !want.contains_key(*rel)) {
+        let _ = std::fs::remove_file(dest.join(rel));
+    }
+    for (rel, (from, sha)) in &want {
+        let to = dest.join(rel);
+        match sha256_of(&to) {
+            Ok(there) if &there == sha => continue,
+            // A file it put there for another start (or a plugin changed since) is replaced.
+            Ok(_) if noted.plugins.contains_key(rel) => {}
+            Ok(_) => {
+                let aside = set_aside(&to)?;
+                tracing::info!(
+                    "nEVR's root: set aside a plugin file the launcher didn't put there ({})",
+                    aside.display()
+                );
+            }
+            Err(_) => {}
+        }
+        copy_whole(from, &to)?;
+    }
+    std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
+    noted.plugins = want.into_iter().map(|(rel, (_, sha))| (rel, sha)).collect();
+    write_record(record, &noted)?;
+    tracing::info!(
+        "nEVR's root: the plugins of {} in place ({}, {} files)",
+        bin.display(),
+        dest.display(),
+        noted.plugins.len()
+    );
+    Ok(())
+}
+
+/// The files under `dir` (its subfolders too), as `prefix` + their path with `/` → (path,
+/// sha256).
+fn files_in(dir: &Path, prefix: &str, out: &mut BTreeMap<String, (PathBuf, String)>) -> Result<()> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let rel = format!("{prefix}{}", e.file_name().to_string_lossy());
+        if path.is_dir() {
+            files_in(&path, &format!("{rel}/"), out)?;
+        } else if path.is_file() {
+            let sha = sha256_of(&path).with_context(|| format!("read {}", path.display()))?;
+            out.insert(rel, (path, sha));
+        }
+    }
+    Ok(())
 }
 
 /// Takes the runtime the launcher put into the root away again (uninstall), when it is
@@ -145,9 +257,11 @@ fn take_away_from(root: &Path, record: &Path) -> bool {
         let _ = std::fs::remove_file(&config);
     }
     let target = root.join(nevr::RUNTIME);
-    let noted: Option<Record> = std::fs::read_to_string(record)
-        .ok()
-        .and_then(|t| serde_json::from_str(&t).ok());
+    let noted = read_record(record);
+    // The plugins it put there go too (#1250 on).
+    for rel in noted.iter().flat_map(|r| r.plugins.keys()) {
+        let _ = std::fs::remove_file(super::mods::plugins_in(root).join(rel));
+    }
     let ours = noted.is_some_and(|r| sha256_of(&target).is_ok_and(|s| s == r.runtime_sha256));
     let _ = std::fs::remove_file(record);
     ours && std::fs::remove_file(&target).is_ok()
@@ -227,7 +341,8 @@ mod tests {
     }
 
     /// Before a start of a real game folder (`ECHOVR_TEST_BIN`), into a root of its own
-    /// (`ECHOVR_TEST_ROOT`): `cargo test puts_a_game_folders_runtime -- --ignored`.
+    /// (`ECHOVR_TEST_ROOT`): `cargo test puts_a_game_folders_runtime -- --ignored`. Its
+    /// `config.yaml` too when `ECHOVR_TEST_CONFIG` names one.
     #[test]
     #[ignore]
     fn puts_a_game_folders_runtime_into_its_root() {
@@ -235,7 +350,120 @@ mod tests {
         let root = PathBuf::from(std::env::var("ECHOVR_TEST_ROOT").unwrap());
         let record = root.with_file_name("launcher-nevr-root.json");
         put_in_place(&bin, &root, &record, false).unwrap();
-        println!("{:?}", std::fs::read_dir(&root).map(|d| d.count()));
+        plugins_into(&bin, &root, &record, false).unwrap();
+        if let Ok(config) = std::env::var("ECHOVR_TEST_CONFIG") {
+            let text = std::fs::read_to_string(config).unwrap();
+            println!("config: {:?}", nevr::config_into(&root, &text).unwrap());
+        }
+        println!("{}", std::fs::read_to_string(&record).unwrap());
+    }
+
+    /// A game folder whose runtime loads plugins from the root (#1250 on), with `plugins`.
+    fn plugins_game(dir: &Path, files: &[(&str, &str)]) -> PathBuf {
+        let bin = game(
+            dir,
+            "runtime: plugins load from the root, never from the game folder",
+        );
+        let plugins = super::super::mods::plugins_in(&bin);
+        let _ = std::fs::remove_dir_all(&plugins);
+        for (rel, text) in files {
+            let p = plugins.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        bin
+    }
+
+    /// The root's `plugins`, as path → text (set-aside files by their name's start).
+    fn listed(dir: &Path) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let mut all = BTreeMap::new();
+        files_in(dir, "", &mut all).unwrap();
+        for (rel, (path, _)) in all {
+            let rel = match rel.find(".original-") {
+                Some(i) => format!("{}.original", &rel[..i]),
+                None => rel,
+            };
+            out.insert(rel, std::fs::read_to_string(path).unwrap());
+        }
+        out
+    }
+
+    #[test]
+    fn mirrors_a_versions_plugins_into_the_root_for_a_runtime_that_loads_them_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, record) = (dir.path().join("root"), dir.path().join("rec.json"));
+        let plugins = super::super::mods::plugins_in(&root);
+        let a = plugins_game(
+            &dir.path().join("a"),
+            &[
+                ("One.dll", "one a"),
+                ("One.plugin.json", "{}"),
+                ("Two/data.bin", "two"),
+            ],
+        );
+        let b = plugins_game(&dir.path().join("b"), &[("One.dll", "one b")]);
+        put_in_place(&a, &root, &record, false).unwrap();
+        plugins_into(&a, &root, &record, false).unwrap();
+        let want_a: BTreeMap<String, String> = [
+            ("One.dll", "one a"),
+            ("One.plugin.json", "{}"),
+            ("Two/data.bin", "two"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .into();
+        assert_eq!(listed(&plugins), want_a);
+        // The game folder's own stay: they are what the Mods page keeps.
+        assert!(super::super::mods::plugins_in(&a).join("One.dll").is_file());
+        // The same set again changes nothing, even while Echo VR runs; another set waits.
+        plugins_into(&a, &root, &record, true).unwrap();
+        assert!(plugins_into(&b, &root, &record, true).is_err());
+        assert_eq!(listed(&plugins), want_a);
+        // Another version's: what it lacks of ours goes; someone else's file stays.
+        std::fs::write(plugins.join("Mine.dll"), "mine").unwrap();
+        plugins_into(&b, &root, &record, false).unwrap();
+        let want_b: BTreeMap<String, String> = [("One.dll", "one b"), ("Mine.dll", "mine")]
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .into();
+        assert_eq!(listed(&plugins), want_b);
+        // The runtime's record survives the plugins' (and the other way round).
+        put_in_place(&b, &root, &record, false).unwrap();
+        let noted = read_record(&record).unwrap();
+        assert_eq!(noted.plugins.len(), 1);
+        // A file of one of ours' names that it didn't put there is set aside, not replaced.
+        std::fs::write(plugins.join("One.plugin.json"), "installer's").unwrap();
+        plugins_into(&a, &root, &record, false).unwrap();
+        let mut want = want_a.clone();
+        want.insert("Mine.dll".into(), "mine".into());
+        want.insert("One.plugin.json.original".into(), "installer's".into());
+        assert_eq!(listed(&plugins), want);
+        // One of ours a plugin changed since is just put back.
+        std::fs::write(plugins.join("One.plugin.json"), "changed").unwrap();
+        plugins_into(&a, &root, &record, false).unwrap();
+        assert_eq!(listed(&plugins), want);
+        // Uninstall takes away what it put there, and nothing else.
+        assert!(take_away_from(&root, &record));
+        let left: BTreeMap<String, String> = [
+            ("Mine.dll", "mine"),
+            ("One.plugin.json.original", "installer's"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .into();
+        assert_eq!(listed(&plugins), left);
+    }
+
+    #[test]
+    fn leaves_the_roots_plugins_alone_for_a_runtime_that_loads_them_beside_the_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, record) = (dir.path().join("root"), dir.path().join("rec.json"));
+        let bin = game(dir.path(), "runtime 5.18");
+        std::fs::create_dir_all(super::super::mods::plugins_in(&bin)).unwrap();
+        std::fs::write(super::super::mods::plugins_in(&bin).join("One.dll"), "one").unwrap();
+        plugins_into(&bin, &root, &record, false).unwrap();
+        assert!(!root.exists());
+        // A record from before the plugins (alpha.5's) still reads.
+        std::fs::write(&record, r#"{"runtime_sha256": "ab", "from": "x"}"#).unwrap();
+        assert!(read_record(&record).is_some_and(|r| r.plugins.is_empty()));
     }
 
     #[test]

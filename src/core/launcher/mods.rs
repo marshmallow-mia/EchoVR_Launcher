@@ -888,7 +888,8 @@ pub fn plugins_dir(v: &InstalledVersion) -> PathBuf {
     plugins_in(&v.bin_dir())
 }
 
-/// The folder nEVR loads plugins from, for the game whose `bin/win10` is `bin`. Every place
+/// The folder nEVR loads plugins from, for the game whose `bin/win10` is `bin` (or in nEVR's
+/// root, `bin` being the root: nevr-runtime #1250 on, [`super::nevr_root::plugins_into`]). Every place
 /// that reads or writes it goes through here (a test keeps it so): where nEVR looks is one line.
 pub fn plugins_in(bin: &Path) -> PathBuf {
     bin.join(PLUGINS)

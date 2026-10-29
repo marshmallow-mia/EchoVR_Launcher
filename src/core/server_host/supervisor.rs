@@ -409,15 +409,18 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     f.build().context("the server's game folder")?;
     let appdata = dir.join("appdata");
     let compat = crate::core::linux::echoxr::server_compat_data(&format!("host-{name}"));
-    // The server's own nEVR root (in its own LOCALAPPDATA): a root host's runtime, and the
-    // sign-in nEVR 5.13 on keeps there. A prefix Proton hasn't made yet gets them next run.
+    // The server's own nEVR root (in its own LOCALAPPDATA): a root host's runtime, its
+    // plugins (#1250 on, from its folder's copy), and the sign-in nEVR 5.13 on keeps there. A
+    // prefix Proton hasn't made yet gets them next run.
     let local = local_app_data(&appdata, &compat);
     let root = local
         .filter(|l| cfg!(windows) || l.is_dir())
         .map(|l| nevr_root::root_in(&l));
     if let Some(root) = &root {
-        nevr_root::put_in_place(&v.bin_dir(), root, &dir.join("nevr-root.json"), false)
+        let record = dir.join("nevr-root.json");
+        nevr_root::put_in_place(&v.bin_dir(), root, &record, false)
             .context("nEVR's runtime for the server")?;
+        nevr_root::plugins_into(&f.bin(), root, &record, false).context("the server's plugins")?;
     }
     account::ensure_login(&cfg, &f.local(), root.as_deref()).context("the server's sign-in")?;
     let password = match cfg.account.sign_in {

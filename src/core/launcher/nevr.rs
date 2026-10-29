@@ -11,7 +11,8 @@
 //! nEVR looks for `_local` beside the game's exe, then one and two folders up (the
 //! game's own `_local`, where the launcher writes); the first `config.yaml` found wins.
 //! From nevr-runtime #1255 on it reads `config.yaml` only from its root
-//! ([`config_into_root`]) or the file `-config-file` names.
+//! ([`config_into_root`]) or the file `-config-file` names, and from #1250 on its plugins only
+//! from the root's `plugins` ([`super::nevr_root::plugins_into`]).
 //! It refuses to start with a `dbgcore.dll` beside the exe (EchoLoader 1's place); one in
 //! `plugins/` is fine.
 
@@ -46,6 +47,9 @@ const ROOT_LOGIN: &str = "MOVED-TO-NEVR-ROOT.txt";
 /// What a runtime that reads `config.yaml` only from nEVR's root carries (nevr-runtime #1255
 /// on): its option naming the exact file, which replaces `-config-path` (refused, exit 64).
 pub const CONFIG_FILE_ARG: &str = "-config-file";
+/// What a runtime that loads plugins only from nEVR's root carries (nevr-runtime #1250 on,
+/// `<root>\plugins`): the end of its line for a run without `LOCALAPPDATA`.
+const ROOT_PLUGINS: &str = "never from the game folder";
 /// The game's exit code when nEVR's host found no runtime it could load.
 pub const RUNTIME_REFUSED: i32 = 78;
 pub const CONFIG: &str = "config.yaml";
@@ -163,6 +167,12 @@ pub fn reads_root_config(bytes: &[u8]) -> bool {
         .flat_map(u16::to_le_bytes)
         .collect();
     contains(bytes, CONFIG_FILE_ARG.as_bytes()) || contains(bytes, &wide)
+}
+
+/// Pure: whether runtime `bytes` loads plugins only from nEVR's root (`<root>\plugins`,
+/// nevr-runtime #1250 on). Its first run moves the files beside the game's exe there.
+pub fn loads_root_plugins(bytes: &[u8]) -> bool {
+    contains(bytes, ROOT_PLUGINS.as_bytes())
 }
 
 /// Whether `bytes` is a host that loads its runtime only from nEVR's root (`%LOCALAPPDATA%\nevr\echovr`).
@@ -673,7 +683,7 @@ pub fn config_into_root(v: &InstalledVersion) -> Result<Option<PathBuf>> {
     config_into(&root, &text)
 }
 
-fn config_into(root: &Path, text: &str) -> Result<Option<PathBuf>> {
+pub(super) fn config_into(root: &Path, text: &str) -> Result<Option<PathBuf>> {
     let path = root.join(CONFIG);
     let mut moved = None;
     match std::fs::read_to_string(&path) {

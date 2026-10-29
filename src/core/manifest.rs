@@ -26,11 +26,12 @@
 //!
 //! The PC update (main's or a channel's overlay) may name a release of nEVR from nEVR's own
 //! signed releases ([`crate::core::nevr_release`]) per platform, which then replaces its
-//! nEVR line; `none` turns off one the overlay would inherit:
+//! nEVR line; `none` turns off one the overlay would inherit. A channel of nEVR's (`beta`)
+//! names the release that channel has when the update is read:
 //!
 //! ```text
 //!   # nEVR windows: 5.8.1
-//!   # nEVR linux:   none
+//!   # nEVR linux:   beta
 //! ```
 //!
 //! Manifest paths end up in `adb shell` scripts (including `rm -rf`) and in local
@@ -74,7 +75,7 @@ pub struct Manifest {
     pub archive_size: Option<u64>,
     /// ...and the one folder in it the entry paths are relative to ("name/").
     pub archive_root: Option<String>,
-    /// `# nEVR windows:` / `# nEVR linux:`: a version, or `none`.
+    /// `# nEVR windows:` / `# nEVR linux:`: a version, a channel of nEVR's, or `none`.
     pub nevr_windows: Option<String>,
     pub nevr_linux: Option<String>,
 }
@@ -165,10 +166,12 @@ fn root_header(line: &str) -> Option<&str> {
     plain.then_some(name)
 }
 
-/// `# nEVR <platform>: <version|none>` -> the value.
+/// `# nEVR <platform>: <version|channel|none>` -> the value. Launchers before 0.13.0-alpha.6
+/// take only a version (or `none`), and a channel's line is nothing to them.
 fn nevr_header(line: &str, platform: &str) -> Option<String> {
     let v = header(line, &format!("nEVR {platform}"))?;
-    (v == "none" || crate::core::nevr_release::semver_ok(v)).then(|| v.to_string())
+    (crate::core::nevr_release::semver_ok(v) || crate::core::nevr_release::channel_ok(v))
+        .then(|| v.to_string())
 }
 
 /// `# Target: <root>` -> root
@@ -292,6 +295,17 @@ impl Manifest {
         v.as_deref().filter(|v| *v != "none")
     }
 
+    /// `version` in place of what this update names for nEVR on `platform` (the release its
+    /// channel has now).
+    pub fn set_nevr_release(&mut self, platform: &str, version: &str) {
+        let v = if platform == "linux" {
+            &mut self.nevr_linux
+        } else {
+            &mut self.nevr_windows
+        };
+        *v = Some(version.to_string());
+    }
+
     /// A build file manifest's archive, beside it.
     pub fn archive_url(&self) -> Option<String> {
         self.archive
@@ -380,6 +394,16 @@ mod tests {
         let bad =
             Manifest::parse("# nEVR windows: ../5\n# nEVR linux: 5.8\n", "https://h/m").unwrap();
         assert_eq!((bad.nevr_windows, bad.nevr_linux), (None, None));
+        // A channel of nEVR's is, until the release it has now is put in its place.
+        let mut m = main.clone();
+        m.overlay(Manifest::parse("# nEVR windows: beta\n", "https://h/alpha/m").unwrap());
+        assert_eq!(m.nevr_release("windows"), Some("beta"));
+        m.set_nevr_release("windows", "6.0.0");
+        assert_eq!(m.nevr_release("windows"), Some("6.0.0"));
+        for not in ["Beta", "beta 2", "be-ta", ""] {
+            let m = Manifest::parse(&format!("# nEVR windows: {not}\n"), "https://h/m").unwrap();
+            assert_eq!(m.nevr_windows, None, "{not}");
+        }
     }
 
     #[test]

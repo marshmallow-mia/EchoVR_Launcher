@@ -11,7 +11,8 @@
 //! 5. not past `expires`;
 //! 6. then the manifest, its signature and the state are stored (the state last);
 //! 7. the release this launcher's update names ([`crate::core::manifest::Manifest::nevr_release`]),
-//!    which has to be in the manifest's `releases`;
+//!    which has to be in the manifest's `releases` (or a channel's: the one its `channels`
+//!    names, [`channel_version`]);
 //! 8. its Windows zip: from the manifest's own folder, its size and sha256, every entry the
 //!    manifest lists and nothing else, each with its size and sha256.
 //!
@@ -171,9 +172,50 @@ fn base() -> String {
 }
 
 /// Steps 1 to 8 up to the zip: nEVR `version`'s release from nEVR's signed manifest.
-/// A signature that doesn't verify is fetched again twice, 3 seconds apart (a mirror
-/// between the two files), before it counts.
 pub fn resolve(version: &str, cancel: &AtomicBool) -> Result<Release, Refused> {
+    let (m, base) = checked(cancel)?;
+    release_in(&m, version, &base)
+}
+
+/// Steps 1 to 6, then the release nEVR's channel `name` has now in the checked manifest.
+/// nEVR's manifest lists only its channels' latest releases, so an update follows a channel
+/// rather than naming a version that soon isn't there.
+pub fn channel_version(name: &str, cancel: &AtomicBool) -> Result<String, Refused> {
+    let (m, _) = checked(cancel)?;
+    channel_in(&m, name)
+}
+
+/// Pure: a channel's name as an update may give it, `[a-z]+` (`none` is none).
+pub fn channel_ok(v: &str) -> bool {
+    !v.is_empty() && v.bytes().all(|b| b.is_ascii_lowercase())
+}
+
+/// Pure: the release channel `name` of the checked manifest `m` has.
+fn channel_in(m: &Value, name: &str) -> Result<String, Refused> {
+    match m["channels"][name].as_str() {
+        Some(v) if semver_ok(v) => Ok(v.to_string()),
+        _ => {
+            let have: Vec<&str> = m["channels"]
+                .as_object()
+                .map(|o| o.keys().map(String::as_str).collect())
+                .unwrap_or_default();
+            let have = if have.is_empty() {
+                "none".into()
+            } else {
+                have.join(", ")
+            };
+            Err(refused(
+                7,
+                format!("it has no channel {name} (it has {have})"),
+            ))
+        }
+    }
+}
+
+/// Steps 1 to 6: nEVR's signed manifest, checked and stored, and its folder. A signature
+/// that doesn't verify is fetched again twice, 3 seconds apart (a mirror between the two
+/// files), before it counts.
+fn checked(cancel: &AtomicBool) -> Result<(Value, String), Refused> {
     let base = base();
     let dir = state_dir();
     let mut tries = 0;
@@ -195,7 +237,7 @@ pub fn resolve(version: &str, cancel: &AtomicBool) -> Result<Release, Refused> {
             }
         }
     }
-    release_in(&stored(&dir)?, version, &base)
+    Ok((stored(&dir)?, base))
 }
 
 /// Step 1.
@@ -799,6 +841,20 @@ mod tests {
         edited[100] ^= 1;
         std::fs::write(dir.path().join(MANIFEST), edited).unwrap();
         assert_eq!(stored(dir.path()).unwrap_err().step, 8);
+    }
+
+    #[test]
+    fn a_channel_is_the_release_it_has_now() {
+        let m = serde_json::json!({"channels": {"beta": "6.0.0", "odd": "6.0"}});
+        assert_eq!(channel_in(&m, "beta").unwrap(), "6.0.0");
+        let e = channel_in(&m, "stable").unwrap_err();
+        assert_eq!(e.step, 7);
+        assert!(
+            e.detail.contains("no channel stable (it has beta, odd)"),
+            "{e}"
+        );
+        assert_eq!(channel_in(&m, "odd").unwrap_err().step, 7);
+        assert!(channel_ok("beta") && !channel_ok("Beta") && !channel_ok("5.8.1"));
     }
 
     #[test]
