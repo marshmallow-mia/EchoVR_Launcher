@@ -355,6 +355,9 @@ pub fn apply_manifest(
     }
     let (manifest, release) = with_nevr_release(manifest, cancel)?;
     let manifest = &manifest;
+    // On the new layout (nEVR 6.0 on) its runtime and plugins are in its folder in the launcher's.
+    let home = super::launcher::home::of_bin(bin_path);
+    let at = |path: &str| super::launcher::home::at(bin_path, home.as_deref(), path);
     let dels: Vec<_> = manifest
         .dels()
         .filter(|e| !skipped(&e.path, skip))
@@ -395,7 +398,7 @@ pub fn apply_manifest(
                 "Updating {current}/{total}: deleting {}...",
                 e.path
             ));
-            let target = bin_path.join(&e.path);
+            let target = at(&e.path);
             let gone = match &mut kept {
                 Some(k) if target.exists() => k.put_aside(&e.path, &target),
                 _ => std::fs::remove_file(&target),
@@ -433,7 +436,7 @@ pub fn apply_manifest(
                 } else {
                     e.path.clone()
                 };
-                let target = bin_path.join(&path);
+                let target = at(&path);
                 let sha = e.sha256.as_deref().unwrap_or_default();
                 if target.exists() && sha256_matches(&target, sha) {
                     tracing::info!("UpdateService: skipping {} (already up to date)", e.path);
@@ -489,6 +492,23 @@ pub fn apply_manifest(
         if let Some(z) = &zip {
             let _ = std::fs::remove_file(z);
         }
+        // A version on the new layout keeps it: an older nEVR would look for its plugins beside
+        // the exe (there's no way back across the move).
+        let old_runtime = staged
+            .iter()
+            .find(|(path, _, _)| {
+                file_name(path).eq_ignore_ascii_case(super::launcher::nevr::RUNTIME)
+            })
+            .filter(|_| home.is_some())
+            .and_then(|(_, _, file)| std::fs::read(file).ok())
+            .filter(|bytes| !super::launcher::home::needs_home(bytes))
+            .map(|bytes| super::launcher::nevr::version_in(&bytes).unwrap_or_else(|| "?".into()));
+        let fetched = fetched.and_then(|()| match old_runtime {
+            Some(v) => Err(anyhow!(
+                "This update would bring nEVR {v}, which loads its plugins from the game folder: since nEVR 6.0 the launcher keeps them in its own folder, and there is no way back. Nothing was changed."
+            )),
+            None => Ok(()),
+        });
         if let Err(e) = fetched {
             for (_, _, file) in &staged {
                 let _ = std::fs::remove_file(file);
@@ -725,9 +745,24 @@ pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
     let record = Previous::read(previous)
         .ok_or_else(|| anyhow!("There is no earlier update to go back to."))?;
     let files = previous.join(PREVIOUS_FILES);
+    let home = super::launcher::home::of_bin(bin_path);
+    let at = |path: &str| super::launcher::home::at(bin_path, home.as_deref(), path);
+    // Never back across the move to the new layout (an older nEVR's plugins are beside the exe).
+    if home.is_some() {
+        let kept = files.join(super::launcher::nevr::ROOT_COPY);
+        if let Some(bytes) = std::fs::read(&kept)
+            .ok()
+            .filter(|b| !super::launcher::home::needs_home(b))
+        {
+            let v = super::launcher::nevr::version_in(&bytes).unwrap_or_else(|| "?".into());
+            return Err(anyhow!(
+                "Undo would bring back nEVR {v}, which loads its plugins from the game folder: since nEVR 6.0 the launcher keeps them in its own folder, and there is no way back."
+            ));
+        }
+    }
     // Everything first checked, so a running game stops it before anything moved.
     for p in record.replaced.iter().chain(&record.added) {
-        let target = bin_path.join(p);
+        let target = at(p);
         if target.exists() {
             if let Err(err) = std::fs::OpenOptions::new().write(true).open(&target) {
                 if is_locked(&err) {
@@ -741,7 +776,7 @@ pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
         }
     }
     for p in &record.added {
-        let target = bin_path.join(p);
+        let target = at(p);
         match std::fs::remove_file(&target) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
                 return Err(anyhow!(e).context(format!("delete {p}")))
@@ -749,12 +784,15 @@ pub fn go_back(previous: &Path, bin_path: &Path) -> Result<Previous> {
             _ => {}
         }
         // A folder it came in (nevr-root/) goes too once it is empty.
-        if let Some(dir) = target.parent().filter(|d| *d != bin_path) {
+        if let Some(dir) = target
+            .parent()
+            .filter(|d| *d != bin_path && Some(*d) != home.as_deref())
+        {
             let _ = std::fs::remove_dir(dir);
         }
     }
     for p in &record.replaced {
-        let target = bin_path.join(p);
+        let target = at(p);
         if let Some(dir) = target.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -860,6 +898,109 @@ mod tests {
             "old nevr"
         );
         assert!(!bin.join("nevr-runtime.dll").exists());
+    }
+
+    /// The new layout (nEVR 6.0 on): an update's runtime and plugins go to the version's folder
+    /// in the launcher's, only the host into the game folder; an older nEVR (its plugins beside
+    /// the exe) is refused, by an update and by Undo.
+    #[test]
+    fn on_the_new_layout_nevrs_files_go_to_the_versions_folder() {
+        use crate::core::launcher::home;
+        use crate::core::launcher::nevr::{ROOT_COPY, RUNTIME};
+        use std::sync::atomic::AtomicBool;
+        let host: &'static str = "MZ nevr_root_override\0NEVR-BUILD 6.0.0 049d5eb\0";
+        let runtime: &'static str = "NEVR-BUILD 6.0.0 049d5eb plugins never from the game folder";
+        let old: &'static str = "NEVR-BUILD 5.18.0 abcdef0\0";
+        let base = serve(vec![
+            ("BugSplat64.dll", host),
+            ("nevr-runtime.dll", runtime),
+            ("plugins/NvrAssetPatches.dll", "assets"),
+            ("old/nevr-runtime.dll", old),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let previous = dir.path().join("previous-update");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("BugSplat64.dll"), "old host").unwrap();
+        home::set_test_data(Some(&dir.path().join("data")));
+        let home = home::moved_for_test(&dir.path().join("data"), &bin);
+        let apply = |text: &str, previous: Option<&std::path::Path>| {
+            let m = super::Manifest::parse(text, &format!("{base}/update.manifest")).unwrap();
+            super::apply_manifest(
+                &m,
+                text,
+                &bin,
+                &[],
+                previous,
+                &AtomicBool::new(false),
+                &mut |_| {},
+            )
+        };
+        let text = format!(
+            "add BugSplat64.dll {}\nadd nevr-runtime.dll {}\nadd plugins/NvrAssetPatches.dll {}\n",
+            sha(host),
+            sha(runtime),
+            sha("assets")
+        );
+        apply(&text, Some(&previous)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(home.join(RUNTIME)).unwrap(),
+            runtime
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("plugins/NvrAssetPatches.dll")).unwrap(),
+            "assets"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin.join("BugSplat64.dll")).unwrap(),
+            host
+        );
+        let in_bin: Vec<_> = std::fs::read_dir(&bin)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(in_bin, ["BugSplat64.dll"]);
+        // Its shipped plugins are noted in the version's folder too.
+        assert!(home
+            .join(crate::core::launcher::mods::SHIPPED_NOTE)
+            .is_file());
+        // An older nEVR: refused, nothing changed, nothing left staged.
+        let older = format!("add BugSplat64.dll {}\n", sha(host));
+        let mut m = super::Manifest::parse(&older, &format!("{base}/update.manifest")).unwrap();
+        let over = format!("add nevr-runtime.dll {}\n", sha(old));
+        m.overlay(super::Manifest::parse(&over, &format!("{base}/old/update.manifest")).unwrap());
+        let e = super::apply_manifest(
+            &m,
+            &older,
+            &bin,
+            &[],
+            None,
+            &AtomicBool::new(false),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(format!("{e:#}").contains("nEVR 5.18.0"), "{e:#}");
+        assert_eq!(
+            std::fs::read_to_string(home.join(RUNTIME)).unwrap(),
+            runtime
+        );
+        assert_eq!(
+            std::fs::read_dir(&home).unwrap().count(),
+            4,
+            "nothing staged"
+        );
+        // Undo to an older nEVR: refused too.
+        let kept = previous.join("files").join(ROOT_COPY);
+        std::fs::create_dir_all(kept.parent().unwrap()).unwrap();
+        std::fs::write(&kept, old).unwrap();
+        let e = super::go_back(&previous, &bin).unwrap_err();
+        assert!(format!("{e:#}").contains("nEVR 5.18.0"), "{e:#}");
+        assert_eq!(
+            std::fs::read_to_string(home.join(RUNTIME)).unwrap(),
+            runtime
+        );
+        home::set_test_data(None);
     }
 
     /// A host that loads its runtime from nEVR's root (nevr-runtime #1104 on): its runtime

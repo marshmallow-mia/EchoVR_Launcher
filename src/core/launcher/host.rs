@@ -179,7 +179,7 @@ pub fn write(v: &InstalledVersion, h: &Host) -> Result<Written> {
     {
         bail!("A server needs its account: the Discord ID and the password it signs in with.");
     }
-    let dir = nevr::local_dir(v).join(&h.folder);
+    let dir = nevr::notes_dir(v).join(&h.folder);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let (plugins, local) = if h.mods {
         super::mods::server_plugins(v)

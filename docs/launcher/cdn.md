@@ -88,8 +88,8 @@ version back. Each update keeps what it replaced, one step back:
 
 | Part | Kept in |
 | --- | --- |
-| Game update | `<game>/_local/previous-update/` (`previous.json` + `files/`) |
-| Mod | `<game>/_local/previous-mods/<file>/` |
+| Game update | `<game>/_local/previous-update/` (`previous.json` + `files/`); nEVR 6.0 on in the version's folder, `<data>/nevr/<id>/previous-update/` |
+| Mod | `<game>/_local/previous-mods/<file>/`; nEVR 6.0 on `<data>/nevr/<id>/previous-mods/<file>/` |
 | Plugin | `<plugins folder>/.<id>.previous/` |
 | Launcher | the release on the download servers (`launcher_previous` in launcher.json) |
 | Anything, without a kept copy | release.echovr.de's history and store (0.11.19) |

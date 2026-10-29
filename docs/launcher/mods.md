@@ -53,8 +53,9 @@ a host by its own name for an overridden root (`nevr_root_override`, which older
 don't carry: 5.8.1 to 5.16 still load the runtime from beside them). The root holds one
 runtime for every Echo VR on the computer, and the launcher keeps several versions, so:
 
-- an update to such a host places the runtime in the version's own copy for the root,
-  `bin/win10/nevr-root/nevr-runtime.dll`, and moves an old `nevr-runtime.dll` beside the exe
+- an update to such a host places the runtime in the version's own copy for the root
+  (from nEVR 6.0 on in the version's folder in the launcher's, [below](#the-new-layout-nevr-60-on);
+  before, `bin/win10/nevr-root/nevr-runtime.dll`), and moves an old `nevr-runtime.dll` beside the exe
   aside (into what Undo update puts back; without that, as install.ps1 does,
   `nevr-runtime.dll.legacy-<time>`);
 - before every start (PLAY, `--play`), and for the selected version whenever its folder is
@@ -63,7 +64,10 @@ runtime for every Echo VR on the computer, and the launcher keeps several versio
   `nevr-runtime.dll.original-<time>`, never replaced; `nevr-root.json` in the launcher's
   data folder notes what it put there. While Echo VR runs with another runtime, a start of
   a version with another one is refused (the file is in use); uninstalling the versions
-  takes the launcher's runtime out of the root again;
+  takes the launcher's runtime out of the root again. Like install.ps1, the launcher notes
+  the install in the root's `installer\nevr-install.txt` (nEVR's record: `key=value` lines),
+  with `owner=launcher`, so nEVR's own scripts leave it alone; a record of nEVR's installer
+  there goes to `installer\aside\nevr-install.txt.launcher-<time>` first;
 - the Mods card, Verify and Repair look at the copy for the root; the host and its runtime
   match by their whole build identity (a development build's version isn't X.Y.Z).
 
@@ -77,16 +81,50 @@ Server host server runs with its own `LOCALAPPDATA` (Windows) or prefix (Linux),
 root of its own: the runtime and its sign-in go there before it starts.
 
 From nevr-runtime #1250 on (6.0.0) the runtime loads plugins only from the root's
-`plugins\`, and its first run moves the files in `bin/win10/plugins` there. The version's
-`bin/win10/plugins` stays where the Mods page keeps them: before every start of a version
-whose runtime carries that change (its message for a run without `LOCALAPPDATA` ends in
-`never from the game folder`), the launcher makes the root's `plugins\` hold the same files
+`plugins\`, and its first run moves the files in `bin/win10/plugins` there. Before every
+start of a version whose runtime carries that change (its message for a run without
+`LOCALAPPDATA` ends in `never from the game folder`), the launcher makes the root's
+`plugins\` hold the version's plugins (where the Mods page keeps them: the version's folder in the launcher's, below)
 (subfolders too, a copy then a rename each), so the runtime finds every one there and moves
 nothing. Files it put there for another version that this one lacks go; a file of the same
 name it didn't put there is set aside as `<name>.original-<time>`; anything else is left
 alone (nEVR loads only the plugins `config.yaml` lists). `nevr-root.json` notes them, and
-uninstalling takes them away. A Server host server gets its plugins (its folder's copy)
-into its own root the same way.
+uninstalling takes them away. A Server host server gets the version's plugins into its own
+root the same way.
+
+### The new layout (nEVR 6.0 on)
+
+nEVR's own layout puts only its host, `BugSplat64.dll`, into the game folder
+(launcher-install-root.md in nevr-runtime). A version whose runtime loads plugins only from the
+root (6.0 on) keeps everything else of the launcher's in a folder of its own in the launcher's
+data folder, `nevr\<version id>\` (on Windows `%LOCALAPPDATA%\EchoVR_Launcher\nevr\<id>\`):
+
+| In it | Before, in the game folder |
+|---|---|
+| `nevr-runtime.dll`: the runtime that goes into nEVR's root before each start | `bin/win10/nevr-root/nevr-runtime.dll` |
+| `plugins\`: the version's mods, their sidecars and settings files, EchoXR Hands | `bin/win10/plugins` |
+| `launcher-mods.json`, `launcher-shipped.json`, `launcher-left-out.json`, `quarantine\`, `previous-mods\` | `_local` |
+| `config.yaml`: the launcher's, copied into nEVR's root before each start | `_local/config.yaml` |
+| `previous-update\`: what the last update replaced (Undo update) | `_local/previous-update` |
+| a host step's folders | `_local/<folder>` |
+| `structure.json`: which game folder it is for | |
+
+A version moves once and for good: at the launcher's start, before a start of it, after an
+update that brings nEVR 6.0, and before a Server host server of it starts (never while Echo VR
+runs: the next time then). Its files move (a copy, then the delete, across drives); what nothing
+reads any more goes to `archived\<id>\<date>\` in the launcher's data folder, at its path in the
+game folder, never deleted: the launcher's `config.yaml` files and their `.old` copies, a runtime
+left beside the exe (`nevr-runtime.dll`, `.legacy-<time>`), the folder of the old copy for the
+root, unfinished downloads, the game's sign-in in `_local` (nEVR 6.0 keeps it in its root; when
+the root has none yet it gets this one first) and the last update's Undo. **There is no way back
+across the move:** an older nEVR loads its plugins from beside the exe, so an update or Undo that
+would bring one is refused and changes nothing. A move cut short goes on at the next one.
+
+What stays in the game folder is what the game, nEVR or a plugin reads there: the host, the
+game's own `_local/config.json`, `log_filter_config.json` (nEVR reads it beside the exe),
+`asset_patches/` (NvrAssetPatches), the content packs, and the logs the game and the plugins
+write (`_local/r14logs`, `plugin_logs`, nEVR's `logs/nevr-boot.jsonl`). Event builds and
+versions on an older nEVR keep the layout below. Uninstalling a version removes its folder.
 
 **A test channel.** To try a community update before it goes live, point the launcher at
 another manifest: `"update_manifest": "https://release.echovr.de/updates-nevr-test/update.manifest"`
@@ -98,7 +136,8 @@ for the live PC version, and Settings says so ("updates from the test channel â€
 **Back to the live channel** for the `launcher.json` one). Back on the live channel, the next
 update or Verify puts the live files back.
 
-The launcher never edits the community update's files. It writes:
+The launcher never edits the community update's files. It writes (on the new layout the
+`_local` files and `plugins/` are in the version's folder, [above](#the-new-layout-nevr-60-on)):
 
 | File | What it holds |
 |---|---|

@@ -37,9 +37,10 @@ pub const RUNTIME: &str = "nevr-runtime.dll";
 /// carries: its name for a root moved by `NEVR_ROOT` in its log. Older hosts (5.8.1 to 5.16)
 /// load it from beside themselves.
 pub const ROOT_HOST: &[u8] = b"nevr_root_override";
-/// Where a version whose host is a root host keeps its runtime, in its game folder: the
-/// launcher puts it into nEVR's root ([`super::nevr_root`]) before a start of it. Beside
-/// the exe it would be the old layout, which install.ps1 moves aside.
+/// Where a version whose host is a root host kept its runtime in its game folder before it
+/// moved to the launcher's folder ([`super::home`], nEVR 6.0 on; an update's manifest path for
+/// it still): the launcher puts it into nEVR's root ([`super::nevr_root`]) before a start of
+/// it. Beside the exe it would be the old layout, which install.ps1 moves aside.
 pub const ROOT_COPY: &str = "nevr-root/nevr-runtime.dll";
 /// What a runtime that keeps its sign-in in nEVR's root (5.13 on) carries (UTF-16): the note
 /// its one-time move leaves in `_local`. Older ones read only `_local`.
@@ -193,7 +194,19 @@ pub fn runtime_entry(host: &[u8]) -> &'static str {
 /// Where the runtime of the nEVR in `bin`'s slot is kept ([`runtime_entry`]).
 pub fn runtime_path(bin: &Path) -> PathBuf {
     let host = std::fs::read(bin.join(super::mods::SLOT)).unwrap_or_default();
-    bin.join(runtime_entry(&host))
+    if is_root_host(&host) {
+        root_copy(bin)
+    } else {
+        bin.join(RUNTIME)
+    }
+}
+
+/// Where the game in `bin` keeps the runtime it puts into nEVR's root: in its folder in the
+/// launcher's ([`super::home`]), else in the game folder ([`ROOT_COPY`]).
+pub fn root_copy(bin: &Path) -> PathBuf {
+    super::home::of_bin(bin)
+        .map(|h| super::home::runtime_in_home(&h))
+        .unwrap_or_else(|| bin.join(ROOT_COPY))
 }
 
 pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -265,9 +278,15 @@ pub fn stray_dbgcore_path(bin: &Path) -> Option<PathBuf> {
 
 // ---- where nEVR looks ----
 
-/// The game's own `_local`, where the launcher writes.
+/// The game's own `_local` (its `config.json`; the launcher's notes too on the old layout).
 pub fn local_dir(v: &InstalledVersion) -> PathBuf {
     Path::new(&v.root).join(paths::ARENA_DIR).join("_local")
+}
+
+/// Where the launcher keeps its notes on `v` (Mods page choices, Undo, its `config.yaml`):
+/// `v`'s folder in the launcher's ([`super::home`]), else the game's `_local`.
+pub fn notes_dir(v: &InstalledVersion) -> PathBuf {
+    super::home::of(v).unwrap_or_else(|| local_dir(v))
 }
 
 /// The `_local` folders nEVR looks in, in its order: beside the exe, one up, two up.
@@ -303,9 +322,14 @@ fn login_root_of(v: &InstalledVersion) -> Option<PathBuf> {
 }
 
 /// Where `v`'s nEVR reads a sign-in: nEVR's root first (5.13 on), then the `_local` folders
-/// it looks in.
+/// it looks in. On the new layout ([`super::home`], nEVR 6.0 on) only the root: the launcher
+/// keeps none in the game folder.
 fn login_dirs(v: &InstalledVersion) -> Vec<PathBuf> {
-    login_root_of(v).into_iter().chain(search(v)).collect()
+    let root = login_root_of(v);
+    if root.is_some() && super::home::of(v).is_some() {
+        return root.into_iter().collect();
+    }
+    root.into_iter().chain(search(v)).collect()
 }
 
 /// The game sign-ins the launcher wrote for `v` (in nEVR's root and each `_local` nEVR
@@ -356,7 +380,7 @@ pub fn keep_as_old(path: &Path) -> Result<PathBuf> {
 /// choices and a plugin's server reach the game. Game servers' configs (in their own
 /// folders) aren't nEVR's search, so they stay. Where each went.
 pub fn migrate_own_configs(v: &InstalledVersion) -> Result<Vec<PathBuf>> {
-    let ours = local_dir(v).join(CONFIG);
+    let ours = notes_dir(v).join(CONFIG);
     let mut moved = Vec::new();
     let mut local = false;
     for dir in search(v) {
@@ -373,7 +397,7 @@ pub fn migrate_own_configs(v: &InstalledVersion) -> Result<Vec<PathBuf>> {
     // The local plugins' switch it had stays on: the launcher's config keeps it.
     let ours_local = std::fs::read_to_string(&ours).is_ok_and(|t| local_plugins_in(&t));
     if local && !ours_local {
-        std::fs::create_dir_all(local_dir(v))?;
+        std::fs::create_dir_all(notes_dir(v))?;
         std::fs::write(&ours, format!("{}: true\n", super::mods::LOCAL_PLUGINS_KEY))
             .with_context(|| format!("write {}", ours.display()))?;
     }
@@ -502,7 +526,7 @@ pub fn local_plugins_in(text: &str) -> bool {
 
 /// Whether `v`'s loader config turns local plugins on.
 pub fn local_plugins(v: &InstalledVersion) -> bool {
-    std::fs::read_to_string(local_dir(v).join(CONFIG)).is_ok_and(|t| local_plugins_in(&t))
+    std::fs::read_to_string(notes_dir(v).join(CONFIG)).is_ok_and(|t| local_plugins_in(&t))
 }
 
 /// A server other than EchoVRCE that a start plays on (a content pack's own, Settings):
@@ -654,7 +678,7 @@ pub fn write_config(
     local: bool,
     backend: Option<&Backend>,
 ) -> Result<()> {
-    let dir = local_dir(v);
+    let dir = notes_dir(v);
     let path = dir.join(CONFIG);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let text = render_config(plugins, local, backend);
@@ -677,7 +701,7 @@ pub fn config_into_root(v: &InstalledVersion) -> Result<Option<PathBuf>> {
     let Some(root) = login_root().filter(|_| super::mods::reads_root_config(&v.bin_dir())) else {
         return Ok(None);
     };
-    let Ok(text) = std::fs::read_to_string(local_dir(v).join(CONFIG)) else {
+    let Ok(text) = std::fs::read_to_string(notes_dir(v).join(CONFIG)) else {
         return Ok(None);
     };
     config_into(&root, &text)
@@ -799,11 +823,13 @@ pub fn login_back(v: &InstalledVersion) -> Result<bool> {
     Ok(back)
 }
 
-/// Gives `v`'s game `login`: in the game's `_local`, beside `config.yaml`, and in nEVR's root
-/// when its nEVR reads it there (5.13 on), with any other sign-in nEVR would read first removed.
+/// Gives `v`'s game `login`: in the game's `_local`, and in nEVR's root when its nEVR reads it
+/// there (5.13 on; on the new layout only there), with any other sign-in nEVR would read first
+/// removed.
 pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
     let dir = local_dir(v);
-    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    // The new layout: in nEVR's root only (where its prefix is there to write in).
+    let root_only = login_root_of(v).is_some() && super::home::of(v).is_some();
     for p in login_dirs(v)
         .into_iter()
         .flat_map(|d| [d.join(CREDENTIALS), d.join(CREDENTIALS_ASIDE)])
@@ -814,7 +840,10 @@ pub fn write_login(v: &InstalledVersion, login: &GameLogin) -> Result<()> {
         }
     }
     let text = serde_json::to_string_pretty(login)?;
-    write_private(&dir.join(CREDENTIALS), text.as_bytes())?;
+    if !root_only {
+        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+        write_private(&dir.join(CREDENTIALS), text.as_bytes())?;
+    }
     if let Some(root) = login_root_of(v) {
         std::fs::create_dir_all(&root).with_context(|| format!("create {}", root.display()))?;
         write_private(&root.join(CREDENTIALS), text.as_bytes())?;

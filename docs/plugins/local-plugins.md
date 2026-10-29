@@ -13,11 +13,15 @@ a plugin, a minimal one, how to build it, and how to load it with the launcher.
 
 ## 1. How nEVR loads a plugin
 
-- **Where:** plugins live in the game's `bin\win10\plugins\` folder, next to
-  `echovr.exe`. nEVR loads only the ones its config names. It never loads every DLL in
-  the folder.
-- **The config:** it is `ready-at-dawn-echo-arena\_local\config.yaml`, and the launcher
-  writes it before every start. Each entry under `plugins:` has these fields:
+- **Where:** nEVR 6.0 and newer load plugins only from `%LOCALAPPDATA%\nevr\echovr\plugins\`
+  (on Linux inside the game's Wine prefix). The launcher keeps each version's plugins in a
+  folder of its own, `%LOCALAPPDATA%\EchoVR_Launcher\nevr\<version>\plugins\`, and puts
+  them there before every start. Older nEVR versions load them from the game's
+  `bin\win10\plugins\` folder, next to `echovr.exe`. nEVR loads only the ones its config
+  names. It never loads every DLL in the folder.
+- **The config:** the launcher writes it before every start: on nEVR 6.0 and newer
+  `%LOCALAPPDATA%\nevr\echovr\config.yaml`, from its own copy in the version's folder
+  (`...\EchoVR_Launcher\nevr\<version>\config.yaml`); before, `ready-at-dawn-echo-arena\_local\config.yaml`. Each entry under `plugins:` has these fields:
 
   | Field | Meaning |
   |---|---|
@@ -254,9 +258,11 @@ from its plugin catalogue. A plugin from your PC isn't verified, so its loading 
 until you turn it on.
 
 1. **Turn on local plugins for the version you test with.** Open that version's loader
-   config, `<install folder>\ready-at-dawn-echo-arena\_local\config.yaml`. Find the
-   install folder with **Install → Manage → Open folder**; the file is there after the
-   version's first start with mods. Add this line at the top, without spaces in front:
+   config: on nEVR 6.0 and newer the launcher's copy,
+   `%LOCALAPPDATA%\EchoVR_Launcher\nevr\<version>\config.yaml`; before,
+   `<install folder>\ready-at-dawn-echo-arena\_local\config.yaml` (find the install folder
+   with **Install → Manage → Open folder**). The file is there after the version's first
+   start with mods. Add this line at the top, without spaces in front:
 
    ```yaml
    x-local-plugins: true

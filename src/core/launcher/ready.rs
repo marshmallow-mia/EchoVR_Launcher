@@ -81,6 +81,12 @@ fn prepare_for(state: &LauncherState, v: &InstalledVersion, root: bool) -> Resul
     let fail = |step| move |error| Failed { step, error };
     let cancel = AtomicBool::new(false);
     let hands = v.publisher_lock.is_none() && state.profile.hands(state.echoxr_hands);
+    // nEVR 6.0 on: its runtime and mods in the launcher's folder, not the game folder's (once).
+    match super::home::move_here(v) {
+        Ok(Some(m)) => tracing::info!("{}: moved to {}", v.id, m.home.display()),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("{}: not moved to the new layout yet: {e:#}", v.id),
+    }
     if v.publisher_lock.is_some() {
         // An event build: on the classic lobbies server, as your account there.
         if !relay::in_place(v) {
@@ -199,7 +205,7 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
     }
     stamp(&bin.join(mods::SLOT)).hash(&mut h);
     stamp(&bin.join(super::nevr::RUNTIME)).hash(&mut h);
-    stamp(&bin.join(super::nevr::ROOT_COPY)).hash(&mut h);
+    stamp(&super::nevr::root_copy(&bin)).hash(&mut h);
     // The selected version's runtime in nEVR's root (another version's start replaces it).
     if state.selected.as_deref() == Some(v.id.as_str()) {
         let in_root = super::nevr_root::root().map(|r| r.join(super::nevr::RUNTIME));

@@ -142,7 +142,7 @@ pub fn loader_problem(bin: &Path) -> Option<(&'static str, SlotState)> {
     if !nevr::is_host(&host) {
         return None;
     }
-    match file_state(&bin.join(nevr::runtime_entry(&host))) {
+    match file_state(&nevr::runtime_path(bin)) {
         SlotState::Ok => None,
         s => Some((nevr::RUNTIME, s)),
     }
@@ -888,11 +888,16 @@ pub fn plugins_dir(v: &InstalledVersion) -> PathBuf {
     plugins_in(&v.bin_dir())
 }
 
-/// The folder nEVR loads plugins from, for the game whose `bin/win10` is `bin` (or in nEVR's
-/// root, `bin` being the root: nevr-runtime #1250 on, [`super::nevr_root::plugins_into`]). Every place
-/// that reads or writes it goes through here (a test keeps it so): where nEVR looks is one line.
+/// The plugins folder of the game whose `bin/win10` is `bin`: on the new layout (nEVR 6.0 on)
+/// the one in its folder in the launcher's ([`super::home`]), which goes into nEVR's root before
+/// each start ([`super::nevr_root::plugins_into`]); else beside the exe, where an older nEVR
+/// loads them. For anything else (nEVR's root, a server's copy of the game) the one in it.
+/// Every place that reads or writes it goes through here (a test keeps it so): where the
+/// plugins are is one line.
 pub fn plugins_in(bin: &Path) -> PathBuf {
-    bin.join(PLUGINS)
+    super::home::of_bin(bin)
+        .map(|h| super::home::plugins_in_home(&h))
+        .unwrap_or_else(|| bin.join(PLUGINS))
 }
 
 /// The folder its plugins log to (each in a folder of its own).
@@ -900,18 +905,17 @@ pub fn log_dir(bin: &Path) -> PathBuf {
     bin.join(PLUGIN_LOGS)
 }
 
-/// Where `v`'s Mods page choices are (`_local/launcher-mods.json`).
+/// Where `v`'s Mods page choices are (`launcher-mods.json`, in its folder in the launcher's,
+/// on the old layout in `_local`).
 pub fn choices_path(v: &InstalledVersion) -> PathBuf {
-    nevr::local_dir(v).join(CHOICES)
+    nevr::notes_dir(v).join(CHOICES)
 }
 
 /// Notes the plugins in update `adds` (manifest paths `plugins/<file>`, relative to `bin`)
-/// with their checksums, in the version's `_local` (beside `bin`, its `bin/<win10|win7>`): a
-/// plugin the update shipped is verified by its checksum from then on, not its name.
+/// with their checksums, with the launcher's notes on the game in `bin`
+/// ([`super::home::notes_for_bin`]): a plugin the update shipped is verified by its checksum
+/// from then on, not its name.
 pub fn note_shipped<'a>(bin: &Path, adds: impl Iterator<Item = &'a crate::core::manifest::Entry>) {
-    let Some(root) = bin.parent().and_then(Path::parent) else {
-        return;
-    };
     let shipped: std::collections::BTreeMap<String, String> = adds
         .filter_map(|e| {
             let file = e.path.strip_prefix("plugins/")?;
@@ -923,7 +927,7 @@ pub fn note_shipped<'a>(bin: &Path, adds: impl Iterator<Item = &'a crate::core::
             })?
         })
         .collect();
-    let dir = root.join("_local");
+    let dir = super::home::notes_for_bin(bin);
     let _ = std::fs::create_dir_all(&dir);
     match serde_json::to_string_pretty(&shipped) {
         Ok(t) => {
@@ -938,15 +942,13 @@ pub fn note_shipped<'a>(bin: &Path, adds: impl Iterator<Item = &'a crate::core::
 /// Forgets what [`note_shipped`] noted for `bin` (going back put other files there): its
 /// plugins are verified by their names again until the next update.
 pub fn forget_shipped(bin: &Path) {
-    if let Some(root) = bin.parent().and_then(Path::parent) {
-        let _ = std::fs::remove_file(root.join("_local").join(SHIPPED_NOTE));
-    }
+    let _ = std::fs::remove_file(super::home::notes_for_bin(bin).join(SHIPPED_NOTE));
 }
 
 /// The plugins the last update placed in `v` (lower-case file → sha256), if it noted them
 /// (versions updated before 0.12.4 didn't).
 fn shipped_note(v: &InstalledVersion) -> Option<std::collections::BTreeMap<String, String>> {
-    let t = std::fs::read_to_string(nevr::local_dir(v).join(SHIPPED_NOTE)).ok()?;
+    let t = std::fs::read_to_string(nevr::notes_dir(v).join(SHIPPED_NOTE)).ok()?;
     serde_json::from_str(&t).ok()
 }
 
@@ -987,9 +989,9 @@ pub fn launcher_files(v: &InstalledVersion) -> Vec<PathBuf> {
     for pack in overlay.packs() {
         out.extend(pack.settings.iter().map(|s| plugins_dir(v).join(s)));
     }
-    out.push(nevr::local_dir(v).join(SHIPPED_NOTE));
+    out.push(nevr::notes_dir(v).join(SHIPPED_NOTE));
     out.push(choices_path(v));
-    out.push(nevr::local_dir(v).join(nevr::CONFIG));
+    out.push(nevr::notes_dir(v).join(nevr::CONFIG));
     out
 }
 
@@ -1042,7 +1044,7 @@ fn facts(bin: &Path) -> (Loader, bool, bool, bool) {
             .and_then(|m| Some((m.len(), m.modified().ok()?)))
     };
     // The runtime is beside the host, or (a root host's) in the folder's copy for the root.
-    let runtime_stamp = [nevr::RUNTIME, nevr::ROOT_COPY].map(|r| stamp_of(&bin.join(r)));
+    let runtime_stamp = [bin.join(nevr::RUNTIME), nevr::root_copy(bin)].map(|r| stamp_of(&r));
     let stamp = stamp_of(&path);
     if stamp.is_some() {
         let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -1060,7 +1062,7 @@ fn facts(bin: &Path) -> (Loader, bool, bool, bool) {
     let runtime = slot
         .as_deref()
         .filter(|b| nevr::is_host(b))
-        .and_then(|b| std::fs::read(bin.join(nevr::runtime_entry(b))).ok());
+        .and_then(|_| std::fs::read(nevr::runtime_path(bin)).ok());
     let loader = classify(slot.as_deref(), sha.as_deref(), runtime.as_deref());
     let early = runtime
         .as_deref()
@@ -2862,10 +2864,10 @@ pub fn remove(v: &InstalledVersion, file: &str) -> Result<()> {
 
 // ---- going back to the version before an update ----
 
-/// Where the mods replaced by an update are kept (`_local/previous-mods/<file>/`): the file
-/// and what the launcher had noted on it.
+/// Where the mods replaced by an update are kept (`previous-mods/<file>/` with the launcher's
+/// notes on `v`): the file and what the launcher had noted on it.
 fn previous_dir(v: &InstalledVersion) -> PathBuf {
-    nevr::local_dir(v).join("previous-mods")
+    nevr::notes_dir(v).join("previous-mods")
 }
 
 const PREVIOUS_ENTRY: &str = "entry.json";
@@ -5522,9 +5524,11 @@ pub(crate) mod tests {
             let name = f.file_name().unwrap().to_string_lossy();
             let text = std::fs::read_to_string(f).unwrap();
             for (n, line) in text.lines().enumerate() {
-                let own = matches!(&*name, "packs.rs" | "plugins.rs");
+                // home.rs: the folder in a version's folder in the launcher's, and the old
+                // layout's it moves from.
+                let own = matches!(&*name, "packs.rs" | "plugins.rs" | "home.rs");
                 let staged = line.contains("staging.join(");
-                let def = line.contains("bin.join(PLUGINS)");
+                let def = line.contains("bin.join(PLUGINS)") || name == "home.rs";
                 if (line.contains(&by_name) && !own && !staged)
                     || (line.contains(&by_const) && !(staged || def))
                 {

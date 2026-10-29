@@ -288,7 +288,10 @@ fn update_after(
     match pc_update::apply_skipping(&m, &v.bin_dir(), keep(v), cancel, &mut |s| {
         on(Step::Status(s))
     }) {
-        Ok(()) => Ok(None),
+        Ok(()) => {
+            settle(v);
+            Ok(None)
+        }
         Err(e) if crate::core::http::is_cancelled(&e) => Err(e),
         Err(e) => {
             tracing::warn!("{} installed, but its update failed: {e:#}", entry.id);
@@ -550,12 +553,26 @@ pub fn update(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step
         Some(&previous),
         cancel,
         &mut |s| on(Step::Status(s)),
-    )
+    )?;
+    settle(v);
+    Ok(())
 }
 
-/// Where `v`'s last update kept the files it replaced (`_local/previous-update/`).
+/// After an update of `v`: its nEVR and mods to the launcher's folder when its nEVR needs
+/// that (6.0 on, [`super::home`]; the update's Undo is archived then). A move that failed is
+/// done before the next start.
+fn settle(v: &InstalledVersion) {
+    match super::home::move_here(v) {
+        Ok(Some(m)) => tracing::info!("{}: moved to {} after the update", v.id, m.home.display()),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("{}: not moved to the new layout yet: {e:#}", v.id),
+    }
+}
+
+/// Where `v`'s last update kept the files it replaced (`previous-update/`, with the launcher's
+/// notes on `v`).
 fn previous_update_dir(v: &InstalledVersion) -> PathBuf {
-    super::nevr::local_dir(v).join("previous-update")
+    super::nevr::notes_dir(v).join("previous-update")
 }
 
 /// What `v`'s last update kept for going back, if anything.
@@ -592,10 +609,13 @@ pub fn server_back(v: &InstalledVersion, h: &History) -> Result<Option<ServerBac
         .map(|s| history::manifest_of(&url, s, &history::text))
         .collect::<Result<Vec<_>>>()?;
     let bin = v.bin_dir();
+    let home = super::home::of(v);
     let mut read = std::collections::HashMap::new();
     let mut disk = |path: &str| -> Option<String> {
         read.entry(path.to_lowercase())
-            .or_insert_with(|| download::sha256_file(&bin.join(path)).ok())
+            .or_insert_with(|| {
+                download::sha256_file(&super::home::at(&bin, home.as_deref(), path)).ok()
+            })
             .clone()
     };
     let effects: Vec<_> = built.iter().map(|(m, _)| history::effect(m)).collect();
@@ -705,6 +725,7 @@ fn verify_update(
     // nEVR's files as its release has them, where the update takes nEVR from there.
     let (m, _) = pc_update::with_nevr_release(&m, cancel)?;
     let bin = v.bin_dir();
+    let home = super::home::of(v);
     let adds: Vec<_> = m
         .adds()
         .filter(|e| !pc_update::skipped(&e.path, keep(v)))
@@ -719,7 +740,7 @@ fn verify_update(
         let f = if e.path.eq_ignore_ascii_case(super::nevr::RUNTIME) {
             super::nevr::runtime_path(&bin)
         } else {
-            bin.join(&e.path)
+            super::home::at(&bin, home.as_deref(), &e.path)
         };
         if !f.is_file() || !download::sha256_matches(&f, e.sha256.as_deref().unwrap_or_default()) {
             bad.push(e.path.clone());

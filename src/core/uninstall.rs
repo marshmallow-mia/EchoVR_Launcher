@@ -132,6 +132,8 @@ pub fn clean_version(v: &InstalledVersion) -> Vec<String> {
     if let Err(e) = super::launcher::nevr::restore_game_config(v) {
         failed.push(format!("{e:#}"));
     }
+    // Its folder in the launcher's (nEVR 6.0 on): its runtime, mods and the launcher's notes.
+    failed.extend(super::launcher::home::remove(v));
     failed
 }
 

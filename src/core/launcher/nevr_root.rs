@@ -5,12 +5,14 @@
 //! (`.credentials.json`, which wins over the game's `_local`) and its logs there too.
 //!
 //! The launcher keeps several versions, each with its own nEVR, so a root host's runtime is
-//! kept in its game folder ([`super::nevr::ROOT_COPY`]) and put into the root before a
-//! start of that version: what install.ps1 does once, before each start. From nevr-runtime
-//! #1250 on the runtime loads plugins only from the root's `plugins` too, so the version's
-//! `plugins` folder (still where the Mods page keeps them) is mirrored there before each start
-//! ([`plugins_into`]): every file the runtime's one-time move would take is then there already,
-//! and it moves nothing out of the game folder.
+//! kept with the version ([`super::nevr::root_copy`]: from nEVR 6.0 on in its folder in the
+//! launcher's, [`super::home`]) and put into the root before a start of that version: what
+//! install.ps1 does once, before each start. From nevr-runtime #1250 on the runtime loads
+//! plugins only from the root's `plugins` too, so the version's plugins (where the Mods page
+//! keeps them, [`super::mods::plugins_in`]) are mirrored there before each start
+//! ([`plugins_into`]). Like install.ps1, the launcher notes the install in the root's
+//! `installer\nevr-install.txt`, as its owner (`owner=launcher`): nEVR's own scripts leave it
+//! alone ([`note_install`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -107,17 +109,18 @@ pub fn put_in_place(bin: &Path, root: &Path, record: &Path, running: bool) -> Re
     if !nevr::is_root_host(&host) {
         return Ok(());
     }
-    let ours = bin.join(nevr::ROOT_COPY);
+    let ours = nevr::root_copy(bin);
     let want = sha256_of(&ours).with_context(|| {
         format!(
             "{} is missing from {}: Repair game files (in PLAY's menu) gets it again",
             nevr::RUNTIME,
-            bin.display()
+            ours.parent().unwrap_or(bin).display()
         )
     })?;
     let target = root.join(nevr::RUNTIME);
     let there = sha256_of(&target).ok();
     if there.as_deref() == Some(want.as_str()) {
+        note_install(root, bin, &host, &want);
         return Ok(());
     }
     if let Some(there) = &there {
@@ -142,6 +145,7 @@ pub fn put_in_place(bin: &Path, root: &Path, record: &Path, running: bool) -> Re
         plugins: read_record(record).map(|r| r.plugins).unwrap_or_default(),
     };
     write_record(record, &noted)?;
+    note_install(root, bin, &host, &noted.runtime_sha256);
     tracing::info!(
         "nEVR's root: put the runtime of {} in place ({})",
         bin.display(),
@@ -168,7 +172,7 @@ pub fn put_in_place_for(bin: &Path) -> Result<()> {
 /// (`<name>.original-<time>`); anything else there is left alone (nEVR loads only the plugins
 /// `config.yaml` lists). Another set isn't put there while Echo VR runs (`running`).
 pub fn plugins_into(bin: &Path, root: &Path, record: &Path, running: bool) -> Result<()> {
-    let runtime = std::fs::read(bin.join(nevr::ROOT_COPY)).unwrap_or_default();
+    let runtime = std::fs::read(nevr::root_copy(bin)).unwrap_or_default();
     if !nevr::loads_root_plugins(&runtime) {
         return Ok(());
     }
@@ -222,6 +226,96 @@ pub fn plugins_into(bin: &Path, root: &Path, record: &Path, running: bool) -> Re
     Ok(())
 }
 
+/// nEVR's install record in its root (`installer\nevr-install.txt`, nevr-runtime's
+/// launcher-install-root.md): `key=value` lines, UTF-8 without a BOM.
+const INSTALL_RECORD: &str = "installer/nevr-install.txt";
+/// Its `owner` for the launcher's installs: nEVR's install.ps1 and uninstall.ps1 leave a
+/// record with another owner than theirs alone.
+const OWNER: &str = "launcher";
+
+/// Pure: the record for the install of host `host` (sha256 `host_sha`) with runtime
+/// `runtime_sha` from the game in `bin`, into `root`.
+fn install_record(
+    root: &Path,
+    bin: &Path,
+    version: &str,
+    host_sha: &str,
+    runtime_sha: &str,
+) -> String {
+    [
+        ("backup", ""),
+        ("legacy", ""),
+        ("runtime_aside", ""),
+        ("runtime_legacy", ""),
+        ("runtime_root", &as_the_game_sees(root)),
+        ("game_dir", &as_the_game_sees(bin)),
+        ("release", version),
+        ("installed_sha256", host_sha),
+        ("runtime_sha256", runtime_sha),
+        ("owner", OWNER),
+    ]
+    .iter()
+    .map(|(k, v)| format!("{k}={v}\n"))
+    .collect()
+}
+
+/// `path` as the game sees it: under Wine (Linux) its Windows path (`C:` for the prefix's
+/// own `drive_c`, else `Z:`).
+fn as_the_game_sees(path: &Path) -> String {
+    if !cfg!(target_os = "linux") {
+        return path.to_string_lossy().into_owned();
+    }
+    let drive_c: Vec<(char, PathBuf)> = path
+        .ancestors()
+        .find(|a| a.file_name().is_some_and(|n| n == "drive_c"))
+        .map(|c| vec![('c', c.to_path_buf())])
+        .unwrap_or_default();
+    crate::core::linux::echoxr::wine_path(&drive_c, path)
+}
+
+/// Notes in `root` that the launcher installed nEVR there (the host `host` in `bin`, runtime
+/// `runtime_sha`), only when that changed. A record of nEVR's own installer (another owner)
+/// goes to `installer\aside` first, as nEVR's scripts set files aside. Only logged when it
+/// fails: the start doesn't need it.
+pub fn note_install(root: &Path, bin: &Path, host: &[u8], runtime_sha: &str) {
+    let path = root.join(INSTALL_RECORD);
+    let version = nevr::version_in(host).unwrap_or_default();
+    let text = install_record(
+        root,
+        bin,
+        &version,
+        &crate::core::pc_update::sha256_hex(host),
+        runtime_sha,
+    );
+    let there = std::fs::read_to_string(&path).ok();
+    if there.as_deref() == Some(text.as_str()) {
+        return;
+    }
+    let result = (|| -> Result<()> {
+        if there
+            .as_deref()
+            .is_some_and(|t| !t.lines().any(|l| l == format!("owner={OWNER}")))
+        {
+            let aside = root.join("installer").join("aside").join(format!(
+                "nevr-install.txt.launcher-{}",
+                time::OffsetDateTime::now_utc().unix_timestamp()
+            ));
+            std::fs::create_dir_all(aside.parent().unwrap_or(root))?;
+            std::fs::rename(&path, &aside)?;
+            tracing::info!(
+                "nEVR's root: set aside the record of nEVR's installer ({})",
+                aside.display()
+            );
+        }
+        std::fs::create_dir_all(path.parent().unwrap_or(root))?;
+        std::fs::write(&path, &text)?;
+        Ok(())
+    })();
+    if let Err(e) = result {
+        tracing::warn!("nEVR's root: couldn't write {}: {e:#}", path.display());
+    }
+}
+
 /// The files under `dir` (its subfolders too), as `prefix` + their path with `/` → (path,
 /// sha256).
 fn files_in(dir: &Path, prefix: &str, out: &mut BTreeMap<String, (PathBuf, String)>) -> Result<()> {
@@ -264,6 +358,13 @@ fn take_away_from(root: &Path, record: &Path) -> bool {
     }
     let ours = noted.is_some_and(|r| sha256_of(&target).is_ok_and(|s| s == r.runtime_sha256));
     let _ = std::fs::remove_file(record);
+    // Its install record goes too (one of another owner's stays).
+    let install = root.join(INSTALL_RECORD);
+    if std::fs::read_to_string(&install)
+        .is_ok_and(|t| t.lines().any(|l| l == format!("owner={OWNER}")))
+    {
+        let _ = std::fs::remove_file(&install);
+    }
     ours && std::fs::remove_file(&target).is_ok()
 }
 
@@ -306,7 +407,14 @@ mod tests {
         assert_eq!(in_root(), "runtime a");
         put_in_place(&b, &root, &record, false).unwrap();
         assert_eq!(in_root(), "runtime b");
-        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        // Beside it only the install record, the launcher's (nEVR's scripts leave it alone).
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 2);
+        let noted = std::fs::read_to_string(root.join(INSTALL_RECORD)).unwrap();
+        assert!(noted.lines().any(|l| l == "owner=launcher"), "{noted}");
+        assert!(
+            noted.contains("runtime_sha256=") && noted.contains("release=5.17.0"),
+            "{noted}"
+        );
         // One the launcher didn't put there (nEVR's installer) is set aside, never replaced.
         std::fs::write(root.join(nevr::RUNTIME), "installer's").unwrap();
         put_in_place(&a, &root, &record, false).unwrap();
@@ -321,9 +429,10 @@ mod tests {
             std::fs::read_to_string(root.join(&aside[0])).unwrap(),
             "installer's"
         );
-        // Uninstall takes ours away, and only ours.
+        // Uninstall takes ours away, and only ours (its install record too).
         assert!(take_away_from(&root, &record));
         assert!(!root.join(nevr::RUNTIME).exists());
+        assert!(!root.join(INSTALL_RECORD).exists());
         std::fs::write(root.join(nevr::RUNTIME), "installer's").unwrap();
         assert!(!take_away_from(&root, &record));
         assert!(root.join(nevr::RUNTIME).exists());
@@ -338,6 +447,55 @@ mod tests {
         std::fs::write(root.join(nevr::CONFIG), "services: {}\n").unwrap();
         take_away_from(&root, &record);
         assert!(root.join(nevr::CONFIG).exists());
+    }
+
+    #[test]
+    fn the_record_names_the_paths_the_game_sees() {
+        let root = Path::new("/p/pfx/drive_c/users/steamuser/AppData/Local/nevr/echovr");
+        let bin = Path::new("/data/g/bin/win10");
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                as_the_game_sees(root),
+                r"C:\users\steamuser\AppData\Local\nevr\echovr"
+            );
+            assert_eq!(as_the_game_sees(bin), r"Z:\data\g\bin\win10");
+        } else {
+            assert_eq!(as_the_game_sees(bin), bin.to_string_lossy());
+        }
+    }
+
+    #[test]
+    fn the_install_record_of_nevrs_installer_goes_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        let theirs = "backup=C:\\x\nowner=nevr-install\n";
+        std::fs::create_dir_all(root.join("installer")).unwrap();
+        std::fs::write(root.join(INSTALL_RECORD), theirs).unwrap();
+        let bin = Path::new("/g/bin/win10");
+        note_install(&root, bin, format!("MZ {ID}\0").as_bytes(), "abc");
+        let ours = std::fs::read_to_string(root.join(INSTALL_RECORD)).unwrap();
+        assert!(
+            ours.ends_with("owner=launcher\n") && ours.contains("runtime_sha256=abc\n"),
+            "{ours}"
+        );
+        let aside: Vec<_> = std::fs::read_dir(root.join("installer/aside"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(std::fs::read_to_string(aside[0].path()).unwrap(), theirs);
+        // The same install again writes nothing (nothing set aside again).
+        note_install(&root, bin, format!("MZ {ID}\0").as_bytes(), "abc");
+        assert_eq!(
+            std::fs::read_dir(root.join("installer/aside"))
+                .unwrap()
+                .count(),
+            1
+        );
+        // Uninstall leaves another owner's record.
+        std::fs::write(root.join(INSTALL_RECORD), theirs).unwrap();
+        take_away_from(&root, &dir.path().join("rec.json"));
+        assert!(root.join(INSTALL_RECORD).is_file());
     }
 
     /// Before a start of a real game folder (`ECHOVR_TEST_BIN`), into a root of its own
