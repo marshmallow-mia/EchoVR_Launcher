@@ -204,7 +204,8 @@ pub fn move_here(v: &InstalledVersion) -> Result<Option<Moved>> {
         );
     }
     let archive = data.join(ARCHIVED).join(safe_name(&v.id)).join(today());
-    let done = move_into(&game, &bin, &home, &archive, &v.id, plan)?;
+    let root = super::nevr_root::root();
+    let done = move_into(&game, &bin, &home, &archive, &v.id, plan, root.as_deref())?;
     tracing::info!(
         "{}: nEVR and its mods are in {} now ({} moved, {} archived in {})",
         v.id,
@@ -374,7 +375,7 @@ fn plan(game: &Path, bin: &Path, home: &Path) -> Plan {
 /// to `archive` (at its path in `game`), then `home` noted as `bin`'s. A file of the same
 /// name in `home` is replaced by the game folder's while the move isn't done (one cut short);
 /// once it is, the version's own stays and the game folder's (an older launcher's) goes to the
-/// archive. The game's sign-in goes into nEVR's root first when that has none.
+/// archive. The game's sign-in goes into nEVR's root (`root`) first when that has none.
 fn move_into(
     game: &Path,
     bin: &Path,
@@ -382,6 +383,7 @@ fn move_into(
     archive: &Path,
     id: &str,
     plan: Plan,
+    root: Option<&Path>,
 ) -> Result<Moved> {
     std::fs::create_dir_all(home).with_context(|| format!("create {}", home.display()))?;
     let mut done = Moved {
@@ -396,9 +398,10 @@ fn move_into(
     }
     // The old copy's folder, once its runtime moved and nothing else is in it, just goes.
     let _ = std::fs::remove_dir(bin.join("nevr-root"));
-    if let (Some(login), Some(root)) = (&plan.login, super::nevr_root::root()) {
+    // The root is made for it: an nEVR from before the root (5.2.1) never had one.
+    if let (Some(login), Some(root)) = (&plan.login, root) {
         let there = root.join(nevr::CREDENTIALS);
-        if !there.exists() && root.is_dir() {
+        if !there.exists() && std::fs::create_dir_all(root).is_ok() {
             let _ = std::fs::copy(login, &there);
         }
     }
@@ -540,6 +543,8 @@ mod tests {
         let game = Path::new(&v.root).join(paths::ARENA_DIR);
         assert_eq!(of(&v), None);
         let plan = plan(&game, &bin, &data.join("nevr/main"));
+        // nEVR's root isn't there yet (5.2.1 had none).
+        let root = dir.path().join("local/nevr/echovr");
         let done = move_into(
             &game,
             &bin,
@@ -547,6 +552,7 @@ mod tests {
             &data.join("archived/main/d"),
             "main",
             plan,
+            Some(&root),
         )
         .unwrap();
         let home = data.join("nevr/main");
@@ -568,6 +574,8 @@ mod tests {
             .join("bin/win10/nevr-runtime.dll.legacy-1700000000")
             .is_file());
         assert!(a.join("_local/.credentials.json").is_file());
+        // The sign-in went into nEVR's root first.
+        assert!(root.join(nevr::CREDENTIALS).is_file());
         assert_eq!(done.archive.as_deref(), Some(a.as_path()));
         // Of the launcher's, only the host is left in the game folder; the game's and the
         // plugins' own files stay.
@@ -652,6 +660,7 @@ mod tests {
             &data.join("archived/main/d"),
             "main",
             p,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -675,7 +684,16 @@ mod tests {
         let (bin, game) = (v.bin_dir(), Path::new(&v.root).join(paths::ARENA_DIR));
         let home = data.join("nevr/main");
         let p = plan(&game, &bin, &home);
-        move_into(&game, &bin, &home, &data.join("archived/main/1"), "main", p).unwrap();
+        move_into(
+            &game,
+            &bin,
+            &home,
+            &data.join("archived/main/1"),
+            "main",
+            p,
+            None,
+        )
+        .unwrap();
         // An older launcher put the old layout's files back.
         std::fs::create_dir_all(bin.join("plugins")).unwrap();
         std::fs::write(bin.join("plugins/NvrAssetPatches.dll"), "older launcher's").unwrap();
@@ -686,7 +704,16 @@ mod tests {
         )
         .unwrap();
         let p = plan_of(&v);
-        move_into(&game, &bin, &home, &data.join("archived/main/2"), "main", p).unwrap();
+        move_into(
+            &game,
+            &bin,
+            &home,
+            &data.join("archived/main/2"),
+            "main",
+            p,
+            None,
+        )
+        .unwrap();
         let read = |p: PathBuf| std::fs::read_to_string(p).unwrap();
         assert_eq!(read(home.join("plugins/NvrAssetPatches.dll")), "assets");
         assert_eq!(read(home.join(super::super::mods::CHOICES)), "{}");
