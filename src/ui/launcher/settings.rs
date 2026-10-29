@@ -1647,6 +1647,8 @@ pub(super) fn channel_answers(d: &mut Dashboard, ctx: &egui::Context) {
     }
     d.state.launcher_channel = c;
     d.save();
+    // The Quest's offer follows the channel too: read again.
+    d.quest_info = None;
     // The launcher installs what its check finds once the game updates the full check
     // finds are done (the live build's files follow the channel: its overlay on main's).
     d.launcher_when_found = true;

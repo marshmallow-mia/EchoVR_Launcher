@@ -4240,6 +4240,8 @@ impl Dashboard {
         self.mods.reload_catalog();
         self.plugins.reload();
         self.updates.check_soon();
+        // A code's test channel can change what the Quest is offered: read it again.
+        self.quest_info = None;
         self.check_dev_codes(ctx);
     }
 
