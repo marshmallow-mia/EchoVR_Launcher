@@ -118,7 +118,9 @@ nothing. Files it put there for another version that this one lacks go; a file o
 name it didn't put there is set aside as `<name>.original-<time>`; anything else is left
 alone (nEVR loads only the plugins `config.yaml` lists). `nevr-root.json` notes them, and
 uninstalling takes them away. A Server host server gets the version's plugins into its own
-root the same way.
+root the same way. The version's content packs (`bin/win10/content`) go into the root's
+`content\` by the same rules, as NvrContentOverlay 1.1.0 on reads a pack from `content\`
+beside the `plugins\` folder it loaded from; the folders a pack leaves empty go with it.
 
 ### The new layout (nEVR 6.0 on)
 
@@ -465,7 +467,8 @@ tables) is a **pack**: one zip, and a `pack` object in place of `file`, `url` an
   packages they add, script DLLs and `content.json`). Files at its top (a README) are left
   out; anything else refuses the pack.
 - Install puts the plugins and settings files into `plugins/` and the content pack into
-  `bin/win10/content/<content>/`, each plugin noted with its checksum, all on. Before that
+  `bin/win10/content/<content>/`, each plugin noted with its checksum, all on (a runtime
+  that loads plugins from nEVR's root gets both there before each start, above). Before that
   it installs the catalogue's `NvrContentOverlay.dll` when the version doesn't have it.
 - The page treats the pack as one mod: its plugins' rows say "part of <name>", and on, off
   or Remove on any of them is the pack's. Remove takes its plugins, settings files and

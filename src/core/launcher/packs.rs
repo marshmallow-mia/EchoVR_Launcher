@@ -21,7 +21,9 @@ use super::catalog;
 
 /// The plugin that serves content packs.
 pub const OVERLAY_PLUGIN: &str = "NvrContentOverlay.dll";
-/// Where content packs go, beside `plugins/` in `bin/win10`.
+/// Where content packs go, beside `plugins/` in `bin/win10`. For a runtime that loads plugins
+/// from nEVR's root they are mirrored into the root's `content` before each start
+/// ([`super::nevr_root::plugins_into`]), where NvrContentOverlay 1.1.0 on reads them.
 pub const CONTENT: &str = "content";
 
 /// A catalogue entry's pack.

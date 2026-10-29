@@ -36,6 +36,9 @@ struct Record {
     /// The files it put into the root's `plugins` (path in it, with `/`) → sha256.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     plugins: BTreeMap<String, String>,
+    /// The files it put into the root's `content` (its content packs), the same way.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    content: BTreeMap<String, String>,
 }
 
 fn read_record(record: &Path) -> Option<Record> {
@@ -138,11 +141,13 @@ pub fn put_in_place(bin: &Path, root: &Path, record: &Path, running: bool) -> Re
         }
     }
     copy_whole(&ours, &target)?;
-    // The plugins it put there stay noted ([`plugins_into`] runs after this).
+    // The plugins and content packs it put there stay noted ([`plugins_into`] runs after this).
+    let before = read_record(record).unwrap_or_default();
     let noted = Record {
         runtime_sha256: want,
         from: bin.to_string_lossy().into_owned(),
-        plugins: read_record(record).map(|r| r.plugins).unwrap_or_default(),
+        plugins: before.plugins,
+        content: before.content,
     };
     write_record(record, &noted)?;
     note_install(root, bin, &host, &noted.runtime_sha256);
@@ -171,42 +176,91 @@ pub fn put_in_place_for(bin: &Path) -> Result<()> {
 /// one lacks goes; a file of the same name it didn't put there is set aside
 /// (`<name>.original-<time>`); anything else there is left alone (nEVR loads only the plugins
 /// `config.yaml` lists). Another set isn't put there while Echo VR runs (`running`).
+///
+/// Its content packs (`bin`'s `content`, [`super::packs::CONTENT`]) go into the root's
+/// `content` the same way: NvrContentOverlay 1.1.0 on reads a pack from `content` beside the
+/// `plugins` folder it was loaded from.
 pub fn plugins_into(bin: &Path, root: &Path, record: &Path, running: bool) -> Result<()> {
     let runtime = std::fs::read(nevr::root_copy(bin)).unwrap_or_default();
     if !nevr::loads_root_plugins(&runtime) {
         return Ok(());
     }
-    let mut want = BTreeMap::new();
-    files_in(&super::mods::plugins_in(bin), "", &mut want)?;
-    let dest = super::mods::plugins_in(root);
     let mut noted = read_record(record).unwrap_or_default();
+    // Neither set changes while Echo VR runs: `mirror` refuses before it touches anything, and
+    // the content's only refuses when the plugins' didn't change either.
+    let dest = super::mods::plugins_in(root);
+    if mirror(
+        &super::mods::plugins_in(bin),
+        &dest,
+        &mut noted.plugins,
+        running,
+    )? {
+        write_record(record, &noted)?;
+        tracing::info!(
+            "nEVR's root: the plugins of {} in place ({}, {} files)",
+            bin.display(),
+            dest.display(),
+            noted.plugins.len()
+        );
+    }
+    std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
+    let content = root.join(super::packs::CONTENT);
+    if mirror(
+        &bin.join(super::packs::CONTENT),
+        &content,
+        &mut noted.content,
+        running,
+    )? {
+        write_record(record, &noted)?;
+        tracing::info!(
+            "nEVR's root: the content packs of {} in place ({}, {} files)",
+            bin.display(),
+            content.display(),
+            noted.content.len()
+        );
+    }
+    Ok(())
+}
+
+/// `dest` holds what `from` holds (subfolders too), `noted` being what the launcher put there
+/// before (path with `/` → sha256), then what it put there now. What it put there and `from`
+/// lacks goes (and the folders that leaves empty, `dest` too); a file of the same name it
+/// didn't put there is set aside; anything else is left alone. Nothing changes while Echo VR
+/// runs (`running`): an error when something would. Whether anything changed.
+fn mirror(
+    from: &Path,
+    dest: &Path,
+    noted: &mut BTreeMap<String, String>,
+    running: bool,
+) -> Result<bool> {
+    let mut want = BTreeMap::new();
+    files_in(from, "", &mut want)?;
     let in_place = |rel: &str, sha: &str| {
         sha256_of(&dest.join(rel)).is_ok_and(|s| s == sha)
-            && noted.plugins.get(rel).is_some_and(|n| n == sha)
+            && noted.get(rel).is_some_and(|n| n == sha)
     };
-    let gone = noted.plugins.keys().any(|rel| !want.contains_key(rel));
+    let gone = noted.keys().any(|rel| !want.contains_key(rel));
     if !gone && want.iter().all(|(rel, (_, sha))| in_place(rel, sha)) {
-        std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
-        return Ok(());
+        return Ok(false);
     }
     if running {
         bail!(
             "Echo VR is running with other mods. Close it first: nEVR loads one set of plugins for every Echo VR on this computer."
         );
     }
-    for rel in noted.plugins.keys().filter(|rel| !want.contains_key(*rel)) {
-        let _ = std::fs::remove_file(dest.join(rel));
+    for rel in noted.keys().filter(|rel| !want.contains_key(*rel)) {
+        remove_noted(dest, rel);
     }
     for (rel, (from, sha)) in &want {
         let to = dest.join(rel);
         match sha256_of(&to) {
             Ok(there) if &there == sha => continue,
-            // A file it put there for another start (or a plugin changed since) is replaced.
-            Ok(_) if noted.plugins.contains_key(rel) => {}
+            // A file it put there for another start (or a mod changed since) is replaced.
+            Ok(_) if noted.contains_key(rel) => {}
             Ok(_) => {
                 let aside = set_aside(&to)?;
                 tracing::info!(
-                    "nEVR's root: set aside a plugin file the launcher didn't put there ({})",
+                    "nEVR's root: set aside a file the launcher didn't put there ({})",
                     aside.display()
                 );
             }
@@ -214,16 +268,19 @@ pub fn plugins_into(bin: &Path, root: &Path, record: &Path, running: bool) -> Re
         }
         copy_whole(from, &to)?;
     }
-    std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
-    noted.plugins = want.into_iter().map(|(rel, (_, sha))| (rel, sha)).collect();
-    write_record(record, &noted)?;
-    tracing::info!(
-        "nEVR's root: the plugins of {} in place ({}, {} files)",
-        bin.display(),
-        dest.display(),
-        noted.plugins.len()
-    );
-    Ok(())
+    *noted = want.into_iter().map(|(rel, (_, sha))| (rel, sha)).collect();
+    Ok(true)
+}
+
+/// `dest`'s file `rel` removed, and the folders up to `dest` (itself too) that leaves empty.
+fn remove_noted(dest: &Path, rel: &str) {
+    let path = dest.join(rel);
+    let _ = std::fs::remove_file(&path);
+    for dir in path.ancestors().skip(1) {
+        if !dir.starts_with(dest) || std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+    }
 }
 
 /// nEVR's install record in its root (`installer\nevr-install.txt`, nevr-runtime's
@@ -352,9 +409,14 @@ fn take_away_from(root: &Path, record: &Path) -> bool {
     }
     let target = root.join(nevr::RUNTIME);
     let noted = read_record(record);
-    // The plugins it put there go too (#1250 on).
-    for rel in noted.iter().flat_map(|r| r.plugins.keys()) {
-        let _ = std::fs::remove_file(super::mods::plugins_in(root).join(rel));
+    // The plugins it put there go too (#1250 on), and its content packs.
+    for r in noted.iter() {
+        for rel in r.plugins.keys() {
+            remove_noted(&super::mods::plugins_in(root), rel);
+        }
+        for rel in r.content.keys() {
+            remove_noted(&root.join(super::packs::CONTENT), rel);
+        }
     }
     let ours = noted.is_some_and(|r| sha256_of(&target).is_ok_and(|s| s == r.runtime_sha256));
     let _ = std::fs::remove_file(record);
@@ -610,6 +672,114 @@ mod tests {
         assert_eq!(listed(&plugins), left);
     }
 
+    /// `plugins_game` with content packs in `bin/content` too.
+    fn content_game(dir: &Path, content: &[(&str, &str)]) -> PathBuf {
+        let bin = plugins_game(dir, &[("NvrContentOverlay.dll", "overlay")]);
+        for (rel, text) in content {
+            let p = bin.join(super::super::packs::CONTENT).join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        }
+        bin
+    }
+
+    fn texts(files: &[(&str, &str)]) -> BTreeMap<String, String> {
+        files
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn mirrors_a_versions_content_packs_into_the_root_for_a_runtime_that_loads_plugins_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, record) = (dir.path().join("root"), dir.path().join("rec.json"));
+        let content = root.join(super::super::packs::CONTENT);
+        let a = content_game(
+            &dir.path().join("a"),
+            &[
+                ("combat/content.json", "{a}"),
+                ("combat/packages/p_1", "pkg a"),
+            ],
+        );
+        let b = content_game(&dir.path().join("b"), &[("other/content.json", "{b}")]);
+        put_in_place(&a, &root, &record, false).unwrap();
+        plugins_into(&a, &root, &record, false).unwrap();
+        let want_a = texts(&[
+            ("combat/content.json", "{a}"),
+            ("combat/packages/p_1", "pkg a"),
+        ]);
+        assert_eq!(listed(&content), want_a);
+        // The game folder's stay: they are what the Mods page keeps.
+        assert!(a.join("content/combat/content.json").is_file());
+        // The same set again changes nothing, even while Echo VR runs; another set waits,
+        // though its plugins are the same.
+        plugins_into(&a, &root, &record, true).unwrap();
+        assert!(plugins_into(&b, &root, &record, true).is_err());
+        assert_eq!(listed(&content), want_a);
+        // Another version's: the pack it lacks goes (its folders too); someone else's stays.
+        std::fs::create_dir_all(content.join("theirs")).unwrap();
+        std::fs::write(content.join("theirs/content.json"), "theirs").unwrap();
+        plugins_into(&b, &root, &record, false).unwrap();
+        let want_b = texts(&[
+            ("other/content.json", "{b}"),
+            ("theirs/content.json", "theirs"),
+        ]);
+        assert_eq!(listed(&content), want_b);
+        assert!(!content.join("combat").exists());
+        // The runtime's record keeps the content's (a runtime put there again rewrites it).
+        std::fs::remove_file(root.join(nevr::RUNTIME)).unwrap();
+        put_in_place(&b, &root, &record, false).unwrap();
+        assert_eq!(read_record(&record).unwrap().content.len(), 1);
+        // A file of one of ours' names that it didn't put there is set aside, not replaced.
+        std::fs::create_dir_all(content.join("combat")).unwrap();
+        std::fs::write(content.join("combat/content.json"), "installer's").unwrap();
+        plugins_into(&a, &root, &record, false).unwrap();
+        let mut want = want_a.clone();
+        want.insert("theirs/content.json".into(), "theirs".into());
+        want.insert("combat/content.json.original".into(), "installer's".into());
+        assert_eq!(listed(&content), want);
+        // Uninstall takes away what it put there, and nothing else.
+        assert!(take_away_from(&root, &record));
+        let left = texts(&[
+            ("theirs/content.json", "theirs"),
+            ("combat/content.json.original", "installer's"),
+        ]);
+        assert_eq!(listed(&content), left);
+        assert!(!content.join("combat/packages").exists());
+    }
+
+    #[test]
+    fn removing_a_noted_file_takes_the_folders_it_empties_up_to_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("up/content");
+        std::fs::create_dir_all(dest.join("p/packages")).unwrap();
+        std::fs::write(dest.join("p/packages/x"), "x").unwrap();
+        std::fs::write(dest.join("p/content.json"), "{}").unwrap();
+        remove_noted(&dest, "p/packages/x");
+        assert!(!dest.join("p/packages").exists());
+        assert!(dest.join("p/content.json").is_file());
+        remove_noted(&dest, "p/content.json");
+        assert!(!dest.exists());
+        assert!(dir.path().join("up").is_dir());
+    }
+
+    #[test]
+    fn makes_no_content_folder_in_the_root_without_packs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, record) = (dir.path().join("root"), dir.path().join("rec.json"));
+        let bin = plugins_game(dir.path(), &[("One.dll", "one")]);
+        plugins_into(&bin, &root, &record, false).unwrap();
+        assert!(super::super::mods::plugins_in(&root).is_dir());
+        assert!(!root.join(super::super::packs::CONTENT).exists());
+        // The last pack going takes the root's content folder with it.
+        let with = content_game(&dir.path().join("w"), &[("p/content.json", "{}")]);
+        plugins_into(&with, &root, &record, false).unwrap();
+        assert!(root.join("content/p/content.json").is_file());
+        plugins_into(&bin, &root, &record, false).unwrap();
+        assert!(!root.join(super::super::packs::CONTENT).exists());
+    }
+
     #[test]
     fn leaves_the_roots_plugins_alone_for_a_runtime_that_loads_them_beside_the_game() {
         let dir = tempfile::tempdir().unwrap();
@@ -617,6 +787,8 @@ mod tests {
         let bin = game(dir.path(), "runtime 5.18");
         std::fs::create_dir_all(super::super::mods::plugins_in(&bin)).unwrap();
         std::fs::write(super::super::mods::plugins_in(&bin).join("One.dll"), "one").unwrap();
+        std::fs::create_dir_all(bin.join("content/combat")).unwrap();
+        std::fs::write(bin.join("content/combat/content.json"), "{}").unwrap();
         plugins_into(&bin, &root, &record, false).unwrap();
         assert!(!root.exists());
         // A record from before the plugins (alpha.5's) still reads.
