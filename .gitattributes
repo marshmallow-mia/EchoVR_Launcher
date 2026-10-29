@@ -1,0 +1,2 @@
+# Signed test fixtures: checked out byte for byte (no CRLF on Windows), or their signatures fail.
+src/core/testdata/nevr-release/** -text
