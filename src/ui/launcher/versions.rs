@@ -175,7 +175,7 @@ pub(super) fn adopt(
 
 /// Repairs version `id`'s game files (REPAIR's check, the changed ones fetched again)
 /// without going to the Install page: for a content pack whose game data an older
-/// installer changed. A licence patch in it stays.
+/// installer changed.
 pub(super) fn repair_game(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     let Some(v) = d.state.version(id).cloned() else {
         return;

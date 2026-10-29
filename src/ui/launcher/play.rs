@@ -799,7 +799,7 @@ fn press_play(d: &mut Dashboard, ctx: &egui::Context, main: Main) {
 }
 
 /// A notice's "Play": picks installed version `id` on the Play page, and starts it when
-/// PLAY would (else its next step, such as the licence patch, waits there).
+/// PLAY would (else its next step, such as the VR setup, waits there).
 pub(super) fn play_version(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     if d.state.version(id).is_none() {
         return;
@@ -1423,8 +1423,8 @@ impl Join {
 }
 
 /// Starts Echo VR into `lobby` (JOIN on Servers or Friends, Join a lobby, a link) the way
-/// PLAY would start it: the licence patch or the VR setup first (the game then starts into
-/// the match), or says why it can't.
+/// PLAY would start it: the VR setup first (the game then starts into the match), or says
+/// why it can't.
 pub(super) fn join(d: &mut Dashboard, ctx: &egui::Context, lobby: Join) {
     let a = pc_action(d);
     if !a.enabled {

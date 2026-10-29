@@ -902,7 +902,7 @@ pub struct Dashboard {
     pub(super) game_stopped: bool,
     /// The Quest was checked quietly once already.
     quest_auto_checked: bool,
-    /// A full-window card on top (the install questions, the licence patch, joining…).
+    /// A full-window card on top (the install questions, joining…).
     overlay: Option<setup::Overlay>,
     /// A job waiting for the administrator-rights answer.
     consent: Option<std::sync::mpsc::SyncSender<bool>>,
