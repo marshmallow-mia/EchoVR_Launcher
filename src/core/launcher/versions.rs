@@ -586,7 +586,9 @@ pub fn server_back(v: &InstalledVersion, h: &History) -> Result<Option<ServerBac
     let Some(url) = manifest_url(v) else {
         return Ok(None);
     };
-    let states = history::timeline(h, &url, &pc_update::overlays_of(&url));
+    let overlays = pc_update::overlays_of(&url);
+    let overlays: Vec<&str> = overlays.iter().map(String::as_str).collect();
+    let states = history::timeline(h, &url, &overlays);
     if states.len() < 2 {
         return Ok(None);
     }

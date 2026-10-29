@@ -5,7 +5,10 @@
 //! catalogues and the files they list. With codes set, the launcher lists their folders'
 //! entries too, over published ones with the same id (the first code's over a later one's).
 //! A code is 26 base32 characters (130 bits), never logged. A folder may also have a
-//! `channel.json` (`{"name": "…"}`, root's) naming the channel.
+//! `channel.json` (`{"name": "…"}`, root's) naming the channel, and with `"overlay": "<name>"`
+//! a test channel for Echo VR's updates: `updates-nevr-<name>/` (PC) and
+//! `quest/updates-nevr-<name>/` (Quest) on top of the followed channel's, so a code can
+//! bring an nEVR release (and its files) before the channels have it.
 //!
 //! A third-party developer's channel (restricted, or public) isn't under `launcher/dev/`:
 //! it's behind the EchoVRCE sign-in, `launcher/gated/dev/<code>/` ([`crate::core::http::GATED`]).
@@ -227,6 +230,8 @@ pub enum Status {
         mods: usize,
         plugins: usize,
         name: Option<String>,
+        /// The test channel for Echo VR's updates it names, if any.
+        overlay: Option<String>,
     },
     /// The server couldn't be asked (the message, without the code).
     Failed(String),
@@ -250,12 +255,21 @@ impl Status {
                 mods,
                 plugins,
                 name,
-            } => format!(
-                "{}: {mods} {}, {plugins} {}.",
-                name.as_deref().unwrap_or("Dev folder"),
-                if *mods == 1 { "mod" } else { "mods" },
-                if *plugins == 1 { "plugin" } else { "plugins" }
-            ),
+                overlay,
+            } => {
+                let mut line = format!(
+                    "{}: {mods} {}, {plugins} {}.",
+                    name.as_deref().unwrap_or("Dev folder"),
+                    if *mods == 1 { "mod" } else { "mods" },
+                    if *plugins == 1 { "plugin" } else { "plugins" }
+                );
+                if let Some(o) = overlay {
+                    line.push_str(&format!(
+                        " Echo VR updates include its test channel {o} (PC and Quest)."
+                    ));
+                }
+                line
+            }
             Status::Failed(e) => format!("Couldn't check the code: {e}"),
         }
     }
@@ -334,6 +348,33 @@ fn parse_channel(text: &str) -> Option<String> {
     (!name.is_empty() && name.len() <= 64).then(|| name.to_string())
 }
 
+/// Pure: the `overlay` in a `channel.json`: 1 to 32 of a-z, 0-9 and `-`, so it can only
+/// name a folder `updates-nevr-<it>/` on release.echovr.de.
+fn parse_overlay(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let o = v.get("overlay")?.as_str()?.trim();
+    ((1..=32).contains(&o.len())
+        && o.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+    .then(|| o.to_string())
+}
+
+/// The test channel for Echo VR's updates the first code that names one gives (its
+/// `channel.json`'s `overlay`, as kept last: no network).
+pub fn overlay() -> Option<String> {
+    codes()
+        .iter()
+        .find_map(|c| kept_one(c, "channel").and_then(|(_, t)| parse_overlay(&t)))
+}
+
+/// Reads every code's `channel.json` again (network: on a worker), so [`overlay`] is
+/// current before an update check.
+pub fn refresh_channels() {
+    for code in codes() {
+        let _ = load_one(&code, "channel");
+    }
+}
+
 /// Fetches `code`'s catalogue `name`: `Ok(None)` when its folder has none (or there's no
 /// such folder). Under `launcher/dev/`, else behind the sign-in (a 401 or 403 there is an
 /// error [`crate::core::http::status_of`] tells). Errors never name the code.
@@ -386,9 +427,10 @@ pub fn check(code: &str) -> Status {
     if mods.is_none() && plugins.is_none() {
         return Status::NotFound;
     }
-    let name = load_one(code, "channel").and_then(|(_, t)| parse_channel(&t));
+    let channel = load_one(code, "channel").map(|(_, t)| t);
     Status::Found {
-        name,
+        name: channel.as_deref().and_then(parse_channel),
+        overlay: channel.as_deref().and_then(parse_overlay),
         mods: mods
             .and_then(|t| super::mods::ModCatalog::parse_dev(&t, code).ok())
             .map_or(0, |c| c.mods.len()),
@@ -493,7 +535,8 @@ mod tests {
             Status::Found {
                 mods: 1,
                 plugins: 2,
-                name: None
+                name: None,
+                overlay: None
             }
             .line(),
             "Dev folder: 1 mod, 2 plugins."
@@ -502,10 +545,21 @@ mod tests {
             Status::Found {
                 mods: 0,
                 plugins: 1,
-                name: Some("cat's channel".into())
+                name: Some("cat's channel".into()),
+                overlay: None
             }
             .line(),
             "cat's channel: 0 mods, 1 plugin."
+        );
+        assert_eq!(
+            Status::Found {
+                mods: 1,
+                plugins: 0,
+                name: Some("nEVR 6 test".into()),
+                overlay: Some("nevr6".into())
+            }
+            .line(),
+            "nEVR 6 test: 1 mod, 0 plugins. Echo VR updates include its test channel nevr6 (PC and Quest)."
         );
     }
 
@@ -525,6 +579,21 @@ mod tests {
         );
         assert_eq!(parse_channel(r#"{"name": ""}"#), None);
         assert_eq!(parse_channel("nope"), None);
+        assert_eq!(
+            parse_overlay(r#"{"name": "t", "overlay": " nevr6 "}"#).as_deref(),
+            Some("nevr6")
+        );
+        for bad in [
+            r#"{"name": "t"}"#,
+            r#"{"overlay": ""}"#,
+            r#"{"overlay": "../updates"}"#,
+            r#"{"overlay": "Nevr6"}"#,
+            r#"{"overlay": "a/b"}"#,
+            r#"{"overlay": 6}"#,
+            r#"{"overlay": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        ] {
+            assert_eq!(parse_overlay(bad), None, "{bad}");
+        }
     }
 
     #[test]

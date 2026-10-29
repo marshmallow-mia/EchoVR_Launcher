@@ -36,6 +36,23 @@ pub const QUEST_BETA_OVERLAY: &str =
 pub const QUEST_ALPHA_OVERLAY: &str =
     "https://release.echovr.de/quest/updates-nevr-alpha/update.manifest";
 
+/// A dev code's test channel `name` (its `channel.json`'s `overlay`,
+/// [`crate::core::launcher::dev_code::overlay`]) on the live PC update, on top of the
+/// followed channel's overlays.
+pub fn dev_overlay(name: &str) -> String {
+    format!("https://release.echovr.de/updates-nevr-{name}/update.manifest")
+}
+
+/// The Quest's twin of [`dev_overlay`].
+pub fn quest_dev_overlay(name: &str) -> String {
+    format!("https://release.echovr.de/quest/updates-nevr-{name}/update.manifest")
+}
+
+/// Pure: a channel's overlays, then a dev code's test channel (last: it wins).
+fn with_dev(channel: &[&str], dev: Option<String>) -> Vec<String> {
+    channel.iter().map(|o| o.to_string()).chain(dev).collect()
+}
+
 /// Where the update channels were read before; installs keep such a URL.
 const FILES_UPDATES: &str = "https://files.echovr.de/updates/";
 const RELEASE_UPDATES: &str = "https://release.echovr.de/updates/";
@@ -79,12 +96,16 @@ pub fn overlays(channel: Channel) -> &'static [&'static str] {
 pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
     let text = http::get_text(url)
         .with_context(|| format!("Could not download the update manifest ({url})"))?;
+    if url == PC_MANIFEST_URL {
+        crate::core::launcher::dev_code::refresh_channels();
+    }
+    let urls = overlays_of(url);
     let mut over = Vec::new();
-    for o in overlays_of(url) {
+    for o in &urls {
         let t = http::get_text_opt(o)
             .with_context(|| format!("Could not download the channel's update ({o})"))?;
         if let Some(t) = t {
-            over.push((o, t));
+            over.push((o.as_str(), t));
         }
     }
     let (mut m, mut text) = with_overlays(url, &text, &over)?;
@@ -116,12 +137,17 @@ pub fn quest_nevr_release() -> Result<Option<String>> {
         .with_context(|| format!("Could not download the Quest's update ({main})"))?
         .unwrap_or_default();
     let channel = *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
+    crate::core::launcher::dev_code::refresh_channels();
+    let urls = with_dev(
+        quest_overlays(channel),
+        crate::core::launcher::dev_code::overlay().map(|o| quest_dev_overlay(&o)),
+    );
     let mut over = Vec::new();
-    for o in quest_overlays(channel) {
+    for o in &urls {
         let t = http::get_text_opt(&quest_url(o))
             .with_context(|| format!("Could not download the channel's Quest update ({o})"))?;
         if let Some(t) = t {
-            over.push((*o, t));
+            over.push((o.as_str(), t));
         }
     }
     let (m, _) = with_overlays(QUEST_MANIFEST_URL, &text, &over)?;
@@ -171,13 +197,16 @@ fn channel_release(name: &str, cancel: &AtomicBool) -> Result<String> {
 }
 
 /// The overlays the update at `url` gets: the followed channel's for the live PC update,
-/// none for any other.
-pub fn overlays_of(url: &str) -> Vec<&'static str> {
+/// then a dev code's test channel ([`dev_overlay`]), none for any other.
+pub fn overlays_of(url: &str) -> Vec<String> {
     if url != PC_MANIFEST_URL {
         return Vec::new();
     }
     let channel = *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
-    overlays(channel).to_vec()
+    with_dev(
+        overlays(channel),
+        crate::core::launcher::dev_code::overlay().map(|o| dev_overlay(&o)),
+    )
 }
 
 /// Pure: `text` (the manifest at `url`) with the overlays `(url, text)` on top, in order.
@@ -1393,6 +1422,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(m.nevr_release("quest"), Some("beta"));
+        // A dev code's test channel comes last, over the followed channel's: here a release
+        // over main's none and alpha's channel, on the Quest and the PC alike.
+        let dev = with_dev(
+            quest_overlays(Channel::Alpha),
+            Some(quest_dev_overlay("nevr6")),
+        );
+        assert_eq!(
+            dev,
+            [
+                QUEST_BETA_OVERLAY,
+                QUEST_ALPHA_OVERLAY,
+                "https://release.echovr.de/quest/updates-nevr-nevr6/update.manifest"
+            ]
+        );
+        let over: Vec<(&str, String)> = dev
+            .iter()
+            .map(|o| o.as_str())
+            .zip(["", "# nEVR quest: beta\n", "# nEVR quest: 6.2.0\n"].map(String::from))
+            .collect();
+        let (m, _) = with_overlays(QUEST_MANIFEST_URL, "# nEVR quest: none\n", &over).unwrap();
+        assert_eq!(m.nevr_release("quest"), Some("6.2.0"));
+        assert_eq!(
+            with_dev(overlays(Channel::Main), Some(dev_overlay("nevr6"))),
+            ["https://release.echovr.de/updates-nevr-nevr6/update.manifest"]
+        );
+        assert_eq!(with_dev(overlays(Channel::Beta), None), [BETA_OVERLAY]);
+        assert!(override_ok(&dev_overlay("nevr6")));
     }
 
     #[test]
