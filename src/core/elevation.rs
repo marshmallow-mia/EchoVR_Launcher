@@ -1154,6 +1154,7 @@ mod tests {
     }
 
     /// A Meta app folder with Echo VR in its library; returns it and the bin folder.
+    #[cfg(unix)]
     fn meta_install(dir: &std::path::Path) -> (String, std::path::PathBuf) {
         let base = dir.join("Oculus");
         let bin = base.join("Software/Software/ready-at-dawn-echo-arena/bin/win10");
