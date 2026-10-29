@@ -55,7 +55,9 @@ fn main() {
     core::log::init("EchoVR_Launcher.log");
     core::linux::log_desktop_env(desktop_fix.as_deref());
     // nEVR 6.0 on: each version's runtime and mods out of its game folder, once.
-    core::launcher::home::move_all(&core::launcher::store::LauncherState::load());
+    let state = core::launcher::store::LauncherState::load();
+    core::launcher::home::move_all(&state);
+    core::launcher::versions::restore_pnsovr(&state);
     core::launcher::self_update::clean_up();
     let result = ui::run();
     core::elevation::shutdown();

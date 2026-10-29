@@ -63,13 +63,12 @@ pub(super) fn update(d: &mut Dashboard, ctx: &egui::Context, v: InstalledVersion
 }
 
 /// Reinstalls `v` from `e`: checks its files against the build's checksums and fetches
-/// only the broken ones again (`keep_patch`: a new player's licence patch stays).
+/// only the broken ones again.
 pub(super) fn reinstall(
     d: &mut Dashboard,
     ctx: &egui::Context,
     e: VersionEntry,
     v: InstalledVersion,
-    keep_patch: bool,
 ) {
     let id = v.id.clone();
     let mut consent = setup::consent_asker(d.worker.tx(ctx));
@@ -80,7 +79,7 @@ pub(super) fn reinstall(
         res(&v.id, v.publisher_lock.is_some()),
         &format!("Repairing {}", v.name),
         "Reading the build's checksums...",
-        move |cancel, on| match versions::reinstall(&e, &v, keep_patch, cancel, on, &mut consent) {
+        move |cancel, on| match versions::reinstall(&e, &v, cancel, on, &mut consent) {
             Ok(r) => JobResult::Reinstalled(r),
             Err(err) => job_err(err, "Couldn't repair"),
         },
@@ -197,15 +196,14 @@ pub(super) fn repair_game(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
         d.notify(&busy);
         return;
     }
-    let keep_patch = v.patched;
-    reinstall(d, ctx, e, v, keep_patch);
+    reinstall(d, ctx, e, v);
 }
 
 /// Copy elsewhere `id`, found to be `e`'s build (the live one), gets what an install
 /// gets: it counts as that build from now on (its update, REPAIR, repairs), then its
 /// files are checked against the build's checksums and the broken ones fetched again
-/// (through the admin helper where the folder needs it), with its update. A licence patch
-/// in it stays; it keeps its name. While Echo VR runs from it or a job has it, only the
+/// (through the admin helper where the folder needs it), with its update. It keeps its
+/// name. While Echo VR runs from it or a job has it, only the
 /// first part: REPAIR, or a content pack's question, does the rest.
 pub(super) fn check_existing(d: &mut Dashboard, ctx: &egui::Context, e: VersionEntry, id: &str) {
     let Some(v) = d.state.versions.iter_mut().find(|v| v.id == id) else {
@@ -213,15 +211,13 @@ pub(super) fn check_existing(d: &mut Dashboard, ctx: &egui::Context, e: VersionE
     };
     v.catalog_id = Some(e.id.clone());
     v.update_manifest = e.update_manifest.clone();
-    v.patched = crate::core::launcher::patch::is_applied(&v.bin_dir());
     let v = v.clone();
     d.save();
     tracing::info!("{}: counts as {} now", v.id, e.id);
     if d.files_in_use(&v).is_some() || d.busy_with(&res(&v.id, false)).is_some() {
         return;
     }
-    let keep_patch = v.patched;
-    reinstall(d, ctx, e, v, keep_patch);
+    reinstall(d, ctx, e, v);
 }
 
 /// Asks for the executable of an Echo VR copy already on this PC: its install root, or
@@ -416,8 +412,6 @@ pub(super) fn manage_menu(
         Verify,
         Open,
         Shortcut,
-        Patch,
-        Unpatch,
         Account,
         Remove,
     }
@@ -478,31 +472,15 @@ pub(super) fn manage_menu(
             Some(Act::Shortcut),
         ));
     }
-    // The licence patch, for owners too (it stays optional for them). Event builds play
-    // with EchoRelay's patch instead, and an account on the classic lobbies server.
-    menu.push((MenuItem::Divider, None));
+    // Event builds play with an account on the classic lobbies server.
     if event {
+        menu.push((MenuItem::Divider, None));
         menu.push((
             MenuItem::row(
                 "Classic lobbies account…",
                 "Your name and password on the classic lobbies server",
             ),
             Some(Act::Account),
-        ));
-    } else if v.patched {
-        menu.push((
-            MenuItem::row("Remove licence patch", "Put the original pnsovr.dll back")
-                .unless(changes),
-            Some(Act::Unpatch),
-        ));
-    } else {
-        menu.push((
-            MenuItem::row(
-                "Licence patch…",
-                "Your personal patch, through Discord or from a link",
-            )
-            .unless(changes),
-            Some(Act::Patch),
         ));
     }
     menu.push((MenuItem::Divider, None));
@@ -544,8 +522,6 @@ pub(super) fn manage_menu(
         }
         Some(Act::Verify) => verify(d, ctx, v.clone()),
         Some(Act::Shortcut) => setup::shortcut(d, &v.id),
-        Some(Act::Patch) => d.overlay = Some(setup::licence(&v.id)),
-        Some(Act::Unpatch) => setup::unpatch(d, ctx, &v.id),
         Some(Act::Account) => d.overlay = Some(setup::relay_account(d, false)),
         Some(Act::Open) => {
             if let Err(e) = platform::open_folder(&v.bin_dir()) {

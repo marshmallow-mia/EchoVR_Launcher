@@ -651,15 +651,8 @@ fn play_label(kit: &Kit, label: &str, lit: bool, t: f32, extra: f32) {
 }
 
 /// The PCVR | QUEST switch: the image shows the side in use (lighter under the pointer),
-/// the other half picks its side. While Quest is off (`super::QUEST`) its side stays
-/// unpicked: the Quest half's rectangle comes back when it was clicked, for the "coming
-/// soon".
-pub(super) fn switch(
-    kit: &mut Kit,
-    key: &str,
-    extra: f32,
-    platform: &mut Platform,
-) -> Option<egui::Rect> {
+/// the other half picks its side.
+pub(super) fn switch(kit: &mut Kit, key: &str, extra: f32, platform: &mut Platform) {
     let name = match platform {
         Platform::Pc => "hardware_pc",
         Platform::Quest => "hardware_quest",
@@ -686,14 +679,9 @@ pub(super) fn switch(
         (
             Platform::Quest,
             SWITCH_QUEST.moved(extra),
-            if super::QUEST {
-                "Echo VR on your Quest, over USB"
-            } else {
-                "Echo VR on Quest: coming soon"
-            },
+            "Echo VR on your Quest, over USB or Wi-Fi",
         ),
     ];
-    let mut soon = None;
     for (i, (p, area, tip)) in sides.into_iter().enumerate() {
         let r = kit.drect(area);
         if kit
@@ -701,14 +689,9 @@ pub(super) fn switch(
             .0
             .clicked
         {
-            if p == Platform::Quest && !super::QUEST {
-                soon = Some(r);
-            } else {
-                *platform = p;
-            }
+            *platform = p;
         }
     }
-    soon
 }
 
 // ---- cards ----

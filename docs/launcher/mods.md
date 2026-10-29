@@ -46,6 +46,34 @@ replaces main's line. `ECHOVR_NEVR_RELEASES` points the launcher at a mirror of 
 An update places nEVR's two files as a pair: both are downloaded and checked first, then
 the runtime goes in before the host, and Undo update puts both back.
 
+### Echo VR on the Quest
+
+From 0.13.0-alpha.8 on the Quest gets nEVR's signed APK, the same for every player: the
+`quest-apk` of a release in the same signed manifest (package `com.readyatdawn.r15`; its
+`version_code` and `signer_cert_sha256` must be there), downloaded from the manifest's own
+folder and checked by size and sha256 (`src/core/launcher/quest.rs`). Which release, our
+line says, in the Quest's own update folders on release.echovr.de:
+
+```text
+# nEVR quest: beta
+```
+
+- `/quest/updates-nevr/update.manifest` is main's, `/quest/updates-nevr-beta/` and
+  `/quest/updates-nevr-alpha/` (each an `update.manifest`) are the channels' overlays, read
+  as on PC (alpha, then beta, then main; a missing one counts as main's). They carry only
+  this line: no file lists are applied on the Quest.
+- `none` or no line: the Quest side says the launcher's channel has no Quest release yet.
+
+The install is `adb install -r -g`. Another signer (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`)
+or a newer build on the headset (`INSTALL_FAILED_VERSION_DOWNGRADE`) is uninstalled first,
+as part of the update without a question: Android deletes `Android/media/com.readyatdawn.r15`
+with the app, so the player's settings there (`files/RAD/`) are copied off before and put
+back after, and the game data is copied again. The game data stays where it was: the mirrors' `quest/_data.zip`,
+whose sha256 must be the release's signed `game-data` one. It is copied only when one of
+that entry's `contents` is missing (or another size) in
+`/sdcard/Android/media/com.readyatdawn.r15/files` or `/sdcard/readyatdawn`. Afterwards the
+headset's versionCode must be the release's, and its data complete.
+
 **nEVR's root.** From nevr-runtime #1104 on (ADR 0012 there), the host loads its runtime
 only from nEVR's root, `%LOCALAPPDATA%\nevr\echovr` (the Wine prefix's on Linux), never from
 beside itself: what install.ps1 does once, the launcher does without scripts. It tells such

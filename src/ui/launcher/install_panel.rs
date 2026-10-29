@@ -181,7 +181,7 @@ fn version_tile(
     actions(d, k, ctx, v, right - aw, ay);
 }
 
-/// An installed version's chips: selected, added from elsewhere, patched.
+/// An installed version's chips: selected, added from elsewhere.
 fn chips(d: &Dashboard, v: &InstalledVersion) -> Vec<(&'static str, Color32)> {
     let mut chips = Vec::new();
     if d.state.selected.as_deref() == Some(v.id.as_str()) {
@@ -189,9 +189,6 @@ fn chips(d: &Dashboard, v: &InstalledVersion) -> Vec<(&'static str, Color32)> {
     }
     if v.external {
         chips.push(("Existing folder", design::QUEST_OFF));
-    }
-    if v.patched {
-        chips.push(("Patched", design::QUEST_OFF));
     }
     chips
 }
@@ -346,10 +343,23 @@ fn existing(d: &mut Dashboard, kit: &mut Kit, x: f32, w: f32, bottom: f32) -> f3
 
 // ---- YOUR QUEST ----
 
-/// YOUR QUEST: the headset (its connection, and Check again) and what is installed on it.
+/// YOUR QUEST: the headset (its connection, and Check again), what is installed on it, the
+/// network, and every headset found.
 pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    // Look for a headset quietly once, and on the network when none answers (the Headsets
+    // list).
+    if !d.quest_auto_checked && !d.demo && !kit.ghost {
+        d.quest_auto_checked = true;
+        if d.quest_conn.status.is_none() && !d.quest_conn.checking {
+            d.check_quest(ctx, false);
+        }
+    }
+    let none = d.quest_conn.status.is_some_and(|s| s != Status::Ready);
+    if none && !d.quest_scanned && !d.quest_conn.checking && !d.demo && !kit.ghost {
+        d.scan_quest(ctx, true);
+    }
     panel::at_right(kit, |k| {
-        let (x, y, w, _) = hero::card_frame(k, card(k), "Your Quest");
+        let (x, y, w, bottom) = hero::card_frame(k, card(k), "Your Quest");
         let h = headset(d);
         let (tx, right) = (x + dz(TILE_PAD), x + w - dz(TILE_PAD));
 
@@ -379,8 +389,16 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         let bw = k
             .button_width("Check again", Some(Icon::Refresh), dz(ACTION_H))
             .max(dz(PLAY_W));
+        let over_network = d
+            .quest_info
+            .as_ref()
+            .is_some_and(|i| h.ready && i.over_network);
         let note = k.label_galley(
-            "Over USB, with developer mode on",
+            if over_network {
+                "Over Wi-Fi (ADB)"
+            } else {
+                "Over USB, with developer mode on"
+            },
             design::din(14.0),
             design::GREY,
             right - bw - dz(12.0) - tx,
@@ -397,7 +415,7 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Some(Icon::Refresh),
             "Check again",
             !d.quest_conn.checking && !d.quest_busy,
-            "Look for your Quest over USB",
+            "Look for your Quest over USB or Wi-Fi",
         )
         .clicked
         {
@@ -452,13 +470,134 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             });
         }
 
-        network(d, k, ctx, x, ey + echo_h + dz(34.0), w);
+        let ny = network(d, k, ctx, x, ey + echo_h + dz(34.0), w);
+        headsets(d, k, ctx, x, ny + dz(34.0), w, bottom);
     });
 }
 
+/// HEADSETS: every headset found (adb's, on USB or the network, and what Find or mDNS
+/// found), once each, with Use for one not in use.
+#[allow(clippy::too_many_arguments)]
+fn headsets(
+    d: &mut Dashboard,
+    k: &mut Kit,
+    ctx: &egui::Context,
+    x: f32,
+    y: f32,
+    w: f32,
+    bottom: f32,
+) {
+    use crate::core::launcher::quest_net::Conn;
+    const ROW_H: f32 = 64.0;
+    k.caption(x, y, "Headsets");
+    let mut ry = y + dz(30.0);
+    let (tx, right) = (x + dz(TILE_PAD), x + w - dz(TILE_PAD));
+    let (list, in_use) = d.quest_list();
+    if list.is_empty() {
+        hero::tile(k, x, ry, w, dz(ROW_H), false);
+        let g = k.label_galley(
+            "None found yet: plug one in by USB, or use Find",
+            design::din(14.0),
+            design::GREY,
+            right - tx,
+        );
+        let gy = ry + (dz(ROW_H) - g.size().y) / 2.0;
+        k.put(tx, gy, g);
+        return;
+    }
+    let busy = d.quest_conn.checking || d.quest_busy || d.busy_with(&[super::Res::Quest]).is_some();
+    let mut picked = None;
+    for (i, f) in list.iter().enumerate() {
+        // The rest, when the card is full (a line for them below this row).
+        let last = i + 1 == list.len();
+        if ry + dz(ROW_H) + if last { 0.0 } else { dz(30.0) } > bottom {
+            let more = format!(
+                "{} more: unplug or turn off what you don't use",
+                list.len() - i
+            );
+            let g = k.label_galley(&more, design::din(14.0), design::GREY, right - tx);
+            k.put(tx, ry + dz(6.0), g);
+            break;
+        }
+        hero::tile(k, x, ry, w, dz(ROW_H), false);
+        let current = f.serial.is_some() && f.serial == in_use;
+        // Its state (Connect says "not connected" already).
+        let chip = match &f.conn {
+            _ if current => Some(("In use", design::QUEST_ON)),
+            Conn::Connected => Some(("Connected", design::QUEST_ON)),
+            Conn::Unauthorized => Some(("Allow this PC", design::QUEST_WARN)),
+            Conn::Other(_) => Some(("Not ready", design::QUEST_WARN)),
+            Conn::NotConnected if f.connect.is_some() => None,
+            Conn::NotConnected => Some(("ADB off", design::QUEST_OFF)),
+        };
+        // Use for adb's own, Connect for a network find adb can reach.
+        let action = match (current, &f.serial, &f.connect) {
+            (true, _, _) => None,
+            (false, Some(_), _) => Some(("Use", "Use this headset for installs, updates and PLAY")),
+            (false, None, Some(_)) => Some((
+                "Connect",
+                "Connect to it over the network (ADB), then use it",
+            )),
+            (false, None, None) => None,
+        };
+        let bw = action.map_or(0.0, |(label, _)| {
+            k.button_width(label, None, dz(ACTION_H)).max(dz(110.0))
+        });
+        // The name with its chip on the first line, how it was found below.
+        let text_r = right - if bw > 0.0 { bw + dz(12.0) } else { 0.0 };
+        let chip_w = chip.map_or(0.0, |(c, _)| k.chip_width(c) + dz(10.0));
+        let name = k.label_galley(
+            &f.label,
+            design::din(16.0),
+            design::TEXT,
+            text_r - tx - chip_w,
+        );
+        let (nh, nw) = (name.size().y, name.size().x);
+        let nr = k.put(tx, ry + dz(10.0), name);
+        if let Some((c, color)) = chip {
+            k.chip(
+                tx + nw + dz(10.0),
+                nr.center().y - k.origin.y - dz(13.5),
+                c,
+                color,
+            );
+        }
+        // An ADB-only find not connected yet may be any Android device.
+        let via = if !f.quest_like && f.serial.is_none() {
+            format!("{} · maybe another Android device", f.via())
+        } else {
+            f.via()
+        };
+        let sub = k.label_galley(&via, design::din(13.0), design::GREY, text_r - tx);
+        k.put(tx, ry + dz(16.0) + nh, sub);
+        if let Some((label, tip)) = action {
+            if k.button(
+                &format!("quest-use-{i}"),
+                right - bw,
+                ry + (dz(ROW_H) - dz(ACTION_H)) / 2.0,
+                bw,
+                dz(ACTION_H),
+                Tone::Dark,
+                None,
+                label,
+                !busy,
+                tip,
+            )
+            .clicked
+            {
+                picked = Some(f.clone());
+            }
+        }
+        ry += dz(ROW_H + 8.0);
+    }
+    if let Some(f) = picked {
+        d.use_quest(ctx, &f);
+    }
+}
+
 /// NETWORK: where the Quest is on the Wi-Fi (typed, or found with Find), ADB over the
-/// network, and what answers there.
-fn network(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, y: f32, w: f32) {
+/// network, and what answers there. Returns the bottom of its tile.
+fn network(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, y: f32, w: f32) -> f32 {
     use crate::core::launcher::quest_net;
     k.caption(x, y, "Network");
     let ty = y + dz(30.0);
@@ -526,11 +665,11 @@ fn network(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, y: f32, 
         scanning.is_none().then_some(Icon::Globe),
         &find_label,
         scanning.is_none(),
-        "Look for your Quest on this PC's network. It answers while Echo VR runs with API access on, or once ADB over the network is on.",
+        "Look for Quests on this PC's network: they answer while Echo VR runs with API access on, or once ADB over the network or wireless debugging is on. Every one found is listed under Headsets.",
     )
     .clicked
     {
-        d.scan_quest(ctx);
+        d.scan_quest(ctx, false);
     }
 
     // ADB over the network: turned on over USB once.
@@ -566,6 +705,7 @@ fn network(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context, x: f32, y: f32, 
         k.put(tx, ly, g);
         ly += h + dz(6.0);
     }
+    row3 + lines_h + dz(TILE_PAD)
 }
 
 /// What the headset card says.

@@ -864,7 +864,6 @@ mod tests {
             dir: dir.path().to_path_buf(),
             filename: "assets.zip".into(),
             use_mirror: false,
-            fresh: false,
             extract: false,
             sha256: None,
         };

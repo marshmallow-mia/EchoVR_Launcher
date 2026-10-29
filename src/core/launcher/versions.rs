@@ -22,9 +22,6 @@ pub enum Step {
     Percent(f64),
     /// Checking the game files against their checksums, this far (0 to 100).
     Checking(f64),
-    /// A page just opened in the browser (Discord's authorization) and the job waits for
-    /// what the player does there; the UI says so and offers to open it again.
-    Browser(String),
 }
 
 pub fn root_for(library: &str, id: &str) -> String {
@@ -87,8 +84,7 @@ pub fn install(
 /// Takes the copy of `entry` at `root` (installed some other way: the Meta app, an older
 /// installer) into the library as version `id`, instead of downloading it: its files are
 /// checked against the build's checksums (a few broken ones come again), then it gets its
-/// update. A folder holding another build is refused, never overwritten. A licence patch
-/// in it stays.
+/// update. A folder holding another build is refused, never overwritten.
 pub fn adopt(
     entry: &VersionEntry,
     root: &str,
@@ -110,7 +106,6 @@ pub fn adopt(
     if !version.present() {
         bail!("There is no Echo VR in {root}.");
     }
-    version.patched = super::patch::is_applied(&version.bin_dir());
     finish(entry, version, cancel, on, consent)
 }
 
@@ -126,7 +121,6 @@ fn from_entry(entry: &VersionEntry, id: &str, root: &str) -> InstalledVersion {
         installed_at: time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .ok(),
-        patched: false,
         exe: entry.exe.clone(),
         publisher_lock: entry.publisher_lock.clone(),
         manifest_sha256: None,
@@ -146,7 +140,7 @@ fn finish(
     consent: &mut dyn FnMut() -> bool,
 ) -> Result<Installed> {
     if let Some(url) = &entry.files_manifest {
-        match Checksums::fetch(url, &version, version.patched) {
+        match Checksums::fetch(url, &version) {
             Ok(sums) => {
                 let bad = sums.check(cancel, on)?;
                 if version.external && mostly_bad(bad.len(), sums.files().count()) {
@@ -213,15 +207,12 @@ fn mostly_bad(bad: usize, total: usize) -> bool {
 
 /// Reinstalls `v` (installed from `entry`) without downloading it all again: every game
 /// file is checked against the build's checksums on the server, and only the broken or
-/// missing ones are fetched again, out of the build's archive. Then its update.
-/// `keep_patch` leaves a licence-patched `pnsovr.dll` alone; otherwise the original
-/// comes back. When most of the game is gone, the whole archive is downloaded instead
+/// missing ones are fetched again, out of the build's archive. Then its update. When most of the game is gone, the whole archive is downloaded instead
 /// (not into a copy elsewhere, `external`: that is refused as another build). Files in a
 /// folder only administrators may write go in through the admin helper, after `consent`.
 pub fn reinstall(
     entry: &VersionEntry,
     v: &InstalledVersion,
-    keep_patch: bool,
     cancel: &AtomicBool,
     on: &mut dyn FnMut(Step),
     consent: &mut dyn FnMut() -> bool,
@@ -233,7 +224,7 @@ pub fn reinstall(
         );
     };
     on(Step::Status("Reading the build's checksums...".into()));
-    let sums = Checksums::fetch(url, v, keep_patch)?;
+    let sums = Checksums::fetch(url, v)?;
     let mut bad = sums.check(cancel, on)?;
     if mostly_bad(bad.len(), sums.files().count()) {
         if v.external {
@@ -247,7 +238,6 @@ pub fn reinstall(
     }
     sums.repair(&bad, cancel, on, consent)?;
     let version = InstalledVersion {
-        patched: keep_patch && v.patched,
         publisher_lock: entry.publisher_lock.clone(),
         ..v.clone()
     };
@@ -285,9 +275,7 @@ fn update_after(
     };
     let m = pc_update::manifest_for(m);
     on(Step::Status("Applying update...".into()));
-    match pc_update::apply_skipping(&m, &v.bin_dir(), keep(v), cancel, &mut |s| {
-        on(Step::Status(s))
-    }) {
+    match pc_update::apply(&m, &v.bin_dir(), cancel, &mut |s| on(Step::Status(s))) {
         Ok(()) => {
             settle(v);
             Ok(None)
@@ -308,8 +296,7 @@ fn game_data(path: &str) -> bool {
 }
 
 /// A build's checksums for one install: its file manifest, where its files are on disk,
-/// and the files that aren't the build's to check (the update replaces them; a kept
-/// licence patch).
+/// and the files that aren't the build's to check (the update replaces them).
 struct Checksums {
     manifest: Manifest,
     /// Where it came from (the admin helper reads it again itself).
@@ -321,7 +308,7 @@ struct Checksums {
 }
 
 impl Checksums {
-    fn fetch(url: &str, v: &InstalledVersion, keep_patch: bool) -> Result<Checksums> {
+    fn fetch(url: &str, v: &InstalledVersion) -> Result<Checksums> {
         let manifest = Manifest::fetch(url)
             .with_context(|| "Couldn't read the build's checksums from the server")?;
         if manifest.archive_root.is_none() {
@@ -347,9 +334,6 @@ impl Checksums {
                     .chain(update.dels())
                     .map(|e| format!("{bin}/{}", e.path).to_ascii_lowercase()),
             );
-        }
-        if keep_patch {
-            skip.insert(format!("{bin}/{}", super::patch::DLL).to_ascii_lowercase());
         }
         // An event build's loader replaces its crash reporter (and, on the 2017 builds,
         // the game's dbghelp.dll goes back where EchoRelay's installer put its patch).
@@ -482,7 +466,6 @@ fn download_and_extract(
         dir: PathBuf::from(root),
         filename: ZIP_NAME.into(),
         use_mirror: entry.uses_mirror(),
-        fresh: false,
         extract: false,
         sha256: entry.sha256.clone(),
     };
@@ -533,12 +516,20 @@ fn no_updates(v: &InstalledVersion) -> anyhow::Error {
     anyhow::anyhow!("{} doesn't get updates: its build is final.", v.name)
 }
 
-/// Files an update must leave alone: the licence patch of a patched version.
-fn keep(v: &InstalledVersion) -> &'static [&'static str] {
-    if v.patched {
-        &[super::patch::DLL]
-    } else {
-        &[]
+/// The game's own `pnsovr.dll` back where an older launcher's licence patch kept it aside
+/// (`pnsovr.dll.orig`), in every version: nothing needs that patch any more. A folder the
+/// launcher may not write is left as it is: Verify and REINSTALL find the file then.
+pub fn restore_pnsovr(state: &super::store::LauncherState) {
+    for v in &state.versions {
+        let bin = v.bin_dir();
+        let orig = bin.join("pnsovr.dll.orig");
+        if !orig.is_file() {
+            continue;
+        }
+        match std::fs::rename(&orig, bin.join("pnsovr.dll")) {
+            Ok(()) => tracing::info!("{}: its own pnsovr.dll is back", v.id),
+            Err(e) => tracing::info!("{}: pnsovr.dll.orig stays ({e})", v.id),
+        }
     }
 }
 
@@ -546,14 +537,9 @@ pub fn update(v: &InstalledVersion, cancel: &AtomicBool, on: &mut dyn FnMut(Step
     ensure_present(v)?;
     let url = manifest_url(v).ok_or_else(|| no_updates(v))?;
     let previous = previous_update_dir(v);
-    pc_update::apply_keeping(
-        &url,
-        &v.bin_dir(),
-        keep(v),
-        Some(&previous),
-        cancel,
-        &mut |s| on(Step::Status(s)),
-    )?;
+    pc_update::apply_keeping(&url, &v.bin_dir(), Some(&previous), cancel, &mut |s| {
+        on(Step::Status(s))
+    })?;
     settle(v);
     Ok(())
 }
@@ -621,7 +607,7 @@ pub fn server_back(v: &InstalledVersion, h: &History) -> Result<Option<ServerBac
     let effects: Vec<_> = built.iter().map(|(m, _)| history::effect(m)).collect();
     let on_disk: Vec<bool> = built
         .iter()
-        .map(|(m, _)| history::on_disk(m, keep(v), &mut disk))
+        .map(|(m, _)| history::on_disk(m, &mut disk))
         .collect();
     let shas: Vec<String> = built
         .iter()
@@ -665,15 +651,9 @@ pub fn go_back(
         );
     };
     on(Step::Status(format!("Going back to {}...", b.before)));
-    pc_update::apply_manifest(
-        &b.manifest,
-        &b.text,
-        &v.bin_dir(),
-        keep(v),
-        None,
-        cancel,
-        &mut |s| on(Step::Status(s)),
-    )?;
+    pc_update::apply_manifest(&b.manifest, &b.text, &v.bin_dir(), None, cancel, &mut |s| {
+        on(Step::Status(s))
+    })?;
     tracing::info!(
         "{}: back from {} to {} (from the history)",
         v.id,
@@ -702,7 +682,7 @@ pub fn verify(
 ) -> Result<Verified> {
     ensure_present(v)?;
     let game = match entry.and_then(|e| e.files_manifest.as_deref()) {
-        Some(url) => Checksums::fetch(url, v, v.patched)?
+        Some(url) => Checksums::fetch(url, v)?
             .check(cancel, on)?
             .into_iter()
             .map(|(path, _)| path)
@@ -726,10 +706,7 @@ fn verify_update(
     let (m, _) = pc_update::with_nevr_release(&m, cancel)?;
     let bin = v.bin_dir();
     let home = super::home::of(v);
-    let adds: Vec<_> = m
-        .adds()
-        .filter(|e| !pc_update::skipped(&e.path, keep(v)))
-        .collect();
+    let adds: Vec<_> = m.adds().collect();
     let mut bad = Vec::new();
     for (i, e) in adds.iter().enumerate() {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -818,7 +795,6 @@ mod tests {
         let bin = dir.path().join(paths::ARENA_DIR).join("bin/win10");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join(paths::DEFAULT_EXE), b"MZ").unwrap();
-        std::fs::write(bin.join("pnsovr.dll.orig"), b"original").unwrap();
         let i = adopt(
             &entry,
             &root,
@@ -830,7 +806,7 @@ mod tests {
         .unwrap();
         assert_eq!(i.version.id, "pc-latest-2");
         assert_eq!(i.version.catalog_id.as_deref(), Some("pc-latest"));
-        assert!(i.version.external && i.version.patched);
+        assert!(i.version.external);
         assert_eq!(i.version.exe, None);
     }
 
@@ -926,7 +902,7 @@ mod tests {
             ..Default::default()
         };
         let cancel = AtomicBool::new(false);
-        let err = reinstall(&entry, &v, false, &cancel, &mut |_| {}, &mut || false)
+        let err = reinstall(&entry, &v, &cancel, &mut |_| {}, &mut || false)
             .err()
             .unwrap();
         assert!(err.to_string().contains("holds another build"), "{err:#}");
@@ -1036,7 +1012,7 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
         assert_eq!(c["publisher_lock"], "release4_5");
         assert!(config.with_file_name("config.json.orig").is_file());
-        let again = reinstall(&entry, &v, false, &cancel, &mut |_| {}, &mut || false).unwrap();
+        let again = reinstall(&entry, &v, &cancel, &mut |_| {}, &mut || false).unwrap();
         assert!(again.repaired.is_empty(), "{:?}", again.repaired);
     }
 
@@ -1132,7 +1108,6 @@ mod tests {
         let r = reinstall(
             &entry,
             &v,
-            false,
             &AtomicBool::new(false),
             &mut |s| {
                 if let Step::Status(s) = s {
@@ -1148,7 +1123,6 @@ mod tests {
         let again = reinstall(
             &entry,
             &v,
-            false,
             &AtomicBool::new(false),
             &mut |_| {},
             &mut || false,

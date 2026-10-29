@@ -1,17 +1,10 @@
-//! Parsed update manifest, shared by the PC and Quest update paths.
+//! Parsed update manifest: the PC update's, and the Quest's line for nEVR.
 //!
 //! Body grammar (whitespace-separated; `#` comments and blank lines ignored):
 //!
 //! ```text
 //!   add  path/to/file.dll  sha256hex
 //!   del  path/to/old.dll
-//! ```
-//!
-//! The Quest manifest additionally carries two header comments:
-//!
-//! ```text
-//!   # BASE_APK: echo_quest_27-08-2026.001.apk 0a7fa5f9...
-//!   # Target:  /sdcard/Android/media/com.readyatdawn.r15
 //! ```
 //!
 //! A build's file manifest (`<archive>.manifest` beside each build, e.g. `pc.zip.manifest`)
@@ -34,8 +27,12 @@
 //!   # nEVR linux:   beta
 //! ```
 //!
-//! Manifest paths end up in `adb shell` scripts (including `rm -rf`) and in local
-//! filesystem paths, so entry paths and the target root are validated strictly here.
+//! The Quest's update (`quest/updates-nevr/`, and its channels' overlays) has only a line
+//! of its own, `# nEVR quest: <version|channel|none>`: the nEVR release whose APK goes onto
+//! the headset ([`crate::core::nevr_release::quest_release`]).
+//!
+//! Manifest paths end up in local filesystem paths, so entry paths are validated strictly
+//! here.
 //! This is the single choke point -- do not re-implement parsing elsewhere.
 
 use anyhow::{bail, Context, Result};
@@ -62,12 +59,6 @@ pub struct Manifest {
     pub entries: Vec<Entry>,
     /// Manifest URL up to (excluding) the last '/'; entries resolve against it.
     pub base_url: String,
-    /// APK filename from the `# BASE_APK:` header.
-    pub base_apk_name: Option<String>,
-    /// SHA-256 of the base APK this manifest was built against.
-    pub base_apk_sha: Option<String>,
-    /// On-device root the entry paths are relative to (Quest manifests only).
-    pub target_root: Option<String>,
     /// A build's file manifest: the archive's file name, beside the manifest.
     pub archive: Option<String>,
     /// ...its SHA-256 and size,
@@ -75,9 +66,11 @@ pub struct Manifest {
     pub archive_size: Option<u64>,
     /// ...and the one folder in it the entry paths are relative to ("name/").
     pub archive_root: Option<String>,
-    /// `# nEVR windows:` / `# nEVR linux:`: a version, a channel of nEVR's, or `none`.
+    /// `# nEVR windows:` / `# nEVR linux:` / `# nEVR quest:`: a version, a channel of
+    /// nEVR's, or `none`.
     pub nevr_windows: Option<String>,
     pub nevr_linux: Option<String>,
+    pub nevr_quest: Option<String>,
 }
 
 /// Only unreserved path characters, no `.`/`..`/empty segments.
@@ -101,30 +94,8 @@ pub fn is_safe_path(path: &str) -> bool {
         && !path.contains("..")
 }
 
-/// The Quest target must be an Echo VR app media dir -- nothing else may reach `rm -rf`.
-pub fn is_safe_target(root: &str) -> bool {
-    const PREFIX: &str = "/sdcard/Android/media/com.readyatdawn.";
-    match root.strip_prefix(PREFIX) {
-        Some(rest) => !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric()),
-        None => false,
-    }
-}
-
 fn is_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// `# BASE_APK: <name> <sha>` -> (name, sha)
-fn parse_base_apk_header(line: &str) -> Option<(String, String)> {
-    let rest = line.strip_prefix('#')?.trim_start();
-    let rest = rest.strip_prefix("BASE_APK:")?;
-    let mut it = rest.split_whitespace();
-    let name = it.next()?;
-    let sha = it.next()?;
-    if it.next().is_some() || !is_sha256_hex(sha) {
-        return None;
-    }
-    Some((name.to_string(), sha.to_string()))
 }
 
 /// `# <key>: <value>` -> value, for a single-word value.
@@ -149,6 +120,8 @@ fn parse_archive_header(m: &mut Manifest, line: &str) {
         m.nevr_windows = Some(v);
     } else if let Some(v) = nevr_header(line, "linux") {
         m.nevr_linux = Some(v);
+    } else if let Some(v) = nevr_header(line, "quest") {
+        m.nevr_quest = Some(v);
     }
 }
 
@@ -174,18 +147,6 @@ fn nevr_header(line: &str, platform: &str) -> Option<String> {
         .then(|| v.to_string())
 }
 
-/// `# Target: <root>` -> root
-fn parse_target_header(line: &str) -> Option<String> {
-    let rest = line.strip_prefix('#')?.trim_start();
-    let rest = rest.strip_prefix("Target:")?;
-    let mut it = rest.split_whitespace();
-    let root = it.next()?;
-    if it.next().is_some() {
-        return None;
-    }
-    Some(root.to_string())
-}
-
 impl Manifest {
     pub fn parse(content: &str, manifest_url: &str) -> Result<Manifest> {
         let mut m = Manifest::default();
@@ -196,14 +157,7 @@ impl Manifest {
             }
             // Headers are comments, so they must be matched before the '#' skip.
             if trimmed.starts_with('#') {
-                if let Some((name, sha)) = parse_base_apk_header(trimmed) {
-                    m.base_apk_name = Some(name);
-                    m.base_apk_sha = Some(sha);
-                } else if let Some(root) = parse_target_header(trimmed) {
-                    m.target_root = Some(root);
-                } else {
-                    parse_archive_header(&mut m, trimmed);
-                }
+                parse_archive_header(&mut m, trimmed);
                 continue;
             }
 
@@ -240,11 +194,6 @@ impl Manifest {
             });
         }
 
-        if let Some(root) = &m.target_root {
-            if !is_safe_target(root) {
-                bail!("Unsafe target root in manifest: {root}");
-            }
-        }
         m.base_url = match manifest_url.rfind('/') {
             Some(i) => manifest_url[..i].to_string(),
             None => String::new(),
@@ -274,6 +223,9 @@ impl Manifest {
         if over.nevr_linux.is_some() {
             self.nevr_linux = over.nevr_linux;
         }
+        if over.nevr_quest.is_some() {
+            self.nevr_quest = over.nevr_quest;
+        }
         for e in over.entries {
             self.entries
                 .retain(|m| !m.path.eq_ignore_ascii_case(&e.path));
@@ -285,12 +237,13 @@ impl Manifest {
     }
 
     /// The nEVR release ([`crate::core::nevr_release`]) this update installs on `platform`
-    /// (`windows`, `linux`) in place of its own nEVR line, if it names one.
+    /// (`windows`, `linux`; `quest` for the headset) in place of its own nEVR line, if it
+    /// names one.
     pub fn nevr_release(&self, platform: &str) -> Option<&str> {
-        let v = if platform == "linux" {
-            &self.nevr_linux
-        } else {
-            &self.nevr_windows
+        let v = match platform {
+            "linux" => &self.nevr_linux,
+            "quest" => &self.nevr_quest,
+            _ => &self.nevr_windows,
         };
         v.as_deref().filter(|v| *v != "none")
     }
@@ -298,10 +251,10 @@ impl Manifest {
     /// `version` in place of what this update names for nEVR on `platform` (the release its
     /// channel has now).
     pub fn set_nevr_release(&mut self, platform: &str, version: &str) {
-        let v = if platform == "linux" {
-            &mut self.nevr_linux
-        } else {
-            &mut self.nevr_windows
+        let v = match platform {
+            "linux" => &mut self.nevr_linux,
+            "quest" => &mut self.nevr_quest,
+            _ => &mut self.nevr_windows,
         };
         *v = Some(version.to_string());
     }
@@ -407,23 +360,18 @@ mod tests {
     }
 
     #[test]
-    fn parses_quest_headers() {
-        let m = Manifest::parse(
-            &format!(
-                "# BASE_APK: echo_quest_27-08-2026.001.apk {SHA}\n# Target:  /sdcard/Android/media/com.readyatdawn.r15\nadd x {SHA}"
-            ),
-            "u/m",
-        )
-        .unwrap();
+    fn reads_the_quests_line() {
+        let main = Manifest::parse("# nEVR quest: none\n", "https://h/quest/m").unwrap();
+        assert_eq!(main.nevr_release("quest"), None);
+        let mut m = main.clone();
+        m.overlay(Manifest::parse("# nEVR quest: beta\n", "https://h/quest/alpha/m").unwrap());
         assert_eq!(
-            m.base_apk_name.as_deref(),
-            Some("echo_quest_27-08-2026.001.apk")
+            (m.nevr_release("quest"), m.nevr_release("windows")),
+            (Some("beta"), None)
         );
-        assert_eq!(m.base_apk_sha.as_deref(), Some(SHA));
-        assert_eq!(
-            m.target_root.as_deref(),
-            Some("/sdcard/Android/media/com.readyatdawn.r15")
-        );
+        // The PC's lines say nothing for the headset, nor the headset's for the PC.
+        let pc = Manifest::parse("# nEVR windows: 6.2.0\n", "https://h/m").unwrap();
+        assert_eq!(pc.nevr_release("quest"), None);
     }
 
     #[test]
@@ -459,20 +407,5 @@ mod tests {
     fn live_manifests_parse() {
         let pc = Manifest::fetch(crate::core::pc_update::PC_MANIFEST_URL).unwrap();
         assert!(pc.adds().count() > 0);
-        let q = Manifest::fetch(crate::core::quest_update::QUEST_MANIFEST_URL).unwrap();
-        assert!(q.base_apk_name.is_some() && q.target_root.is_some());
-    }
-
-    #[test]
-    fn rejects_unsafe_target() {
-        for bad in [
-            "/sdcard",
-            "/sdcard/Android/media/com.readyatdawn.",
-            "/sdcard/Android/media/com.readyatdawn.r15/../..",
-            "/sdcard/Android/media/com.other.app",
-        ] {
-            let text = format!("# Target: {bad}\n");
-            assert!(Manifest::parse(&text, "u/m").is_err(), "{bad}");
-        }
     }
 }

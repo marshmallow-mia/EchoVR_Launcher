@@ -1,0 +1,264 @@
+{
+  "schema_version": 1,
+  "product": "nevr-runtime",
+  "manifest_version": 10,
+  "generated": "2026-10-29T16:45:24Z",
+  "expires": "2026-11-12T16:45:24Z",
+  "channels": {
+    "beta": "6.2.0"
+  },
+  "releases": {
+    "6.1.0": {
+      "version": "6.1.0",
+      "tag": "v6.1.0",
+      "commit": "d5c55a796f5209214f442e698d14ebf71351666a",
+      "build_id": "NEVR-BUILD 6.1.0 d5c55a796f5209214f442e698d14ebf71351666a",
+      "published": "2026-10-29T13:20:07Z",
+      "github_release": "https://github.com/EchoTools/nevr-runtime/releases/tag/v6.1.0",
+      "notes": "nevr-runtime-v6.1.0-quest.apk: built on spriffy by release-quest-apk from d5c55a796f5209214f442e698d14ebf71351666a, not CI-attested\nechovr-data-fc2eedeacc50.zip: Echo VR Android game data, data version 5932408047, store build 4987566; compared on spriffy against the store OBB main.4987566.com.readyatdawn.r15.obb (sha256 8020d1791c8806b3c9592806d2476c9b9c9771cbfcbce112914b357b66180607): 4 of 4 files byte-identical, 0 different, 0 only in the zip, 0 only in the OBB; not CI-attested",
+      "artifacts": [
+        {
+          "name": "echovr-data-fc2eedeacc50.zip",
+          "kind": "game-data",
+          "platform": "android-arm64",
+          "path": "data/echovr-data-fc2eedeacc50.zip",
+          "sha256": "fc2eedeacc50d9ddf751e21914bb4188660cf5e79ce48aab24b84e757f4b543c",
+          "size": 937395400,
+          "contents": [
+            {
+              "path": "_data/5932408047/rad15/android/manifests/2b47aab238f60515",
+              "sha256": "26becc4814f88436b522a36318463eff60c15e4337f0912d7f21237b17754ebe",
+              "size": 1461
+            },
+            {
+              "path": "_data/5932408047/rad15/android/manifests/48037dc70b0ecab2",
+              "sha256": "762c16ae58c9bc70eee071d8c0e2e8fc0408d1f0691032164029294c5cb7ec48",
+              "size": 828213
+            },
+            {
+              "path": "_data/5932408047/rad15/android/packages/2b47aab238f60515_0",
+              "sha256": "dd0a1087acfe15b0563c17298963b707f949ad4efb42d0ae85b8faa0b4b47e12",
+              "size": 14995192
+            },
+            {
+              "path": "_data/5932408047/rad15/android/packages/48037dc70b0ecab2_0",
+              "sha256": "14d26efc718a8f8135039e47bd1321cbb556fc4181bf95ffcb5ef59c406a5a3b",
+              "size": 929620177
+            }
+          ],
+          "game_data": {
+            "data_version": "5932408047",
+            "echo_build": "4987566"
+          }
+        },
+        {
+          "name": "nevr-runtime-v6.1.0-quest-libovrplatformloader.so",
+          "kind": "quest-library",
+          "platform": "android-arm64",
+          "path": "v6.1.0/nevr-runtime-v6.1.0-quest-libovrplatformloader.so",
+          "sha256": "62b6b689fbc06e53f08a6a514940d537e7a2edab549851ff0edef080d29fcae5",
+          "size": 78581057
+        },
+        {
+          "name": "nevr-runtime-v6.1.0-quest.apk",
+          "kind": "quest-apk",
+          "platform": "android-arm64",
+          "path": "v6.1.0/nevr-runtime-v6.1.0-quest.apk",
+          "sha256": "eeebbc7ecf481012f4ed03b609b4a6b1a1b97b106561c23708f631484f525edd",
+          "size": 175496180,
+          "android": {
+            "package": "com.readyatdawn.r15",
+            "version_code": 60100999,
+            "signer_cert_sha256": "3bcb586824efa14a6d8566c5e027f0263edc657c16a4631e3b305c2d595ae085"
+          }
+        },
+        {
+          "name": "nevr-runtime-v6.1.0-windows.zip",
+          "kind": "windows-zip",
+          "platform": "windows-x86_64",
+          "path": "v6.1.0/nevr-runtime-v6.1.0-windows.zip",
+          "sha256": "b819468e74c675d058ab265debfde9a8b9f0453c0cd76f6e17accbb30acef2b5",
+          "size": 9384307,
+          "contents": [
+            {
+              "path": "BugSplat64.dll",
+              "sha256": "ad79b383ecc33d37b7e7c870cda215366566707d4111e3e8c738c1522db5e506",
+              "size": 609584
+            },
+            {
+              "path": "README.txt",
+              "sha256": "79adc8dffca3c26ccfa5ba64817c33bb8719d3d513603123803bfa076d36e1ee",
+              "size": 7014
+            },
+            {
+              "path": "SHA256SUMS",
+              "sha256": "efd0f4a2b9d17d4cd89bc64226a14ccc23cb2968cb446686e32fbc65084f16fc",
+              "size": 729
+            },
+            {
+              "path": "SIGNING.txt",
+              "sha256": "55074dd74c76354e64faca59067de237906ed28dd5d97b1eef70c17ec0fe0aa3",
+              "size": 1021
+            },
+            {
+              "path": "echovr_server.exe",
+              "sha256": "91f86baa9cc1d26150e051afd83527d42c6d953d43168978580e890dc8bcfb34",
+              "size": 213296
+            },
+            {
+              "path": "install.ps1",
+              "sha256": "b0c172b8140c3fcc91f546fd2381c6e452335da324c60a6d56cf41ebbdb9a3cf",
+              "size": 30904
+            },
+            {
+              "path": "nevr-install.exe",
+              "sha256": "ead8cb74ebf1a0ebf42ce4371cfcb3afcfd014b024f0908d0998aafbae479792",
+              "size": 5374768
+            },
+            {
+              "path": "nevr-runtime.dll",
+              "sha256": "8ebd00686add83fd9c97096eeefef92ecb25ea085ce9bd6e2b53cc1420047f01",
+              "size": 16208688
+            },
+            {
+              "path": "quest-diagnose.ps1",
+              "sha256": "5447fd29f2982f74ce5cc503b18c3e637cdd52ddadfcb1964e20e43d4b1f1693",
+              "size": 40342
+            },
+            {
+              "path": "uninstall.ps1",
+              "sha256": "16cdaf5d674d8debb8f4cd5eaec0f6644a217f016f9d9c495de2540b961ac870",
+              "size": 35025
+            }
+          ]
+        }
+      ]
+    },
+    "6.2.0": {
+      "version": "6.2.0",
+      "tag": "v6.2.0",
+      "commit": "ad6ab50cbca9cf9293190d49060d56f1a7f38757",
+      "build_id": "NEVR-BUILD 6.2.0 ad6ab50cbca9cf9293190d49060d56f1a7f38757",
+      "published": "2026-10-29T16:40:56Z",
+      "github_release": "https://github.com/EchoTools/nevr-runtime/releases/tag/v6.2.0",
+      "notes": "nevr-runtime-v6.2.0-quest.apk: built on spriffy by release-quest-apk from ad6ab50cbca9cf9293190d49060d56f1a7f38757, not CI-attested\nechovr-data-fc2eedeacc50.zip: Echo VR Android game data, data version 5932408047, store build 4987566; compared on spriffy against the store OBB main.4987566.com.readyatdawn.r15.obb (sha256 8020d1791c8806b3c9592806d2476c9b9c9771cbfcbce112914b357b66180607): 4 of 4 files byte-identical, 0 different, 0 only in the zip, 0 only in the OBB; not CI-attested",
+      "artifacts": [
+        {
+          "name": "echovr-data-fc2eedeacc50.zip",
+          "kind": "game-data",
+          "platform": "android-arm64",
+          "path": "data/echovr-data-fc2eedeacc50.zip",
+          "sha256": "fc2eedeacc50d9ddf751e21914bb4188660cf5e79ce48aab24b84e757f4b543c",
+          "size": 937395400,
+          "contents": [
+            {
+              "path": "_data/5932408047/rad15/android/manifests/2b47aab238f60515",
+              "sha256": "26becc4814f88436b522a36318463eff60c15e4337f0912d7f21237b17754ebe",
+              "size": 1461
+            },
+            {
+              "path": "_data/5932408047/rad15/android/manifests/48037dc70b0ecab2",
+              "sha256": "762c16ae58c9bc70eee071d8c0e2e8fc0408d1f0691032164029294c5cb7ec48",
+              "size": 828213
+            },
+            {
+              "path": "_data/5932408047/rad15/android/packages/2b47aab238f60515_0",
+              "sha256": "dd0a1087acfe15b0563c17298963b707f949ad4efb42d0ae85b8faa0b4b47e12",
+              "size": 14995192
+            },
+            {
+              "path": "_data/5932408047/rad15/android/packages/48037dc70b0ecab2_0",
+              "sha256": "14d26efc718a8f8135039e47bd1321cbb556fc4181bf95ffcb5ef59c406a5a3b",
+              "size": 929620177
+            }
+          ],
+          "game_data": {
+            "data_version": "5932408047",
+            "echo_build": "4987566"
+          }
+        },
+        {
+          "name": "nevr-runtime-v6.2.0-quest-libovrplatformloader.so",
+          "kind": "quest-library",
+          "platform": "android-arm64",
+          "path": "v6.2.0/nevr-runtime-v6.2.0-quest-libovrplatformloader.so",
+          "sha256": "21d05b09b9a57098841154c453a2c7c55ec1c1cacdb368b416473cc6157a91cb",
+          "size": 78581057
+        },
+        {
+          "name": "nevr-runtime-v6.2.0-quest.apk",
+          "kind": "quest-apk",
+          "platform": "android-arm64",
+          "path": "v6.2.0/nevr-runtime-v6.2.0-quest.apk",
+          "sha256": "f75c3d69d017ab34d10668bb7e12eea33bea64bc455331a26605bcf93980e6eb",
+          "size": 175496180,
+          "android": {
+            "package": "com.readyatdawn.r15",
+            "version_code": 60200999,
+            "signer_cert_sha256": "3bcb586824efa14a6d8566c5e027f0263edc657c16a4631e3b305c2d595ae085"
+          }
+        },
+        {
+          "name": "nevr-runtime-v6.2.0-windows.zip",
+          "kind": "windows-zip",
+          "platform": "windows-x86_64",
+          "path": "v6.2.0/nevr-runtime-v6.2.0-windows.zip",
+          "sha256": "fb42ea3f386dbafd69b98a4bae73fd57fc6c95cf0a1ad01487a520132ac0af91",
+          "size": 9384309,
+          "contents": [
+            {
+              "path": "BugSplat64.dll",
+              "sha256": "34789ba4fff3d3a263cd7d088de1e91923190ff0391e48b4406bc7cb7ccd0a33",
+              "size": 609584
+            },
+            {
+              "path": "README.txt",
+              "sha256": "2248fc72b97de6353e16f355f0da75f0c69cf62793d68179465293502db83a73",
+              "size": 7014
+            },
+            {
+              "path": "SHA256SUMS",
+              "sha256": "7c22e67743bcd9330ad708097d1346edcd2c2b3e02190d520801a312a00f71a2",
+              "size": 729
+            },
+            {
+              "path": "SIGNING.txt",
+              "sha256": "55074dd74c76354e64faca59067de237906ed28dd5d97b1eef70c17ec0fe0aa3",
+              "size": 1021
+            },
+            {
+              "path": "echovr_server.exe",
+              "sha256": "c61632db9fc44d68969bbd41576d9eaf3844cf6acf72aa28aa60059e96a8b161",
+              "size": 213296
+            },
+            {
+              "path": "install.ps1",
+              "sha256": "9cacd73ee7dca18c58660529a814763fbdcfb98359741ca4a6be67a214dbe4d8",
+              "size": 30912
+            },
+            {
+              "path": "nevr-install.exe",
+              "sha256": "28285018c556133e2e9cee64d233fcbd6aa6f7358ed90da8de4fd01b822e427a",
+              "size": 5374768
+            },
+            {
+              "path": "nevr-runtime.dll",
+              "sha256": "407cfbe11509e8bde892a18d207a08d5a83c72abbf7ecabe242d10d3f759c3c1",
+              "size": 16208688
+            },
+            {
+              "path": "quest-diagnose.ps1",
+              "sha256": "2ceb043865bcffee0b75ab3e031f31da069dc36a1bd0ca36f551b30e6d71882f",
+              "size": 40342
+            },
+            {
+              "path": "uninstall.ps1",
+              "sha256": "922f2373145217a42c340d037bd5bb706900d79b0f39df7cb7ec9f1deb645fe4",
+              "size": 35033
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

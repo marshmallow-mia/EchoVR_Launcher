@@ -51,8 +51,6 @@ pub struct Job {
     pub dir: PathBuf,
     pub filename: String,
     pub use_mirror: bool,
-    /// Delete an existing file first instead of resuming (personalized patch files).
-    pub fresh: bool,
     /// Extract the zip into `dir` afterwards.
     pub extract: bool,
     /// The file's SHA-256 on release.echovr.de, when known (else release.echovr.de's index
@@ -225,10 +223,6 @@ pub fn run(job: &Job, cancel: &AtomicBool, on: &mut dyn FnMut(Progress)) -> Resu
         )
     })?;
     let target = job.target();
-    if job.fresh && target.exists() {
-        std::fs::remove_file(&target)
-            .with_context(|| format!("couldn't delete the old {}", target.display()))?;
-    }
 
     // By checksum first, when the file's is known (the CDN's store, then release.echovr.de's);
     // the mirrors (release.echovr.de and the bucket) by path when neither has it.
@@ -491,7 +485,7 @@ fn fetch_from(
     })
 }
 
-/// Personalized patch URLs are credentials of a sort; keep only scheme and host in logs.
+/// A download URL may carry a token; keep only scheme and host in logs.
 pub fn redact(url: &str) -> String {
     if url.contains("/launcher/dev/") {
         return crate::core::launcher::dev_code::redact(url);
@@ -530,7 +524,6 @@ pub fn fetch_pinned(
         dir: dir.to_path_buf(),
         filename: name.into(),
         use_mirror: !url.contains("://"),
-        fresh: false,
         extract: false,
         sha256: Some(sha256.into()),
     };

@@ -79,7 +79,6 @@ pub fn download_installer(
         dir: super::paths::downloads_dir().join("revive"),
         filename: "ReviveInstaller.exe".into(),
         use_mirror: false,
-        fresh: false,
         extract: false,
         sha256: None,
     };

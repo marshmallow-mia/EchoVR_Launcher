@@ -130,16 +130,14 @@ fn fit_zoom(ctx: &egui::Context) {
     }
 }
 
-/// Personal patch files never outlive the session (the Java shutdown hook).
+/// Files older launchers left in the downloads folder that nothing uses any more.
 fn cleanup_staged_patches() {
-    use crate::core::launcher::patch;
     let dir = crate::core::paths::downloads_dir();
-    let _ = std::fs::remove_file(dir.join(patch::DLL));
-    let _ = std::fs::remove_file(dir.join(patch::LINK_DLL));
+    let _ = std::fs::remove_file(dir.join("pnsovr.dll"));
+    let _ = std::fs::remove_file(dir.join("pnsovr-link.dll"));
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            // Personal patched APKs go; the stock APK stays for the next install.
             if name.ends_with(".patched.apk") {
                 let _ = std::fs::remove_file(e.path());
             }

@@ -411,16 +411,14 @@ pub fn step_back(
     Some((now, back))
 }
 
-/// Whether every file `m` adds (but `skip`) is on disk with its checksum; `disk` gives a
-/// path's checksum on disk (each file is read once for all states).
-pub fn on_disk(m: &Manifest, skip: &[&str], disk: &mut dyn FnMut(&str) -> Option<String>) -> bool {
-    m.adds()
-        .filter(|e| !pc_update::skipped(&e.path, skip))
-        .all(|e| {
-            e.sha256
-                .as_deref()
-                .is_some_and(|sha| disk(&e.path).is_some_and(|d| d.eq_ignore_ascii_case(sha)))
-        })
+/// Whether every file `m` adds is on disk with its checksum; `disk` gives a path's checksum
+/// on disk (each file is read once for all states).
+pub fn on_disk(m: &Manifest, disk: &mut dyn FnMut(&str) -> Option<String>) -> bool {
+    m.adds().all(|e| {
+        e.sha256
+            .as_deref()
+            .is_some_and(|sha| disk(&e.path).is_some_and(|d| d.eq_ignore_ascii_case(sha)))
+    })
 }
 
 /// An update manifest by its checksum, from the store (they never change: kept while the

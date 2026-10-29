@@ -127,36 +127,141 @@ impl Release {
     /// Step 8: the zip to `to`, at most its size, then its size, sha256 and every entry
     /// checked ([`check_zip`]). `to` is gone again when it doesn't pass.
     pub fn download(&self, to: &Path, cancel: &AtomicBool) -> Result<(), Refused> {
-        let got = (|| {
-            let mut file = std::fs::File::create(to)
-                .map_err(|e| refused(8, format!("{}: {e}", to.display())))?;
-            let (size, sha) =
-                super::http::get_capped(&self.url, self.size, &mut file, Some(cancel))
-                    .map_err(|e| refused(8, format!("{e:#}")))?;
-            if size != self.size {
-                return Err(refused(
-                    8,
-                    format!(
-                        "{} is {size} bytes, the manifest says {}",
-                        self.url, self.size
-                    ),
-                ));
-            }
-            if sha != self.sha256 {
-                return Err(refused(
-                    8,
-                    format!("{}'s sha256 differs from the manifest", self.url),
-                ));
-            }
-            check_zip(to, &self.contents)
-        })();
-        if got.is_err() {
+        fetch_checked(&self.url, self.size, &self.sha256, to, cancel, &mut |_| {})?;
+        check_zip(to, &self.contents).inspect_err(|_| {
             let _ = std::fs::remove_file(to);
-        }
-        got
+        })
     }
 }
 
+/// One file of a release that isn't a zip (the Quest's APK): where, its size and sha256.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+}
+
+impl Artifact {
+    /// Step 8: the file to `to`, at most its size, then its size and sha256; `on` gets how
+    /// far it is (0 to 100). `to` is gone again when it doesn't pass.
+    pub fn download(
+        &self,
+        to: &Path,
+        cancel: &AtomicBool,
+        on: &mut dyn FnMut(f64),
+    ) -> Result<(), Refused> {
+        let size = self.size.max(1);
+        fetch_checked(&self.url, self.size, &self.sha256, to, cancel, &mut |n| {
+            on(100.0 * n as f64 / size as f64)
+        })
+    }
+}
+
+/// What [`fetch_checked`] writes, counted for its progress.
+struct Counted<'a, W> {
+    inner: W,
+    done: u64,
+    on: &'a mut dyn FnMut(u64),
+}
+
+impl<W: std::io::Write> std::io::Write for Counted<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.done += n as u64;
+        (self.on)(self.done);
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Step 8 for one file: at most `size` bytes of `url` to `to`, then exactly `size` and
+/// `sha256`; `on` gets the bytes written so far. `to` is deleted when it doesn't pass.
+fn fetch_checked(
+    url: &str,
+    size: u64,
+    sha256: &str,
+    to: &Path,
+    cancel: &AtomicBool,
+    on: &mut dyn FnMut(u64),
+) -> Result<(), Refused> {
+    let got = (|| {
+        let file =
+            std::fs::File::create(to).map_err(|e| refused(8, format!("{}: {e}", to.display())))?;
+        let mut file = Counted {
+            inner: std::io::BufWriter::new(file),
+            done: 0,
+            on,
+        };
+        let (got, sha) = super::http::get_capped(url, size, &mut file, Some(cancel))
+            .map_err(|e| refused(8, format!("{e:#}")))?;
+        if got != size {
+            return Err(refused(
+                8,
+                format!("{url} is {got} bytes, the manifest says {size}"),
+            ));
+        }
+        if sha != sha256 {
+            return Err(refused(
+                8,
+                format!("{url}'s sha256 differs from the manifest"),
+            ));
+        }
+        std::io::Write::flush(&mut file).map_err(|e| refused(8, format!("{}: {e}", to.display())))
+    })();
+    if got.is_err() {
+        let _ = std::fs::remove_file(to);
+    }
+    got
+}
+
+/// nEVR's Echo VR for the Quest in a release: its APK (the one build every player gets,
+/// signed by nEVR) and the game data it reads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestRelease {
+    pub version: String,
+    pub apk: Artifact,
+    /// The APK's `versionCode`, as Android reports it once installed.
+    pub version_code: u64,
+    pub signer_cert_sha256: String,
+    pub data: GameData,
+}
+
+/// The game data a Quest release reads: a zip whose files go under the app's media folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GameData {
+    pub sha256: String,
+    pub size: u64,
+    /// Its files (`_data/<data version>/rad15/android/...`), each with its size and sha256.
+    pub contents: Vec<Member>,
+}
+
+/// Steps 1 to 8 up to the APK: the Quest release `which` names, a version or one of nEVR's
+/// channels (the release it has now).
+pub fn quest_release(which: &str, cancel: &AtomicBool) -> Result<QuestRelease, Refused> {
+    let (m, base) = checked(cancel)?;
+    let version = if channel_ok(which) {
+        channel_in(&m, which)?
+    } else {
+        which.to_string()
+    };
+    quest_in(&m, &version, &base)
+}
+
+/// The release whose Quest APK has `version_code`, from the manifest checked last (no
+/// network): what the headset has installed, by name.
+pub fn quest_version_of(version_code: u64) -> Option<String> {
+    let m = stored(&state_dir()).ok()?;
+    m["releases"].as_object()?.iter().find_map(|(v, r)| {
+        quest_apks(r)
+            .iter()
+            .any(|a| a["android"]["version_code"].as_u64() == Some(version_code))
+            .then(|| v.clone())
+    })
+}
 /// Where the launcher keeps what it knows about nEVR's releases.
 pub fn state_dir() -> PathBuf {
     super::paths::data_dir().join("nevr-releases")
@@ -441,9 +546,8 @@ fn stored(dir: &Path) -> Result<Value, Refused> {
     serde_json::from_slice(&bytes).map_err(|e| refused(8, format!("stored manifest: {e}")))
 }
 
-/// Step 7 and the zip's line for step 8: release `version` of the checked manifest `m`,
-/// whose folder is `base`.
-fn release_in(m: &Value, version: &str, base: &str) -> Result<Release, Refused> {
+/// Step 7: release `version` of the checked manifest `m`.
+fn release_of<'a>(m: &'a Value, version: &str) -> Result<&'a Value, Refused> {
     if !semver_ok(version) {
         return Err(refused(7, format!("{version} is not a version X.Y.Z")));
     }
@@ -464,6 +568,163 @@ fn release_in(m: &Value, version: &str, base: &str) -> Result<Release, Refused> 
             format!("{version} is not in releases (it has {offered})"),
         ));
     }
+    Ok(r)
+}
+
+/// A release's Quest APKs (normally one).
+fn quest_apks(r: &Value) -> Vec<&Value> {
+    r["artifacts"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|x| x["kind"] == "quest-apk" && x["platform"] == "android-arm64")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A release's game data for the Quest (normally one).
+fn game_datas(r: &Value) -> Vec<&Value> {
+    r["artifacts"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter(|x| x["kind"] == "game-data" && x["platform"] == "android-arm64")
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Step 7 and step 8's lines for the Quest: release `version`'s APK (nEVR's package, with
+/// the versionCode and signer it is installed with, or refused) and its game data, or,
+/// when it lists none, the newest release's (one copy serves every release).
+fn quest_in(m: &Value, version: &str, base: &str) -> Result<QuestRelease, Refused> {
+    let r = release_of(m, version)?;
+    let [apk] = quest_apks(r)[..] else {
+        return Err(refused(
+            8,
+            format!("release {version} has no Quest APK, or two"),
+        ));
+    };
+    let path = apk["path"].as_str().unwrap_or_default();
+    if !path_ok(version, path) || !path.ends_with(".apk") {
+        return Err(refused(
+            8,
+            "the APK's path is not v<version>/nevr-runtime-v<version>-<name>.apk",
+        ));
+    }
+    let (sha256, size) = sha_and_size(apk)?;
+    let android = &apk["android"];
+    if android["package"] != super::adb::PACKAGE {
+        return Err(refused(
+            8,
+            format!("the APK is not for {}", super::adb::PACKAGE),
+        ));
+    }
+    let version_code = android["version_code"]
+        .as_u64()
+        .filter(|c| *c > 0)
+        .ok_or_else(|| refused(8, "the APK has no versionCode"))?;
+    let signer = android["signer_cert_sha256"]
+        .as_str()
+        .filter(|s| is_sha256_hex(s))
+        .ok_or_else(|| refused(8, "the APK names no signer to check it against"))?;
+    Ok(QuestRelease {
+        version: version.to_string(),
+        apk: Artifact {
+            url: format!("{base}/{path}"),
+            sha256,
+            size,
+        },
+        version_code,
+        signer_cert_sha256: signer.to_string(),
+        data: game_data_for(m, version, r)?,
+    })
+}
+
+/// Release `version`'s (`r`) game data, or the newest release's that lists one.
+fn game_data_for(m: &Value, version: &str, r: &Value) -> Result<GameData, Refused> {
+    fn one<'a>(r: &'a Value, v: &str) -> Result<Option<&'a Value>, Refused> {
+        match game_datas(r)[..] {
+            [] => Ok(None),
+            [d] => Ok(Some(d)),
+            _ => Err(refused(8, format!("release {v} lists two game data"))),
+        }
+    }
+    let data = match one(r, version)? {
+        Some(d) => d,
+        None => {
+            let mut all: Vec<(&String, &Value)> = m["releases"]
+                .as_object()
+                .map(|o| o.iter().filter(|(v, _)| semver_ok(v)).collect())
+                .unwrap_or_default();
+            all.sort_by_key(|(v, _)| semver_key(v));
+            let mut newest = None;
+            for (v, r) in all.into_iter().rev() {
+                if let Some(d) = one(r, v)? {
+                    newest = Some(d);
+                    break;
+                }
+            }
+            newest.ok_or_else(|| refused(8, "no release lists the Quest's game data"))?
+        }
+    };
+    let (sha256, size) = sha_and_size(data)?;
+    let mut contents: Vec<Member> = Vec::new();
+    for c in data["contents"].as_array().into_iter().flatten() {
+        let path = c["path"].as_str().unwrap_or_default();
+        if !data_path_ok(path) {
+            return Err(refused(
+                8,
+                format!("the game data lists a path that is not allowed: {path}"),
+            ));
+        }
+        if contents.iter().any(|m| m.path == path) {
+            return Err(refused(8, format!("the game data lists {path} twice")));
+        }
+        let (sha256, size) = sha_and_size(c)?;
+        contents.push(Member {
+            path: path.to_string(),
+            sha256,
+            size,
+        });
+    }
+    if contents.is_empty() {
+        return Err(refused(8, "the game data lists no files"));
+    }
+    Ok(GameData {
+        sha256,
+        size,
+        contents,
+    })
+}
+
+/// `_data/<data version>/rad15/android/(manifests|packages)/<name>`, the name of a-z 0-9 _.
+fn data_path_ok(path: &str) -> bool {
+    let p: Vec<&str> = path.split('/').collect();
+    let name_ok = |s: &str| {
+        !s.is_empty()
+            && s.bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_'))
+    };
+    matches!(p[..], ["_data", v, "rad15", "android", "manifests" | "packages", name]
+        if !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()) && name_ok(name))
+}
+
+/// `X.Y.Z` (checked with [`semver_ok`]) as numbers, for ordering.
+fn semver_key(v: &str) -> (u64, u64, u64) {
+    let mut n = v.split('.').map(|p| p.parse().unwrap_or(0));
+    (
+        n.next().unwrap_or(0),
+        n.next().unwrap_or(0),
+        n.next().unwrap_or(0),
+    )
+}
+
+/// Step 7 and the zip's line for step 8: release `version` of the checked manifest `m`,
+/// whose folder is `base`.
+fn release_in(m: &Value, version: &str, base: &str) -> Result<Release, Refused> {
+    let r = release_of(m, version)?;
     let zips: Vec<&Value> = r["artifacts"]
         .as_array()
         .map(|a| a.iter().filter(|x| x["kind"] == "windows-zip").collect())
@@ -874,6 +1135,125 @@ mod tests {
         assert!(path_ok("5.5.1", "v5.5.1/nevr-runtime-v5.5.1-windows.zip"));
         for bad in ["5.5", "05.5.1", "5.5.1.0", "5.5.x", "", "5..1"] {
             assert!(!semver_ok(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn takes_the_quest_release_of_the_live_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m, s) = fixture("quest");
+        accept(&m, &s, &PINNED, dir.path(), BEFORE).unwrap();
+        let m = stored(dir.path()).unwrap();
+        let q = quest_in(&m, &channel_in(&m, "beta").unwrap(), BASE).unwrap();
+        assert_eq!(q.version, "6.2.0");
+        assert_eq!(
+            q.apk.url,
+            "https://evr.echo.taxi/nevr-runtime/v6.2.0/nevr-runtime-v6.2.0-quest.apk"
+        );
+        assert_eq!(
+            (q.apk.size, q.version_code, &q.apk.sha256[..8]),
+            (175496180, 60200999, "f75c3d69")
+        );
+        assert_eq!(&q.signer_cert_sha256[..8], "3bcb5868");
+        // The same data as the launcher's _data.zip.
+        assert!(q.data.sha256.starts_with("fc2eedeacc50"));
+        assert_eq!((q.data.size, q.data.contents.len()), (937395400, 4));
+    }
+
+    #[test]
+    fn refuses_a_quest_apk_it_cant_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m, s) = fixture("quest");
+        accept(&m, &s, &PINNED, dir.path(), BEFORE).unwrap();
+        let good = stored(dir.path()).unwrap();
+        fn apk(m: &mut Value) -> &mut Value {
+            m["releases"]["6.2.0"]["artifacts"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|a| a["kind"] == "quest-apk")
+                .unwrap()
+        }
+        type Edit = fn(&mut Value);
+        let edits: [(&str, Edit); 5] = [
+            ("no signer", |a| {
+                a["android"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("signer_cert_sha256");
+            }),
+            ("not for", |a| {
+                a["android"]["package"] = "com.example".into()
+            }),
+            ("no versionCode", |a| {
+                a["android"]["version_code"] = 0.into()
+            }),
+            ("path", |a| a["path"] = "../x.apk".into()),
+            ("sha256", |a| a["sha256"] = "abc".into()),
+        ];
+        for (why, edit) in edits {
+            let mut m = good.clone();
+            edit(apk(&mut m));
+            let e = quest_in(&m, "6.2.0", BASE).unwrap_err();
+            assert!(e.step == 8 && e.detail.contains(why), "{why}: {e:?}");
+        }
+        // Two APKs.
+        let mut m = good.clone();
+        let a = apk(&mut m).clone();
+        m["releases"]["6.2.0"]["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .push(a);
+        assert!(quest_in(&m, "6.2.0", BASE)
+            .unwrap_err()
+            .detail
+            .contains("or two"));
+        // A data path out of the media folder.
+        let mut m = good.clone();
+        for r in ["6.1.0", "6.2.0"] {
+            for a in m["releases"][r]["artifacts"].as_array_mut().unwrap() {
+                if a["kind"] == "game-data" {
+                    a["contents"][0]["path"] = "_data/1/../../x".into();
+                }
+            }
+        }
+        assert!(quest_in(&m, "6.2.0", BASE)
+            .unwrap_err()
+            .detail
+            .contains("not allowed"));
+    }
+
+    #[test]
+    fn game_data_comes_from_the_newest_release_that_lists_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m, s) = fixture("quest");
+        accept(&m, &s, &PINNED, dir.path(), BEFORE).unwrap();
+        let mut m = stored(dir.path()).unwrap();
+        let drop_data = |m: &mut Value, r: &str| {
+            m["releases"][r]["artifacts"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|a| a["kind"] != "game-data")
+        };
+        drop_data(&mut m, "6.2.0");
+        let q = quest_in(&m, "6.2.0", BASE).unwrap();
+        assert!(q.data.sha256.starts_with("fc2eedeacc50"));
+        drop_data(&mut m, "6.1.0");
+        assert!(quest_in(&m, "6.2.0", BASE)
+            .unwrap_err()
+            .detail
+            .contains("no release lists"));
+        assert!(data_path_ok(
+            "_data/5932408047/rad15/android/packages/48037dc70b0ecab2_0"
+        ));
+        for bad in [
+            "_data/x/rad15/android/packages/a",
+            "_data/1/rad15/android/other/a",
+            "_data/1/rad15/android/packages/A",
+            "_data/1/rad15/android/packages/a/b",
+            "/_data/1/rad15/android/packages/a",
+        ] {
+            assert!(!data_path_ok(bad), "{bad}");
         }
     }
 

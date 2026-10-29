@@ -1,25 +1,25 @@
-//! Echo VR on the Quest: which version is installed, and starting/stopping it over adb.
+//! Echo VR on the Quest: nEVR's build, from nEVR's signed releases, installed and
+//! updated over adb; which version is installed, and starting/stopping it.
+//!
+//! Which release goes onto the headset is ours to say (the Quest's `# nEVR quest:` line,
+//! [`pc_update::quest_nevr_release`]); what its files are, nEVR's signed manifest says
+//! ([`nevr_release::quest_release`]). The APK is the same for every player.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 
 use super::versions::Step;
 use crate::core::adb::{self, PACKAGE};
 use crate::core::download::{self, Progress};
 use crate::core::error::UiError;
-use crate::core::manifest::Manifest;
-use crate::core::oauth::{self, OAuthError};
-use crate::core::quest_update::{self, Marker, VersionCheck};
-use crate::core::{paths, quest_install};
+use crate::core::nevr_release::{self, QuestRelease};
+use crate::core::quest_install::{self, ApkInstall};
+use crate::core::{paths, pc_update};
 
-/// Used when the update manifest (which names the current APK) can't be fetched and the
-/// versions catalogue names none.
-pub const FALLBACK_APK: &str = "echo_quest_27-08-2026.001.apk";
 pub const DATA_ZIP: &str = "_data.zip";
-/// Where the mirrors keep the Quest's APK and data (the names above, the manifest's
-/// `BASE_APK`): release.echovr.de's Quest tree.
+/// Where the mirrors keep the Quest's game data: release.echovr.de's Quest tree.
 const QUEST_DIR: &str = "quest/";
 
 /// The download of a Quest game file named `name`, from the mirrors.
@@ -27,203 +27,183 @@ fn quest_file(name: &str) -> String {
     format!("{QUEST_DIR}{name}")
 }
 
-/// Where the Quest APK comes from.
+/// How an install or update ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ApkSource {
-    /// The stock APK (owners).
-    Stock,
-    /// A personal patched APK through Discord (new players).
-    Discord,
-    /// A patched APK link the user already has.
-    Url(String),
-}
-
-#[derive(Debug)]
-pub enum JobError {
-    OAuth(OAuthError),
-    Other(anyhow::Error),
-}
-
-impl From<anyhow::Error> for JobError {
-    fn from(e: anyhow::Error) -> Self {
-        JobError::Other(e)
-    }
-}
-
-/// How an install ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Installed {
-    /// With the latest update.
-    UpToDate,
-    /// The update manifest couldn't be fetched: installed, but not checked for updates.
-    NotChecked,
-}
-
-/// What an update found.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UpdateOutcome {
-    Updated,
-    /// The headset's APK is not the one the update is built for: reinstall. The text
-    /// says why.
-    NeedsReinstall(String),
-}
-
-/// A personal patched APK is saved apart from the stock one, so a resumed download can
-/// never mix the two.
-pub fn patched_name(base: &str) -> String {
-    format!("{}.patched.apk", base.trim_end_matches(".apk"))
+pub enum Outcome {
+    /// nEVR `version` is on the headset now.
+    Installed(String),
+    /// It already was.
+    UpToDate(String),
+    /// The followed launcher channel offers no Echo VR for the Quest.
+    NotOffered,
 }
 
 fn staging() -> PathBuf {
     paths::downloads_dir()
 }
 
-fn fetch(
-    url: &str,
-    name: &str,
-    mirror: bool,
-    fresh: bool,
-    sha256: Option<&str>,
-    cancel: &AtomicBool,
-    on: &mut dyn FnMut(Step),
-) -> Result<PathBuf> {
+/// The release the followed launcher channel offers for the Quest, checked against nEVR's
+/// signed manifest; `None` when it offers none.
+pub fn offered(cancel: &AtomicBool) -> Result<Option<QuestRelease>> {
+    let Some(which) = pc_update::quest_nevr_release()? else {
+        return Ok(None);
+    };
+    nevr_release::quest_release(&which, cancel)
+        .map(Some)
+        .map_err(|e| {
+            tracing::warn!(
+                "Quest: nEVR's release refused at step {}: {}",
+                e.step,
+                e.detail
+            );
+            anyhow::anyhow!(e)
+        })
+}
+
+/// Pure: whether what is installed is release `r`'s APK (its versionCode, then its bytes:
+/// `sha` is asked for only when the code matches).
+fn is_release(
+    installed: &quest_install::Installed,
+    r: &QuestRelease,
+    sha: impl FnOnce(&str) -> Option<String>,
+) -> bool {
+    installed.version_code == Some(r.version_code)
+        && sha(&installed.path).as_deref() == Some(r.apk.sha256.as_str())
+}
+
+/// Puts the offered nEVR release onto the headset, as nEVR's install method says (ADR 0023,
+/// "Quest plan"): its APK over what is installed, then the game data when it isn't there,
+/// then the checks. Another build (or a newer one), which Android won't install over, is
+/// uninstalled first: updating to nEVR is all the player asked for.
+pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome> {
+    ready()?;
+    on(Step::Status("Checking nEVR's release...".into()));
+    let Some(r) = offered(cancel)? else {
+        return Ok(Outcome::NotOffered);
+    };
+    let v = r.version.clone();
+    let have = quest_install::installed();
+    let current = have
+        .as_ref()
+        .is_some_and(|i| is_release(i, &r, quest_install::installed_sha));
+
+    if !current {
+        let apk = staging().join(format!("nevr-runtime-v{v}-quest.apk"));
+        if !download::sha256_matches(&apk, &r.apk.sha256) {
+            on(Step::Status(format!("Downloading Echo VR (nEVR {v})...")));
+            std::fs::create_dir_all(staging())?;
+            r.apk
+                .download(&apk, cancel, &mut |f| on(Step::Percent(f)))
+                .map_err(anyhow::Error::from)?;
+        }
+        on(Step::Status("Installing Echo VR on your Quest...".into()));
+        match quest_install::install_apk(&apk) {
+            ApkInstall::Done => {}
+            ApkInstall::Failed(why) => bail_refused(&why)?,
+            _ => {
+                // Android takes the game's media folder with the app: the settings in it
+                // come back after.
+                on(Step::Status("Keeping your Echo VR settings...".into()));
+                let kept = quest_install::save_settings(&staging().join("quest-settings"));
+                on(Step::Status(format!("Updating to nEVR {v}...")));
+                quest_install::uninstall()?;
+                match quest_install::install_apk(&apk) {
+                    ApkInstall::Done => {}
+                    ApkInstall::Failed(why) => bail_refused(&why)?,
+                    other => bail_refused(&format!("{other:?}"))?,
+                }
+                if let Some(dir) = kept {
+                    on(Step::Status("Putting your Echo VR settings back...".into()));
+                    if quest_install::restore_settings(&dir) {
+                        let _ = std::fs::remove_dir_all(dir.parent().unwrap_or(&dir));
+                    } else {
+                        tracing::warn!(
+                            "Quest: settings not put back; a copy is in {}",
+                            dir.display()
+                        );
+                    }
+                }
+            }
+        }
+        let _ = std::fs::remove_file(&apk);
+    }
+
+    on(Step::Status("Checking the game data...".into()));
+    if !quest_install::data_present(&r.data.contents) {
+        on(Step::Status("Downloading the game data...".into()));
+        let zip = fetch_data(&r, cancel, on)?;
+        quest_install::push_data(&zip, &mut |s| on(Step::Status(s)))?;
+        let _ = std::fs::remove_file(&zip);
+        if !quest_install::data_present(&r.data.contents) {
+            bail!("The game data didn't arrive complete on your Quest. Please try again.");
+        }
+    }
+    quest_install::grant_permissions();
+
+    // What the headset reports now has to be what nEVR's manifest names.
+    let now = quest_install::installed();
+    if now.as_ref().and_then(|i| i.version_code) != Some(r.version_code) {
+        bail!(
+            "Your Quest doesn't report nEVR {v} after the install (versionCode {:?}). Please try again.",
+            now.and_then(|i| i.version_code)
+        );
+    }
+    // A headset on USB is let go of; one over the network stays connected.
+    let network = adb::last_selection()
+        .serial
+        .is_some_and(|s| super::quest_net::is_network_serial(&s));
+    if !network {
+        adb::exec(&["kill-server"]);
+    }
+    Ok(if current {
+        Outcome::UpToDate(v)
+    } else {
+        Outcome::Installed(v)
+    })
+}
+
+/// An APK the headset refused for a reason of its own.
+fn bail_refused(why: &str) -> Result<()> {
+    Err(UiError::new(
+        "Install Failed",
+        format!("Your Quest refused the APK:\n{why}"),
+    )
+    .into())
+}
+
+/// The game data from the mirrors, checked against the sha256 nEVR's manifest gives it.
+fn fetch_data(r: &QuestRelease, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<PathBuf> {
     let job = download::Job {
-        url: url.into(),
+        url: quest_file(DATA_ZIP),
         dir: staging(),
-        filename: name.into(),
-        use_mirror: mirror,
-        fresh,
+        filename: DATA_ZIP.into(),
+        use_mirror: true,
         extract: false,
-        sha256: sha256.map(str::to_string),
+        sha256: Some(r.data.sha256.clone()),
     };
     let file = download::run(&job, cancel, &mut |p| match p {
         Progress::Percent(v) => on(Step::Percent(v)),
         Progress::Status(s) => on(Step::Status(s)),
         _ => {}
     })?;
-    // Its checksum, else release.echovr.de's index's (the game data has none of its own).
-    if let Some(sha) = download::expected_sha(&job) {
-        on(Step::Status("Verifying the download...".into()));
-        if !download::sha256_matches(&file, &sha) {
-            let _ = std::fs::remove_file(&file);
-            bail!("The downloaded {name} is corrupt (checksum mismatch). Please try again.");
-        }
+    on(Step::Status("Verifying the download...".into()));
+    if !download::sha256_matches(&file, &r.data.sha256) {
+        let _ = std::fs::remove_file(&file);
+        bail!("The downloaded game data is corrupt (checksum mismatch). Please try again.");
     }
     Ok(file)
 }
 
-/// Downloads the APK (stock or patched) and the game data, installs both over adb,
-/// records the install on the headset and applies the latest update. `fallback_apk` is
-/// the APK to take when the update manifest (which names the current one) can't be
-/// fetched: the versions catalogue's.
-pub fn install(
-    source: &ApkSource,
-    fallback_apk: Option<&str>,
-    cancel: &AtomicBool,
-    on: &mut dyn FnMut(Step),
-) -> Result<Installed, JobError> {
-    ready()?;
-    on(Step::Status("Checking for the latest version...".into()));
-    let manifest = Manifest::fetch(quest_update::QUEST_MANIFEST_URL)
-        .map_err(|e| tracing::warn!("quest manifest: {e:#}"))
-        .ok();
-    let base = manifest
-        .as_ref()
-        .and_then(|m| m.base_apk_name.clone())
-        .or_else(|| fallback_apk.map(str::to_string))
-        .unwrap_or_else(|| FALLBACK_APK.into());
-
-    let (apk, patched) = match source {
-        ApkSource::Stock => {
-            on(Step::Status("Downloading Echo VR...".into()));
-            let sha = manifest.as_ref().and_then(|m| m.base_apk_sha.as_deref());
-            let apk = fetch(&quest_file(&base), &base, true, false, sha, cancel, on)?;
-            (apk, false)
-        }
-        ApkSource::Discord | ApkSource::Url(_) => {
-            let url = match source {
-                ApkSource::Url(u) => oauth::validate_apk_url(u.trim()).ok_or_else(|| {
-                    anyhow!("That link is not a patched APK link. Please check it and try again.")
-                })?,
-                _ => oauth::run(oauth::FileType::Apk, cancel, on).map_err(JobError::OAuth)?,
-            };
-            on(Step::Status("Downloading your patched APK...".into()));
-            (
-                fetch(&url, &patched_name(&base), false, true, None, cancel, on)?,
-                true,
-            )
-        }
-    };
-    on(Step::Status("Downloading the game data...".into()));
-    fetch(
-        &quest_file(DATA_ZIP),
-        DATA_ZIP,
-        true,
-        false,
-        None,
-        cancel,
-        on,
-    )?;
-
-    let apk_file = apk
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    quest_install::install(&staging(), &apk_file, DATA_ZIP, &mut |s| {
-        on(Step::Status(s))
-    })?;
-    // Record which base version this is before the update runs, so a failed update
-    // still leaves a correct marker.
-    quest_update::write_marker_after_install(
-        Some(base),
-        manifest.as_ref().and_then(|m| m.base_apk_sha.clone()),
-        download::sha256_file(&apk).ok(),
-        patched,
-    );
-    let _ = std::fs::remove_file(staging().join(DATA_ZIP));
-    let outcome = match manifest {
-        Some(m) => {
-            on(Step::Status("Applying the latest update...".into()));
-            quest_update::apply(&m, cancel, &mut |s| on(Step::Status(s))).map_err(|e| {
-                e.context("Echo VR is installed, but applying the latest update failed. Use Update to try again.")
-            })?;
-            Installed::UpToDate
-        }
-        None => Installed::NotChecked,
-    };
-    adb::exec(&["kill-server"]);
-    Ok(outcome)
-}
-
-/// Checks that the headset has the APK the update is built for, then applies it.
-pub fn update(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<UpdateOutcome> {
-    let st = quest_update::check_version(quest_update::QUEST_MANIFEST_URL, &mut |s| {
-        on(Step::Status(s))
-    });
-    match st.result {
-        VersionCheck::Ok => {
-            let m = st
-                .manifest
-                .ok_or_else(|| anyhow!("The update list could not be loaded."))?;
-            quest_update::apply(&m, cancel, &mut |s| on(Step::Status(s)))?;
-            Ok(UpdateOutcome::Updated)
-        }
-        VersionCheck::NotInstalled | VersionCheck::Mismatch => {
-            Ok(UpdateOutcome::NeedsReinstall(st.detail))
-        }
-        VersionCheck::NoDevice => {
-            Err(UiError::new(crate::core::error::QUEST_NOT_FOUND_TITLE, st.detail).into())
-        }
-        VersionCheck::ManifestError => Err(UiError::new("Update check failed", st.detail).into()),
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuestInfo {
     pub device: Option<String>,
     pub installed: bool,
-    /// From the installer's on-device marker, when present.
-    pub marker: Option<Marker>,
+    /// The installed APK's versionCode.
+    pub version_code: Option<u64>,
+    /// The nEVR release the installed APK is, when it is one.
+    pub nevr: Option<String>,
+    /// The release the launcher channel offers, and its versionCode.
+    pub offered: Option<(String, u64)>,
     /// Its Wi-Fi address, when it was read over USB.
     pub wifi_ip: Option<std::net::Ipv4Addr>,
     /// ADB reaches it over the network rather than USB.
@@ -232,17 +212,20 @@ pub struct QuestInfo {
 
 impl QuestInfo {
     pub fn version_label(&self) -> String {
-        match (&self.installed, &self.marker) {
+        match (self.installed, &self.nevr) {
             (false, _) => "Echo VR is not installed on this Quest".into(),
-            (true, Some(m)) => {
-                let base = m.base_apk.clone().unwrap_or_else(|| "unknown build".into());
-                if m.patched {
-                    format!("{base} (patched)")
-                } else {
-                    base
-                }
+            (true, Some(v)) => format!("nEVR {v}"),
+            (true, None) => "Echo VR (another build)".into(),
+        }
+    }
+
+    /// The release to update to, when Echo VR is installed and isn't the offered one.
+    pub fn update_offered(&self) -> Option<&str> {
+        match &self.offered {
+            Some((v, code)) if self.installed && self.version_code != Some(*code) => {
+                Some(v.as_str())
             }
-            (true, None) => "Installed (version unknown)".into(),
+            _ => None,
         }
     }
 }
@@ -262,16 +245,21 @@ pub fn info() -> Result<QuestInfo> {
     let over_network = target
         .as_ref()
         .is_some_and(|d| super::quest_net::is_network_serial(&d.serial));
-    let installed = quest_update::installed_apk_path().is_some();
-    let marker = if installed {
-        quest_update::read_marker()
-    } else {
-        None
+    let have = quest_install::installed();
+    let version_code = have.as_ref().and_then(|i| i.version_code);
+    let offered = match offered(&AtomicBool::new(false)) {
+        Ok(r) => r.map(|r| (r.version, r.version_code)),
+        Err(e) => {
+            tracing::info!("Quest: no release offer read: {e:#}");
+            None
+        }
     };
     Ok(QuestInfo {
         device,
-        installed,
-        marker,
+        installed: have.is_some(),
+        version_code,
+        nevr: version_code.and_then(nevr_release::quest_version_of),
+        offered,
         wifi_ip: super::quest_net::ip_over_usb(),
         over_network,
     })
@@ -290,10 +278,20 @@ pub fn parse_activity(output: &str) -> Option<String> {
 
 pub fn launch() -> Result<()> {
     ready()?;
-    let out = adb::shell(&format!(
-        "cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {PACKAGE}"
-    ));
-    let Some(component) = parse_activity(&out.output) else {
+    // nEVR's build lists its activity as Quest apps do (category INFO), older builds as a
+    // launcher's.
+    let component = [
+        "android.intent.category.LAUNCHER",
+        "android.intent.category.INFO",
+    ]
+    .iter()
+    .find_map(|c| {
+        let out = adb::shell(&format!(
+            "cmd package resolve-activity --brief -a android.intent.action.MAIN -c {c} {PACKAGE}"
+        ));
+        parse_activity(&out.output)
+    });
+    let Some(component) = component else {
         return Err(UiError::new(
             "Echo VR not installed",
             "Echo VR is not installed on your Quest.",
@@ -371,20 +369,7 @@ mod tests {
     }
 
     #[test]
-    fn patched_apk_is_kept_apart() {
-        assert_eq!(
-            patched_name("echo_quest_27-08-2026.001.apk"),
-            "echo_quest_27-08-2026.001.patched.apk"
-        );
-        assert_ne!(patched_name(FALLBACK_APK), FALLBACK_APK);
-    }
-
-    #[test]
-    fn game_files_come_from_the_quest_tree() {
-        assert_eq!(
-            quest_file(FALLBACK_APK),
-            "quest/echo_quest_27-08-2026.001.apk"
-        );
+    fn game_data_comes_from_the_quest_tree() {
         assert_eq!(quest_file(DATA_ZIP), "quest/_data.zip");
     }
 
@@ -399,22 +384,46 @@ mod tests {
     }
 
     #[test]
-    fn version_label() {
-        let mut i = QuestInfo {
-            device: None,
-            installed: false,
-            marker: None,
-            wifi_ip: None,
-            over_network: false,
-        };
+    fn version_label_and_offer() {
+        let mut i = QuestInfo::default();
         assert!(i.version_label().contains("not installed"));
+        i.offered = Some(("6.2.0".into(), 60200999));
+        assert_eq!(i.update_offered(), None);
         i.installed = true;
-        assert_eq!(i.version_label(), "Installed (version unknown)");
-        i.marker = Some(Marker {
-            base_apk: Some("echo_quest_27-08-2026.001.apk".into()),
-            patched: true,
-            ..Default::default()
-        });
-        assert_eq!(i.version_label(), "echo_quest_27-08-2026.001.apk (patched)");
+        assert_eq!(i.version_label(), "Echo VR (another build)");
+        assert_eq!(i.update_offered(), Some("6.2.0"));
+        (i.version_code, i.nevr) = (Some(60100999), Some("6.1.0".into()));
+        assert_eq!(i.version_label(), "nEVR 6.1.0");
+        assert_eq!(i.update_offered(), Some("6.2.0"));
+        i.version_code = Some(60200999);
+        assert_eq!(i.update_offered(), None);
+    }
+
+    #[test]
+    fn the_release_is_installed_only_with_its_code_and_bytes() {
+        let r = QuestRelease {
+            version: "6.2.0".into(),
+            apk: nevr_release::Artifact {
+                url: String::new(),
+                sha256: "a".repeat(64),
+                size: 1,
+            },
+            version_code: 60200999,
+            signer_cert_sha256: String::new(),
+            data: nevr_release::GameData {
+                sha256: String::new(),
+                size: 0,
+                contents: Vec::new(),
+            },
+        };
+        let mut i = quest_install::Installed {
+            path: "/data/app/base.apk".into(),
+            version_code: Some(60200999),
+        };
+        assert!(is_release(&i, &r, |_| Some("a".repeat(64))));
+        assert!(!is_release(&i, &r, |_| Some("b".repeat(64))));
+        assert!(!is_release(&i, &r, |_| None));
+        i.version_code = Some(4987566);
+        assert!(!is_release(&i, &r, |_| panic!("no hash for another code")));
     }
 }

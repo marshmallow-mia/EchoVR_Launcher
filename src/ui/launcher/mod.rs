@@ -132,11 +132,6 @@ const X0: f32 = dz(138.0);
 const CW: f32 = W - X0 - dz(48.0);
 /// The page's header strip under the status bar (design pixels).
 pub(super) const HEADER: Dr = Dr::new(138.0, 80.0, 1734.0, 46.0);
-/// Echo VR on Quest. The first release is PCVR only: the switch's Quest side says it's
-/// coming soon, and nothing looks for a headset.
-pub(super) const QUEST: bool = false;
-/// How long the switch's "coming soon" stays up.
-const QUEST_SOON_FOR: std::time::Duration = std::time::Duration::from_millis(2500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Page {
@@ -191,14 +186,6 @@ enum JobResult {
     Verified(crate::core::launcher::versions::Verified),
     /// `None` = cancelled.
     Failed(Option<UiError>),
-    /// The licence patch was applied.
-    Patched,
-    /// The licence patch was taken off again.
-    Unpatched,
-    /// A new player's patch is in the download folder, waiting for its version's install.
-    LicenceFetched(PathBuf),
-    /// Discord authorization for the patch failed.
-    OAuthFailed(crate::core::oauth::OAuthError),
     /// Revive (SteamVR) is installed; with what of the rest (artwork, library entry)
     /// couldn't be done.
     ReviveReady(Vec<String>),
@@ -220,10 +207,8 @@ enum JobResult {
     EventBuildReady,
     /// The live build is set up for the EchoRelay server a plugin chose.
     LiveRelayReady,
-    QuestInstalled(crate::core::launcher::quest::Installed),
-    QuestUpdated,
-    /// The headset's APK doesn't match the update: offer a reinstall (the text says why).
-    QuestNeedsReinstall(String),
+    /// Echo VR onto the Quest, or its update: how it ended.
+    Quest(crate::core::launcher::quest::Outcome),
     /// Mods were installed, added or removed: what to say.
     ModsChanged(String),
     /// EchoXR Hands is installed: it's on now (and EchoXR, which it needs, on Windows).
@@ -286,8 +271,14 @@ enum Msg {
     CacheSize(u64),
     /// How far a scan for the Quest on the network is (0 to 1).
     QuestScanProgress(f32),
-    /// What it found.
-    QuestScanDone(Vec<crate::core::launcher::quest_net::Found>),
+    /// What it found, what adb found by mDNS, and whether it was a quiet scan.
+    QuestScanDone(
+        Vec<crate::core::launcher::quest_net::Found>,
+        Vec<crate::core::launcher::quest_net::Mdns>,
+        bool,
+    ),
+    /// adb connected to a listed headset (its serial), or why not.
+    QuestConnected(Result<String, UiError>),
     /// ADB over the network was turned on, or why not.
     QuestNetwork(Result<(), UiError>),
     /// The launcher's latest release, if newer (`Err`: couldn't look).
@@ -503,13 +494,8 @@ enum JobKind {
     Reinstall,
     Update,
     Verify,
-    Patch,
-    Unpatch,
-    /// Fetching a new player's patch while their version installs.
-    Licence,
     Revive,
     QuestInstall,
-    QuestUpdate,
     /// Installing, adding or removing a plugin.
     Mods,
     /// Taking what the launcher put on this PC off it again.
@@ -536,8 +522,6 @@ pub(super) enum Res {
     Quest,
     /// The mods' shared download folder.
     Mods,
-    /// A new player's licence patch on its way.
-    Licence,
     /// Everything: the launcher's own update (it restarts at the end) and the uninstall.
     All,
 }
@@ -583,24 +567,16 @@ pub enum SnapVariant {
     DialogInstallError,
     /// Removing a version (a red button).
     DialogConfirm,
-    /// Discord's authorization page opened: continue in the browser.
-    DialogBrowser,
     /// A version's Manage menu, open.
     MenuOpen,
-    /// The Install card's questions, as an owner (prefilled).
+    /// The Install card's questions (prefilled).
     InstallAsk,
-    /// ...as a new player, with a patch link.
-    InstallAskNew,
     /// ...with Echo VR found in the Meta library.
     InstallAskFound,
     /// ...not installed, nothing found (choose echovr.exe).
     InstallAskChoose,
-    /// ...for the Quest, as a new player.
+    /// ...for the Quest.
     InstallAskQuest,
-    /// PLAY of a version not installed here: the licence question first.
-    Owner,
-    /// Installed; the new player's patch is still on its way.
-    LicenceWaiting,
     /// An event build installed and selected, an account on the relay.
     EventSelected,
     /// The Install card of an event build.
@@ -633,6 +609,10 @@ pub enum SnapVariant {
     QuestSide,
     /// The Quest side, a headset without Echo VR.
     QuestFresh,
+    /// The Quest side's Headsets list: USB, network, unauthorized and ADB-only finds.
+    QuestHeadsets,
+    /// The Quest side, the launcher's channel without a Quest release.
+    QuestNotOffered,
     /// The Quest side, Echo VR running on the headset (seen through its API).
     QuestRunning,
     /// PLAY was clicked; the game isn't up yet.
@@ -691,12 +671,6 @@ pub enum SnapVariant {
     VrceSigning,
     /// EchoVRCE: the code being approved in the window.
     VrceSigningHere,
-    /// A new player: PATCH on Play.
-    NewPlayer,
-    /// The licence card for the selected version.
-    Licence,
-    /// ...with a patch link pasted.
-    LicenceLink,
     /// Mods: the version has no mod loader yet.
     ModsNoLoader,
     /// Mods: a plugin's options open.
@@ -815,9 +789,6 @@ pub struct Dashboard {
     upload_after_sign_in: Option<std::time::Instant>,
     /// A start waits for the game that is closing (Virtual Desktop's answer): since when.
     play_when_closed: Option<std::time::Instant>,
-    /// PLAY (or a JOIN, with its lobby) asked for the licence patch of this version first:
-    /// the game starts once it is in. Gone when the licence card is cancelled.
-    play_after_patch: Option<(String, Option<play::Join>)>,
     /// The version whose mod loader the "Windows blocked" question is about.
     nevr_blocked: Option<String>,
     /// Copies elsewhere looked at this run, whether they are the live build.
@@ -835,8 +806,6 @@ pub struct Dashboard {
     quest_conn: QuestConn,
     quest_info: Option<QuestInfo>,
     quest_busy: bool,
-    /// The headset's Echo VR was a patched build when last read (its marker says so).
-    quest_was_patched: bool,
     /// The Install page's list of installed versions.
     library_scroll: f32,
     /// The version the Install page's hero shows (a row of its version list).
@@ -872,8 +841,6 @@ pub struct Dashboard {
     play_after_prep: bool,
     /// Linux: when `--play`'s word on a failed start was last looked for.
     linux_outcome_at: Option<std::time::Instant>,
-    /// The job whose "continue in your browser" dialog is up (Discord's authorization).
-    browser_job: Option<String>,
     /// SteamVR's library entry being added (`true`) or taken out: Settings' box goes back
     /// if that fails.
     library_wanted: Option<bool>,
@@ -905,6 +872,15 @@ pub struct Dashboard {
     quest_scan: Option<f32>,
     /// ADB over the network was set up over USB in this session (or tried).
     quest_net_tried: bool,
+    /// What the last scan found on the network, and adb by mDNS: the Headsets list.
+    quest_found: Vec<crate::core::launcher::quest_net::Found>,
+    quest_mdns: Vec<crate::core::launcher::quest_net::Mdns>,
+    /// The network was looked at quietly once (no headset on USB).
+    quest_scanned: bool,
+    /// The newer nEVR build for the Quest a notice told about.
+    quest_offer_told: Option<String>,
+    /// Snapshots: adb's device table, the one in use first.
+    snap_devices: Option<Vec<crate::core::adb::devices::Device>>,
     pending_remove: Option<String>,
     /// The version VERIFY found broken, and whether the build's own files are (REINSTALL's
     /// repair) or only the update's (an update).
@@ -973,13 +949,8 @@ pub struct Dashboard {
     /// What just happened, in the status bar, with a button when there is something to
     /// do about it ([`notices`]).
     notices: notices::Notices,
-    /// A new player's patch on its way into the version being installed.
-    pending_patch: Option<setup::PendingPatch>,
     /// Pages drawn at least once, seen or not (`prewarm`).
     warmed: std::collections::HashSet<Page>,
-    /// The Quest side of the switch was clicked while Quest is off (`QUEST`): where, and
-    /// when.
-    quest_soon: Option<(egui::Rect, std::time::Instant)>,
     video: super::video::BackgroundVideo,
 }
 
@@ -1179,15 +1150,19 @@ impl Dashboard {
         }
     }
 
-    /// Looks for the Quest on this PC's local network (its game's API, or ADB).
-    fn scan_quest(&mut self, ctx: &egui::Context) {
+    /// Looks for Quests on this PC's local network (their game's API, or ADB) and asks adb
+    /// what it finds by mDNS (`quiet`: nothing is said when there is nothing).
+    fn scan_quest(&mut self, ctx: &egui::Context, quiet: bool) {
         use crate::core::launcher::quest_net;
+        self.quest_scanned = true;
         let Some(own) = quest_net::local_ipv4() else {
-            self.dialogs.error(
-                "No network",
-                "This PC doesn't seem to be on a local network.",
-                Default::default(),
-            );
+            if !quiet {
+                self.dialogs.error(
+                    "No network",
+                    "This PC doesn't seem to be on a local network.",
+                    Default::default(),
+                );
+            }
             return;
         };
         self.quest_scan = Some(0.0);
@@ -1196,8 +1171,61 @@ impl Dashboard {
             let hosts = quest_net::subnet_hosts(own);
             let found =
                 quest_net::scan(&hosts, &cancel, &mut |p| tx.send(Msg::QuestScanProgress(p)));
-            tx.send(Msg::QuestScanDone(found));
+            let mdns = if crate::core::adb::bundle::binary().is_ok() {
+                quest_net::mdns()
+            } else {
+                Vec::new()
+            };
+            tx.send(Msg::QuestScanDone(found, mdns, quiet));
         });
+    }
+
+    /// Every headset found, once each (adb's table, the last scan, mDNS), and the adb
+    /// serial in use when one is connected.
+    fn quest_list(
+        &self,
+    ) -> (
+        Vec<crate::core::launcher::quest_net::FoundQuest>,
+        Option<String>,
+    ) {
+        let (devices, serial) = match &self.snap_devices {
+            Some(d) => (d.clone(), d.first().map(|d| d.serial.clone())),
+            None => {
+                let s = crate::core::adb::last_selection();
+                (s.all, s.serial)
+            }
+        };
+        let usb_ip = self
+            .quest_info
+            .as_ref()
+            .filter(|i| !i.over_network)
+            .and_then(|i| i.wifi_ip);
+        let list = crate::core::launcher::quest_net::merge(
+            &devices,
+            &self.quest_found,
+            &self.quest_mdns,
+            serial.as_deref().zip(usb_ip),
+        );
+        let ready = self.quest_conn.status == Some(Status::Ready);
+        (list, serial.filter(|_| ready))
+    }
+
+    /// Uses listed headset `f`: adb's own, or connected to over the network first.
+    fn use_quest(&mut self, ctx: &egui::Context, f: &crate::core::launcher::quest_net::FoundQuest) {
+        if let Some(serial) = &f.serial {
+            crate::core::adb::set_preferred(serial);
+            if f.network {
+                self.set_quest_ip(f.ip);
+            }
+            self.check_quest(ctx, true);
+        } else if let Some(addr) = f.connect.clone() {
+            self.quest_busy = true;
+            self.worker.spawn(ctx, move |tx| {
+                let r = crate::core::launcher::quest_net::connect_to(&addr)
+                    .map_err(|e| UiError::from_anyhow(&e, "Couldn't connect"));
+                tx.send(Msg::QuestConnected(r));
+            });
+        }
     }
 
     /// Turns on ADB over the network while the Quest is on USB.
@@ -1779,7 +1807,6 @@ impl Dashboard {
         self.overlay = None;
         self.notices.clear();
         self.dialogs = DialogHost::default();
-        self.state.owner = Some(true);
         self.state.selected = Some("pc-latest".into());
         self.platform = Platform::Pc;
         // A connected headset with Echo VR on it, as in the design concept.
@@ -1787,10 +1814,9 @@ impl Dashboard {
         self.quest_info = Some(QuestInfo {
             device: Some("Meta Quest 3 (2G0YC5ZF8R0123)".into()),
             installed: true,
-            marker: Some(crate::core::quest_update::Marker {
-                base_apk: Some("r15_26-06-23.apk".into()),
-                ..Default::default()
-            }),
+            version_code: Some(60200999),
+            nevr: Some("6.2.0".into()),
+            offered: Some(("6.2.0".into(), 60200999)),
             wifi_ip: Some(std::net::Ipv4Addr::new(192, 168, 178, 45)),
             over_network: false,
         });
@@ -1803,6 +1829,9 @@ impl Dashboard {
         self.snap_game = None;
         self.install_pick = None;
         self.snap_found.clear();
+        self.snap_devices = None;
+        self.quest_found.clear();
+        self.quest_mdns.clear();
         self.state.versions = demo_state().versions;
         self.state.game_server = None;
         plugins::snap_game_server(
@@ -1893,15 +1922,6 @@ impl Dashboard {
                 "Delete Echo VR (PC, latest)?\n\nThis removes C:/EchoVR/versions/pc-latest from disk.",
                 "Delete",
             ),
-            Some(SnapVariant::DialogBrowser) => {
-                let (title, body) = browser_dialog(setup::LICENCE_JOB);
-                self.dialogs.browser(
-                    BROWSER_KEY,
-                    title,
-                    &body,
-                    "https://discord.com/oauth2/authorize?client_id=1",
-                );
-            }
             Some(SnapVariant::MenuOpen) => {
                 let id = crate::ui::widgets::menu_id("menu-pc-latest");
                 ctx.data_mut(|d| d.insert_temp(id, true));
@@ -2005,7 +2025,6 @@ impl Dashboard {
             Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A", None),
             Some(
                 v @ (SnapVariant::InstallAsk
-                | SnapVariant::InstallAskNew
                 | SnapVariant::InstallAskFound
                 | SnapVariant::InstallAskChoose),
             ) => {
@@ -2013,9 +2032,6 @@ impl Dashboard {
                     .catalog
                     .as_ref()
                     .and_then(|c| c.versions.iter().find(|e| e.id == "pc-latest").cloned());
-                if v == SnapVariant::InstallAskNew {
-                    self.state.owner = Some(false);
-                }
                 // Nothing installed by the launcher yet; (found) the Meta app's copy.
                 if matches!(v, SnapVariant::InstallAskFound | SnapVariant::InstallAskChoose) {
                     self.state.versions.clear();
@@ -2025,12 +2041,6 @@ impl Dashboard {
                 }
                 if let Some(e) = entry {
                     setup::ask_install(self, e);
-                }
-                if let Some(setup::Overlay::Install(ask)) = &mut self.overlay {
-                    if v == SnapVariant::InstallAskNew {
-                        ask.link = true;
-                        ask.url = "https://files.echovr.de/dlls/1727000000/pnsovr.dll".into();
-                    }
                 }
             }
             Some(SnapVariant::QuestSide) => self.platform = Platform::Quest,
@@ -2189,23 +2199,9 @@ impl Dashboard {
             }
             Some(SnapVariant::VrceSigning) => self.vrce.demo(false),
             Some(SnapVariant::VrceSigningHere) => self.vrce.demo_here(),
-            Some(SnapVariant::NewPlayer) => self.state.owner = Some(false),
-            Some(SnapVariant::Licence) => {
-                self.state.owner = Some(false);
-                self.overlay = Some(setup::licence("pc-latest"));
-            }
-            Some(SnapVariant::LicenceLink) => {
-                self.state.owner = Some(false);
-                self.overlay = Some(setup::Overlay::Licence {
-                    id: "pc-latest".into(),
-                    url: "https://files.echovr.de/dlls/1727000000/pnsovr.dll".into(),
-                    link: true,
-                });
-            }
             Some(SnapVariant::InstallAskQuest) => {
-                self.state.owner = Some(false);
                 self.platform = Platform::Quest;
-                setup::ask_quest_install(self, false);
+                setup::ask_quest_install(self);
             }
             Some(SnapVariant::EventSelected) => {
                 self.state.versions.push(InstalledVersion {
@@ -2242,29 +2238,6 @@ impl Dashboard {
                     play: true,
                 });
             }
-            Some(SnapVariant::Owner) => {
-                self.state.owner = None;
-                self.overlay = Some(setup::Overlay::Owner);
-            }
-            Some(SnapVariant::LicenceWaiting) => {
-                self.state.owner = Some(false);
-                self.pending_patch = Some(setup::PendingPatch {
-                    version: "pc-latest".into(),
-                    dll: None,
-                });
-                self.jobs.insert(
-                    setup::LICENCE_JOB.into(),
-                    Job {
-                        kind: JobKind::Licence,
-                        res: vec![Res::Licence],
-                        cancellable: true,
-                        title: "Getting your licence patch".into(),
-                        label: "Discord authorization opened in your browser.".into(),
-                        fraction: None,
-                        cancel: Arc::new(AtomicBool::new(false)),
-                    },
-                );
-            }
             Some(SnapVariant::JoinLobby) => {
                 self.overlay = Some(setup::Overlay::JoinLobby {
                     input: "spark://c/0F5C1A2B-3C4D-5E6F-7A8B-9C0D1E2F3A4B".into(),
@@ -2289,11 +2262,46 @@ impl Dashboard {
             Some(SnapVariant::ModsHands | SnapVariant::ModsSettings | SnapVariant::ModsSettingsAll) => {
                 self.state.echoxr_hands = true;
             }
+            Some(SnapVariant::QuestHeadsets) => {
+                use crate::core::launcher::quest_net::{Found, Mdns};
+                self.platform = Platform::Quest;
+                self.snap_devices = Some(crate::core::adb::devices::parse(
+                    "List of devices attached\n\
+                     2G0YC5ZF8R0123 device usb:1-1 product:eureka model:Quest_3 device:eureka transport_id:1\n\
+                     1WMHH8123A0456 unauthorized usb:1-2 transport_id:2\n",
+                ));
+                let ip = |n| std::net::Ipv4Addr::new(192, 168, 178, n);
+                self.quest_found = vec![
+                    Found {
+                        ip: ip(45),
+                        api: false,
+                        adb: true,
+                    },
+                    Found {
+                        ip: ip(61),
+                        api: true,
+                        adb: true,
+                    },
+                    Found {
+                        ip: ip(77),
+                        api: false,
+                        adb: true,
+                    },
+                ];
+                self.quest_mdns = vec![Mdns {
+                    name: "adb-340YC10G9X0789-AbCdEf".into(),
+                    addr: std::net::SocketAddrV4::new(ip(90), 37199),
+                }];
+            }
+            Some(SnapVariant::QuestNotOffered) => {
+                self.platform = Platform::Quest;
+                self.state.launcher_channel = update_check::Channel::Beta;
+                setup::quest_not_offered(self);
+            }
             Some(SnapVariant::QuestFresh) => {
                 self.platform = Platform::Quest;
                 if let Some(i) = &mut self.quest_info {
-                    i.installed = false;
-                    i.marker = None;
+                    (i.installed, i.version_code, i.nevr) = (false, None, None);
                 }
             }
             // Set up with the plugin list above.
@@ -2659,21 +2667,8 @@ impl Dashboard {
                     self.catalog_loading = false;
                 }
                 Msg::JobStep(id, step) => {
-                    // Discord answered (the job moved on): the browser dialog has done its part.
-                    if self.browser_job.as_deref() == Some(id.as_str())
-                        && !matches!(step, Step::Browser(_))
-                    {
-                        self.browser_job = None;
-                        self.dialogs.dismiss(BROWSER_KEY);
-                    }
                     if let Some(j) = self.jobs.get_mut(&id) {
                         match step {
-                            Step::Browser(url) => {
-                                j.label = "Waiting for Discord in your browser...".into();
-                                let (title, body) = browser_dialog(&id);
-                                self.dialogs.browser(BROWSER_KEY, title, &body, &url);
-                                self.browser_job = Some(id.clone());
-                            }
                             Step::Status(s) => {
                                 // The downloader reports progress as "12.34%" status lines too.
                                 j.fraction = s
@@ -2698,10 +2693,6 @@ impl Dashboard {
                     }
                 }
                 Msg::JobDone(id, r) => {
-                    if self.browser_job.as_deref() == Some(id.as_str()) {
-                        self.browser_job = None;
-                        self.dialogs.dismiss(BROWSER_KEY);
-                    }
                     let job = self.jobs.remove(&id);
                     let kind = job.as_ref().map(|j| j.kind);
                     self.job_done(ctx, &id, kind, job.map(|j| j.title), r);
@@ -2720,9 +2711,16 @@ impl Dashboard {
                                     self.enable_quest_network(ctx, ip);
                                 }
                             }
-                            if i.installed {
-                                self.quest_was_patched =
-                                    i.marker.as_ref().is_some_and(|m| m.patched);
+                            // A newer nEVR build for it: said once a run.
+                            if let Some(v) = i.update_offered() {
+                                if self.quest_offer_told.as_deref() != Some(v) {
+                                    self.quest_offer_told = Some(v.to_string());
+                                    self.notify_with(
+                                        &format!("nEVR {v} is out for your Quest"),
+                                        "Update",
+                                        notices::Action::UpdateQuest,
+                                    );
+                                }
                             }
                             self.quest_info = Some(i)
                         }
@@ -2730,6 +2728,19 @@ impl Dashboard {
                             self.quest_info = None;
                             self.dialogs.error_ui(&e);
                         }
+                    }
+                }
+                Msg::QuestConnected(r) => {
+                    self.quest_busy = false;
+                    match r {
+                        Ok(serial) => {
+                            crate::core::adb::set_preferred(&serial);
+                            if let Ok(a) = serial.parse::<std::net::SocketAddrV4>() {
+                                self.set_quest_ip(Some(*a.ip()));
+                            }
+                            self.check_quest(ctx, true);
+                        }
+                        Err(e) => self.dialogs.error_ui(&e),
                     }
                 }
                 Msg::QuestAction(r) => {
@@ -2792,15 +2803,38 @@ impl Dashboard {
                         self.quest_scan = Some(p);
                     }
                 }
-                Msg::QuestScanDone(found) => {
+                Msg::QuestScanDone(found, mdns, quiet) => {
                     self.quest_scan = None;
-                    match found.first() {
-                        Some(f) => {
-                            self.set_quest_ip(Some(f.ip));
+                    (self.quest_found, self.quest_mdns) = (found, mdns);
+                    // Only the network's finds: adb's own are listed anyway.
+                    let net: Vec<_> = self
+                        .quest_list()
+                        .0
+                        .into_iter()
+                        .filter(|f| f.serial.is_none())
+                        .collect();
+                    match &net[..] {
+                        [] if quiet => {}
+                        [f] => {
+                            if let Some(ip) =
+                                f.ip.filter(|_| f.quest_like || self.quest_ip().is_none())
+                            {
+                                self.set_quest_ip(Some(ip));
+                            }
                             let what = if f.api { "Echo VR's API" } else { "ADB" };
-                            self.notify(&format!("Found your Quest at {} ({what})", f.ip));
+                            if !quiet {
+                                self.notify(&format!("Found a headset at {} ({what})", f.label));
+                            }
                         }
-                        None => self.dialogs.info(
+                        [_, ..] => {
+                            if !quiet {
+                                self.notify(&format!(
+                                    "Found {} devices on your network: pick yours under Headsets",
+                                    net.len()
+                                ));
+                            }
+                        }
+                        [] => self.dialogs.info(
                             "No Quest found",
                             "Nothing on your network answered as a Quest.\n\n\
                              The scan finds it while Echo VR runs with API access on, or \
@@ -2930,23 +2964,10 @@ impl Dashboard {
                 }
             }
         }
-        if self.dialogs.take(BROWSER_KEY).is_some() {
-            if let Some(id) = self.browser_job.take() {
-                tracing::info!("job {id}: browser wait cancelled by the player");
-                self.cancel_job(&id);
-            }
-        }
         if let Some(a) = self.dialogs.take(setup::CONSENT_KEY) {
             if let Some(tx) = self.consent.take() {
                 let _ = tx.send(a.is_yes());
             }
-        }
-        if self
-            .dialogs
-            .take(setup::JOIN_KEY)
-            .is_some_and(|a| a.is_yes())
-        {
-            crate::core::platform::open_url(crate::core::oauth::PATCHER_INVITE);
         }
         self.quest_conn.poll(&mut self.dialogs);
         if let Some(n) = self.vrce.tick(ctx, self.demo) {
@@ -2985,14 +3006,6 @@ impl Dashboard {
         self.check_updates(ctx);
         self.check_catalogs(ctx);
         // Read the headset's version once it is connected.
-        // A reinstall asks the install's questions again.
-        if self
-            .dialogs
-            .take(setup::QUEST_REINSTALL_KEY)
-            .is_some_and(|a| a.is_yes())
-        {
-            setup::ask_quest_install(self, false);
-        }
         let ready = self.quest_conn.status == Some(Status::Ready);
         // Probing while a Quest job runs would trip over its adb restarts.
         let quest_job = self.jobs.contains_key(setup::QUEST_JOB);
@@ -3007,34 +3020,6 @@ impl Dashboard {
     }
 
     /// Shows `text` in the status bar for a few seconds.
-    /// "Quest support is coming soon" above the switch's Quest side, fading out.
-    fn quest_soon(&mut self, kit: &mut Kit, ctx: &egui::Context) {
-        let Some((at, since)) = self.quest_soon else {
-            return;
-        };
-        let age = since.elapsed();
-        if age >= QUEST_SOON_FOR {
-            self.quest_soon = None;
-            return;
-        }
-        ctx.request_repaint();
-        let fade = (QUEST_SOON_FOR - age).as_secs_f32().min(0.4) / 0.4;
-        let g = kit.spaced_galley(
-            "QUEST SUPPORT IS COMING SOON",
-            design::din(13.0),
-            design::TEXT.gamma_multiply(fade),
-            dz(0.5),
-            false,
-        );
-        let pad = egui::vec2(dz(14.0), dz(9.0));
-        let size = g.size() + pad * 2.0;
-        let min = egui::pos2(at.center().x - size.x / 2.0, at.top() - size.y - dz(10.0));
-        let r = egui::Rect::from_min_size(min, size);
-        let p = kit.ui.painter();
-        p.rect_filled(r, dz(6.0), design::BLUE.gamma_multiply(fade));
-        p.galley(r.min + pad, g, design::TEXT);
-    }
-
     fn notify(&mut self, text: &str) {
         self.notices.push(notices::Notice::info(text));
     }
@@ -3078,18 +3063,7 @@ impl Dashboard {
                     e.message.replace('\n', " ")
                 )
             }
-            JobResult::OAuthFailed(e) => {
-                tracing::warn!("job {id}: Discord authorization failed: {e:?}")
-            }
             _ => tracing::info!("job {id}: done"),
-        }
-        // A patch that didn't go in: PLAY doesn't wait for it any more.
-        if kind == Some(JobKind::Patch) && !matches!(r, JobResult::Patched) {
-            self.play_after_patch = None;
-        }
-        // A new player's patch: gone with its fetch, or with its version's install.
-        if id == setup::LICENCE_JOB && !matches!(r, JobResult::LicenceFetched(_)) {
-            self.pending_patch = None;
         }
         let install_failed = matches!(kind, Some(JobKind::Install | JobKind::Reinstall))
             && matches!(r, JobResult::Failed(_));
@@ -3103,10 +3077,6 @@ impl Dashboard {
                     .or_else(|| self.state.versions.first().map(|v| v.id.clone()));
                 self.save();
             }
-        }
-        if install_failed && self.pending_patch.as_ref().is_some_and(|p| p.version == id) {
-            self.pending_patch = None;
-            self.cancel_job(setup::LICENCE_JOB);
         }
         if id == setup::QUEST_JOB {
             // Read the headset again once the job is over.
@@ -3152,8 +3122,6 @@ impl Dashboard {
                 // What its update replaced (or the history) can be gone back to now.
                 goback::refresh(self, ctx);
                 self.check_slot_soon(ctx, &installed);
-                // A new player's patch goes in now, if it is already here.
-                setup::apply_pending(self, ctx);
                 if update_failed.is_none() {
                     self.update_note.remove(id);
                 }
@@ -3197,7 +3165,6 @@ impl Dashboard {
                 self.save();
                 goback::refresh(self, ctx);
                 self.check_slot_soon(ctx, id);
-                setup::apply_pending(self, ctx);
                 if r.update_failed.is_none() {
                     self.update_note.remove(id);
                 }
@@ -3220,7 +3187,9 @@ impl Dashboard {
                         );
                     }
                     (None, 0) => self.notify(&format!("{name}: every game file was intact")),
-                    (None, 1) => self.notify(&format!("{name}: 1 broken game file was fetched again")),
+                    (None, 1) => {
+                        self.notify(&format!("{name}: 1 broken game file was fetched again"))
+                    }
                     (None, n) => {
                         self.notify(&format!("{name}: {n} broken game files were fetched again"))
                     }
@@ -3255,46 +3224,6 @@ impl Dashboard {
                 msg.push_str("\n\nRepair them now?");
                 versions::ask_repair(self, id, !v.game.is_empty(), &msg);
             }
-            JobResult::Patched => {
-                if let Some(v) = self.state.versions.iter_mut().find(|v| v.id == id) {
-                    v.patched = true;
-                }
-                self.save();
-                match self.play_after_patch.take() {
-                    Some((patched, lobby)) if patched == id => {
-                        self.notify("Your licence patch is in place: starting Echo VR");
-                        play::try_start(self, ctx, lobby);
-                    }
-                    _ => self.notify("Your licence patch is in place. Have fun!"),
-                }
-            }
-            JobResult::LicenceFetched(dll) => {
-                if let Some(p) = &mut self.pending_patch {
-                    p.dll = Some(dll);
-                    setup::apply_pending(self, ctx);
-                }
-            }
-            JobResult::Unpatched => {
-                if let Some(v) = self.state.versions.iter_mut().find(|v| v.id == id) {
-                    v.patched = false;
-                }
-                self.save();
-                self.notify("The licence patch is removed: the original pnsovr.dll is back");
-            }
-            JobResult::OAuthFailed(e) => {
-                use crate::core::oauth::OAuthError;
-                match (&e, e.dialog()) {
-                    (OAuthError::NotInGuild(_), Some((title, msg))) => self.dialogs.options(
-                        setup::JOIN_KEY,
-                        title,
-                        &msg,
-                        crate::ui::dialogs::Icon::Info,
-                        &["Join Server", "Close"],
-                    ),
-                    (_, Some((title, msg))) => self.dialogs.error(title, &msg, Default::default()),
-                    (_, None) => {}
-                }
-            }
             JobResult::Uninstalled(o) => settings::uninstalled(self, o),
             JobResult::Removed(id) => {
                 if let Some(v) = self.state.version(&id).cloned() {
@@ -3316,7 +3245,9 @@ impl Dashboard {
                 let echoxr = crate::core::launcher::store::SteamVrVia::EchoXr;
                 if !cfg!(target_os = "linux") && self.state.profile.steamvr_via != echoxr {
                     self.state.profile.steamvr_via = echoxr;
-                    self.notify("EchoXR Hands is installed, and EchoXR is on: hand tracking needs it");
+                    self.notify(
+                        "EchoXR Hands is installed, and EchoXR is on: hand tracking needs it",
+                    );
                 } else {
                     self.notify("EchoXR Hands is installed: it plays along through EchoXR");
                 }
@@ -3409,24 +3340,18 @@ impl Dashboard {
             JobResult::LibraryEntry(false) => {
                 self.notify("Echo VR is out of SteamVR's library (restart SteamVR to see it)")
             }
-            JobResult::QuestInstalled(crate::core::launcher::quest::Installed::UpToDate) => {
-                self.notify("Echo VR is installed on your Quest and up to date")
+            JobResult::Quest(o) => {
+                use crate::core::launcher::quest::Outcome;
+                match o {
+                    Outcome::Installed(v) => {
+                        self.notify(&format!("nEVR {v} is on your Quest. Have fun!"))
+                    }
+                    Outcome::UpToDate(v) => {
+                        self.notify(&format!("Your Quest has nEVR {v}, the latest"))
+                    }
+                    Outcome::NotOffered => setup::quest_not_offered(self),
+                }
             }
-            JobResult::QuestInstalled(crate::core::launcher::quest::Installed::NotChecked) => {
-                self.notify_with(
-                    "Echo VR is on your Quest, but the update server couldn't be reached: it may not be the latest",
-                    "Try again",
-                    notices::Action::UpdateQuest,
-                )
-            }
-            JobResult::QuestUpdated => self.notify("Your Quest has the latest update"),
-            JobResult::QuestNeedsReinstall(detail) => self.dialogs.options(
-                setup::QUEST_REINSTALL_KEY,
-                "Echo VR version mismatch",
-                &format!("{detail}\n\nReinstall Echo VR on your Quest to continue."),
-                crate::ui::dialogs::Icon::Warning,
-                &["Reinstall Echo VR", "Cancel"],
-            ),
             JobResult::Failed(None) => {
                 if let Some(t) = title {
                     self.notify(&format!("Cancelled: {t}"));
@@ -3480,10 +3405,8 @@ impl Dashboard {
             Job {
                 kind,
                 res,
-                cancellable: !matches!(
-                    kind,
-                    JobKind::Unpatch | JobKind::Uninstall | JobKind::Remove
-                ) && id != setup::LIBRARY_JOB,
+                cancellable: !matches!(kind, JobKind::Uninstall | JobKind::Remove)
+                    && id != setup::LIBRARY_JOB,
                 title: title.to_string(),
                 label: label.to_string(),
                 fraction: None,
@@ -3509,13 +3432,10 @@ impl Dashboard {
         !self.jobs.is_empty()
     }
 
-    /// The running jobs, the one to name first: real work before a licence patch waiting
-    /// for its version, then by title (the map's order changes).
+    /// The running jobs, by title (the map's order changes).
     fn jobs_in_order(&self) -> Vec<&Job> {
         let mut jobs: Vec<&Job> = self.jobs.values().collect();
-        jobs.sort_by(|a, b| {
-            (a.kind == JobKind::Licence, &a.title).cmp(&(b.kind == JobKind::Licence, &b.title))
-        });
+        jobs.sort_by(|a, b| a.title.cmp(&b.title));
         jobs
     }
 
@@ -3593,7 +3513,6 @@ impl Dashboard {
         if !(self.page == Page::EchoVrce && echovrce::fills_page(self)) {
             self.top_bar(kit, &ctx);
         }
-        self.quest_soon(kit, &ctx);
         kit.origin.x -= shift;
         kit.ex += shift;
         self.rail(kit, &ctx, shift);
@@ -4275,11 +4194,9 @@ impl Dashboard {
             return ("PCVR: installing", design::BLUE);
         }
         match self.target() {
-            Target::Installed(v) => {
+            Target::Installed(_) => {
                 let needs_steamvr = self.steamvr_missing();
-                if setup::needs_patch(self, &v) {
-                    ("PCVR: needs the patch", design::QUEST_WARN)
-                } else if needs_steamvr && self.state.profile.runtime == Runtime::VirtualDesktop {
+                if needs_steamvr && self.state.profile.runtime == Runtime::VirtualDesktop {
                     ("PCVR: set up EchoXR", design::QUEST_WARN)
                 } else if needs_steamvr {
                     ("PCVR: set up SteamVR", design::QUEST_WARN)
@@ -4756,7 +4673,7 @@ impl Dashboard {
             Action::Play(id) => play::play_version(self, ctx, &id),
             Action::RestartGame => play::restart(self),
             Action::FixSteamEntry => setup::windows_steam(self, ctx, true),
-            Action::UpdateQuest => setup::quest_update(self, ctx),
+            Action::UpdateQuest => setup::quest_install(self, ctx),
             Action::SteamVrLibrary => setup::steamvr_library(self, ctx, true),
             Action::OpenUrl(url) => crate::core::platform::open_url(&url),
             Action::JoinInvite(id) => servers::join_invite(self, ctx, &id),
@@ -4765,23 +4682,6 @@ impl Dashboard {
 }
 
 /// The "continue in your browser" dialog while a job waits on Discord's authorization.
-const BROWSER_KEY: &str = "browser-wait";
-
-/// What that dialog says, for job `id`: why the page opened and what to do there.
-fn browser_dialog(id: &str) -> (&'static str, String) {
-    let what = if id == setup::QUEST_JOB {
-        "a patched Echo VR for your Quest"
-    } else {
-        "your personal licence patch, which new players need to play Echo VR on PC"
-    };
-    (
-        "Continue in your browser",
-        format!(
-            "Discord's authorization page just opened in your browser. The Echo VR Patcher bot uses it to build {what} for your Discord account.\n\nAuthorize it there (you need to be a member of its Discord server), then come back here: the launcher picks it up by itself.\n\nNo page in your browser? Open it again, or copy the link into your browser yourself."
-        ),
-    )
-}
-
 /// A centred card for pages that are not built yet.
 fn empty_state(kit: &mut Kit, icon: Icon, title: &str, text: &str) {
     let (x, y, w, h) = empty_panel(kit, icon, title, text);
@@ -5108,9 +5008,8 @@ mod tests {
     #[test]
     fn a_download_holds_only_its_version() {
         let install_beta = [v("pc-beta")];
-        // The live build can be updated, patched and modded meanwhile.
+        // The live build can be updated and modded meanwhile.
         assert!(!clash(&install_beta, &[v("pc-latest")]));
-        assert!(!clash(&install_beta, &[v("pc-latest"), Res::Licence]));
         assert!(!clash(&install_beta, &[v("pc-latest"), Res::Mods]));
         // ...but not the version being installed.
         assert!(clash(&install_beta, &[v("pc-beta"), Res::Mods]));
@@ -5137,6 +5036,5 @@ mod tests {
     fn the_launcher_update_and_uninstall_wait_for_everything() {
         assert!(clash(&[Res::All], &[Res::Quest]));
         assert!(clash(&[v("pc-beta")], &[Res::All]));
-        assert!(clash(&[Res::Licence], &[Res::All]));
     }
 }

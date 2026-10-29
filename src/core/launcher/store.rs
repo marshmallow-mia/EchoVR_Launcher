@@ -135,8 +135,6 @@ pub struct InstalledVersion {
     pub catalog_id: Option<String>,
     pub update_manifest: Option<String>,
     pub installed_at: Option<String>,
-    /// The licence patch (`pnsovr.dll`) is applied; updates leave that file alone.
-    pub patched: bool,
     /// The executable's file name when it isn't `echovr.exe` (the 2017 builds'
     /// `EchoArena.exe`).
     pub exe: Option<String>,
@@ -158,7 +156,7 @@ impl InstalledVersion {
         paths::exe_in(&self.root, self.exe_name())
     }
 
-    /// The folder holding its executable, where updates and the licence patch go.
+    /// The folder holding its executable, where updates go.
     pub fn bin_dir(&self) -> PathBuf {
         let exe = self.exe_path();
         exe.parent().map(Path::to_path_buf).unwrap_or(exe)
@@ -188,9 +186,6 @@ pub struct LauncherState {
     /// `https://{release,files}.echovr.de/updates-*/update.manifest`. `None`: the live one.
     /// `ECHOVR_UPDATE_MANIFEST` comes first.
     pub update_manifest: Option<String>,
-    /// Owns Echo VR on a Meta account (`Some(false)`: a new player, who needs the
-    /// licence patch). `None` until asked: at an install, or a version's first PLAY.
-    pub owner: Option<bool>,
     /// SteamVR setup also installs the game artwork for the SteamVR library.
     pub revive_artwork: bool,
     /// SteamVR setup also puts Echo VR into SteamVR's library.
@@ -383,7 +378,6 @@ impl Default for LauncherState {
             imported: false,
             minimize_on_launch: true,
             update_manifest: None,
-            owner: None,
             revive_artwork: true,
             revive_library: true,
             show_launch_options: false,

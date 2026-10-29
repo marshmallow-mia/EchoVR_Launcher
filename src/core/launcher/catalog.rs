@@ -26,8 +26,7 @@
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
-use super::quest;
-use crate::core::{pc_update, quest_update};
+use crate::core::pc_update;
 
 pub const CATALOG_URL: &str = "https://release.echovr.de/launcher/versions.json";
 /// The live PC build's file manifest (its zip is `pc.zip`; on files.echovr.de it is also
@@ -343,17 +342,6 @@ impl Catalog {
                         lock: "rad15_summer",
                     },
                 ),
-                VersionEntry {
-                    id: "quest-latest".into(),
-                    name: "Echo VR (Quest, latest)".into(),
-                    channel: "stable".into(),
-                    platform: Platform::Quest,
-                    url: quest::FALLBACK_APK.into(),
-                    data_url: Some("_data.zip".into()),
-                    update_manifest: Some(quest_update::QUEST_MANIFEST_URL.into()),
-                    notes: "Installed over USB from the Quest side of Play.".into(),
-                    ..Default::default()
-                },
             ],
         }
     }

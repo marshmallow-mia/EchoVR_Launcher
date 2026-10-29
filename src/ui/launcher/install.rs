@@ -111,9 +111,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 }
             }
         }
-        if let Some(r) = hero::switch(k, "hero-switch", extra, &mut d.platform) {
-            d.quest_soon = Some((r, std::time::Instant::now()));
-        }
+        hero::switch(k, "hero-switch", extra, &mut d.platform);
     });
 
     match d.platform {
@@ -146,7 +144,6 @@ enum SideAct {
     ChangeFolder,
     UpdatePc(Box<InstalledVersion>),
     Help(&'static str),
-    QuestLink,
     QuestCheck,
     QuestUpdate,
     Nothing,
@@ -457,13 +454,13 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
     });
     h.name = hero_name("Echo VR (Quest)", h.logo);
     h.notes =
-        "Installed over USB. The headset holds one version; updates only copy what changed.".into();
+        "nEVR's signed Echo VR, over USB or Wi-Fi. The headset holds one version; the game data is copied only when it is missing.".into();
     h.line.parts = play::quest_info(d);
     let busy_tip = quest_job.unwrap_or_else(|| "Wait a moment".into());
     if !ready {
         (h.face, h.main) = (Face::Label("CONNECT"), Main::QuestConnect);
         h.enabled = !d.quest_conn.checking && !d.quest_busy;
-        h.tip = "Look for your Quest over USB".into();
+        h.tip = "Look for your Quest over USB or Wi-Fi".into();
         let url = if status == Some(Status::Unauthorized) {
             USB_DEBUGGING_URL
         } else {
@@ -483,34 +480,19 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
         h.tip = if busy {
             busy_tip.clone()
         } else {
-            "Download Echo VR and install it on your Quest".into()
+            "Download nEVR's Echo VR and install it on your Quest".into()
         };
-        // New players may have a patched build's link already.
-        if d.state.owner == Some(false) {
-            h.side = Side::Blue {
-                icon: Icon::Download,
-                label: "From a link",
-                ready: false,
-            };
-            (h.side_act, h.side_enabled) = (SideAct::QuestLink, !busy);
-            h.side_tip = if busy {
-                busy_tip
-            } else {
-                "Install a patched build from a link you already have".into()
-            };
+        h.side = Side::Blue {
+            icon: Icon::Refresh,
+            label: "Check again",
+            ready: false,
+        };
+        (h.side_act, h.side_enabled) = (SideAct::QuestCheck, !busy);
+        h.side_tip = if busy {
+            busy_tip
         } else {
-            h.side = Side::Blue {
-                icon: Icon::Refresh,
-                label: "Check again",
-                ready: false,
-            };
-            (h.side_act, h.side_enabled) = (SideAct::QuestCheck, !busy);
-            h.side_tip = if busy {
-                busy_tip
-            } else {
-                "Look at the headset again".into()
-            };
-        }
+            "Look at the headset again".into()
+        };
     } else {
         (h.face, h.main, h.enabled) = (Face::Label("PLAY"), Main::QuestPlay, !busy);
         h.tip = if busy {
@@ -518,11 +500,15 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
         } else {
             "Start Echo VR on your Quest".into()
         };
+        let offered = d.quest_info.as_ref().and_then(|i| i.update_offered());
+        h.side = Side::Updates {
+            alert: offered.is_some(),
+        };
         (h.side_act, h.side_enabled) = (SideAct::QuestUpdate, !busy);
-        h.side_tip = if busy {
-            busy_tip
-        } else {
-            "Copy the latest game files to your Quest".into()
+        h.side_tip = match (busy, offered) {
+            (true, _) => busy_tip,
+            (false, Some(v)) => format!("Update to nEVR {v}"),
+            (false, None) => "Check for a newer nEVR build for your Quest".into(),
         };
     }
     h.show_job(hero::job_view(d, setup::QUEST_JOB));
@@ -535,7 +521,7 @@ fn do_main(d: &mut Dashboard, ctx: &egui::Context, main: Main) {
             setup::ask_install(d, *e);
         }
         Main::QuestConnect => d.check_quest(ctx, true),
-        Main::QuestInstall => setup::ask_quest_install(d, false),
+        Main::QuestInstall => setup::ask_quest_install(d),
         Main::QuestPlay => play::play_quest(d, ctx),
         Main::Nothing => {}
     }
@@ -546,9 +532,8 @@ fn do_side(d: &mut Dashboard, ctx: &egui::Context, act: SideAct) {
         SideAct::ChangeFolder => hero::choose_library(d),
         SideAct::UpdatePc(v) => versions::update(d, ctx, *v),
         SideAct::Help(url) => platform::open_url(url),
-        SideAct::QuestLink => setup::ask_quest_install(d, true),
         SideAct::QuestCheck => d.check_quest(ctx, true),
-        SideAct::QuestUpdate => setup::quest_update(d, ctx),
+        SideAct::QuestUpdate => setup::quest_install(d, ctx),
         SideAct::Nothing => {}
     }
 }
@@ -751,8 +736,8 @@ fn how_it_works(kit: &mut Kit, r: Dr) {
         y,
         w,
         "1 · Turn on developer mode for your Quest in the Meta Horizon app.\n\n\
-         2 · Plug the Quest into this PC by USB and allow USB debugging in the headset.\n\n\
-         3 · Press INSTALL. Echo VR downloads and goes straight onto the headset.",
+         2 · Plug the Quest into this PC by USB and allow USB debugging in the headset. With ADB over the network on (or a headset Find lists), Wi-Fi does it too.\n\n\
+         3 · Press INSTALL. nEVR's Echo VR downloads and goes straight onto the headset.",
         15.8,
         design::TEXT,
         dz(18.0),

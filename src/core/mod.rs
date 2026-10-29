@@ -1,4 +1,4 @@
-//! Everything that is not UI: downloads, adb, updates, OAuth, OS integration.
+//! Everything that is not UI: downloads, adb, updates, OS integration.
 
 pub mod adb;
 pub mod cache;
@@ -17,14 +17,12 @@ pub mod log;
 pub mod logs;
 pub mod manifest;
 pub mod nevr_release;
-pub mod oauth;
 pub mod paths;
 pub mod pc_update;
 pub mod platform;
 pub mod plugin_host;
 pub mod process;
 pub mod quest_install;
-pub mod quest_update;
 pub mod remote_zip;
 pub mod revive;
 pub mod semver;

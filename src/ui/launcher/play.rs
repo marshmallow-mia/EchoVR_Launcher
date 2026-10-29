@@ -76,7 +76,7 @@ const CAPTION_ASCENT: f32 = 0.2;
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     // Look for a headset quietly once, so the Quest chip has something to say.
-    if super::QUEST && !d.quest_auto_checked && !d.demo && !kit.ghost {
+    if !d.quest_auto_checked && !d.demo && !kit.ghost {
         d.quest_auto_checked = true;
         if d.quest_conn.status.is_none() && !d.quest_conn.checking {
             d.check_quest(ctx, false);
@@ -105,9 +105,7 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         None => buttons(d, kit, ctx, a),
     }
-    if let Some(r) = hero::switch(kit, "side", 0.0, &mut d.platform) {
-        d.quest_soon = Some((r, std::time::Instant::now()));
-    }
+    hero::switch(kit, "side", 0.0, &mut d.platform);
     if d.platform == Platform::Pc {
         version_picker(d, kit);
     }
@@ -223,7 +221,6 @@ enum Main {
     Stop,
     /// Closes the other build PLAY started, then plays this one.
     SwitchTo,
-    Patch(String),
     /// PLAY, after installing Revive (SteamVR on Windows).
     PrepareRevive,
     /// PLAY, after putting EchoXR into the game's folder (SteamVR on Windows).
@@ -409,8 +406,6 @@ fn pc_action(d: &mut Dashboard) -> Action {
                 "Running"
             } else if ours {
                 "Starting"
-            } else if setup::needs_patch(d, &v) {
-                "Needs the licence patch"
             } else if needs_steamvr && vd {
                 "EchoXR is not set up"
             } else if needs_steamvr {
@@ -464,11 +459,6 @@ fn pc_action(d: &mut Dashboard) -> Action {
                         "{o} is running (started outside the launcher): close it first to play this one"
                     );
                 }
-            } else if setup::needs_patch(d, &v) {
-                (a.label, a.main) = ("PATCH", Main::Patch(v.id.clone()));
-                a.tip =
-                    "New players need a personal licence patch: get yours through Discord".into();
-                a.wait_for(d, &[Res::Version(v.id.clone()), Res::Licence]);
             } else if needs_steamvr && echoxr {
                 a.main = Main::PrepareEchoXr;
                 a.tip = if vd {
@@ -619,15 +609,19 @@ fn quest_action(d: &mut Dashboard) -> Action {
         a.label = "CONNECT";
         a.main = Main::QuestConnect;
         a.enabled = !d.quest_conn.checking && !d.quest_busy;
-        a.tip = "Look for your Quest over USB".into();
+        a.tip = "Look for your Quest over USB or Wi-Fi".into();
     }
+    let offered = d.quest_info.as_ref().and_then(|i| i.update_offered());
     a.update = Update::Quest;
     a.update_enabled = installed && !busy;
     a.update_busy = quest_busy;
-    a.update_tip = "Copy the latest game files to your Quest".into();
+    a.update_tip = match offered {
+        Some(v) => format!("Update to nEVR {v}: install the newer build on your Quest"),
+        None => "Check for a newer nEVR build for your Quest".into(),
+    };
     // A launcher update comes along (after the Quest's).
-    a.update_ready = d.launcher_ready();
-    if a.update_ready && a.update_enabled {
+    a.update_ready = offered.is_some() || d.launcher_ready();
+    if d.launcher_ready() && a.update_enabled {
         a.update_tip = format!("{}, then {}", a.update_tip, ready_tip(d, false, 0, true));
     }
     a
@@ -664,7 +658,7 @@ fn ready_tip(d: &Dashboard, game: bool, plugins: usize, launcher: bool) -> Strin
 pub(super) fn quest_info(d: &Dashboard) -> Vec<String> {
     let device = d.quest_info.as_ref().and_then(|i| i.device.clone());
     match (d.quest_conn.checking, d.quest_conn.status) {
-        (true, _) => vec!["Looking for your headset over USB".into()],
+        (true, _) => vec!["Looking for your headset".into()],
         (_, Some(Status::Ready)) => {
             let mut parts = match &d.quest_info {
                 Some(i) if i.installed => vec!["Installed".into(), i.version_label()],
@@ -698,15 +692,10 @@ pub(super) fn job_state(job: &JobView) -> String {
         JobKind::Reinstall => "Repairing".into(),
         JobKind::Update => "Updating".into(),
         JobKind::Verify => "Checking files".into(),
-        JobKind::Patch => "Patching".into(),
-        JobKind::Unpatch => "Removing the patch".into(),
-        JobKind::Licence => "Licence patch".into(),
         JobKind::Uninstall => "Uninstalling".into(),
         JobKind::Remove => "Removing".into(),
         JobKind::GoBack => "Undoing update".into(),
-        JobKind::Revive | JobKind::QuestUpdate | JobKind::Mods | JobKind::LauncherUpdate => {
-            job.title.clone()
-        }
+        JobKind::Revive | JobKind::Mods | JobKind::LauncherUpdate => job.title.clone(),
     }
 }
 
@@ -754,10 +743,6 @@ fn press_play(d: &mut Dashboard, ctx: &egui::Context, main: Main) {
         Main::SwitchTo => {
             stop(d);
             d.play_when_closed = Some(std::time::Instant::now());
-        }
-        Main::Patch(id) => {
-            d.play_after_patch = Some((id.clone(), None));
-            d.overlay = Some(setup::licence(&id));
         }
         Main::PrepareRevive => {
             d.pending_lobby = None;
@@ -826,11 +811,7 @@ pub(super) fn play_version(d: &mut Dashboard, ctx: &egui::Context, id: &str) {
     let main = pc_action(d).main;
     if matches!(
         main,
-        Main::Play
-            | Main::Patch(_)
-            | Main::PrepareRevive
-            | Main::PrepareEchoXr
-            | Main::PrepareLinux
+        Main::Play | Main::PrepareRevive | Main::PrepareEchoXr | Main::PrepareLinux
     ) {
         press_play(d, ctx, main);
     }
@@ -861,7 +842,7 @@ fn run_update(d: &mut Dashboard, ctx: &egui::Context, update: Update) {
             d.queue_updates(ctx, plugins.into_iter().chain(launcher).collect());
         }
         Update::Quest => {
-            setup::quest_update(d, ctx);
+            setup::quest_install(d, ctx);
             d.queue_updates(ctx, launcher.into_iter().collect());
         }
         Update::Nothing => {}
@@ -1323,7 +1304,7 @@ fn cards(
     let main = main.unwrap_or_else(|| {
         text(
             "Welcome",
-            "Your launcher for Echo VR on PC (Quest is coming soon).\n\n\
+            "Your launcher for Echo VR on PC and Quest.\n\n\
              - Install, update and play from one place\n\
              - Friends, servers and matches to join, on the left\n\
              - Server status and this week's best on the right\n\n\
@@ -1484,11 +1465,6 @@ pub(super) fn join(d: &mut Dashboard, ctx: &egui::Context, lobby: Join) {
             }
         }
         Main::Play => try_start(d, ctx, Some(lobby)),
-        Main::Patch(id) => {
-            d.notify("Your licence patch first: Echo VR joins once it's in");
-            d.play_after_patch = Some((id.clone(), Some(lobby)));
-            d.overlay = Some(setup::licence(&id));
-        }
         Main::PrepareRevive => prepare(d, ctx, setup::REVIVE_JOB, setup::revive),
         Main::PrepareEchoXr => prepare(d, ctx, setup::ECHOXR_JOB, setup::echoxr_windows),
         Main::PrepareLinux if setup::linux_needs_shortcut() => {
@@ -1606,13 +1582,6 @@ pub(super) fn try_start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Jo
                 return;
             }
         }
-    }
-    // A version not installed here: the licence question first, once.
-    let unpatched = matches!(d.target(), Target::Installed(v) if !v.patched);
-    if d.state.owner.is_none() && unpatched && !d.demo {
-        d.pending_lobby = lobby;
-        d.overlay = Some(setup::Overlay::Owner);
-        return;
     }
     match launch::preflight(&d.state.profile) {
         Some(w) => {
@@ -2154,8 +2123,6 @@ mod tests {
         let mut d = Dashboard::default();
         d.state.selected = Some(v.id.clone());
         d.state.versions = vec![v];
-        // A new player not asked yet: a start stops at that question, before the game.
-        d.state.owner = None;
         d.platform = Platform::Pc;
         (d, egui::Context::default())
     }
@@ -2175,13 +2142,13 @@ mod tests {
         try_start(&mut d, &ctx, None);
         assert_eq!(d.dialogs.open_keys(), vec![PACK_DATA_PLAY]);
 
-        // Play without it: the start goes on (to the licence question here), and isn't
-        // asked about again this run.
+        // Play without it: the start goes on (to "Echo VR not found" here, the test
+        // folder has no game), and isn't asked about again this run.
         d.dialogs.press(PACK_DATA_PLAY, Answer::Button(1));
         answers(&mut d, &ctx);
         assert!(d.pack_play_without.contains("pc-latest"));
-        assert!(matches!(d.overlay, Some(setup::Overlay::Owner)));
-        assert!(d.dialogs.open_keys().is_empty());
+        assert!(!d.dialogs.open_keys().contains(&PACK_DATA_PLAY));
+        assert!(d.overlay.is_none());
 
         // Repair: without the catalogue read it says so instead of guessing a build.
         let (mut d, ctx) = window(dir.path(), false);
@@ -2197,7 +2164,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut d, ctx) = window(dir.path(), true);
         try_start(&mut d, &ctx, None);
-        assert!(d.dialogs.open_keys().is_empty());
-        assert!(matches!(d.overlay, Some(setup::Overlay::Owner)));
+        assert!(!d.dialogs.open_keys().contains(&PACK_DATA_PLAY));
+        assert!(d.overlay.is_none());
     }
 }

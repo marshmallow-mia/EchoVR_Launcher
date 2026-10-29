@@ -91,16 +91,6 @@
       "hosted": "event",
       "summary": "Classic lobby on the community relay",
       "publisher_lock": "rad15_summer"
-    },
-    {
-      "id": "quest-latest",
-      "name": "Echo VR (Quest, latest)",
-      "channel": "stable",
-      "platform": "quest",
-      "url": "echo_quest_27-08-2026.001.apk",
-      "data_url": "_data.zip",
-      "update_manifest": "https://release.echovr.de/quest/updates/update.manifest",
-      "notes": "Installed over USB from the Quest side of Play."
     }
   ]
 }

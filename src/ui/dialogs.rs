@@ -43,8 +43,6 @@ enum Kind {
     /// The icon, the buttons, and whether the first one deletes something.
     Message(Icon, Vec<String>, bool),
     Picker(Vec<Device>),
-    /// Waiting on the player in their browser, at this page.
-    Browser(String),
 }
 
 /// Whether Enter picks a dialog's first button: not when that deletes something (a slip
@@ -70,8 +68,6 @@ pub struct DialogHost {
 
 /// Card width, padding and the body's text size (design pixels).
 const W: f32 = 560.0;
-/// The browser dialog's card: three buttons in a row.
-const W_BROWSER: f32 = 720.0;
 const PAD: f32 = 26.0;
 const BODY: f32 = 17.0;
 const ICON: f32 = 34.0;
@@ -160,19 +156,6 @@ impl DialogHost {
         );
     }
 
-    /// Something to finish in the browser, at `url` (just opened there). Open again and
-    /// Copy link keep it up; Cancel or Escape close it with `Answer::Closed`. The screen
-    /// takes it away with [`DialogHost::dismiss`] once the wait is over.
-    pub fn browser(&mut self, key: &'static str, title: &str, message: &str, url: &str) {
-        self.dismiss(key);
-        self.push(key, title, message, Kind::Browser(url.to_string()));
-    }
-
-    /// Closes the dialog under `key`, if it is up, without an answer.
-    pub fn dismiss(&mut self, key: &'static str) {
-        self.stack.retain(|d| d.key != key);
-    }
-
     /// The dialogs up, top-most last (tests).
     #[cfg(test)]
     pub fn open_keys(&self) -> Vec<&'static str> {
@@ -223,11 +206,7 @@ fn body(k: &Kit, text: &str, w: f32) -> Vec<Arc<Galley>> {
 }
 
 fn draw(k: &mut Kit, d: &mut Dialog) -> Option<Answer> {
-    let w = dz(if matches!(d.kind, Kind::Browser(_)) {
-        W_BROWSER
-    } else {
-        W
-    });
+    let w = dz(W);
     let pad = dz(PAD);
     let text_w = w - 2.0 * pad;
     let paras = body(k, &d.message, text_w);
@@ -282,7 +261,7 @@ fn draw(k: &mut Kit, d: &mut Dialog) -> Option<Answer> {
     let (glyph, color) = match &d.kind {
         Kind::Error(_) | Kind::Message(Icon::Warning, ..) => (Glyph::Warning, design::QUEST_WARN),
         Kind::Picker(_) => (Glyph::Headset, design::BLUE),
-        Kind::Message(..) | Kind::Browser(_) => (Glyph::Info, design::BLUE),
+        Kind::Message(..) => (Glyph::Info, design::BLUE),
     };
     let ib = k.rect(x + pad, y + pad, dz(ICON), dz(ICON));
     k.ui.painter().rect_filled(ib, dz(4.0), color);
@@ -397,55 +376,6 @@ fn draw(k: &mut Kit, d: &mut Dialog) -> Option<Answer> {
         Kind::Picker(_) => k
             .button_row("dialog-btn", right, by, &["Cancel"], Tone::Dark)
             .map(|_| Answer::Closed),
-        Kind::Browser(url) => {
-            // Open again (the way on), Copy link beside it, Cancel on the right.
-            let ow = k.button_width("Open again", Some(Glyph::Globe), BTN_H);
-            if k.button(
-                "dialog-open",
-                x + pad,
-                by,
-                ow,
-                BTN_H,
-                Tone::Blue,
-                Some(Glyph::Globe),
-                "Open again",
-                true,
-                "Open the page in your browser again",
-            )
-            .clicked
-            {
-                crate::core::platform::open_url(url);
-            }
-            let copied = d
-                .copied
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(2));
-            let label = if copied { "Copied" } else { "Copy link" };
-            let cw = k.button_width("Copy link", Some(Glyph::Copy), BTN_H);
-            if k.button(
-                "dialog-copy",
-                x + pad + ow + dz(12.0),
-                by,
-                cw,
-                BTN_H,
-                Tone::Dark,
-                Some(Glyph::Copy),
-                label,
-                true,
-                "Copy the page's address, to open it in a browser yourself",
-            )
-            .clicked
-            {
-                if let Ok(mut c) = arboard::Clipboard::new() {
-                    let _ = c.set_text(url.clone());
-                    d.copied = Some(Instant::now());
-                }
-            }
-            if copied {
-                k.ui.ctx().request_repaint_after(Duration::from_millis(200));
-            }
-            k.button_row("dialog-btn", right, by, &["Cancel"], Tone::Dark)
-                .map(|_| Answer::Closed)
-        }
     }
 }
 

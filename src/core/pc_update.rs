@@ -28,15 +28,17 @@ pub const PC_MANIFEST_URL: &str = "https://release.echovr.de/updates-nevr/update
 /// replacements too, its own on top.
 pub const BETA_OVERLAY: &str = "https://release.echovr.de/updates-nevr-beta/update.manifest";
 pub const ALPHA_OVERLAY: &str = "https://release.echovr.de/updates-nevr-alpha/update.manifest";
+/// The Quest's twins of these, which name only the nEVR release whose APK goes onto the
+/// headset (`# nEVR quest:`); the same rule, the same channels.
+pub const QUEST_MANIFEST_URL: &str = "https://release.echovr.de/quest/updates-nevr/update.manifest";
+pub const QUEST_BETA_OVERLAY: &str =
+    "https://release.echovr.de/quest/updates-nevr-beta/update.manifest";
+pub const QUEST_ALPHA_OVERLAY: &str =
+    "https://release.echovr.de/quest/updates-nevr-alpha/update.manifest";
 
 /// Where the update channels were read before; installs keep such a URL.
 const FILES_UPDATES: &str = "https://files.echovr.de/updates/";
 const RELEASE_UPDATES: &str = "https://release.echovr.de/updates/";
-/// The Quest update, as installs and catalogues may have noted it before the Quest tree.
-const OLD_QUEST_MANIFESTS: [&str; 2] = [
-    "https://files.echovr.de/updates/quest/update.manifest",
-    "https://release.echovr.de/updates/quest/update.manifest",
-];
 /// The PC channel without nEVR, as installs may have noted it (either host).
 const OLD_PC_MANIFESTS: [&str; 2] = [
     "https://files.echovr.de/updates/update.manifest",
@@ -94,6 +96,51 @@ pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
         text.push_str(&channel_line(&name, &v));
     }
     Ok((m, text))
+}
+
+/// The overlays on the Quest's update for `channel`, in the order they apply.
+pub fn quest_overlays(channel: Channel) -> &'static [&'static str] {
+    match channel {
+        Channel::Main => &[],
+        Channel::Beta => &[QUEST_BETA_OVERLAY],
+        Channel::Alpha => &[QUEST_BETA_OVERLAY, QUEST_ALPHA_OVERLAY],
+    }
+}
+
+/// The nEVR release, or channel of nEVR's, whose APK the followed launcher channel puts on
+/// the Quest: main's `# nEVR quest:` line with the channel's overlays on top. `None` when
+/// none is offered there (no line, or `none`).
+pub fn quest_nevr_release() -> Result<Option<String>> {
+    let main = quest_url(QUEST_MANIFEST_URL);
+    let text = http::get_text_opt(&main)
+        .with_context(|| format!("Could not download the Quest's update ({main})"))?
+        .unwrap_or_default();
+    let channel = *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
+    let mut over = Vec::new();
+    for o in quest_overlays(channel) {
+        let t = http::get_text_opt(&quest_url(o))
+            .with_context(|| format!("Could not download the channel's Quest update ({o})"))?;
+        if let Some(t) = t {
+            over.push((*o, t));
+        }
+    }
+    let (m, _) = with_overlays(QUEST_MANIFEST_URL, &text, &over)?;
+    Ok(m.nevr_release("quest").map(str::to_string))
+}
+
+/// Debug builds: `ECHOVR_QUEST_UPDATES=<url>` reads the Quest's update folders
+/// (`<url>/updates-nevr/update.manifest`, ...) from a test server.
+fn quest_url(url: &str) -> String {
+    match std::env::var("ECHOVR_QUEST_UPDATES")
+        .ok()
+        .filter(|_| cfg!(debug_assertions))
+    {
+        Some(base) => url.replace(
+            "https://release.echovr.de/quest",
+            base.trim_end_matches('/'),
+        ),
+        None => url.to_string(),
+    }
 }
 
 /// The channel of nEVR's `m` names for this platform, when it names one and no version.
@@ -215,11 +262,9 @@ fn pick_channel(env: Option<&str>, config: Option<&str>) -> Option<(String, &'st
 /// `url`, or for the live PC update the channel [`channel_override`] names.
 pub fn manifest_for(url: &str) -> String {
     // The PC channel without nEVR: the launcher's live one now has it. Any other
-    // files.echovr.de update channel is read from the mirror; the Quest's from its tree.
+    // files.echovr.de update channel is read from the mirror.
     let moved = if OLD_PC_MANIFESTS.contains(&url) {
         Some(PC_MANIFEST_URL.to_string())
-    } else if OLD_QUEST_MANIFESTS.contains(&url) {
-        Some(super::quest_update::QUEST_MANIFEST_URL.to_string())
     } else {
         url.strip_prefix(FILES_UPDATES)
             .map(|rest| format!("{RELEASE_UPDATES}{rest}"))
@@ -278,21 +323,14 @@ pub(crate) fn is_locked(e: &std::io::Error) -> bool {
         || e.kind() == std::io::ErrorKind::PermissionDenied
 }
 
-/// True when the manifest path names one of the `skip` files (case-insensitive).
-pub fn skipped(path: &str, skip: &[&str]) -> bool {
-    skip.iter().any(|s| path.eq_ignore_ascii_case(s))
-}
-
-/// Applies the update at `manifest_url` to `bin_path`, leaving the files in `skip` alone
-/// (a licence-patched `pnsovr.dll`).
-pub fn apply_skipping(
+/// Applies the update at `manifest_url` to `bin_path`.
+pub fn apply(
     manifest_url: &str,
     bin_path: &Path,
-    skip: &[&str],
     cancel: &AtomicBool,
     status: &mut dyn FnMut(String),
 ) -> Result<()> {
-    apply_keeping(manifest_url, bin_path, skip, None, cancel, status)
+    apply_keeping(manifest_url, bin_path, None, cancel, status)
 }
 
 /// What an update put aside in its `previous` folder ([`apply_keeping`]), to go back.
@@ -323,19 +361,18 @@ impl Previous {
     }
 }
 
-/// [`apply_skipping`], keeping what it replaces or deletes in `previous` (one update back,
+/// [`apply`], keeping what it replaces or deletes in `previous` (one update back,
 /// written only when the update changes a file) so that [`go_back`] can put it back.
 pub fn apply_keeping(
     manifest_url: &str,
     bin_path: &Path,
-    skip: &[&str],
     previous: Option<&Path>,
     cancel: &AtomicBool,
     status: &mut dyn FnMut(String),
 ) -> Result<()> {
     tracing::info!("UpdateService: downloading manifest {manifest_url}");
     let (manifest, text) = fetch_manifest(manifest_url)?;
-    apply_manifest(&manifest, &text, bin_path, skip, previous, cancel, status)
+    apply_manifest(&manifest, &text, bin_path, previous, cancel, status)
 }
 
 /// [`apply_keeping`] for a manifest at hand (`text`: what it was built from, recorded as
@@ -345,7 +382,6 @@ pub fn apply_manifest(
     manifest: &Manifest,
     text: &str,
     bin_path: &Path,
-    skip: &[&str],
     previous: Option<&Path>,
     cancel: &AtomicBool,
     status: &mut dyn FnMut(String),
@@ -358,14 +394,8 @@ pub fn apply_manifest(
     // On the new layout (nEVR 6.0 on) its runtime and plugins are in its folder in the launcher's.
     let home = super::launcher::home::of_bin(bin_path);
     let at = |path: &str| super::launcher::home::at(bin_path, home.as_deref(), path);
-    let dels: Vec<_> = manifest
-        .dels()
-        .filter(|e| !skipped(&e.path, skip))
-        .collect();
-    let mut adds: Vec<_> = manifest
-        .adds()
-        .filter(|e| !skipped(&e.path, skip))
-        .collect();
+    let dels: Vec<_> = manifest.dels().collect();
+    let mut adds: Vec<_> = manifest.adds().collect();
     // nEVR's host first: where its runtime goes depends on it.
     adds.sort_by_key(|e| place_order(&e.path) != 2);
     let total = dels.len() + adds.len();
@@ -858,7 +888,6 @@ mod tests {
                 &m,
                 text,
                 &bin,
-                &[],
                 Some(&previous),
                 &AtomicBool::new(false),
                 &mut |_| {},
@@ -930,7 +959,6 @@ mod tests {
                 &m,
                 text,
                 &bin,
-                &[],
                 previous,
                 &AtomicBool::new(false),
                 &mut |_| {},
@@ -970,16 +998,8 @@ mod tests {
         let mut m = super::Manifest::parse(&older, &format!("{base}/update.manifest")).unwrap();
         let over = format!("add nevr-runtime.dll {}\n", sha(old));
         m.overlay(super::Manifest::parse(&over, &format!("{base}/old/update.manifest")).unwrap());
-        let e = super::apply_manifest(
-            &m,
-            &older,
-            &bin,
-            &[],
-            None,
-            &AtomicBool::new(false),
-            &mut |_| {},
-        )
-        .unwrap_err();
+        let e = super::apply_manifest(&m, &older, &bin, None, &AtomicBool::new(false), &mut |_| {})
+            .unwrap_err();
         assert!(format!("{e:#}").contains("nEVR 5.18.0"), "{e:#}");
         assert_eq!(
             std::fs::read_to_string(home.join(RUNTIME)).unwrap(),
@@ -1035,7 +1055,6 @@ mod tests {
                 &m,
                 &text,
                 &bin,
-                &[],
                 previous,
                 &AtomicBool::new(false),
                 &mut |_| {},
@@ -1163,7 +1182,6 @@ mod tests {
             &m,
             &text,
             &bin,
-            &[],
             Some(&previous),
             &AtomicBool::new(false),
             &mut |s| println!("{s}"),
@@ -1271,13 +1289,6 @@ mod tests {
             assert_eq!(manifest_for(old), PC_MANIFEST_URL);
         }
         assert!(PC_MANIFEST_URL.contains("/updates-nevr/"));
-        // The Quest's, from either host: the Quest tree's.
-        for old in OLD_QUEST_MANIFESTS {
-            assert_eq!(
-                manifest_for(old),
-                "https://release.echovr.de/quest/updates/update.manifest"
-            );
-        }
         assert_eq!(
             manifest_for("https://release.echovr.de/halloween2017.zip.manifest"),
             "https://release.echovr.de/halloween2017.zip.manifest"
@@ -1363,6 +1374,25 @@ mod tests {
         assert_eq!(overlays(Channel::Main), &[] as &[&str]);
         assert_eq!(overlays(Channel::Beta), &[BETA_OVERLAY]);
         assert_eq!(overlays(Channel::Alpha), &[BETA_OVERLAY, ALPHA_OVERLAY]);
+        // The Quest's: the same chain in its twin folders.
+        assert_eq!(quest_overlays(Channel::Main), &[] as &[&str]);
+        assert_eq!(
+            quest_overlays(Channel::Alpha),
+            &[QUEST_BETA_OVERLAY, QUEST_ALPHA_OVERLAY]
+        );
+        for u in [QUEST_MANIFEST_URL, QUEST_BETA_OVERLAY, QUEST_ALPHA_OVERLAY] {
+            assert!(
+                u.starts_with("https://release.echovr.de/quest/updates-nevr"),
+                "{u}"
+            );
+        }
+        let (m, _) = with_overlays(
+            QUEST_MANIFEST_URL,
+            "# nEVR quest: none\n",
+            &[(QUEST_ALPHA_OVERLAY, "# nEVR quest: beta\n".into())],
+        )
+        .unwrap();
+        assert_eq!(m.nevr_release("quest"), Some("beta"));
     }
 
     #[test]

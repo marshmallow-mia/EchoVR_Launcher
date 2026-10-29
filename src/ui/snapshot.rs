@@ -68,7 +68,6 @@ pub fn shots() -> Vec<Shot> {
         ("play_quest", Page::Play, SnapVariant::QuestSide),
         ("play_notice", Page::Play, SnapVariant::Notice),
         ("install_ask", Page::Install, SnapVariant::InstallAsk),
-        ("install_ask_new", Page::Install, SnapVariant::InstallAskNew),
         (
             "install_ask_found",
             Page::Install,
@@ -146,7 +145,6 @@ pub fn shots() -> Vec<Shot> {
         ("friends_uwu", Page::Friends, SnapVariant::Uwu),
         ("settings_uwu", Page::Settings, SnapVariant::Uwu),
         ("dialog_confirm", Page::Install, SnapVariant::DialogConfirm),
-        ("dialog_browser", Page::Play, SnapVariant::DialogBrowser),
         (
             "settings_delete_cache",
             Page::Settings,
@@ -192,6 +190,16 @@ pub fn shots() -> Vec<Shot> {
         ("install_fresh", Page::Install, SnapVariant::Fresh),
         ("install_extracting", Page::Install, SnapVariant::Extracting),
         ("install_quest", Page::Install, SnapVariant::QuestSide),
+        (
+            "install_quest_headsets",
+            Page::Install,
+            SnapVariant::QuestHeadsets,
+        ),
+        (
+            "install_quest_not_offered",
+            Page::Install,
+            SnapVariant::QuestNotOffered,
+        ),
         (
             "install_quest_fresh",
             Page::Install,
@@ -330,15 +338,11 @@ pub fn shots() -> Vec<Shot> {
             Page::Install,
             SnapVariant::Placeholder,
         ),
-        ("play_patch", Page::Play, SnapVariant::NewPlayer),
-        ("play_licence", Page::Play, SnapVariant::Licence),
-        ("play_licence_link", Page::Play, SnapVariant::LicenceLink),
         (
             "install_ask_quest",
             Page::Install,
             SnapVariant::InstallAskQuest,
         ),
-        ("play_owner", Page::Play, SnapVariant::Owner),
         ("play_event", Page::Play, SnapVariant::EventSelected),
         ("install_event", Page::Install, SnapVariant::EventSelected),
         (
@@ -348,11 +352,6 @@ pub fn shots() -> Vec<Shot> {
         ),
         ("play_relay_account", Page::Play, SnapVariant::RelayAccount),
         ("settings_event", Page::Settings, SnapVariant::EventSelected),
-        (
-            "play_licence_waiting",
-            Page::Play,
-            SnapVariant::LicenceWaiting,
-        ),
     ] {
         shots.push(Shot {
             name: format!("launcher_{n}"),

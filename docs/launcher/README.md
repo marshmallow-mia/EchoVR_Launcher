@@ -13,9 +13,8 @@ Rules the launcher enforces (see `src/core/launcher/catalog.rs`):
   [cdn.md](cdn.md)), or an absolute `https://` URL on one of those hosts or `release.echovr.de` (the event
   builds, `pc.zip` and their manifests).
   An empty `url` lists a build that can't be downloaded yet: INSTALL says so.
-  A Quest build (`"platform": "quest"`) names its APK by file name only: it and `_data.zip`
-  are in the mirrors' `quest/` folder, release.echovr.de's Quest tree
-  (`https://release.echovr.de/quest/`, the PC layout under `/quest`).
+  A Quest entry (`"platform": "quest"`) is for launchers before 0.13.0-alpha.8; later ones
+  install nEVR's signed APK instead ([mods.md](mods.md#echo-vr-on-the-quest)).
 - `update_manifest`: absolute `https://` URL on those three hosts, in the usual
   `add <path> <sha256>` / `del <path>` format. Applied after install and by "Update".
 - `sha256`: optional; when set, the downloaded zip must match before it is extracted.

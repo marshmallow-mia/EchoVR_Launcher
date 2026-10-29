@@ -26,8 +26,9 @@ use devices::{Device, Selection, Status};
 pub const PACKAGE: &str = "com.readyatdawn.r15";
 
 /// Subcommands that address the server rather than a device; `-s` is invalid there.
-const NO_SERIAL: [&str; 7] = [
+const NO_SERIAL: [&str; 8] = [
     "devices",
+    "mdns",
     "start-server",
     "kill-server",
     "version",

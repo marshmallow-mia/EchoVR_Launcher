@@ -36,7 +36,7 @@ pub fn legacy_cache_dir() -> PathBuf {
         .join(APP_DIR)
 }
 
-/// Staged downloads (Quest APK/data, licence patch dll, Revive installer).
+/// Staged downloads (Quest APK/data, Revive installer).
 pub fn downloads_dir() -> PathBuf {
     cache_dir().join("downloads")
 }
