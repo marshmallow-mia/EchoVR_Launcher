@@ -796,24 +796,26 @@ pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context
         return;
     }
     let blocked = kit.blocked;
-    kit.modal("overlay", blocked, |k| match &d.overlay {
-        Some(Overlay::Install(_)) => install_card(d, k, ctx),
-        Some(Overlay::RelayAccount { .. }) => relay_account_card(d, k, ctx),
-        Some(Overlay::PackServer { .. }) => pack_server_card(d, k),
-        Some(Overlay::JoinLobby { .. }) => super::play::lobby_card(d, k, ctx),
-        Some(Overlay::LoginNotice(_)) => super::play::login_card(d, k, ctx),
-        Some(Overlay::VrceTokens { .. }) => super::echovrce::tokens_card(d, k, ctx),
-        Some(Overlay::StartServer { .. }) => super::servers::start_card(d, k, ctx),
-        Some(Overlay::ShareMatch { .. }) => super::servers::share_card(d, k, ctx),
-        Some(Overlay::UploadLogs { .. }) => super::settings::upload_card(d, k, ctx),
-        Some(Overlay::Credits { .. }) => super::settings::credits_card(d, k),
-        Some(Overlay::GoBack { .. }) => super::goback::card(d, k, ctx),
-        Some(Overlay::Uninstall { .. }) => super::settings::uninstall_card(d, k),
-        Some(Overlay::PluginSettings(_)) => super::mods::settings_card(d, k, ctx),
-        Some(Overlay::Advanced) => super::settings::advanced_card(d, k, ctx),
-        Some(Overlay::AddUnlisted { .. }) => super::mods::unlisted_card(d, k, ctx),
-        Some(Overlay::Alert(_)) => super::alerts::card(d, k),
-        None => {}
+    kit.modal("overlay", egui::Order::Foreground, blocked, |k| {
+        match &d.overlay {
+            Some(Overlay::Install(_)) => install_card(d, k, ctx),
+            Some(Overlay::RelayAccount { .. }) => relay_account_card(d, k, ctx),
+            Some(Overlay::PackServer { .. }) => pack_server_card(d, k),
+            Some(Overlay::JoinLobby { .. }) => super::play::lobby_card(d, k, ctx),
+            Some(Overlay::LoginNotice(_)) => super::play::login_card(d, k, ctx),
+            Some(Overlay::VrceTokens { .. }) => super::echovrce::tokens_card(d, k, ctx),
+            Some(Overlay::StartServer { .. }) => super::servers::start_card(d, k, ctx),
+            Some(Overlay::ShareMatch { .. }) => super::servers::share_card(d, k, ctx),
+            Some(Overlay::UploadLogs { .. }) => super::settings::upload_card(d, k, ctx),
+            Some(Overlay::Credits { .. }) => super::settings::credits_card(d, k),
+            Some(Overlay::GoBack { .. }) => super::goback::card(d, k, ctx),
+            Some(Overlay::Uninstall { .. }) => super::settings::uninstall_card(d, k),
+            Some(Overlay::PluginSettings(_)) => super::mods::settings_card(d, k, ctx),
+            Some(Overlay::Advanced) => super::settings::advanced_card(d, k, ctx),
+            Some(Overlay::AddUnlisted { .. }) => super::mods::unlisted_card(d, k, ctx),
+            Some(Overlay::Alert(_)) => super::alerts::card(d, k),
+            None => {}
+        }
     });
 }
 

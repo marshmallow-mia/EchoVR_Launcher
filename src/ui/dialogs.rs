@@ -179,7 +179,7 @@ impl DialogHost {
         let Some(top) = self.stack.last_mut() else {
             return;
         };
-        let answer = kit.modal("dialog", false, |k| draw(k, top));
+        let answer = kit.modal("dialog", egui::Order::Tooltip, false, |k| draw(k, top));
         let keys = kit.ui.input(|i| {
             (
                 i.key_pressed(egui::Key::Enter),
@@ -389,5 +389,50 @@ mod tests {
         let delete = Kind::Message(Icon::Warning, vec!["Delete".into(), "Cancel".into()], true);
         assert!(enter_answers(&ok));
         assert!(!enter_answers(&delete));
+    }
+
+    /// A dialog opened again over an open card (a refusal after "Undo update") is drawn
+    /// above it, not behind it.
+    #[test]
+    fn a_dialog_stays_above_a_card() {
+        let ctx = egui::Context::default();
+        crate::ui::theme::install_fonts(&ctx);
+        let assets = crate::ui::assets::Assets::default();
+        let mut host = DialogHost::default();
+        let frame = |host: &mut DialogHost| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 720.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let blocked = host.is_open();
+                let mut kit = Kit::new(ui, &assets, blocked);
+                kit.modal("overlay", egui::Order::Foreground, blocked, |_| ());
+                host.show(&mut kit);
+            });
+            out.textures_delta.clear();
+        };
+        let top = |ctx: &egui::Context| ctx.layer_id_at(egui::pos2(640.0, 360.0)).map(|l| l.id);
+        let card = egui::Id::new(("modal", "overlay"));
+        let dialog = egui::Id::new(("modal", "dialog"));
+
+        host.info("Undo the update?", "First dialog.");
+        for _ in 0..3 {
+            frame(&mut host);
+        }
+        assert_eq!(top(&ctx), Some(dialog));
+        host.stack.clear();
+        for _ in 0..3 {
+            frame(&mut host);
+        }
+        assert_eq!(top(&ctx), Some(card));
+        host.error("Couldn't undo the update", "No way back.", HelpLink::None);
+        for _ in 0..3 {
+            frame(&mut host);
+        }
+        assert_eq!(top(&ctx), Some(dialog));
     }
 }

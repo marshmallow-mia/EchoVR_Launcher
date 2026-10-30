@@ -1088,15 +1088,23 @@ impl Kit<'_> {
     }
 
     /// A card over the whole window: dims the page, swallows its clicks, and runs `f` with
-    /// a kit on top whose origin is the window's (`key` names the layer; later ones are
-    /// drawn above earlier ones).
-    pub fn modal<T>(&mut self, key: &str, blocked: bool, f: impl FnOnce(&mut Kit) -> T) -> T {
+    /// a kit on top whose origin is the window's (`key` names the layer). Cards are
+    /// `Order::Foreground`, dialogs `Order::Tooltip`: two layers that both move to the top
+    /// every frame keep the order they had, so a dialog opened again over a card stayed
+    /// behind it (invisible, and the card inert).
+    pub fn modal<T>(
+        &mut self,
+        key: &str,
+        order: Order,
+        blocked: bool,
+        f: impl FnOnce(&mut Kit) -> T,
+    ) -> T {
         let ctx = self.ctx();
         let screen = self.window();
         let assets = self.assets;
         let id = Id::new(("modal", key));
         let out = egui::Area::new(id)
-            .order(Order::Foreground)
+            .order(order)
             .fixed_pos(screen.min)
             .show(&ctx, |ui| {
                 ui.allocate_exact_size(screen.size(), Sense::click());
