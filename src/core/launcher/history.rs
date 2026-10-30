@@ -464,6 +464,14 @@ pub fn label(s: &State) -> String {
     format!("the update of {}", s.at.get(..10).unwrap_or(&s.at))
 }
 
+/// What a state is called by when it came out: "the update of 2026-10-30 15:47 UTC".
+pub fn label_by_time(s: &State) -> String {
+    format!(
+        "the update of {} UTC",
+        s.at.get(..16).unwrap_or(&s.at).replace('T', " ")
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

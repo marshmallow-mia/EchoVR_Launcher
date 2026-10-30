@@ -621,14 +621,32 @@ pub fn server_back(v: &InstalledVersion, h: &History) -> Result<Option<ServerBac
         return Ok(None);
     };
     let (m_back, text) = built[back].clone();
+    if !back_allowed(home.is_some(), &m_back) {
+        return Ok(None);
+    }
+    // One taking nEVR from its releases: its title names the nEVR older launchers get.
+    let label = |i: usize| match built[i].0.nevr_release(crate::core::nevr_release::PLATFORM) {
+        Some(_) => history::label_by_time(&states[i]),
+        None => history::label(&states[i]),
+    };
     Ok(Some(ServerBack {
-        now: history::label(&states[now]),
-        before: history::label(&states[back]),
+        now: label(now),
+        before: label(back),
         at: states[back].at.clone(),
         from: shas[now].clone(),
         manifest: history::going_back(&built[now].0, m_back),
         text,
     }))
+}
+
+/// Pure: whether the history's way back to `back` may be taken. nEVR 6's layout
+/// (`new_layout`) is one way: only to an update that takes nEVR from its releases too, not
+/// to one that would put an older nEVR's host over it.
+fn back_allowed(new_layout: bool, back: &Manifest) -> bool {
+    !new_layout
+        || back
+            .nevr_release(crate::core::nevr_release::PLATFORM)
+            .is_some()
 }
 
 /// Puts back what `v`'s last update replaced, or (no copy kept) the version before from
@@ -763,6 +781,22 @@ fn ensure_present(v: &InstalledVersion) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_way_back_from_nevr_6_to_an_older_host() {
+        let url = "https://release.echovr.de/updates-nevr/update.manifest";
+        let sha = "a".repeat(64);
+        let old = Manifest::parse(&format!("add BugSplat64.dll {sha}\n"), url).unwrap();
+        let releases = Manifest::parse(
+            &format!("# nEVR windows: beta\n# nEVR linux: beta\nadd BugSplat64.dll {sha}\n"),
+            url,
+        )
+        .unwrap();
+        assert!(!back_allowed(true, &old));
+        assert!(back_allowed(true, &releases));
+        // Before the move, the history's way back is as it was.
+        assert!(back_allowed(false, &old));
+    }
 
     #[test]
     fn another_build_is_mostly_bad() {
