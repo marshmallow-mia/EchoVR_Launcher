@@ -4,6 +4,9 @@
 //! so rotates, its own refresh token: sharing one would sign the others out); or the
 //! account's Discord ID and password, which reach nEVR in the environment only.
 //!
+//! Or no account at all (nEVR 6.9.0 on): each server shows a code the first time it starts,
+//! the host approves it on echovrce.com, and nEVR keeps that sign-in in the server's root.
+//!
 //! A device link works only for an account without a password (EchoVRCE refuses the
 //! server's login otherwise; `/reset-password` in the Echo VR Lounge Discord clears it).
 
@@ -163,10 +166,29 @@ pub fn use_device(c: &mut Config, a: Account, t: Tokens) -> Result<()> {
         ..a
     };
     // The servers' own sessions came from another link: they are made anew.
-    for s in &c.servers {
-        let _ = std::fs::remove_file(super::farm_local(&s.dir()).join(nevr::CREDENTIALS));
-    }
+    forget_sign_ins(c);
     Ok(())
+}
+
+/// The servers' own sign-ins go (in their `_local` and their nEVR root, where one their
+/// code got is kept too): they are made anew, or the next start shows a new code.
+fn forget_sign_ins(c: &Config) {
+    for s in &c.servers {
+        let dirs = [Some(super::farm_local(&s.dir())), super::nevr_root(&s.name)];
+        for d in dirs.into_iter().flatten() {
+            let _ = std::fs::remove_file(d.join(nevr::CREDENTIALS));
+        }
+    }
+}
+
+/// How many of the servers keep a sign-in their code got (no account set): in their nEVR
+/// root.
+pub fn signed_in_by_code(c: &Config) -> usize {
+    c.servers
+        .iter()
+        .filter_map(|s| super::nevr_root(&s.name))
+        .filter(|r| r.join(nevr::CREDENTIALS).is_file())
+        .count()
 }
 
 /// One RPC on the servers' Nakama (`services.http_uri`): with its HTTP key, or as the
@@ -265,19 +287,16 @@ pub fn keep_password(
         user_id: a.user_id,
         username: a.username,
     };
-    for s in &c.servers {
-        let _ = std::fs::remove_file(super::farm_local(&s.dir()).join(nevr::CREDENTIALS));
-    }
+    forget_sign_ins(c);
     Ok(host_guilds(&t.token))
 }
 
-/// Signs the servers out: the account and its secrets go.
+/// Signs the servers out: the account and its secrets go, and the sign-ins the servers
+/// keep (a code's too: the next start shows a new one).
 pub fn forget(c: &mut Config) -> Result<()> {
     secrets::save(&Secrets::default())?;
     c.account = Account::default();
-    for s in &c.servers {
-        let _ = std::fs::remove_file(super::farm_local(&s.dir()).join(nevr::CREDENTIALS));
-    }
+    forget_sign_ins(c);
     Ok(())
 }
 

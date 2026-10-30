@@ -67,8 +67,11 @@ pub fn call(op: &str, args: &Value) -> Result<Value, String> {
             } else {
                 vec![name.clone()]
             };
-            if run && c.account.sign_in == SignIn::None {
-                return Err("Sign the servers in first: they need an account of their own on EchoVRCE (Account).".into());
+            if run
+                && c.account.sign_in == SignIn::None
+                && !c.by_code(&crate::core::launcher::store::LauncherState::load())
+            {
+                return Err("Sign the servers in first: they need an account of their own on EchoVRCE (Account). From nEVR 6.9.0 on they need none: update the game.".into());
             }
             for n in &names {
                 match c.server_mut(n) {
@@ -311,7 +314,7 @@ pub fn row(s: &Server, st: Option<&Status>, now: i64) -> Value {
         Some(st) => match st.state {
             State::Registered => "good",
             State::InSession => "normal",
-            State::Starting | State::Stopping | State::Backoff => "warn",
+            State::Starting | State::Stopping | State::Backoff | State::AwaitingApproval => "warn",
             State::Failed => "bad",
             State::Stopped => "muted",
         },
@@ -330,9 +333,19 @@ pub fn row(s: &Server, st: Option<&Status>, now: i64) -> Value {
     if !host::list(&s.guilds).is_empty() {
         line.push(format!("{} guild(s)", host::list(&s.guilds).len()));
     }
+    let awaiting = st
+        .filter(|st| st.state == State::AwaitingApproval && st.fresh(now))
+        .filter(|st| !st.sign_in_url.is_empty());
     let mut detail = match st {
         Some(st) if st.state == State::Registered || st.state == State::InSession => {
             format!("Registered at {}:{}", st.public_ip, st.port)
+        }
+        Some(st) if awaiting.is_some() => {
+            let left = ((st.sign_in_expires - now).max(0) + 59) / 60;
+            format!(
+                "Approve its code: open {} signed in as the servers' EchoVRCE account (APPROVE; good for {left} min more, then a new one comes)",
+                st.sign_in_url
+            )
         }
         Some(st) if matches!(st.state, State::Failed | State::Backoff) => {
             let why = st.reason.map_or("It stopped on an error", Reason::words);
@@ -351,7 +364,10 @@ pub fn row(s: &Server, st: Option<&Status>, now: i64) -> Value {
             st.restarts,
             span(now - st.since)
         );
-        let failing = matches!(st.state, State::Failed | State::Backoff);
+        let failing = matches!(
+            st.state,
+            State::Failed | State::Backoff | State::AwaitingApproval
+        );
         detail = match (detail.is_empty(), failing) {
             (true, _) => up,
             (false, true) => detail,
@@ -374,6 +390,9 @@ pub fn row(s: &Server, st: Option<&Status>, now: i64) -> Value {
         "detail": detail,
         "alive": alive,
         "in_match": st.is_some_and(|st| st.state == State::InSession && st.fresh(now)),
+        // Waiting for its code to be approved: the page (and the code for open-approve).
+        "sign_in_url": awaiting.map(|st| st.sign_in_url.clone()),
+        "sign_in_code": awaiting.and_then(|st| host::events::code_in(&st.sign_in_url)),
     })
 }
 
@@ -401,6 +420,10 @@ pub fn state(c: &Config, now: i64) -> Value {
                 SignIn::Password => "password",
             },
             "who": who,
+            // No account needed: the servers' nEVR signs each in by a code it shows (6.9.0
+            // on); how many keep one.
+            "by_code": c.by_code(&crate::core::launcher::store::LauncherState::load()),
+            "code_signed_in": host::account::signed_in_by_code(c),
         },
         "version": c.version,
         "defaults": {
@@ -504,6 +527,34 @@ mod tests {
             detail.contains("2 matches") && detail.contains("up 3 min"),
             "{detail}"
         );
+    }
+
+    #[test]
+    fn a_row_offers_to_approve_a_code() {
+        let mut c = cfg();
+        c.servers[0].run = true;
+        let s = &c.servers[0];
+        let st = Status {
+            name: s.name.clone(),
+            state: State::AwaitingApproval,
+            since: 990,
+            updated: 1000,
+            sign_in_url: "https://echovrce.com/device?code=AB12".into(),
+            sign_in_expires: 1000 + 250,
+            ..Default::default()
+        };
+        let r = row(s, Some(&st), 1000);
+        assert_eq!(r["chip"], "Approve its sign-in");
+        assert_eq!(r["tone"], "warn");
+        assert_eq!(r["sign_in_code"], "AB12");
+        let detail = r["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("device?code=AB12") && detail.contains("5 min more"),
+            "{detail}"
+        );
+        // An old status (the server host gone): no code to approve.
+        let r = row(s, Some(&st), 1000 + 3600);
+        assert!(r["sign_in_code"].is_null());
     }
 
     #[test]

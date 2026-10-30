@@ -1,8 +1,8 @@
 # Server host
 
 The Server host plugin runs Echo VR game servers on your PC with nEVR. Each server signs in
-with an EchoVRCE account of its own, registers with EchoVRCE, hosts matches and starts
-again after every match. The servers keep running when the launcher is closed.
+to EchoVRCE (from nEVR 6.9.0 on by a code it shows, approved once), registers with
+EchoVRCE, hosts matches and starts again after every match. The servers keep running when the launcher is closed.
 
 It runs on Windows and on Linux. On Linux, the servers run through the launcher's GE-Proton.
 
@@ -19,7 +19,8 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
 ## The page
 
 - **Servers.** Each server shows:
-  - its state: Ready, In a match, Starting, Waiting to restart or Stopped on an error;
+  - its state: Ready, In a match, Starting, Approve its sign-in, Waiting to restart or
+    Stopped on an error;
   - the address EchoVRCE registered it at;
   - its port, regions and nEVR version;
   - how many matches and restarts it has had, and how long it has been up.
@@ -44,6 +45,14 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
 
   A check that fails has a button that fixes it, or leads you to the fix.
 - **Account.** How the servers sign in:
+  - **No account (nEVR 6.9.0 on, the default):** each server shows a code the first time it
+    starts. Its row says **Approve its sign-in** and gets an **Approve** button, which opens
+    echovrce.com with the code: sign in there as the account the server should play as. A
+    code runs out after 5 minutes and the server shows a new one; until then it doesn't
+    count as hanging. nEVR keeps the sign-in in the server's own nEVR root, so later starts
+    ask no code. **Sign out** forgets those sign-ins: each shows a new code at its next
+    start. The launcher reads the code from the game's error output (nEVR's log has it
+    masked). Older nEVR versions need one of the ways below.
   - **Use my EchoVRCE account:** links the servers to the account the launcher is signed in
     with. No password is stored.
   - **Link another:** approve a code on echovrce.com while signed in as another account.

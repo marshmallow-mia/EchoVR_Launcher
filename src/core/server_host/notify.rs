@@ -1,6 +1,6 @@
 //! Alerts about the servers: one stopped on an error (a refused sign-in in particular),
 //! one that keeps restarting without hosting a match, one that should run but doesn't,
-//! and one that recovered. On the desktop and, when set, to a Discord webhook. After
+//! one that waits for its sign-in code to be approved, and one that recovered. On the desktop and, when set, to a Discord webhook. After
 //! evr-docker's (Echo-VR-Server-on-Docker `pkg/notify`).
 
 use std::collections::{HashMap, VecDeque};
@@ -25,6 +25,8 @@ pub enum Kind {
     CredentialsFailed,
     CrashLoop,
     Down,
+    /// It shows a code for its sign-in and waits until it is approved.
+    SignInCode,
     Recovered,
 }
 
@@ -108,6 +110,14 @@ impl Watch {
                 ));
             }
         }
+        if s.state == State::AwaitingApproval && seen.state != State::AwaitingApproval {
+            // Not the code itself: whoever approves it, the server plays as.
+            out.push(alert(
+                Kind::SignInCode,
+                format!("{} waits for its sign-in", s.name),
+                "Approve its code: APPROVE on the Server host page, signed in on echovrce.com as the servers' account.".into(),
+            ));
+        }
         if seen.restart_times.len() >= LOOP_RESTARTS && !s.last_error.is_empty() {
             seen.troubled = true;
             out.push(alert(
@@ -178,7 +188,7 @@ fn short(text: &str) -> String {
 pub fn webhook_body(a: &Alert, host: &str) -> serde_json::Value {
     let color = match a.kind {
         Kind::Recovered => 0x1bbd1b,
-        Kind::Down | Kind::CrashLoop => 0xd69614,
+        Kind::Down | Kind::CrashLoop | Kind::SignInCode => 0xd69614,
         Kind::Failed | Kind::CredentialsFailed => 0xd62c40,
     };
     json!({
@@ -274,6 +284,24 @@ mod tests {
         assert!(w.look(&f, true, 20).is_empty());
         let a = w.look(&st(State::Registered, 2, 0, 30), true, 30);
         assert_eq!(a[0].kind, Kind::Recovered);
+    }
+
+    #[test]
+    fn asks_once_to_approve_a_code() {
+        let mut w = Watch::default();
+        w.look(&st(State::Starting, 0, 0, 0), true, 0);
+        let a = w.look(&st(State::AwaitingApproval, 0, 0, 5), true, 5);
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].kind, Kind::SignInCode);
+        assert!(!a[0].text.contains("code="), "no code in an alert");
+        // A new code (the old one ran out): no new alert.
+        assert!(w
+            .look(&st(State::AwaitingApproval, 0, 0, 310), true, 310)
+            .is_empty());
+        // Approved and registered: nothing went wrong, no "is back".
+        assert!(w
+            .look(&st(State::Registered, 0, 0, 320), true, 320)
+            .is_empty());
     }
 
     #[test]

@@ -242,6 +242,10 @@ struct Outcome {
     stop: bool,
     /// nEVR said its Ctrl+C teardown is done (it unregistered the server).
     torn_down: bool,
+    /// It shows a code for its sign-in and waits for it: no register timeout meanwhile.
+    awaiting_code: bool,
+    /// When its sign-in by code ended: the register timeout counts from then.
+    signed_in_at: Option<Instant>,
 }
 
 /// A server's thread: its runs, until it is told to stop.
@@ -374,13 +378,16 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     if let Some(why) = config::check_services(&cfg) {
         bail!("{why}");
     }
-    if cfg.account.sign_in == SignIn::None || cfg.account.discord_id.trim().is_empty() {
-        bail!("the servers have no account yet: sign them in under Account");
-    }
     let state = LauncherState::load();
     let Some(v) = cfg.version_in(&state) else {
         bail!("no installed live build to run (event builds can't host servers)");
     };
+    // Without an account nEVR 6.9.0 on signs the server in by a code it shows.
+    let by_code = cfg.by_code(&state);
+    if !by_code && (cfg.account.sign_in == SignIn::None || cfg.account.discord_id.trim().is_empty())
+    {
+        bail!("the servers have no account yet: sign them in under Account (from nEVR 6.9.0 on they need none: each shows a code to approve)");
+    }
     if !mods::nevr_in(&v.bin_dir()) {
         bail!(
             "{} has no nEVR in its slot: a server needs it (update the game)",
@@ -522,8 +529,9 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
 }
 
 /// Lines from the game: nEVR's log file (its jsonl, followed from the start), and what
-/// Proton says on its output (Linux). The game's own output reaches neither a pipe under
-/// Proton nor one on Windows (nEVR's console window has it).
+/// Proton says on its output (Linux). Of the game's own output only the line with a
+/// server's sign-in code matters (nEVR 6.9.0 on, before it opens its console window):
+/// on Windows the rest is read and dropped (its log file has it).
 fn lines(
     child_out: Option<(std::process::ChildStdout, std::process::ChildStderr)>,
     log_dirs: Vec<PathBuf>,
@@ -539,11 +547,23 @@ fn lines(
             let tx = tx.clone();
             std::thread::spawn(move || {
                 use std::io::BufRead;
-                for l in std::io::BufReader::new(r).lines() {
-                    let Ok(l) = l else { break };
-                    if tx.send(l).is_err() {
-                        break;
+                // Read to its end, whatever it holds: a full pipe would stop the game.
+                let mut r = std::io::BufReader::new(r);
+                let mut buf = Vec::new();
+                loop {
+                    buf.clear();
+                    match r.read_until(b'\n', &mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
                     }
+                    let l = String::from_utf8_lossy(&buf);
+                    let l = l.trim_end_matches(['\r', '\n']);
+                    if cfg!(windows) && !events::is_sign_in_code(l) {
+                        continue;
+                    }
+                    let _ = tx.send(l.to_string());
                 }
             });
         }
@@ -583,7 +603,7 @@ fn lines(
 
 /// The server's `%LOCALAPPDATA%`: on Windows its own (`appdata`), on Linux its prefix's
 /// (in `compat`).
-fn local_app_data(appdata: &Path, compat: &Path) -> Option<PathBuf> {
+pub(super) fn local_app_data(appdata: &Path, compat: &Path) -> Option<PathBuf> {
     if cfg!(target_os = "linux") {
         Some(compat.join("pfx/drive_c/users/steamuser/AppData/Local"))
     } else if cfg!(windows) {
@@ -609,15 +629,11 @@ fn log_dirs(p: &Prepared) -> Vec<PathBuf> {
 /// One run of the game: until it ends.
 fn run_once(p: &Prepared, shared: &Shared, console: &mut Console, rx: &Receiver<Order>) -> Outcome {
     let (mut cmd, wine) = command(p);
-    let linux = cfg!(target_os = "linux");
-    cmd.stdin(std::process::Stdio::null());
-    if linux {
-        cmd.stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-    } else {
-        cmd.stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
-    }
+    // Piped on Windows too: nEVR 6.9.0 on writes a server's sign-in code on its error
+    // output (before it opens its console window).
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
     let started_at = std::time::SystemTime::now() - Duration::from_secs(2);
     let mut game = match super::proc::Game::start(cmd, wine) {
         Ok(g) => g,
@@ -643,9 +659,11 @@ fn run_once(p: &Prepared, shared: &Shared, console: &mut Console, rx: &Receiver<
         s.last_error.clear();
         s.next_start = 0;
         s.public_ip.clear();
+        s.sign_in_url.clear();
+        s.sign_in_expires = 0;
     });
     let stop_tail = Arc::new(AtomicBool::new(false));
-    let out = linux.then(|| game.take_output()).flatten();
+    let out = game.take_output();
     let lines = lines(out, log_dirs(p), started_at, stop_tail.clone());
 
     let mut o = Outcome::default();
@@ -669,8 +687,11 @@ fn run_once(p: &Prepared, shared: &Shared, console: &mut Console, rx: &Receiver<
         let mut got = 0;
         while let Ok(raw) = lines.try_recv() {
             got += 1;
-            console.line(&raw);
             let ev = events::parse(&raw);
+            if ev.kind != Kind::SignInCode {
+                // (The code's line: the host's line says where to approve it.)
+                console.line(&raw);
+            }
             handle(
                 &ev,
                 p,
@@ -741,7 +762,9 @@ fn run_once(p: &Prepared, shared: &Shared, console: &mut Console, rx: &Receiver<
                 schedule(&mut kill_at, STOP_TIMEOUT);
             }
         }
-        if !o.registered && !stopping && started.elapsed() >= REGISTER_TIMEOUT {
+        // Not while it waits for its code to be approved: from its sign-in on.
+        let since = o.signed_in_at.unwrap_or(started);
+        if !o.registered && !stopping && !o.awaiting_code && since.elapsed() >= REGISTER_TIMEOUT {
             o.reason = Some(Reason::NotRegistered);
             o.detail = if no_credentials {
                 "not registered within 180 s: it had no sign-in (link the servers again under Account)".into()
@@ -771,8 +794,10 @@ fn run_once(p: &Prepared, shared: &Shared, console: &mut Console, rx: &Receiver<
     while Instant::now() < drain {
         match lines.recv_timeout(Duration::from_millis(100)) {
             Ok(raw) => {
-                console.line(&raw);
                 let ev = events::parse(&raw);
+                if ev.kind != Kind::SignInCode {
+                    console.line(&raw);
+                }
                 if ev.kind != Kind::None {
                     let mut ignore = None;
                     handle(
@@ -818,6 +843,36 @@ fn handle(
     match ev.kind {
         Kind::RuntimeVersion => shared.update(|s| s.runtime = ev.version.clone()),
         Kind::NoCredentials => *no_credentials = true,
+        Kind::SignInCode => {
+            o.awaiting_code = true;
+            let expires = now() + i64::from(ev.expires);
+            shared.update(|s| {
+                s.state = State::AwaitingApproval;
+                s.sign_in_url = ev.url.clone();
+                s.sign_in_expires = expires;
+            });
+            console.host(&format!(
+                "approve this server: open {} and sign in with the servers' EchoVRCE account within {} minutes (a new code follows if it runs out); it keeps the sign-in",
+                ev.url,
+                (ev.expires / 60).max(1)
+            ));
+        }
+        Kind::SignInEnded => {
+            o.awaiting_code = false;
+            o.signed_in_at = Some(Instant::now());
+            shared.update(|s| {
+                if s.state == State::AwaitingApproval {
+                    s.state = State::Starting;
+                }
+                s.sign_in_url.clear();
+                s.sign_in_expires = 0;
+            });
+            console.host(if ev.ok {
+                "signed in: the code was approved"
+            } else {
+                "the sign-in by code ended without one"
+            });
+        }
         Kind::Bound => {
             if ev.port != p.server.port {
                 o.reason = Some(Reason::InvalidConfig);
@@ -878,6 +933,8 @@ fn handle(
                     "the game loop crashed"
                 } else if p.sign_in == SignIn::Device {
                     "EchoVRCE refused the sign-in: a linked account must have no password (/reset-password in the Echo VR Lounge Discord)"
+                } else if p.sign_in == SignIn::None {
+                    "EchoVRCE refused the sign-in its code got: SIGN OUT under Account, and it shows a new code"
                 } else {
                     "EchoVRCE refused the sign-in: check the Discord ID and password"
                 };

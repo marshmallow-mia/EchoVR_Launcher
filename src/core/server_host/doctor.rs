@@ -103,7 +103,7 @@ pub fn run(c: &Config, running: &[String]) -> Vec<Check> {
             ));
         }
     }
-    out.push(account_check(c));
+    out.push(account_check(c, c.by_code(&state)));
     out.push(disk_check());
     out.extend(port_checks(c, running));
     out.push(public_ip_check(c));
@@ -191,12 +191,21 @@ fn linux_checks() -> Vec<Check> {
     out
 }
 
-fn account_check(c: &Config) -> Check {
+fn account_check(c: &Config, by_code: bool) -> Check {
     match c.account.sign_in {
+        SignIn::None if by_code => {
+            let n = account::signed_in_by_code(c);
+            let text = match (n, c.servers.len()) {
+                (_, 0) => "No account needed: each server shows a code the first time it starts; approve it (APPROVE) signed in on echovrce.com as the servers' account.".to_string(),
+                (n, all) if n >= all => "Each server signs in as the account that approved its code.".to_string(),
+                (n, all) => format!("{n} of {all} servers signed in by their code; the others show one when they start: approve it (APPROVE) signed in on echovrce.com as the servers' account."),
+            };
+            check("Account", Level::Good, text, Fix::None)
+        }
         SignIn::None => check(
             "Account",
             Level::Bad,
-            "The servers have no account yet.",
+            "The servers have no account yet (from nEVR 6.9.0 on they need none: update the game, or sign them in).",
             Fix::SignIn,
         ),
         sign_in => match account::session(c) {

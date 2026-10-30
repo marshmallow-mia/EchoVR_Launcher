@@ -24,6 +24,9 @@ pub const HEARTBEAT_S: i64 = 15;
 pub enum State {
     /// Started, not registered yet.
     Starting,
+    /// It shows a code for its sign-in (no account, nEVR 6.9.0 on) and waits until it is
+    /// approved on echovrce.com: [`Status::sign_in_url`].
+    AwaitingApproval,
     /// Waiting for a match.
     Registered,
     /// Hosting a match.
@@ -46,6 +49,7 @@ impl State {
     pub fn words(self) -> &'static str {
         match self {
             State::Starting => "Starting",
+            State::AwaitingApproval => "Approve its sign-in",
             State::Registered => "Ready",
             State::InSession => "In a match",
             State::Stopping => "Stopping",
@@ -83,6 +87,10 @@ pub struct Status {
     pub last_error: String,
     /// When it starts again (Backoff, Failed), Unix seconds.
     pub next_start: i64,
+    /// AwaitingApproval: the page that approves its code (the code in it), and until when
+    /// (Unix seconds) before it shows a new one.
+    pub sign_in_url: String,
+    pub sign_in_expires: i64,
 }
 
 impl Status {

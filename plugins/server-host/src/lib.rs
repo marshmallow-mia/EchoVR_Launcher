@@ -110,6 +110,12 @@ fn signed_in(s: &S) -> bool {
     text_at(&s.st, "account.sign_in") != "none" && !text_at(&s.st, "account.sign_in").is_empty()
 }
 
+/// No account set, and none needed: the servers' nEVR (6.9.0 on) signs each in by a code
+/// it shows the first time it starts.
+fn by_code(s: &S) -> bool {
+    !signed_in(s) && s.st["account"]["by_code"] == true
+}
+
 fn tone(t: &str) -> Tone {
     match t {
         "good" => Tone::Good,
@@ -315,7 +321,11 @@ fn clicked(s: &mut S, id: &str) {
                 Ok(names) => {
                     let names: Vec<String> = names
                         .as_array()
-                        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     notify(&format!("Added {}", names.join(", ")));
                     refresh(s);
@@ -340,7 +350,13 @@ fn clicked(s: &mut S, id: &str) {
         }
         "defaults" => {
             if let Ok(d) = call("defaults", &json!({})) {
-                for k in ["socket_uri", "serverdb_uri", "http_uri", "http_key", "server_key"] {
+                for k in [
+                    "socket_uri",
+                    "serverdb_uri",
+                    "http_uri",
+                    "http_key",
+                    "server_key",
+                ] {
                     s.form.insert(k.into(), text_at(&d, k));
                 }
                 s.form.insert("publisher_lock".into(), "echovrce".into());
@@ -424,7 +440,11 @@ fn clicked(s: &mut S, id: &str) {
         "sign-out" => host::ask(
             "sign-out",
             "Sign the servers out?",
-            "The servers forget their EchoVRCE account: they can't host until one is linked again. Running servers keep going until they start again.",
+            if by_code(s) {
+                "The servers forget the sign-ins their codes got: each shows a new code at its next start. Running servers keep going until they start again."
+            } else {
+                "The servers forget their EchoVRCE account: they can't host until one is linked again. Running servers keep going until they start again."
+            },
             &["Sign out".into(), "Cancel".into()],
             true,
         ),
@@ -478,6 +498,12 @@ fn row_clicked(s: &mut S, name: &str, what: &str) {
         "restart" => {
             if act(s, "command", json!({"name": name, "what": "restart"})) {
                 notify(&format!("{name} starts again"));
+            }
+        }
+        "approve" => {
+            let code = server(s, name).map(|v| text_at(v, "sign_in_code"));
+            if let Some(code) = code.filter(|c| !c.is_empty()) {
+                act(s, "open-approve", json!({"code": code}));
             }
         }
         "console" => open_console(s, name),
@@ -645,7 +671,7 @@ fn servers_tab(t: &mut Kids, s: &S, st: &Value) {
         t.warn("The server host isn't running, so the servers set to run aren't.");
         t.button(button("start-host", "START IT").primary());
     }
-    if !signed_in(s) {
+    if !signed_in(s) && !by_code(s) {
         t.warn("Sign the servers in first (Account, on the right): they need an account of their own on EchoVRCE.");
     }
     let full = list.len() as u64 >= st["max_servers"].as_u64().unwrap_or(32);
@@ -661,6 +687,22 @@ fn servers_tab(t: &mut Kids, s: &S, st: &Value) {
         .map(|v| {
             let run = v["run"] == true;
             let alive = v["alive"] == true;
+            let approve = !text_at(v, "sign_in_code").is_empty();
+            let mut buttons = Vec::new();
+            if approve {
+                buttons.push(button("approve", "APPROVE").primary());
+            }
+            buttons.extend([
+                if run {
+                    button("stop", "STOP")
+                } else {
+                    button("start", "START").primary().enabled(!approve)
+                },
+                button("restart", "RESTART").enabled(run && alive),
+                button("console", "Its live console").icon("info"),
+                button("edit", "Its port, regions, guilds, tick rate and more").icon("gear"),
+                button("delete", "Delete this server").icon("trash"),
+            ]);
             Row {
                 key: text_at(v, "name"),
                 cells: vec![
@@ -669,17 +711,7 @@ fn servers_tab(t: &mut Kids, s: &S, st: &Value) {
                     cell(text_at(v, "line")),
                 ],
                 detail: text_at(v, "detail"),
-                buttons: vec![
-                    if run {
-                        button("stop", "STOP")
-                    } else {
-                        button("start", "START").primary()
-                    },
-                    button("restart", "RESTART").enabled(run && alive),
-                    button("console", "Its live console").icon("info"),
-                    button("edit", "Its port, regions, guilds, tick rate and more").icon("gear"),
-                    button("delete", "Delete this server").icon("trash"),
-                ],
+                buttons,
             }
         })
         .collect();
@@ -969,6 +1001,7 @@ fn account_card(ui: &mut Ui, s: &S) {
             match how.as_str() {
                 "device" => format!("The servers sign in as {who} (linked, no password)."),
                 "password" => format!("The servers sign in as {who} with its Discord ID and password."),
+                _ if by_code(s) => "No account needed: each server shows a code the first time it starts (APPROVE on its row). Approve it signed in on echovrce.com as the account the servers should play as, one of their own or yours if it has no password; the server keeps that sign-in. Or sign them all in as one account here:".to_string(),
                 _ => "The servers aren't signed in yet: link an EchoVRCE account for them below. Use an account of their own, or the one you play with if it has no password.".to_string(),
             },
             Tone::Normal,
@@ -1003,6 +1036,11 @@ fn account_card(ui: &mut Ui, s: &S) {
                     button("link-code", "LINK ANOTHER").enabled(!s.busy),
                     button("password-open", "PASSWORD").enabled(!s.busy),
                 ]);
+                let n = s.st["account"]["code_signed_in"].as_u64().unwrap_or(0);
+                if by_code(s) && n > 0 {
+                    c.muted(format!("{n} server(s) signed in by their code. SIGN OUT forgets those sign-ins: each shows a new code at its next start."));
+                    c.button(button("sign-out", "SIGN OUT").danger().enabled(!s.busy));
+                }
             }
         } else {
             c.buttons(vec![

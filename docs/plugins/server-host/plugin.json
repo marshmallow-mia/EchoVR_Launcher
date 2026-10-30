@@ -2,9 +2,9 @@
   "schema": 2,
   "id": "server-host",
   "name": "Server host",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "marshmallow-mia",
-  "summary": "Run Echo VR game servers on this PC with nEVR: add servers, start and stop them, see what each one does and its live console. They sign in as their own account, register with EchoVRCE, start again after every match, and keep running while the launcher is closed. Windows, and Linux through the launcher's Proton.",
+  "summary": "Run Echo VR game servers on this PC with nEVR: add servers, start and stop them, see what each one does and its live console. They sign in by a code each shows (nEVR 6.9.0 on) or as an account, register with EchoVRCE, start again after every match, and keep running while the launcher is closed. Windows, and Linux through the launcher's Proton.",
   "icon": "globe",
   "wasm": "plugin.wasm",
   "permissions": {

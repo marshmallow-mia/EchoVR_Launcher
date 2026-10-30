@@ -1,7 +1,7 @@
 //! What a game server's log says, line by line: the lines the supervisor acts on (signed
 //! in, registered, a match starting or ending, a fatal error), from nEVR's jsonl or its
 //! plain console text alike. After evr-supervisor (Echo-VR-Server-on-Docker), measured on
-//! nEVR 5.4.2.
+//! nEVR 5.4.2; the sign-in by code on 6.9.0.
 
 /// A line the supervisor acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +28,11 @@ pub enum Kind {
     Held,
     /// nEVR has neither a token nor a password to sign in with.
     NoCredentials,
+    /// A server without an account (nEVR 6.9.0 on) shows a code to approve: `url` (the
+    /// code in it), for `expires` seconds. A new one follows when it runs out.
+    SignInCode,
+    /// Its sign-in by code ended: `ok` when approved.
+    SignInEnded,
 }
 
 /// Why a server stopped. Retrying helps, except for a refused sign-in and a broken config:
@@ -41,6 +46,8 @@ pub enum Reason {
     RegistrationRejected,
     NotRegistered,
     Crashed,
+    /// The sign-in by code ended without one (EchoVRCE couldn't be asked).
+    SignIn,
     Fatal,
 }
 
@@ -60,6 +67,7 @@ impl Reason {
             Reason::RegistrationRejected => "EchoVRCE refused the server's registration",
             Reason::NotRegistered => "The server didn't register in time",
             Reason::Crashed => "The game crashed",
+            Reason::SignIn => "The server's sign-in by code didn't go through",
             Reason::Fatal => "The game stopped on an error",
         }
     }
@@ -81,10 +89,68 @@ pub struct Event {
     pub version: String,
     /// `LoginFailed`, `Fatal`, `Held`.
     pub reason: Option<Reason>,
+    /// `SignInCode`: the page that approves it, the code in it.
+    pub url: String,
+    /// `SignInCode`: how many seconds the code is good for.
+    pub expires: u32,
+    /// `SignInEnded`: approved.
+    pub ok: bool,
+}
+
+/// Pure: the code a server without an account shows (nEVR 6.9.0 on), a line of its own
+/// on its error output: `{"tag":"NEVR.AUTH","event":"server_sign_in_code","code":…,
+/// "url":"…?code=…","expires_in_s":300,"msg":…}`. Its log has the code masked. (url,
+/// seconds).
+fn sign_in_code(raw: &str) -> Option<(String, u32)> {
+    let s = raw.trim();
+    if !s.starts_with('{') || !s.contains(crate::core::launcher::nevr::SERVER_SIGN_IN_CODE) {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    let text = |k: &str| v.get(k).and_then(serde_json::Value::as_str).unwrap_or("");
+    let url = text("url");
+    (text("tag") == "NEVR.AUTH"
+        && text("event") == crate::core::launcher::nevr::SERVER_SIGN_IN_CODE
+        && (url.starts_with("https://") || url.starts_with("http://")))
+    .then(|| {
+        let secs = v.get("expires_in_s").and_then(serde_json::Value::as_u64);
+        (url.to_string(), secs.unwrap_or(300).min(3600) as u32)
+    })
+}
+
+/// Pure: whether `raw` is the line with a server's sign-in code (it goes to the page, not
+/// into its console file).
+pub fn is_sign_in_code(raw: &str) -> bool {
+    sign_in_code(&clean_colours(raw)).is_some()
+}
+
+/// Pure: the code in an approval page's address (`…?code=ABCD`).
+pub fn code_in(url: &str) -> Option<String> {
+    let u = url::Url::parse(url).ok()?;
+    let code = u.query_pairs().find(|(k, _)| k == "code")?.1.to_string();
+    (!code.is_empty() && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .then_some(code)
 }
 
 /// Pure: `raw` without ANSI colours and, for a jsonl record, its `msg`.
 pub fn clean(raw: &str) -> String {
+    let s = clean_colours(raw);
+    if s.starts_with('{') && s.contains("\"msg\"") {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+            if let Some(m) = v
+                .get("msg")
+                .and_then(|m| m.as_str())
+                .filter(|m| !m.is_empty())
+            {
+                return m.trim_end_matches(['\r', '\n']).to_string();
+            }
+        }
+    }
+    s
+}
+
+/// Pure: `raw` without ANSI colours and its line end.
+fn clean_colours(raw: &str) -> String {
     let mut s = String::with_capacity(raw.len());
     let mut chars = raw.chars().peekable();
     while let Some(c) = chars.next() {
@@ -100,19 +166,7 @@ pub fn clean(raw: &str) -> String {
         }
         s.push(c);
     }
-    let s = s.trim_end_matches(['\r', '\n']).to_string();
-    if s.starts_with('{') && s.contains("\"msg\"") {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-            if let Some(m) = v
-                .get("msg")
-                .and_then(|m| m.as_str())
-                .filter(|m| !m.is_empty())
-            {
-                return m.trim_end_matches(['\r', '\n']).to_string();
-            }
-        }
-    }
-    s
+    s.trim_end_matches(['\r', '\n']).to_string()
 }
 
 /// Pure: the level of a jsonl record (`info`, `warn`, `error`), if it is one.
@@ -147,7 +201,12 @@ fn bracket_after(line: &str, key: &str) -> Option<(String, u16)> {
 }
 
 fn fatal_reason(line: &str) -> Reason {
-    if line.contains("HTTP 401") || line.contains("no valid token") {
+    if line.contains("device sign-in ended without a token") {
+        Reason::SignIn
+    } else if line.contains("HTTP 401")
+        || line.contains("no valid token")
+        || line.contains("the service refused the credential")
+    {
         Reason::BadCredentials
     } else if line.contains("registration rejected") && line.contains("code=10") {
         Reason::UdpUnreachable
@@ -179,9 +238,22 @@ pub fn parse(raw: &str) -> Event {
         session: String::new(),
         version: String::new(),
         reason: None,
+        url: String::new(),
+        expires: 0,
+        ok: false,
     };
+    if let Some((url, secs)) = sign_in_code(&clean_colours(raw)) {
+        ev.kind = Kind::SignInCode;
+        ev.line = format!("approve this server: {url}");
+        ev.url = url;
+        ev.expires = secs;
+        return ev;
+    }
     let l = ev.line.as_str();
-    if l.contains("NEVR-BUILD ") {
+    if l.contains("[NEVR.AUTH] server sign-in ended: result=") {
+        ev.kind = Kind::SignInEnded;
+        ev.ok = l.contains("result=ok");
+    } else if l.contains("NEVR-BUILD ") {
         if let Some(v) = word_after(l, "NEVR-BUILD ") {
             ev.kind = Kind::RuntimeVersion;
             ev.version = v.to_string();
@@ -244,6 +316,8 @@ const NOISE: &[&str] = &[
     "[NEVR.LOGFILTER] health",
     "NSUSER] saved",
     "[NEVR.SELFCHECK]",
+    // The sign-in by code asks every 3 s.
+    "[NEVR.AUTH] poll #",
 ];
 
 /// Pure: whether a (clean) line is one of nEVR's high-volume diagnostics.
@@ -327,6 +401,43 @@ mod tests {
         assert_eq!(f("something else"), Reason::Fatal);
         assert!(!Reason::InvalidConfig.retryable());
         assert!(Reason::UdpUnreachable.retryable());
+    }
+
+    #[test]
+    fn a_server_without_an_account_shows_a_code() {
+        // nEVR 6.9.0 on echo (evr-docker's fixture; code and ids replaced).
+        let evs = kinds(include_str!("testdata/v6.9.0-device-code.log"));
+        let k: Vec<Kind> = evs.iter().map(|e| e.kind).collect();
+        let code = evs.iter().find(|e| e.kind == Kind::SignInCode).unwrap();
+        assert_eq!(code.url, "https://echovrce.com/device?code=TEST");
+        assert_eq!(code.expires, 300);
+        assert_eq!(
+            code.line,
+            "approve this server: https://echovrce.com/device?code=TEST"
+        );
+        assert_eq!(code_in(&code.url).as_deref(), Some("TEST"));
+        let ended = evs.iter().find(|e| e.kind == Kind::SignInEnded).unwrap();
+        assert!(ended.ok);
+        let at = |kind| k.iter().position(|x| *x == kind).unwrap();
+        assert!(at(Kind::SignInCode) < at(Kind::SignInEnded));
+        assert!(at(Kind::SignInEnded) < at(Kind::Registered));
+        assert!(is_noise(&clean(
+            r#"2026-10-30T13:59:16.007Z info [NEVR.AUTH] poll #1 http=200 status=pending"#
+        )));
+        // The masked line in its log is no code.
+        let masked = parse("[NEVR.AUTH] code shown url=https://echovrce.com/device?code=<4 chars masked> open_result=33 (shown)");
+        assert_eq!(masked.kind, Kind::None);
+        assert!(is_sign_in_code(
+            r#"{"code":"AB12","event":"server_sign_in_code","expires_in_s":300,"msg":"x","tag":"NEVR.AUTH","url":"https://echovrce.com/device?code=AB12"}"#
+        ));
+        assert!(!is_sign_in_code(
+            r#"{"event":"server_sign_in_code","tag":"NEVR.AUTH","url":"javascript:x"}"#
+        ));
+        let failed = parse("[NEVR.AUTH] server sign-in ended: result=failed seconds=12");
+        assert_eq!((failed.kind, failed.ok), (Kind::SignInEnded, false));
+        let f = parse("[NEVR.FATAL] server login refused: device sign-in ended without a token");
+        assert_eq!(f.reason, Some(Reason::SignIn));
+        assert!(Reason::SignIn.retryable());
     }
 
     #[test]

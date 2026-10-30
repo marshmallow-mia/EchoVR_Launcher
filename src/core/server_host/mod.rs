@@ -88,6 +88,45 @@ pub fn farm_local(dir: &Path) -> PathBuf {
     farm_root(dir).join("_local")
 }
 
+/// Server `name`'s `%LOCALAPPDATA%`: on Windows its own (in its folder), on Linux its
+/// prefix's.
+pub fn local_app_data(name: &str) -> Option<PathBuf> {
+    let compat = crate::core::linux::echoxr::server_compat_data(&format!("host-{name}"));
+    supervisor::local_app_data(&server_dir(name).join("appdata"), &compat)
+}
+
+/// Server `name`'s nEVR root, where nEVR 5.13 on keeps its sign-in (6.9.0 on also the one
+/// its code got).
+pub fn nevr_root(name: &str) -> Option<PathBuf> {
+    local_app_data(name).map(|l| super::launcher::nevr_root::root_in(&l))
+}
+
+/// Whether the nEVR of `v` signs a server without an account in by a code it shows
+/// (6.9.0 on): the servers need no account then.
+pub fn signs_in_by_code(v: &InstalledVersion) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    // The page asks every few seconds: a runtime is read once (again when it changes).
+    type Seen = HashMap<PathBuf, (std::time::SystemTime, u64, bool)>;
+    static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+    let runtime = super::launcher::nevr::runtime_path(&v.bin_dir());
+    let Ok(meta) = std::fs::metadata(&runtime) else {
+        return false;
+    };
+    let key = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    let seen = seen.get_or_insert_with(HashMap::new);
+    if let Some(&(m, l, yes)) = seen.get(&runtime) {
+        if (m, l) == key {
+            return yes;
+        }
+    }
+    let yes =
+        std::fs::read(&runtime).is_ok_and(|b| super::launcher::nevr::signs_servers_in_by_code(&b));
+    seen.insert(runtime, (key.0, key.1, yes));
+    yes
+}
+
 /// One game server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -166,7 +205,9 @@ impl Default for Services {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SignIn {
-    /// Not set up yet.
+    /// No account: from nEVR 6.9.0 on each server signs in by the code it shows the first
+    /// time it starts (approved on echovrce.com) and keeps that sign-in in its nEVR root.
+    /// Older versions can't start a server so.
     #[default]
     None,
     /// An EchoVRCE session linked for the servers (a device link): no password. Each
@@ -329,6 +370,12 @@ impl Config {
             self.servers.push(s);
         }
         Ok(names)
+    }
+
+    /// Whether the servers sign in by the codes they show: no account is set, and the
+    /// version they run does that (nEVR 6.9.0 on).
+    pub fn by_code(&self, state: &LauncherState) -> bool {
+        self.account.sign_in == SignIn::None && self.version_in(state).is_some_and(signs_in_by_code)
     }
 
     /// The installed version the servers run: the one set, else the selected live build,

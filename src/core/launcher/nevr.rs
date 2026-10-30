@@ -51,6 +51,10 @@ pub const CONFIG_FILE_ARG: &str = "-config-file";
 /// What a runtime that loads plugins only from nEVR's root carries (nevr-runtime #1250 on,
 /// `<root>\plugins`): the end of its line for a run without `LOCALAPPDATA`.
 const ROOT_PLUGINS: &str = "never from the game folder";
+/// What a runtime whose game server signs in without a password carries (nevr-runtime #1532,
+/// 6.9.0 on): the event of the line with the code it prints on its error output for the
+/// host to approve on echovrce.com. It keeps the sign-in in its root.
+pub const SERVER_SIGN_IN_CODE: &str = "server_sign_in_code";
 /// The game's exit code when nEVR's host found no runtime it could load.
 pub const RUNTIME_REFUSED: i32 = 78;
 pub const CONFIG: &str = "config.yaml";
@@ -174,6 +178,12 @@ pub fn reads_root_config(bytes: &[u8]) -> bool {
 /// nevr-runtime #1250 on). Its first run moves the files beside the game's exe there.
 pub fn loads_root_plugins(bytes: &[u8]) -> bool {
     contains(bytes, ROOT_PLUGINS.as_bytes())
+}
+
+/// Pure: whether runtime `bytes` signs a game server without a password in by a code it
+/// shows ([`SERVER_SIGN_IN_CODE`], 6.9.0 on). Older ones refuse such a server.
+pub fn signs_servers_in_by_code(bytes: &[u8]) -> bool {
+    contains(bytes, SERVER_SIGN_IN_CODE.as_bytes())
 }
 
 /// Whether `bytes` is a host that loads its runtime only from nEVR's root (`%LOCALAPPDATA%\nevr\echovr`).
