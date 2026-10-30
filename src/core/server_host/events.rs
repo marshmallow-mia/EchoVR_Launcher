@@ -124,6 +124,13 @@ pub fn is_sign_in_code(raw: &str) -> bool {
     sign_in_code(&clean_colours(raw)).is_some()
 }
 
+/// Pure: whether `raw`, a line of the game's own output, is one its log file has too:
+/// nEVR's and the game's (`[NEVR.…]`, `[EVR]`).
+pub fn is_logged(raw: &str) -> bool {
+    let l = clean(raw);
+    l.contains("[NEVR") || l.contains("[EVR]")
+}
+
 /// Pure: the code in an approval page's address (`…?code=ABCD`).
 pub fn code_in(url: &str) -> Option<String> {
     let u = url::Url::parse(url).ok()?;
@@ -432,6 +439,13 @@ mod tests {
         ));
         assert!(!is_sign_in_code(
             r#"{"event":"server_sign_in_code","tag":"NEVR.AUTH","url":"javascript:x"}"#
+        ));
+        assert!(is_logged("\u{1b}[90m2026-10-30T17:24:31.381Z\u{1b}[0m \u{1b}[0minfo\u{1b}[0m [NEVR.PATCH] shutdown signal received"));
+        assert!(is_logged(
+            r#"{"ts":"x","level":"info","msg":"[EVR] [NETGAME] NetGame switching state"}"#
+        ));
+        assert!(!is_logged(
+            "Proton: Executable is inside wine prefix, launching normally."
         ));
         let failed = parse("[NEVR.AUTH] server sign-in ended: result=failed seconds=12");
         assert_eq!((failed.kind, failed.ok), (Kind::SignInEnded, false));

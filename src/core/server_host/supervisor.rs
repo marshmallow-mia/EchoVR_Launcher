@@ -488,8 +488,11 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
         let config = echoxr::wine_path(&[], &p.config_json);
         let yaml = p.config_yaml.as_ref().map(|y| echoxr::wine_path(&[], y));
         let mut c = std::process::Command::new(echoxr::proton_script());
+        // As a Windows path: Proton then runs the game with wine itself, not through
+        // umu.exe, so the game's error output (a server's sign-in code, nEVR 6.9.0 on)
+        // reaches this pipe.
         c.arg("run")
-            .arg(&p.exe)
+            .arg(echoxr::wine_path(&[], &p.exe))
             .args(game_args(&p.server, &config, yaml.as_deref()))
             .current_dir(&p.bin)
             .env("STEAM_COMPAT_DATA_PATH", &p.compat)
@@ -530,8 +533,9 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
 
 /// Lines from the game: nEVR's log file (its jsonl, followed from the start), and what
 /// Proton says on its output (Linux). Of the game's own output only the line with a
-/// server's sign-in code matters (nEVR 6.9.0 on, before it opens its console window):
-/// on Windows the rest is read and dropped (its log file has it).
+/// server's sign-in code matters (nEVR 6.9.0 on, before it opens its console window): the
+/// rest is read and dropped (its log file has it; read twice, a registration would count
+/// twice).
 fn lines(
     child_out: Option<(std::process::ChildStdout, std::process::ChildStderr)>,
     log_dirs: Vec<PathBuf>,
@@ -560,7 +564,7 @@ fn lines(
                     }
                     let l = String::from_utf8_lossy(&buf);
                     let l = l.trim_end_matches(['\r', '\n']);
-                    if cfg!(windows) && !events::is_sign_in_code(l) {
+                    if !events::is_sign_in_code(l) && (cfg!(windows) || events::is_logged(l)) {
                         continue;
                     }
                     let _ = tx.send(l.to_string());
