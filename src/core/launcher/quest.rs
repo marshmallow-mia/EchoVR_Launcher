@@ -19,14 +19,6 @@ use crate::core::quest_install::{self, ApkInstall};
 use crate::core::{paths, pc_update};
 
 pub const DATA_ZIP: &str = "_data.zip";
-/// Where the mirrors keep the Quest's game data: release.echovr.de's Quest tree.
-const QUEST_DIR: &str = "quest/";
-
-/// The download of a Quest game file named `name`, from the mirrors.
-fn quest_file(name: &str) -> String {
-    format!("{QUEST_DIR}{name}")
-}
-
 /// How an install or update ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -174,13 +166,13 @@ fn bail_refused(why: &str) -> Result<()> {
     .into())
 }
 
-/// The game data from the mirrors, checked against the sha256 nEVR's manifest gives it.
+/// The game data nEVR's manifest names (from its release folder), checked against its sha256.
 fn fetch_data(r: &QuestRelease, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<PathBuf> {
     let job = download::Job {
-        url: quest_file(DATA_ZIP),
+        url: r.data.url.clone(),
         dir: staging(),
         filename: DATA_ZIP.into(),
-        use_mirror: true,
+        use_mirror: false,
         extract: false,
         sha256: Some(r.data.sha256.clone()),
     };
@@ -372,11 +364,6 @@ mod tests {
     }
 
     #[test]
-    fn game_data_comes_from_the_quest_tree() {
-        assert_eq!(quest_file(DATA_ZIP), "quest/_data.zip");
-    }
-
-    #[test]
     fn activity_parsing() {
         let out = "priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=true\ncom.readyatdawn.r15/com.unity3d.player.UnityPlayerActivity\n";
         assert_eq!(
@@ -414,6 +401,7 @@ mod tests {
             version_code: 60200999,
             signer_cert_sha256: String::new(),
             data: nevr_release::GameData {
+                url: String::new(),
                 sha256: String::new(),
                 size: 0,
                 contents: Vec::new(),

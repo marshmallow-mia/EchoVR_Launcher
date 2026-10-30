@@ -233,6 +233,8 @@ pub struct QuestRelease {
 /// The game data a Quest release reads: a zip whose files go under the app's media folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GameData {
+    /// The zip in nEVR's release folder (`data/echovr-data-<12 hex>.zip`).
+    pub url: String,
     pub sha256: String,
     pub size: u64,
     /// Its files (`_data/<data version>/rad15/android/...`), each with its size and sha256.
@@ -638,12 +640,12 @@ fn quest_in(m: &Value, version: &str, base: &str) -> Result<QuestRelease, Refuse
         },
         version_code,
         signer_cert_sha256: signer.to_string(),
-        data: game_data_for(m, version, r)?,
+        data: game_data_for(m, version, r, base)?,
     })
 }
 
 /// Release `version`'s (`r`) game data, or the newest release's that lists one.
-fn game_data_for(m: &Value, version: &str, r: &Value) -> Result<GameData, Refused> {
+fn game_data_for(m: &Value, version: &str, r: &Value, base: &str) -> Result<GameData, Refused> {
     fn one<'a>(r: &'a Value, v: &str) -> Result<Option<&'a Value>, Refused> {
         match game_datas(r)[..] {
             [] => Ok(None),
@@ -669,6 +671,13 @@ fn game_data_for(m: &Value, version: &str, r: &Value) -> Result<GameData, Refuse
             newest.ok_or_else(|| refused(8, "no release lists the Quest's game data"))?
         }
     };
+    let path = data["path"].as_str().unwrap_or_default();
+    if !game_data_zip_ok(path) {
+        return Err(refused(
+            8,
+            "the game data's path is not data/echovr-data-<12 hex>.zip",
+        ));
+    }
     let (sha256, size) = sha_and_size(data)?;
     let mut contents: Vec<Member> = Vec::new();
     for c in data["contents"].as_array().into_iter().flatten() {
@@ -693,6 +702,7 @@ fn game_data_for(m: &Value, version: &str, r: &Value) -> Result<GameData, Refuse
         return Err(refused(8, "the game data lists no files"));
     }
     Ok(GameData {
+        url: format!("{base}/{path}"),
         sha256,
         size,
         contents,
@@ -700,6 +710,13 @@ fn game_data_for(m: &Value, version: &str, r: &Value) -> Result<GameData, Refuse
 }
 
 /// `_data/<data version>/rad15/android/(manifests|packages)/<name>`, the name of a-z 0-9 _.
+/// The one shape a game data zip's path has: a file right under `data/`.
+fn game_data_zip_ok(path: &str) -> bool {
+    path.strip_prefix("data/echovr-data-")
+        .and_then(|n| n.strip_suffix(".zip"))
+        .is_some_and(|h| h.len() == 12 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+}
+
 fn data_path_ok(path: &str) -> bool {
     let p: Vec<&str> = path.split('/').collect();
     let name_ok = |s: &str| {
@@ -1157,6 +1174,7 @@ mod tests {
         assert_eq!(&q.signer_cert_sha256[..8], "3bcb5868");
         // The same data as the launcher's _data.zip.
         assert!(q.data.sha256.starts_with("fc2eedeacc50"));
+        assert!(q.data.url.ends_with("/data/echovr-data-fc2eedeacc50.zip"));
         assert_eq!((q.data.size, q.data.contents.len()), (937395400, 4));
     }
 
