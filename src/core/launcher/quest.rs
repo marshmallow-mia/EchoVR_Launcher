@@ -64,9 +64,8 @@ fn is_release(
 }
 
 /// Puts the offered nEVR release onto the headset, as nEVR's install method says (ADR 0023,
-/// "Quest plan"): its APK over what is installed, then the game data when it isn't there,
-/// then the checks. Another build (or a newer one), which Android won't install over, is
-/// uninstalled first: updating to nEVR is all the player asked for.
+/// "Quest plan"): a clean install of its APK (what is installed is uninstalled first, the
+/// settings kept), then the game data when it isn't there, then the checks.
 pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome> {
     ready()?;
     on(Step::Status("Checking nEVR's release...".into()));
@@ -88,33 +87,33 @@ pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome>
                 .download(&apk, cancel, &mut |f| on(Step::Percent(f)))
                 .map_err(anyhow::Error::from)?;
         }
+        // A clean install, never one over another build: what is installed goes first (its
+        // sign-in with it), and the settings in the game's media folder, which Android takes
+        // with the app, come back after.
+        let kept = if have.is_some() {
+            on(Step::Status("Keeping your Echo VR settings...".into()));
+            let kept = quest_install::save_settings(&staging().join("quest-settings"));
+            on(Step::Status(format!("Updating to nEVR {v}...")));
+            quest_install::uninstall()?;
+            kept
+        } else {
+            None
+        };
         on(Step::Status("Installing Echo VR on your Quest...".into()));
         match quest_install::install_apk(&apk) {
             ApkInstall::Done => {}
             ApkInstall::Failed(why) => bail_refused(&why)?,
-            _ => {
-                // Android takes the game's media folder with the app: the settings in it
-                // come back after.
-                on(Step::Status("Keeping your Echo VR settings...".into()));
-                let kept = quest_install::save_settings(&staging().join("quest-settings"));
-                on(Step::Status(format!("Updating to nEVR {v}...")));
-                quest_install::uninstall()?;
-                match quest_install::install_apk(&apk) {
-                    ApkInstall::Done => {}
-                    ApkInstall::Failed(why) => bail_refused(&why)?,
-                    other => bail_refused(&format!("{other:?}"))?,
-                }
-                if let Some(dir) = kept {
-                    on(Step::Status("Putting your Echo VR settings back...".into()));
-                    if quest_install::restore_settings(&dir) {
-                        let _ = std::fs::remove_dir_all(dir.parent().unwrap_or(&dir));
-                    } else {
-                        tracing::warn!(
-                            "Quest: settings not put back; a copy is in {}",
-                            dir.display()
-                        );
-                    }
-                }
+            other => bail_refused(&format!("{other:?}"))?,
+        }
+        if let Some(dir) = kept {
+            on(Step::Status("Putting your Echo VR settings back...".into()));
+            if quest_install::restore_settings(&dir) {
+                let _ = std::fs::remove_dir_all(dir.parent().unwrap_or(&dir));
+            } else {
+                tracing::warn!(
+                    "Quest: settings not put back; a copy is in {}",
+                    dir.display()
+                );
             }
         }
         let _ = std::fs::remove_file(&apk);
