@@ -138,6 +138,9 @@ pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome>
             bail!("The game data didn't arrive complete on your Quest. Please try again.");
         }
     }
+    // The community content (the Echo Combat update's asset patches), as Crafter's
+    // installer adds it.
+    crate::core::quest_content::apply(cancel, &staging(), &mut |s| on(Step::Status(s)))?;
     quest_install::grant_permissions();
 
     // What the headset reports now has to be what nEVR's manifest names.

@@ -22,6 +22,7 @@ pub mod pc_update;
 pub mod platform;
 pub mod plugin_host;
 pub mod process;
+pub mod quest_content;
 pub mod quest_install;
 pub mod remote_zip;
 pub mod revive;
