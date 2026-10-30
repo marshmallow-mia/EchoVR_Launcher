@@ -2,7 +2,9 @@
 //! (`servers.json`, aggregated from the EchoVRCE status API by the feed bot)
 //! and Community News (`news.json`, mirrored from Discord by the feed bot).
 //! News images are referenced by content-hashed file names, so a name that didn't change
-//! never needs downloading again.
+//! never needs downloading again. A dev code's folder under `launcher/dev/` may have a
+//! `news.json` (and its images) of its own: its slots go over the feed's, so news can be
+//! tried with a code before it goes to everyone.
 
 use std::sync::OnceLock;
 
@@ -110,13 +112,71 @@ pub struct NewsItem {
     /// Discord markdown.
     #[serde(default)]
     pub body: String,
-    /// File name of the message's first image under [`BASE`].
+    /// File name of the message's first image under [`BASE`] (or, for a dev code's news,
+    /// in its folder).
     #[serde(default)]
     pub image: Option<String>,
     #[serde(default)]
     pub link_label: String,
     #[serde(default)]
     pub link_url: String,
+    /// Where its image is: the feed's, or a dev code's folder.
+    #[serde(skip)]
+    pub from: Source,
+}
+
+/// Where a news item (its image) comes from.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum Source {
+    #[default]
+    Feed,
+    /// A dev code's folder (`news.json` there): the code, never shown or logged.
+    Dev(String),
+}
+
+/// Never the code.
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Source::Feed => f.write_str("Feed"),
+            Source::Dev(_) => f.write_str("Dev"),
+        }
+    }
+}
+
+/// A news image to download: `key` names it among the feed's images (a dev folder's
+/// apart from the feed's, without the code), `name` is its file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRef {
+    pub key: String,
+    pub name: String,
+    pub from: Source,
+}
+
+impl NewsItem {
+    /// Its image, if it has one (a dev folder's only by a plain file name).
+    pub fn image_ref(&self) -> Option<ImageRef> {
+        let name = self.image.clone()?;
+        let key = match &self.from {
+            Source::Feed => name.clone(),
+            Source::Dev(_) if plain_name(&name) => format!("dev/{name}"),
+            Source::Dev(_) => return None,
+        };
+        Some(ImageRef {
+            key,
+            name,
+            from: self.from.clone(),
+        })
+    }
+}
+
+/// Pure: `name` is a file name in a folder, nothing that leaves it.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 pub fn fetch_servers() -> Result<Servers> {
@@ -125,15 +185,65 @@ pub fn fetch_servers() -> Result<Servers> {
     ))?)?)
 }
 
+/// The news: the feed's, with a dev code's (the first code's folder with a `news.json`)
+/// over it slot by slot. An error only when neither has any.
 pub fn fetch_news() -> Result<News> {
-    Ok(serde_json::from_str(&http::get_text(&format!(
-        "{BASE}news.json"
-    ))?)?)
+    let feed = http::get_text(&format!("{BASE}news.json"))
+        .and_then(|t| Ok(serde_json::from_str::<News>(&t)?));
+    let dev = dev_news();
+    match feed {
+        Ok(feed) => Ok(over(Some(feed), dev).unwrap_or_default()),
+        Err(e) => over(None, dev).ok_or(e),
+    }
 }
 
-/// A feed image by file name.
-pub fn fetch_image(name: &str) -> Result<image::RgbaImage> {
-    let bytes = http::get_bytes(&format!("{BASE}{name}"))?;
+/// The first dev code's news (its folder's `news.json`), its items marked as its own.
+fn dev_news() -> Option<News> {
+    for code in crate::core::launcher::dev_code::codes() {
+        match crate::core::launcher::dev_code::fetch_ours(&code, "news.json") {
+            Ok(Some(text)) => match serde_json::from_str::<News>(&text) {
+                Ok(n) => return Some(from_dev(n, &code)),
+                Err(e) => tracing::warn!("a dev code's news.json doesn't read: {e}"),
+            },
+            Ok(None) => {}
+            // Already without the code.
+            Err(e) => tracing::info!("a dev code's news unavailable: {e:#}"),
+        }
+    }
+    None
+}
+
+/// Pure: `n`'s items as `code`'s.
+fn from_dev(mut n: News, code: &str) -> News {
+    for item in [&mut n.slots.main, &mut n.slots.community]
+        .into_iter()
+        .flatten()
+    {
+        item.from = Source::Dev(code.to_string());
+    }
+    n
+}
+
+/// Pure: `dev`'s slots over `feed`'s, each where it has one; `None` when neither is there.
+fn over(feed: Option<News>, dev: Option<News>) -> Option<News> {
+    let Some(dev) = dev else { return feed };
+    let mut n = feed.unwrap_or_default();
+    if dev.slots.main.is_some() {
+        n.slots.main = dev.slots.main;
+    }
+    if dev.slots.community.is_some() {
+        n.slots.community = dev.slots.community;
+    }
+    Some(n)
+}
+
+/// A news image: from the feed, or from the dev code's folder its news came from.
+pub fn fetch_image(image: &ImageRef) -> Result<image::RgbaImage> {
+    let bytes = match &image.from {
+        Source::Feed => http::get_bytes(&format!("{BASE}{}", image.name))?,
+        Source::Dev(code) => crate::core::launcher::dev_code::fetch_ours_bytes(code, &image.name)?
+            .ok_or_else(|| anyhow::anyhow!("not in the dev code's folder"))?,
+    };
     Ok(image::load_from_memory(&bytes)?.to_rgba8())
 }
 
@@ -280,6 +390,7 @@ pub fn mock_news() -> News {
                 image: None,
                 link_label: "How to play".into(),
                 link_url: "https://echovr.de".into(),
+                from: Source::Feed,
             }),
             community: Some(NewsItem {
                 title: "Community".into(),
@@ -289,6 +400,7 @@ pub fn mock_news() -> News {
                 image: None,
                 link_label: "Join the Discord".into(),
                 link_url: "https://echovr.de".into(),
+                from: Source::Feed,
             }),
         },
     }
@@ -329,6 +441,69 @@ mod tests {
         .unwrap();
         assert_eq!(n.slots.main.unwrap().title, "Halloween");
         assert!(n.slots.community.is_none());
+    }
+
+    fn news(main: Option<&str>, community: Option<&str>) -> News {
+        let item = |t: &str| NewsItem {
+            title: t.into(),
+            image: Some(format!("{t}.jpg")),
+            ..Default::default()
+        };
+        News {
+            slots: Slots {
+                main: main.map(item),
+                community: community.map(item),
+            },
+        }
+    }
+
+    fn titles(n: &News) -> (Option<&str>, Option<&str>) {
+        (
+            n.slots.main.as_ref().map(|i| i.title.as_str()),
+            n.slots.community.as_ref().map(|i| i.title.as_str()),
+        )
+    }
+
+    #[test]
+    fn dev_news_goes_over_the_feed_slot_by_slot() {
+        let dev = || Some(from_dev(news(Some("event"), None), "code"));
+        // The dev code's main over the feed's; the feed's community stays.
+        let n = over(Some(news(Some("feed"), Some("lounge"))), dev()).unwrap();
+        assert_eq!(titles(&n), (Some("event"), Some("lounge")));
+        assert_eq!(n.slots.main.unwrap().from, Source::Dev("code".into()));
+        assert_eq!(n.slots.community.unwrap().from, Source::Feed);
+        // No feed news (its news.json missing): the dev code's alone.
+        let n = over(None, dev()).unwrap();
+        assert_eq!(titles(&n), (Some("event"), None));
+        // No dev news (a 404 in its folder): the feed's as it is.
+        let n = over(Some(news(Some("feed"), None)), None).unwrap();
+        assert_eq!(titles(&n), (Some("feed"), None));
+        // Neither: nothing, so the Play page keeps its own banner.
+        assert!(over(None, None).is_none());
+    }
+
+    #[test]
+    fn dev_images_come_from_their_folder_under_their_own_key() {
+        let feed = news(Some("a"), None).slots.main.unwrap();
+        let r = feed.image_ref().unwrap();
+        assert_eq!((r.key.as_str(), r.from), ("a.jpg", Source::Feed));
+        let dev = from_dev(news(Some("a"), None), "secretcode")
+            .slots
+            .main
+            .unwrap();
+        let r = dev.image_ref().unwrap();
+        // Apart from the feed's a.jpg, and never naming the code.
+        assert_eq!(r.key, "dev/a.jpg");
+        assert_eq!(r.name, "a.jpg");
+        assert_eq!(r.from, Source::Dev("secretcode".into()));
+        assert!(!format!("{r:?}").contains("secretcode"));
+        // Only a plain file name in the dev folder.
+        for bad in ["../x.jpg", "a/b.jpg", ".hidden", "", "a b.jpg"] {
+            let mut i = dev.clone();
+            i.image = Some(bad.into());
+            assert!(i.image_ref().is_none(), "{bad}");
+        }
+        assert!(NewsItem::default().image_ref().is_none());
     }
 
     #[test]

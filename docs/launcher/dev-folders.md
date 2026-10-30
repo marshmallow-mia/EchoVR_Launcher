@@ -26,6 +26,13 @@ A folder can name its channel in a root-owned `channel.json` (`{"name": "…"}`;
 writes it): Advanced settings shows the name, and alerts can aim at the channel
 ([alerts.md](alerts.md)).
 
+A maintainer's folder (under `launcher/dev/`, never a gated third-party one) may also hold a
+`news.json` in the feed's format (`launcher/feed/news.json`, see `src/core/launcher/feed.rs`)
+with its images beside it (plain file names): since 0.13.2 the Play page shows its `main`
+and/or `community` slot over the feed's, with the code set. That's how news is tried before
+it goes to everyone: going live is copying the file and its images into `launcher/feed/`,
+which every launcher reads.
+
 Third-party developers' channels (since 0.13.0-alpha.2) are behind the EchoVRCE sign-in, at
 `launcher/gated/dev/<code>/`: *restricted* ones open for the developer's own EchoVRCE account
 and the accounts in their folder's `access.json`, *public* ones for any signed-in account

@@ -233,6 +233,24 @@ pub fn get_bytes(url: &str) -> Result<Vec<u8>> {
     })
 }
 
+/// [`get_bytes`], but a resource that isn't there (404 or 410) is `None` instead of an
+/// error, and another failure carries its [`HttpStatus`] (a dev folder's news image).
+pub fn get_bytes_opt(url: &str) -> Result<Option<Vec<u8>>> {
+    block_on(async {
+        let resp = client()
+            .get(url)
+            .timeout(Duration::from_secs(60))
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?;
+        match resp.status().as_u16() {
+            404 | 410 => Ok(None),
+            s if (200..300).contains(&s) => Ok(Some(resp.bytes().await?.to_vec())),
+            s => Err(anyhow::Error::new(HttpStatus(s)).context(format!("GET {url}"))),
+        }
+    })
+}
+
 /// Streams a URL straight to `dest`. For small update files; no progress reporting.
 pub fn download_to(url: &str, dest: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     let done = download_to_inner(url, dest, cancel);

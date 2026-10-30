@@ -1199,10 +1199,7 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
     let banner = Dr::new(area.x + dx / 2.0, area.y, NEWS.w, area.h);
     let news = d.feed.news.clone();
     let main = news.as_ref().and_then(|n| n.slots.main.clone());
-    let tex = main
-        .as_ref()
-        .and_then(|m| d.feed.texture(m.image.as_deref()))
-        .cloned();
+    let tex = main.as_ref().and_then(|m| d.feed.texture(m)).cloned();
     // Nothing loaded (yet), and snapshots: the design's banner, with its HOW TO PLAY.
     let fallback = news.is_none() || (tex.is_none() && d.demo && !d.feed_live);
     match tex {

@@ -380,28 +380,41 @@ pub fn refresh_channels() {
 /// error [`crate::core::http::status_of`] tells). Errors never name the code.
 pub fn fetch(code: &str, name: &str) -> anyhow::Result<Option<String>> {
     let get = |root: &str| crate::core::http::get_text_opt(&format!("{root}{code}/{name}"));
-    let hide = |e: anyhow::Error| {
-        let status = crate::core::http::status_of(&e);
-        let e = anyhow::anyhow!(redact(&format!("{e:#}")));
-        match status {
-            Some(s) => e.context(crate::core::http::HttpStatus(s)),
-            None => e,
-        }
-    };
     let (first, second, gated_first) = if is_gated(code) {
         (GATED_ROOT, DEV_ROOT, true)
     } else {
         (DEV_ROOT, GATED_ROOT, false)
     };
-    match get(first).map_err(hide)? {
+    match get(first).map_err(hidden)? {
         Some(t) => Ok(Some(t)),
         None => {
-            let t = get(second).map_err(hide)?;
+            let t = get(second).map_err(hidden)?;
             if t.is_some() {
                 note_gated(code, !gated_first);
             }
             Ok(t)
         }
+    }
+}
+
+/// [`fetch`] from the maintainers' folders only (`launcher/dev/`, never a third-party
+/// developer's gated channel): what the Play page's news shows comes from us.
+pub fn fetch_ours(code: &str, name: &str) -> anyhow::Result<Option<String>> {
+    crate::core::http::get_text_opt(&format!("{DEV_ROOT}{code}/{name}")).map_err(hidden)
+}
+
+/// [`fetch_ours`] for a binary file (a news image).
+pub fn fetch_ours_bytes(code: &str, name: &str) -> anyhow::Result<Option<Vec<u8>>> {
+    crate::core::http::get_bytes_opt(&format!("{DEV_ROOT}{code}/{name}")).map_err(hidden)
+}
+
+/// `e` without any code, keeping its HTTP status.
+fn hidden(e: anyhow::Error) -> anyhow::Error {
+    let status = crate::core::http::status_of(&e);
+    let e = anyhow::anyhow!(redact(&format!("{e:#}")));
+    match status {
+        Some(s) => e.context(crate::core::http::HttpStatus(s)),
+        None => e,
     }
 }
 

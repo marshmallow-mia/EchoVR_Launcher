@@ -458,13 +458,13 @@ impl Feed {
     const STATUS_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
     const NEWS_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
 
-    /// The image file names the news refers to.
-    fn wanted(&self) -> Vec<String> {
+    /// The images the news refers to (a dev folder's keyed apart from the feed's).
+    fn wanted(&self) -> Vec<feed::ImageRef> {
         self.news
             .iter()
             .flat_map(|n| [&n.slots.main, &n.slots.community])
             .flatten()
-            .filter_map(|i| i.image.clone())
+            .filter_map(feed::NewsItem::image_ref)
             .collect()
     }
 
@@ -473,12 +473,15 @@ impl Feed {
     fn ready(&self) -> bool {
         self.status.is_some()
             && self.news.is_some()
-            && self.wanted().iter().all(|n| self.textures.contains_key(n))
+            && self
+                .wanted()
+                .iter()
+                .all(|i| self.textures.contains_key(&i.key))
     }
 
-    /// The texture of a feed image, once downloaded.
-    fn texture(&self, name: Option<&str>) -> Option<&egui::TextureHandle> {
-        self.textures.get(name?)
+    /// The texture of a news item's image, once downloaded.
+    fn texture(&self, item: &feed::NewsItem) -> Option<&egui::TextureHandle> {
+        self.textures.get(&item.image_ref()?.key)
     }
 }
 
@@ -2365,17 +2368,21 @@ impl Dashboard {
             });
         }
         let wanted = self.feed.wanted();
-        self.feed.textures.retain(|name, _| wanted.contains(name));
-        for name in wanted {
-            if self.feed.textures.contains_key(&name) || self.feed.images_pending.contains(&name) {
+        self.feed
+            .textures
+            .retain(|key, _| wanted.iter().any(|i| i.key == *key));
+        for image in wanted {
+            let key = image.key.clone();
+            if self.feed.textures.contains_key(&key) || self.feed.images_pending.contains(&key) {
                 continue;
             }
-            self.feed.images_pending.insert(name.clone());
+            self.feed.images_pending.insert(key.clone());
             self.worker.spawn(ctx, move |tx| {
-                let img = feed::fetch_image(&name)
-                    .inspect_err(|e| tracing::warn!("feed image {name}: {e:#}"))
+                // The key never names a dev code.
+                let img = feed::fetch_image(&image)
+                    .inspect_err(|e| tracing::warn!("feed image {key}: {e:#}"))
                     .ok();
-                tx.send(Msg::FeedImage(name, img));
+                tx.send(Msg::FeedImage(key, img));
             });
         }
         ctx.request_repaint_after(std::time::Duration::from_secs(10));
