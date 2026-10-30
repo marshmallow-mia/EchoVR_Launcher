@@ -75,8 +75,13 @@ const CAPTION: Color32 = Color32::from_gray(118);
 const CAPTION_ASCENT: f32 = 0.2;
 
 pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
-    // Look for a headset quietly once, so the Quest chip has something to say.
-    if !d.quest_auto_checked && !d.demo && !kit.ghost {
+    // Look for a headset quietly once, so the Quest chip has something to say: only for a
+    // player on the Quest side or with a Quest set up before. adb's server would start for
+    // everyone else too (on Windows its mDNS brings up a firewall question at first start).
+    let quest_player = d.platform == Platform::Quest
+        || d.state.quest_ip.is_some()
+        || d.state.quest_adb_network;
+    if quest_player && !d.quest_auto_checked && !d.demo && !kit.ghost {
         d.quest_auto_checked = true;
         if d.quest_conn.status.is_none() && !d.quest_conn.checking {
             d.check_quest(ctx, false);
