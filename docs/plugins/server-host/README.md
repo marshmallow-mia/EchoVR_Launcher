@@ -74,7 +74,10 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
 - **Settings** (the gear button):
   - the game version the servers run;
   - what new servers start with (regions, guilds, tick rate);
-  - the services (EchoVRCE's, or another Nakama's);
+  - the services (EchoVRCE's, or another Nakama's). EchoVRCE's login and registration for
+    nEVR 6 servers is `wss://g.echovrce.com/nevr`. From 1.1.1 on the page moves servers off
+    the old addresses (`ws://g.echovrce.com:80/spr`, where EchoVRCE refuses a nEVR 6
+    server's login) the first time it loads;
   - the publisher lock;
   - an optional bind address and public address (`network.internal_ip`, `network.external_ip`).
 

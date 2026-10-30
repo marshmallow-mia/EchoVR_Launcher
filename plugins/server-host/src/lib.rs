@@ -9,6 +9,16 @@ use echovr_plugin::*;
 const POLL: u32 = 1;
 const RUNNING: u32 = 2;
 
+/// EchoVRCE's login and registration for nEVR 6 servers (what nEVR has built in). Without
+/// the port: launchers up to 0.13.3 turn `wss://g.echovrce.com:443/nevr` back into the old
+/// login when they read the settings.
+const ECHOVRCE_NEVR: &str = "wss://g.echovrce.com/nevr";
+/// What launchers up to 0.13.3 keep as EchoVRCE's: it refuses a nEVR 6 server's login
+/// (400), and the server never registers.
+const OLD_LOGIN: &str = "ws://g.echovrce.com:80/spr";
+const OLD_REGISTRATION: &str = "ws://g.echovrce.com:80/nevr";
+const NEVR_443: &str = "wss://g.echovrce.com:443/nevr";
+
 #[derive(Default, PartialEq, Clone, Copy)]
 enum Tab {
     #[default]
@@ -83,6 +93,43 @@ fn refresh(s: &mut S) {
     let names = servers(s);
     if s.console.is_empty() || !names.contains(&s.console) {
         s.console = names.first().cloned().unwrap_or_default();
+    }
+}
+
+/// Pure: the settings that move the servers off the old EchoVRCE addresses (`login`,
+/// `registration` as saved), if they are on them. Other services stay as they are.
+fn nevr_address_change(login: &str, registration: &str) -> Option<Value> {
+    if login.trim() != OLD_LOGIN {
+        return None;
+    }
+    let mut args = json!({"socket_uri": ECHOVRCE_NEVR});
+    if matches!(registration.trim(), "" | OLD_REGISTRATION | NEVR_443) {
+        args["serverdb_uri"] = json!(ECHOVRCE_NEVR);
+    }
+    Some(args)
+}
+
+/// Once the page loads: servers on the old EchoVRCE addresses get the one nEVR 6 signs in
+/// and registers at (idle servers start again with it).
+fn to_nevr_address(s: &mut S) {
+    let change = nevr_address_change(
+        &text_at(&s.st, "services.socket_uri"),
+        &text_at(&s.st, "services.serverdb_uri"),
+    );
+    if let Some(args) = change {
+        if call("settings", &args).is_ok() {
+            notify("The servers sign in and register at EchoVRCE's current address now");
+            refresh(s);
+        }
+    }
+}
+
+/// Pure: `v` as the settings keep it: EchoVRCE's nEVR address without its port.
+fn kept_address(v: &str) -> String {
+    if v.trim() == NEVR_443 {
+        ECHOVRCE_NEVR.to_string()
+    } else {
+        v.to_string()
     }
 }
 
@@ -209,6 +256,7 @@ impl Plugin for ServerHost {
             s.follow = true;
             s.add_n = "1".into();
             refresh(s);
+            to_nevr_address(s);
             ask_running(s);
         });
         Ok(())
@@ -359,6 +407,10 @@ fn clicked(s: &mut S, id: &str) {
                 ] {
                     s.form.insert(k.into(), text_at(&d, k));
                 }
+                // The launcher's own defaults are the old addresses up to 0.13.3.
+                for k in ["socket_uri", "serverdb_uri"] {
+                    s.form.insert(k.into(), ECHOVRCE_NEVR.into());
+                }
                 s.form.insert("publisher_lock".into(), "echovrce".into());
             }
         }
@@ -384,7 +436,11 @@ fn clicked(s: &mut S, id: &str) {
             }
         }
         "save-settings" => {
-            let args: Value = s.form.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
+            let args: Value = s
+                .form
+                .iter()
+                .map(|(k, v)| (k.clone(), json!(kept_address(v))))
+                .collect();
             match call("settings", &args) {
                 Ok(_) => {
                     s.over = None;
@@ -1098,3 +1154,29 @@ fn background_card(ui: &mut Ui, s: &S) {
 }
 
 export_plugin!(ServerHost);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moves_only_the_old_echovrce_addresses() {
+        let c = nevr_address_change(OLD_LOGIN, OLD_REGISTRATION).unwrap();
+        assert_eq!(c["socket_uri"], ECHOVRCE_NEVR);
+        assert_eq!(c["serverdb_uri"], ECHOVRCE_NEVR);
+        // Another registration set by the host stays.
+        let c = nevr_address_change(OLD_LOGIN, "wss://other:443/nevr").unwrap();
+        assert!(c.get("serverdb_uri").is_none());
+        assert!(nevr_address_change(ECHOVRCE_NEVR, OLD_REGISTRATION).is_none());
+        assert!(nevr_address_change("wss://other/nevr", "").is_none());
+    }
+
+    #[test]
+    fn keeps_echovrces_address_without_its_port() {
+        assert_eq!(
+            kept_address(" wss://g.echovrce.com:443/nevr "),
+            ECHOVRCE_NEVR
+        );
+        assert_eq!(kept_address("wss://other:443/nevr"), "wss://other:443/nevr");
+    }
+}
