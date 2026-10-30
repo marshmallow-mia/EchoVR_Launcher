@@ -1200,6 +1200,8 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
     let news = d.feed.news.clone();
     let main = news.as_ref().and_then(|n| n.slots.main.clone());
     let tex = main.as_ref().and_then(|m| d.feed.texture(m)).cloned();
+    let lettering = main.as_ref().and_then(|m| d.feed.lettering(m)).cloned();
+    let links = main.as_ref().map(NewsItem::all_links).unwrap_or_default();
     // Nothing loaded (yet), and snapshots: the design's banner, with its HOW TO PLAY.
     let fallback = news.is_none() || (tex.is_none() && d.demo && !d.feed_live);
     match tex {
@@ -1210,6 +1212,26 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
             let (x, w, h) = NEWS_LETTERING;
             let y = area.y + (area.h - h) / 2.0;
             kit.image_d("news_fallback_text.png", Dr::new(x, y, w, h));
+            banner_rim(kit, area);
+        }
+        // In two layers, as the design's banner: the background covers the card, the
+        // lettering stays whole above the links.
+        Some(tex) if main.as_ref().is_some_and(|m| m.lettering.is_some()) => {
+            kit.texture_cover(&tex, kit.drect(area), dz(4.0));
+            if let Some(l) = &lettering {
+                let bottom = if links.is_empty() {
+                    area.y + area.h - 14.0
+                } else {
+                    NEWS_LINK.1 - 36.0
+                };
+                let fit = Dr::new(
+                    banner.x + 40.0,
+                    area.y + 14.0,
+                    banner.w - 80.0,
+                    bottom - area.y - 14.0,
+                );
+                kit.paint_tex(l, contain(l.size(), kit.drect(fit)), Color32::WHITE);
+            }
             banner_rim(kit, area);
         }
         Some(tex) => {
@@ -1242,18 +1264,18 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
             }
         }
     }
-    let link = match (&news, &main) {
-        _ if fallback => Some((
+    let links = if fallback {
+        vec![(
             "How to play".to_string(),
             crate::core::LOUNGE_INVITE.to_string(),
-        )),
-        (_, Some(m)) if !m.link_label.is_empty() && !m.link_url.is_empty() => {
-            Some((m.link_label.clone(), m.link_url.clone()))
-        }
-        _ => None,
+        )]
+    } else {
+        links
     };
-    if let Some((label, url)) = link {
-        let (right, base) = NEWS_LINK;
+    // Side by side from the right, the first leftmost.
+    let (right, base) = NEWS_LINK;
+    let mut x = dz(right + dx);
+    for (i, (label, url)) in links.iter().enumerate().rev() {
         let g = kit.spaced_fit(
             &label.to_uppercase(),
             design::conthrax(21.0),
@@ -1262,9 +1284,10 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
             true,
             dz(700.0),
         );
-        let r = kit.put(dz(right + dx) - g.size().x, dz(base) - g.size().y, g);
-        if kit.click_area("news-link", r, &url) {
-            crate::core::platform::open_url(&url);
+        let r = kit.put(x - g.size().x, dz(base) - g.size().y, g);
+        x = r.left() - dz(48.0);
+        if kit.click_area(&format!("news-link-{i}"), r, url) {
+            crate::core::platform::open_url(url);
         }
     }
 
@@ -1274,6 +1297,13 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
     card(kit, 0, CARDS[0].wider(half).taller(dy), &main_card, false);
     let second = CARDS[1].moved(half).wider(half).taller(dy);
     card(kit, 1, second, &community_card, true);
+}
+
+/// Pure: `size` scaled to fit inside `r`, centred.
+fn contain(size: [usize; 2], r: egui::Rect) -> egui::Rect {
+    let (w, h) = (size[0].max(1) as f32, size[1].max(1) as f32);
+    let s = (r.width() / w).min(r.height() / h);
+    egui::Rect::from_center_size(r.center(), egui::vec2(w * s, h * s))
 }
 
 /// The rim around a picture banner: violet at the top to pink at the bottom.

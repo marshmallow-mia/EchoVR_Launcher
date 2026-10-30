@@ -464,7 +464,8 @@ impl Feed {
             .iter()
             .flat_map(|n| [&n.slots.main, &n.slots.community])
             .flatten()
-            .filter_map(feed::NewsItem::image_ref)
+            .flat_map(|i| [i.image_ref(), i.lettering_ref()])
+            .flatten()
             .collect()
     }
 
@@ -482,6 +483,11 @@ impl Feed {
     /// The texture of a news item's image, once downloaded.
     fn texture(&self, item: &feed::NewsItem) -> Option<&egui::TextureHandle> {
         self.textures.get(&item.image_ref()?.key)
+    }
+
+    /// The texture of a news item's lettering, once downloaded.
+    fn lettering(&self, item: &feed::NewsItem) -> Option<&egui::TextureHandle> {
+        self.textures.get(&item.lettering_ref()?.key)
     }
 }
 

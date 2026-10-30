@@ -116,13 +116,28 @@ pub struct NewsItem {
     /// in its folder).
     #[serde(default)]
     pub image: Option<String>,
+    /// A picture over `image` (with transparency), as the built-in banner's lettering:
+    /// `image` covers the banner, this stays whole on top of it. Same place as `image`.
+    #[serde(default)]
+    pub lettering: Option<String>,
     #[serde(default)]
     pub link_label: String,
     #[serde(default)]
     pub link_url: String,
+    /// More links after `link_label`'s, side by side at the banner's bottom right.
+    #[serde(default)]
+    pub links: Vec<NewsLink>,
     /// Where its image is: the feed's, or a dev code's folder.
     #[serde(skip)]
     pub from: Source,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NewsLink {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub url: String,
 }
 
 /// Where a news item (its image) comes from.
@@ -156,7 +171,24 @@ pub struct ImageRef {
 impl NewsItem {
     /// Its image, if it has one (a dev folder's only by a plain file name).
     pub fn image_ref(&self) -> Option<ImageRef> {
-        let name = self.image.clone()?;
+        self.picture(self.image.as_deref())
+    }
+
+    /// Its lettering over the image, if it has one (the same rules).
+    pub fn lettering_ref(&self) -> Option<ImageRef> {
+        self.picture(self.lettering.as_deref())
+    }
+
+    /// Its links (label, URL), `link_label`'s first, each with both.
+    pub fn all_links(&self) -> Vec<(String, String)> {
+        std::iter::once((self.link_label.clone(), self.link_url.clone()))
+            .chain(self.links.iter().map(|l| (l.label.clone(), l.url.clone())))
+            .filter(|(l, u)| !l.trim().is_empty() && !u.trim().is_empty())
+            .collect()
+    }
+
+    fn picture(&self, name: Option<&str>) -> Option<ImageRef> {
+        let name = name?.to_string();
         let key = match &self.from {
             Source::Feed => name.clone(),
             Source::Dev(_) if plain_name(&name) => format!("dev/{name}"),
@@ -390,7 +422,7 @@ pub fn mock_news() -> News {
                 image: None,
                 link_label: "How to play".into(),
                 link_url: "https://echovr.de".into(),
-                from: Source::Feed,
+                ..Default::default()
             }),
             community: Some(NewsItem {
                 title: "Community".into(),
@@ -400,7 +432,7 @@ pub fn mock_news() -> News {
                 image: None,
                 link_label: "Join the Discord".into(),
                 link_url: "https://echovr.de".into(),
-                from: Source::Feed,
+                ..Default::default()
             }),
         },
     }
@@ -504,6 +536,36 @@ mod tests {
             assert!(i.image_ref().is_none(), "{bad}");
         }
         assert!(NewsItem::default().image_ref().is_none());
+        // The lettering: from the same folder, by the same rules.
+        let mut l = dev.clone();
+        l.lettering = Some("t.png".into());
+        assert_eq!(l.lettering_ref().unwrap().key, "dev/t.png");
+        l.lettering = Some("../t.png".into());
+        assert!(l.lettering_ref().is_none());
+    }
+
+    #[test]
+    fn links_in_order_each_with_both() {
+        let n: News = serde_json::from_str(
+            r#"{"slots":{"main":{"title":"t","link_label":"EchoVRCE.com","link_url":"https://echovrce.com",
+            "links":[{"label":"Join the Lounge","url":"https://discord.com/invite/x"},{"label":"no url"}]}}}"#,
+        )
+        .unwrap();
+        let m = n.slots.main.unwrap();
+        assert_eq!(
+            m.all_links(),
+            [
+                (
+                    "EchoVRCE.com".to_string(),
+                    "https://echovrce.com".to_string()
+                ),
+                (
+                    "Join the Lounge".to_string(),
+                    "https://discord.com/invite/x".to_string()
+                ),
+            ]
+        );
+        assert!(NewsItem::default().all_links().is_empty());
     }
 
     #[test]
