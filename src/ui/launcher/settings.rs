@@ -1182,7 +1182,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         ask_upload(d);
     }
 
-    about(d, kit, ctx, x, w);
+    about(d, kit, ctx, x, w, y + BTN_H);
     let footer = myriad(
         kit,
         "Not affiliated with Meta or Ready at Dawn",
@@ -1195,22 +1195,39 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
 }
 
 /// ABOUT, above the panel's footer: the icon, the name and version, and the credits and
-/// links.
-fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32) {
+/// links. What's above it ends at `above`: when that leaves too little room (a small window,
+/// a note more), the name and version shrink to one line, and with less room still only the
+/// links are left (Advanced settings says the version too).
+fn about(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, x: f32, w: f32, above: f32) {
     let links_y = dz(panel::footer_y(kit) - 62.0);
     let s = dz(60.0);
     let top = links_y - dz(28.0) - s;
     let line = top - dz(24.0);
-    kit.ui.painter().hline(
-        kit.rect(x, line, w, 0.0).x_range(),
-        kit.rect(x, line, w, 0.0).min.y,
-        egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
-    );
-    kit.image("icon.png", x, top, s, s);
-    kit.title(x + s + dz(20.0), top + dz(4.0), "Echo VR Launcher", 22.0);
+    let compact = links_y - dz(42.0);
     let (status, action) = update_status(d);
-    let g = kit.label_galley(&status, design::din(15.0), design::GREY, w - s - dz(20.0));
-    kit.put(x + s + dz(20.0), top + dz(40.0), g);
+    let rule = |kit: &mut Kit, at: f32| {
+        kit.ui.painter().hline(
+            kit.rect(x, at, w, 0.0).x_range(),
+            kit.rect(x, at, w, 0.0).min.y,
+            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(40)),
+        )
+    };
+    if above + dz(10.0) <= line {
+        rule(kit, line);
+        kit.image("icon.png", x, top, s, s);
+        kit.title(x + s + dz(20.0), top + dz(4.0), "Echo VR Launcher", 22.0);
+        let g = kit.label_galley(&status, design::din(15.0), design::GREY, w - s - dz(20.0));
+        kit.put(x + s + dz(20.0), top + dz(40.0), g);
+    } else if above + dz(10.0) <= compact {
+        rule(kit, compact);
+        let g = kit.label_galley(
+            &format!("Echo VR Launcher · {status}"),
+            design::din(15.0),
+            design::GREY,
+            w,
+        );
+        kit.put(x, compact + dz(12.0), g);
+    }
 
     // An update that's out has its button at the panel's top instead.
     let update = action

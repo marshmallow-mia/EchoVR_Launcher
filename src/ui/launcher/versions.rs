@@ -442,6 +442,12 @@ pub(super) fn manage_menu(
                     "Put back the files the last update replaced",
                 )
                 .unless(changes),
+                // On nEVR 6's layout the update that brought it kept no way back.
+                None if crate::core::launcher::home::of(v).is_some() => {
+                    MenuItem::row("Undo update", "").unless(Some(
+                        "Nothing to undo: the update to nEVR 6 can't be undone, and no update has replaced files since",
+                    ))
+                }
                 None => MenuItem::row("Undo update", "").unless(Some(
                     "Nothing to undo: no update has replaced files here yet",
                 )),
