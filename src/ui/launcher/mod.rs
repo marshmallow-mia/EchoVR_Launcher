@@ -295,7 +295,8 @@ enum Msg {
     QuestLogs(Result<PathBuf, UiError>),
     /// The logs were uploaded: the service's reference, or why not.
     /// The upload's reference (or why it failed), and the reported mod's name for a report.
-    LogsUploaded(Result<String, String>, Option<String>),
+    /// The reference, and how many of the logs found went; for a report, the mod's name.
+    LogsUploaded(Result<(String, usize, usize), String>, Option<String>),
     /// Linux: what PLAY's start through Steam waits for.
     LaunchNote(String),
     /// Linux: Steam has the link (true), the start was cancelled (false), or it failed.
@@ -952,8 +953,9 @@ pub struct Dashboard {
     /// writes happened; the next log upload is that report.
     report: Option<(String, String)>,
     report_note: String,
-    /// The logs "Upload logs" asked about.
+    /// The logs "Upload logs" asked about, and those it only names (their age, a dump).
     upload_sources: Vec<crate::core::logs::Source>,
+    upload_skipped: Vec<crate::core::logs::Skipped>,
     feed: Feed,
     /// What just happened, in the status bar, with a button when there is something to
     /// do about it ([`notices`]).
@@ -2031,7 +2033,7 @@ impl Dashboard {
                 self.state.launcher_channel = update_check::Channel::Beta;
                 self.launcher_update = LauncherUpdate::Latest;
             }
-            Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A", None),
+            Some(SnapVariant::LogsSent) => settings::logs_sent(self, ctx, "K7Q4MZ2A", (8, 8), None),
             Some(
                 v @ (SnapVariant::InstallAsk
                 | SnapVariant::InstallAskFound
@@ -2909,9 +2911,15 @@ impl Dashboard {
                 Msg::LogsUploaded(r, reported) => {
                     self.uploading_logs = false;
                     match r {
-                        Ok(code) => {
-                            tracing::info!("logs: uploaded");
-                            settings::logs_sent(self, ctx, &code, reported.as_deref())
+                        Ok((code, sent, found)) => {
+                            tracing::info!("logs: uploaded {sent} of {found}");
+                            settings::logs_sent(
+                                self,
+                                ctx,
+                                &code,
+                                (sent, found),
+                                reported.as_deref(),
+                            )
                         }
                         Err(why) => {
                             tracing::warn!("logs: upload failed: {why}");

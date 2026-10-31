@@ -621,12 +621,7 @@ pub(super) fn local_app_data(appdata: &Path, compat: &Path) -> Option<PathBuf> {
 /// `%LOCALAPPDATA%\EchoVR\logs`, in the server's own `LOCALAPPDATA`.
 fn log_dirs(p: &Prepared) -> Vec<PathBuf> {
     local_app_data(&p.appdata, &p.compat)
-        .map(|l| {
-            vec![
-                nevr_root::root_in(&l).join("logs"),
-                l.join("EchoVR").join("logs"),
-            ]
-        })
+        .map(|l| nevr::log_dirs_in(&l))
         .unwrap_or_default()
 }
 

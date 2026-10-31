@@ -1732,11 +1732,16 @@ pub(super) fn ask_upload(d: &mut Dashboard) {
         );
         return;
     }
-    d.upload_sources = if d.demo {
-        demo_sources()
+    let found = if d.demo {
+        logs::Found {
+            sources: demo_sources(),
+            skipped: Vec::new(),
+        }
     } else {
         logs::collect(&d.state.versions)
     };
+    d.upload_sources = found.sources;
+    d.upload_skipped = found.skipped;
     if d.upload_sources.is_empty() {
         // A report that can't go now isn't left for the next plain upload.
         d.report = None;
@@ -1749,6 +1754,9 @@ pub(super) fn ask_upload(d: &mut Dashboard) {
     }
     d.overlay = Some(setup::Overlay::UploadLogs { off: Vec::new() });
 }
+
+/// The names a row's tooltip lists, at most.
+const TOOLTIP_NAMES: usize = 15;
 
 /// The order of the upload card's rows.
 const UPLOAD_ROWS: [logs::Kind; 5] = [
@@ -1806,7 +1814,7 @@ pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         x,
         ry,
         cw,
-        "Choose which logs go. All of them help the most.",
+        "Choose which logs go. All of them help the most: should the service take fewer, crashes go first and the rest are named in the upload.",
         17.0,
         design::BODY,
         0.0,
@@ -1817,7 +1825,14 @@ pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             continue;
         }
         let mut on = !off.contains(&kind);
-        let names: Vec<&str> = of_kind.iter().map(|s| s.name.as_str()).collect();
+        let mut names: Vec<String> = of_kind
+            .iter()
+            .take(TOOLTIP_NAMES)
+            .map(|s| s.name.clone())
+            .collect();
+        if of_kind.len() > TOOLTIP_NAMES {
+            names.push(format!("+{} more", of_kind.len() - TOOLTIP_NAMES));
+        }
         let bytes: u64 = of_kind.iter().map(|s| s.bytes).sum();
         let size = if bytes < 100_000 {
             format!("{} KB", bytes.div_ceil(1000))
@@ -1881,6 +1896,7 @@ pub(super) fn upload_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     {
         d.overlay = None;
         d.upload_sources.clear();
+        d.upload_skipped.clear();
         d.report = None;
         d.report_note.clear();
         return;
@@ -2090,6 +2106,9 @@ fn demo_sources() -> Vec<logs::Source> {
         name: name.into(),
         path: Default::default(),
         bytes,
+        modified: std::time::SystemTime::UNIX_EPOCH,
+        rank: logs::Rank::Rest,
+        run: None,
     };
     vec![
         s(logs::Kind::Launcher, "EchoVR_Launcher.log", 412_000),
@@ -2115,6 +2134,11 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
     d.uploading_logs = true;
     d.notify("Uploading your logs…");
     let sources = std::mem::take(&mut d.upload_sources);
+    // What the index names besides: of the kinds that go.
+    let skipped: Vec<logs::Skipped> = std::mem::take(&mut d.upload_skipped)
+        .into_iter()
+        .filter(|s| sources.iter().any(|o| o.kind == s.kind))
+        .collect();
     let (report, reported) = match d.report.take() {
         Some((what, name)) => (Some((what, std::mem::take(&mut d.report_note))), Some(name)),
         None => (None, None),
@@ -2127,8 +2151,10 @@ fn upload(d: &mut Dashboard, ctx: &egui::Context) {
             oid: logs::find_oid(&versions),
             report,
         };
-        let r = logs::bundle(&sources)
-            .and_then(|b| logs::upload(b, &who))
+        // Never more than the service takes: it refuses a whole upload past its limits.
+        let limits = logs::limits();
+        let r = logs::bundle(&sources, &skipped, &limits)
+            .and_then(|b| Ok((logs::upload(b.bytes, &who)?, b.sent, b.found)))
             .map_err(|e| format!("{e:#}"));
         tx.send(Msg::LogsUploaded(r, reported));
     });
@@ -2157,14 +2183,22 @@ pub(super) fn logs_sent(
     d: &mut Dashboard,
     ctx: &egui::Context,
     code: &str,
+    (sent, found): (usize, usize),
     reported: Option<&str>,
 ) {
     ctx.copy_text(code.to_string());
+    let fewer = if sent < found {
+        format!(
+            "\n\n{sent} of the {found} logs found went (the service takes no more at once): crashes first, the others are named in the upload."
+        )
+    } else {
+        String::new()
+    };
     if let Some(name) = reported {
         d.dialogs.info(
             "Your report is sent",
             &format!(
-                "The moderators got your report on {name} with your logs: nothing more to do. Its reference is {code} (it's copied), if they ask.\n\nThe logs are deleted after 30 days."
+                "The moderators got your report on {name} with your logs: nothing more to do. Its reference is {code} (it's copied), if they ask.{fewer}\n\nThe logs are deleted after 30 days."
             ),
         );
         return;
@@ -2172,7 +2206,7 @@ pub(super) fn logs_sent(
     d.dialogs.info(
         "Your logs are uploaded",
         &format!(
-            "Your reference is {code} (it's copied). Send it to marshmallow-mia on Discord, so the right logs are looked at.\n\nThey're deleted after 30 days."
+            "Your reference is {code} (it's copied). Send it to marshmallow-mia on Discord, so the right logs are looked at.{fewer}\n\nThey're deleted after 30 days."
         ),
     );
 }

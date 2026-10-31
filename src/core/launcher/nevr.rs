@@ -1040,6 +1040,116 @@ pub fn log_dirs_in(local: &Path) -> Vec<PathBuf> {
     ]
 }
 
+/// A folder nEVR writes logs, crash records or reports to, with its name in an upload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub label: String,
+    pub dir: PathBuf,
+    /// Its subfolders too (a plugin's logs, in folders of their own).
+    pub deep: bool,
+}
+
+impl Place {
+    fn new(label: &str, dir: PathBuf, deep: bool) -> Self {
+        Place {
+            label: label.into(),
+            dir,
+            deep,
+        }
+    }
+}
+
+/// Pure: every folder nEVR (6.x and before) writes logs to in the `%LOCALAPPDATA%` `local`
+/// with the `%TEMP%` `temp`: its root's `logs` (starts, crash records, its host's log) and
+/// `crashes` (crash reports, dumps), the host's fallbacks in `temp`, the logs 5.x kept in
+/// `EchoVR\logs` (5.13 moves them, a move can leave some), its installer's, and the root's
+/// `plugin_logs`. Labels start with `prefix` (a server's name, or nothing).
+pub fn log_places_in(local: &Path, temp: &Path, prefix: &str) -> Vec<Place> {
+    let root = super::nevr_root::root_in(local);
+    let temp_root = temp.join("nevr").join("echovr");
+    let l = |s: &str| format!("{prefix}{s}");
+    vec![
+        Place::new(&l("root.logs"), root.join("logs"), false),
+        Place::new(&l("root.crashes"), root.join("crashes"), false),
+        Place::new(&l("root.plugin_logs"), root.join("plugin_logs"), true),
+        Place::new(&l("temp.logs"), temp_root.join("logs"), false),
+        Place::new(&l("temp.crashes"), temp_root.join("crashes"), false),
+        Place::new(&l("EchoVR.logs"), local.join("EchoVR").join("logs"), false),
+        Place::new(
+            &l("installer.logs"),
+            local.join("nevr").join("installer").join("logs"),
+            false,
+        ),
+    ]
+}
+
+/// Pure: the folders nEVR writes logs to beside the game in `bin`: `logs` (the boot log, and
+/// the run log and crash record when `%LOCALAPPDATA%` can't be written) and `plugin_logs`.
+/// The host's last fallback, `bin` itself, is [`is_host_fallback`]'s.
+pub fn bin_places(bin: &Path, prefix: &str) -> Vec<Place> {
+    vec![
+        Place::new(&format!("{prefix}logs"), bin.join("logs"), false),
+        Place::new(
+            &format!("{prefix}plugin_logs"),
+            super::mods::log_dir(bin),
+            true,
+        ),
+    ]
+}
+
+/// Whether `name` in the game's folder is one nEVR's host writes there when it can write
+/// nowhere else: `nevr-<pid>-<n>.txt` (or `.dmp`).
+pub fn is_host_fallback(name: &str) -> bool {
+    name.strip_prefix("nevr-")
+        .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
+        && (name.ends_with(".txt") || name.ends_with(".dmp"))
+}
+
+/// The game's `%TEMP%` beside its `%LOCALAPPDATA%` `local`: Windows' own, the Wine prefix's
+/// (`AppData\Local\Temp`) on Linux.
+pub fn temp_for(local: &Path) -> PathBuf {
+    if cfg!(windows) {
+        std::env::temp_dir()
+    } else {
+        local.join("Temp")
+    }
+}
+
+/// [`log_places_in`] on this computer (on Linux, in the Wine prefix).
+pub fn log_places() -> Vec<Place> {
+    super::nevr_root::local_app_data()
+        .map(|l| log_places_in(&l, &temp_for(&l), ""))
+        .unwrap_or_default()
+}
+
+/// Pure: the start a crash record or report is of: `nevr-crash-<run>.txt`,
+/// `nevr-crash-<run>-<n>.report.txt` (`.sent`/`.rejected` once sent) → `<run>`, the `"run"`
+/// of every line of that start's log.
+pub fn crash_run(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("nevr-crash-")?;
+    if let Some(run) = rest.strip_suffix(".txt").filter(|r| !r.contains('.')) {
+        return (!run.is_empty()).then(|| run.to_string());
+    }
+    let report = [".report.txt", ".report.txt.sent", ".report.txt.rejected"]
+        .iter()
+        .find_map(|s| rest.strip_suffix(s))?;
+    let (run, n) = report.rsplit_once('-')?;
+    (!run.is_empty() && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        .then(|| run.to_string())
+}
+
+/// The start a log of a start (`nevr-<time>.jsonl`) is of: its first line's `"run"`.
+pub fn run_of(path: &Path) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let f = std::fs::File::open(path).ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(f.take(64 << 10))
+        .read_line(&mut line)
+        .ok()?;
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    v["run"].as_str().map(str::to_string)
+}
+
 /// The one of [`log_dirs`] with the newest log of a start in it (the root's when neither
 /// has one yet).
 pub fn log_dir() -> Option<PathBuf> {
@@ -1094,19 +1204,13 @@ pub fn runtime_refused_message() -> String {
     format!("nEVR stopped Echo VR at its start: {why}. Repair game files (in PLAY's menu) downloads nEVR's files again.")
 }
 
-/// Its log of a start's first moments, beside the exe.
-pub fn boot_log(bin: &Path) -> PathBuf {
-    bin.join("logs").join("nevr-boot.jsonl")
-}
-
 /// Whether `name` is one of nEVR's logs of a start (`nevr-<time>.jsonl`), not its first
-/// moments' (`nevr-boot.jsonl`) or its host's record (`nevr-bootstrap.jsonl`, in the root's
-/// `logs` with the runs' from 5.13 on).
+/// moments' (`nevr-boot.jsonl`), its host's record (`nevr-bootstrap.jsonl`, in the root's
+/// `logs` with the runs' from 5.13 on) or its updater's (`nevr-update.jsonl`).
 pub fn is_run_log(name: &str) -> bool {
-    name.starts_with("nevr-")
+    name.strip_prefix("nevr-")
+        .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_digit()))
         && name.ends_with(".jsonl")
-        && name != "nevr-boot.jsonl"
-        && name != "nevr-bootstrap.jsonl"
 }
 
 /// Pure: whether a start's log (nEVR's, which has the game's own lines) says VR didn't come
@@ -1115,11 +1219,6 @@ pub fn is_run_log(name: &str) -> bool {
 /// Desktop's Oculus mode). The game then stops with an error.
 pub fn swap_chain_failed(log: &str) -> bool {
     log.contains("Failed to create OVR D3D swap chain") || log.contains("ovrError_NoHmd")
-}
-
-/// Whether `name` is one of nEVR's crash records.
-pub fn is_crash_log(name: &str) -> bool {
-    name.starts_with("nevr-crash-") && name.ends_with(".txt")
 }
 
 /// The newest log of a start in `dir` (by its name, which is the time it started).
@@ -1551,6 +1650,8 @@ mod tests {
         assert!(is_run_log("nevr-2026-10-28T07-32-54.258.jsonl"));
         assert!(!is_run_log("nevr-bootstrap.jsonl"));
         assert!(!is_run_log("nevr-boot.jsonl"));
+        assert!(!is_run_log("nevr-update.jsonl"));
+        assert!(!is_run_log("nevr-crash-68c0-1dd68cae112e7c4.txt"));
         let local = Path::new("L");
         assert_eq!(
             log_dirs_in(local),
@@ -1559,6 +1660,74 @@ mod tests {
                 local.join("EchoVR").join("logs")
             ]
         );
+    }
+
+    /// nEVR 6.x's every log folder (nevr-runtime v6.12.0: README "Files the runtime uses",
+    /// the host's fallbacks in host_paths.h and crash_capture.h), in the Wine prefix too.
+    #[test]
+    fn knows_every_folder_nevr_logs_to() {
+        let local = Path::new("pfx/drive_c/users/steamuser/AppData/Local");
+        let places = log_places_in(local, &local.join("Temp"), "server-a.");
+        let at = |label: &str| {
+            places
+                .iter()
+                .find(|p| p.label == label)
+                .unwrap_or_else(|| panic!("{label}: {places:?}"))
+        };
+        let root = local.join("nevr/echovr");
+        assert_eq!(at("server-a.root.logs").dir, root.join("logs"));
+        assert_eq!(at("server-a.root.crashes").dir, root.join("crashes"));
+        assert!(at("server-a.root.plugin_logs").deep);
+        assert_eq!(
+            at("server-a.temp.crashes").dir,
+            local.join("Temp/nevr/echovr/crashes")
+        );
+        assert_eq!(at("server-a.EchoVR.logs").dir, local.join("EchoVR/logs"));
+        assert_eq!(
+            at("server-a.installer.logs").dir,
+            local.join("nevr/installer/logs")
+        );
+        let bin = Path::new("game/bin/win10");
+        assert_eq!(
+            bin_places(bin, "pc-latest.")
+                .iter()
+                .map(|p| (p.label.as_str(), p.deep))
+                .collect::<Vec<_>>(),
+            [("pc-latest.logs", false), ("pc-latest.plugin_logs", true)]
+        );
+        assert!(is_host_fallback("nevr-31568-1.txt"));
+        assert!(is_host_fallback("nevr-31568-1.dmp"));
+        assert!(!is_host_fallback("nevr-runtime.dll"));
+        assert!(!is_host_fallback("nevr-crash-1.txt"));
+    }
+
+    /// A crash record or report names its start's run, which every line of that start's log
+    /// carries (its file name is only the time it started).
+    #[test]
+    fn ties_a_crash_to_its_start() {
+        let run = Some("68c0-1dd68cae112e7c4".to_string());
+        assert_eq!(crash_run("nevr-crash-68c0-1dd68cae112e7c4.txt"), run);
+        assert_eq!(
+            crash_run("nevr-crash-68c0-1dd68cae112e7c4-1.report.txt"),
+            run
+        );
+        assert_eq!(
+            crash_run("nevr-crash-68c0-1dd68cae112e7c4-12.report.txt.sent"),
+            run
+        );
+        assert_eq!(crash_run("nevr-crash-.txt"), None);
+        assert_eq!(crash_run("nevr-crash-x.report.txt"), None);
+        assert_eq!(crash_run("nevr-host-1-2-1.report.txt"), None);
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("nevr-2026-10-31T00-00-45.000.jsonl");
+        std::fs::write(
+            &log,
+            "{\"ts\":\"2026-10-31T00:00:45.900Z\",\"run\":\"68c0-1dd68cae112e7c4\",\"level\":\"info\",\"msg\":\"x\"}\n{}\n",
+        )
+        .unwrap();
+        assert_eq!(run_of(&log), run);
+        std::fs::write(&log, "not json\n").unwrap();
+        assert_eq!(run_of(&log), None);
     }
 
     /// From #1255 on the runtime reads config.yaml only from its root: the launcher's for the
