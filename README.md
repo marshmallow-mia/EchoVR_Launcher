@@ -247,6 +247,9 @@ Echo VR Installer (`EchoVR_Installer`) is moved over at the first start.
 handy for checking UI changes. Add `ECHOVR_SNAPSHOTS_DEMO=1` to render the launcher with
 two made-up versions (nothing is saved).
 
+How to test, commit and release a change: [AGENTS.md](AGENTS.md) (for people and coding
+agents alike) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 Copyright (C) 2024-2026 the Echo VR Launcher contributors
