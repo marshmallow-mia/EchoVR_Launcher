@@ -2189,7 +2189,7 @@ pub(super) fn logs_sent(
     ctx.copy_text(code.to_string());
     let fewer = if sent < found {
         format!(
-            "\n\n{sent} of the {found} logs found went (the service takes no more at once): crashes first, the others are named in the upload."
+            "\n\n{sent} of the {found} recent logs went (the service takes no more at once, or a log couldn't be read): crashes first, the others are named in the upload."
         )
     } else {
         String::new()

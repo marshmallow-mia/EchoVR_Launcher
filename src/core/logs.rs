@@ -209,6 +209,11 @@ pub struct Source {
     pub run: Option<String>,
 }
 
+/// Why a crash dump is named only.
+const DUMP: &str = "a crash dump, never sent (it can hold sign-in tokens and chat)";
+/// Why an old log is named only.
+const OLD: &str = "older than 14 days";
+
 /// A log found and not sent for its age or kind: the index names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
@@ -359,9 +364,9 @@ impl Collector {
         }
         let modified = m.modified().unwrap_or(self.now);
         let why = if name.to_ascii_lowercase().ends_with(".dmp") {
-            Some("a crash dump, never sent (it can hold sign-in tokens and chat)")
+            Some(DUMP)
         } else if !always && !self.recent(modified) {
-            Some("older than 14 days")
+            Some(OLD)
         } else {
             None
         };
@@ -698,7 +703,8 @@ fn break_lines(text: &str) -> String {
     out
 }
 
-/// A bundle, and how many of the logs found it sends.
+/// A bundle, how many logs it sends, and how many could have gone (the recent ones, not
+/// the crash dumps or old logs it only names).
 #[derive(Debug)]
 pub struct Bundle {
     pub bytes: Vec<u8>,
@@ -783,8 +789,58 @@ pub fn bundle(sources: &[Source], skipped: &[Skipped], limits: &Limits) -> Resul
     Ok(Bundle {
         bytes: out,
         sent: texts.len(),
-        found: sources.len() + skipped.len(),
+        found: sources.len(),
     })
+}
+
+/// Pure: the index's first line: how many logs went, and why each of the others didn't
+/// (old, a crash dump, over the service's limits, unreadable), so a short upload doesn't
+/// read as one the service cut.
+fn headline(
+    now: &str,
+    limits: &Limits,
+    fates: &[(&Source, Fate)],
+    skipped: &[Skipped],
+    sent: usize,
+) -> String {
+    let count = |f: &dyn Fn(&Fate) -> bool| fates.iter().filter(|(_, x)| f(x)).count();
+    let over = count(&|f| matches!(f, Fate::OverFiles | Fate::OverBytes));
+    let unread = count(&|f| matches!(f, Fate::Unread));
+    let old = skipped.iter().filter(|s| s.why == OLD).count();
+    let dumps = skipped.iter().filter(|s| s.why == DUMP).count();
+    let mut not = Vec::new();
+    for (n, what) in [
+        (old, "older than 14 days".to_string()),
+        (
+            dumps,
+            if dumps == 1 {
+                "crash dump"
+            } else {
+                "crash dumps"
+            }
+            .to_string()
+                + " (never sent)",
+        ),
+        (
+            over,
+            format!(
+                "over the service's limits ({} files, {})",
+                limits.max_files,
+                size(limits.max_body as u64)
+            ),
+        ),
+        (unread, "couldn't be read".to_string()),
+    ] {
+        if n > 0 {
+            not.push(format!("{n} {what}"));
+        }
+    }
+    let not = if not.is_empty() {
+        String::new()
+    } else {
+        format!(" Not sent: {}.", not.join(", "))
+    };
+    format!("{now} Upload index: {sent} logs sent.{not} Every log found is named below.")
 }
 
 /// Pure: the index of a bundle: what it sends of the logs found, the crashes and their
@@ -799,12 +855,7 @@ fn index(
     sent: usize,
 ) -> String {
     let now = utc(now);
-    let mut lines = vec![format!(
-        "{now} Upload index: {sent} of {} logs found are sent (the service takes {} files and {} at most). Every log found is named below.",
-        sources.len() + skipped.len(),
-        limits.max_files,
-        size(limits.max_body as u64),
-    )];
+    let mut lines = vec![headline(now.as_str(), limits, fates, skipped, sent)];
     let path = |s: &Source| format!("{}/{}", s.kind.dir(), s.name);
     let mut crashes: Vec<&Source> = sources
         .iter()
@@ -1327,6 +1378,8 @@ mod tests {
         ));
         assert!(t.contains("not sent plugin/root.logs.nevr-2026-10-01T00-00-00.000.jsonl 3 bytes: older than 14 days"));
         assert!(!t.contains("MDMP"));
+        assert!(t.contains(" Upload index: 23 logs sent. Not sent: 1 older than 14 days, 1 crash dump (never sent), 80 over the service's limits (24 files, "), "{t}");
+        assert_eq!(b.found, 23 + 80);
     }
 
     /// nEVR 6.x's folders besides its root's logs, and a Server host server's own.
