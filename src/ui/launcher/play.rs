@@ -1276,7 +1276,8 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
     } else {
         links
     };
-    // Side by side from the right, the first leftmost.
+    // With two or more links the first sits at the banner's left, in line with its
+    // lettering, and the others side by side from the right. One link stays at the right.
     let (right, base) = NEWS_LINK;
     let mut x = dz(right + dx);
     for (i, (label, url)) in links.iter().enumerate().rev() {
@@ -1289,9 +1290,14 @@ fn news(d: &mut Dashboard, kit: &mut Kit) {
             dz(700.0),
         );
         // put() takes x within the page, its rect is in the window's: step by the width.
-        x -= g.size().x;
-        let r = kit.put(x, dz(base) - g.size().y, g);
-        x -= dz(48.0);
+        let r = if i == 0 && links.len() > 1 {
+            kit.put(dz(NEWS.x + 48.0), dz(base) - g.size().y, g)
+        } else {
+            x -= g.size().x;
+            let r = kit.put(x, dz(base) - g.size().y, g);
+            x -= dz(48.0);
+            r
+        };
         if kit.click_area(&format!("news-link-{i}"), r, url) {
             crate::core::platform::open_url(url);
         }
