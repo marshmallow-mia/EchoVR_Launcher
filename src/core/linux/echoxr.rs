@@ -63,6 +63,32 @@ pub fn is_set_up() -> bool {
         && echoxr::is_fetched()
 }
 
+/// EchoXR as this launcher pins it, fetched when a launcher update pinned another one. Only
+/// the window's PLAY set Linux up again, so a start from Steam (`--play`) right after the
+/// update found no EchoXR. The setup's marker follows when EchoXR is all that changed.
+pub fn catch_up_echoxr(cancel: &AtomicBool) -> Result<()> {
+    if echoxr::is_fetched() || !proton_dir().join("proton").is_file() {
+        return Ok(());
+    }
+    tracing::info!("EchoXR {} isn't here yet: fetching it", echoxr::VERSION);
+    echoxr::fetch(cancel, &mut |_| {})?;
+    let marker = root().join(MARKER);
+    if std::fs::read_to_string(&marker).is_ok_and(|old| only_echoxr_differs(&old, &marker_text())) {
+        std::fs::write(&marker, marker_text()).context("write the Linux setup's marker")?;
+    }
+    Ok(())
+}
+
+/// Whether two setup markers differ in nothing but EchoXR's version.
+fn only_echoxr_differs(old: &str, new: &str) -> bool {
+    let without = |s: &str| {
+        let mut v: serde_json::Value = serde_json::from_str(s).ok()?;
+        v.as_object_mut()?.remove("echoxr");
+        Some(v)
+    };
+    matches!((without(old), without(new)), (Some(a), Some(b)) if a == b)
+}
+
 /// The OpenXR runtime Echo VR plays with on Linux, through EchoXR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Xr {
@@ -622,6 +648,21 @@ fn hands_layers_in(reg: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_echoxr_alone_keeps_the_setup() {
+        let new = marker_text();
+        let old = new.replace(echoxr::VERSION, "0.5.0");
+        assert_ne!(old, new);
+        assert!(only_echoxr_differs(&old, &new));
+        // Another Proton or Platform SDK revision still needs the window's setup.
+        assert!(!only_echoxr_differs(
+            &old.replace(PROTON, "GE-Proton10-1"),
+            &new
+        ));
+        assert!(!only_echoxr_differs("{\"echoxr\":\"0.5.0\"}", &new));
+        assert!(!only_echoxr_differs("not json", &new));
+    }
 
     #[test]
     fn finds_the_hands_layer_among_the_implicit_ones() {

@@ -508,6 +508,9 @@ pub fn play_from_steam(ask: &crate::core::launcher::headless::Ask) -> i32 {
     // Steam alone, this may be the first time): an event build's classic lobbies, the live
     // build's EchoRelay server or its mods and server (nEVR), EchoXR.
     let hands = !event && profile.hands(state.echoxr_hands);
+    if let Err(e) = echoxr::catch_up_echoxr(&std::sync::atomic::AtomicBool::new(false)) {
+        tracing::warn!("--play: EchoXR {}: {e:#}", crate::core::echoxr::VERSION);
+    }
     let this_start = LauncherState {
         profile: profile.clone(),
         ..state.clone()
