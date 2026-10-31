@@ -453,11 +453,16 @@ impl Collector {
             .iter()
             .filter_map(|s| nevr::crash_run(&file(s)))
             .collect();
-        let mut newest: HashMap<(Kind, PathBuf), SystemTime> = HashMap::new();
+        // One newest log per folder, a tie going to the last name: Linux stamps files with a
+        // coarse clock, and logs written in the same tick all counted as the newest.
+        let mut newest: HashMap<(Kind, PathBuf), (SystemTime, PathBuf)> = HashMap::new();
         for s in &self.found.sources {
             let folder = s.path.parent().unwrap_or(Path::new("")).to_path_buf();
-            let t = newest.entry((s.kind, folder)).or_insert(s.modified);
-            *t = (*t).max(s.modified);
+            let this = (s.modified, s.path.clone());
+            let t = newest.entry((s.kind, folder)).or_insert(this.clone());
+            if this > *t {
+                *t = this;
+            }
         }
         for s in &mut self.found.sources {
             let f = file(s);
@@ -478,7 +483,10 @@ impl Collector {
                 Rank::Crash
             } else if key {
                 Rank::Key
-            } else if newest.get(&(s.kind, folder)) == Some(&s.modified) {
+            } else if newest
+                .get(&(s.kind, folder))
+                .is_some_and(|(_, p)| *p == s.path)
+            {
                 Rank::Newest
             } else {
                 Rank::Rest
@@ -1180,6 +1188,39 @@ mod tests {
 
     fn text(b: &Bundle) -> String {
         String::from_utf8(b.bytes.clone()).unwrap()
+    }
+
+    /// Linux's coarse file times: logs written in the same tick are one folder's newest once.
+    #[test]
+    fn one_newest_log_per_folder_even_with_equal_times() {
+        let dir = tempfile::tempdir().unwrap();
+        let logs = dir.path().join("logs");
+        write(
+            &logs.join("EchoVR_Launcher.log"),
+            "2026-10-03T10:00:00Z  INFO hi\n",
+        );
+        let root = dir.path().join("pc");
+        let v = version(&root);
+        let r14 = root.join(paths::ARENA_DIR).join("_local/r14logs");
+        let t = SystemTime::now() - std::time::Duration::from_secs(60);
+        for i in 0..5 {
+            let f = r14.join(format!("[r14]-{i}.log"));
+            write(&f, "[10-03-2026] [10:00:00]: x\n");
+            std::fs::File::options()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(t)
+                .unwrap();
+        }
+        let found = collect_from(&logs, &[], &[v], &[], SystemTime::now());
+        let newest: Vec<_> = found
+            .sources
+            .iter()
+            .filter(|s| s.rank == Rank::Newest)
+            .map(|s| s.name.as_str())
+            .collect();
+        assert_eq!(newest.len(), 1, "{newest:?}");
     }
 
     /// Every log of the last two weeks, from every place, no group capped.
