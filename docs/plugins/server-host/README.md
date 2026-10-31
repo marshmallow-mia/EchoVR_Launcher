@@ -71,6 +71,17 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
   - desktop alerts;
   - an optional Discord webhook for the same alerts. Alerts are sent when a server stops on
     an error, keeps restarting, is down or comes back.
+- **A server's mods** (its Edit card). **Load the mods the Mods page has on** is on by
+  default. Below it is a switch for each mod the Mods page has on for the servers' version
+  (a content pack is one switch), and fields for each mod's arguments. A server can leave
+  out a mod, or set its own arguments (for example a team size), while the Mods page keeps
+  what players' games load. Only changes from the Mods page's are kept.
+  - Mods for players' games only (their `target` is `client`, such as GPU Rating) never
+    load on a server. Mods for game servers only (`server`) load only there: the Mods page
+    tags them **Servers only**, and PLAY leaves them out.
+  - The mods the game needs (Asset Patches) always load, also with the switch off.
+  - A required mod the catalogue has is installed before a server starts, as before a
+    player's start.
 - **Settings** (the gear button):
   - the game version the servers run;
   - what new servers start with (regions, guilds, tick rate);
@@ -100,7 +111,8 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
 - Each server has a folder in the launcher's data folder: `server-host/servers/<name>/`.
   It holds:
   - `root/`: the server's own game folder.
-    - `bin/win10` is a copy of the game's files and plugins.
+    - `bin/win10` is a copy of the game's files and plugins. From nEVR 6 on, the plugins go
+      into the server's own nEVR root, which is where nEVR loads them from.
     - Everything else links to the installed game.
     - `_local` has the server's `config.yaml`, `config.json` and sign-in.
   - `status.json`, `console.log` and `control`.

@@ -397,11 +397,17 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     if cfg!(target_os = "linux") && !crate::core::linux::echoxr::proton_script().is_file() {
         bail!("set Echo VR up on Linux first (PLAY does it): servers run through its Proton");
     }
-    let (plugins, local) = if server.mods {
-        mods::server_plugins(v)
-    } else {
-        (Vec::new(), false)
-    };
+    // What the game needs from the catalogue, as before a player's start (a server can be
+    // the first to start this version).
+    if let Err(e) = mods::ensure_required(
+        v,
+        &mods::ModCatalog::cached(),
+        &state.holds,
+        mods::Role::Server,
+    ) {
+        tracing::warn!("required mods: {e:#}");
+    }
+    let (plugins, local) = mods::server_plugins(v, &server.own_mods());
     let yaml = config::render(&cfg, &server, &plugins, local);
     let json = config::game_config(&cfg.publisher_lock);
     let game = Path::new(&v.root).join(paths::ARENA_DIR);

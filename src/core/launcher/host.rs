@@ -181,11 +181,13 @@ pub fn write(v: &InstalledVersion, h: &Host) -> Result<Written> {
     }
     let dir = nevr::notes_dir(v).join(&h.folder);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let (plugins, local) = if h.mods {
-        super::mods::server_plugins(v)
-    } else {
-        (Vec::new(), false)
-    };
+    let (plugins, local) = super::mods::server_plugins(
+        v,
+        &super::mods::ServerMods {
+            on: h.mods,
+            ..Default::default()
+        },
+    );
     let config = dir.join(nevr::CONFIG);
     write_private(&config, &render(h, &plugins, local))?;
     let config_json = dir.join("config.json");

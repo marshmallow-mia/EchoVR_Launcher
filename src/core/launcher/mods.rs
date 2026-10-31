@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::catalog;
+use super::catalogue::Target;
 use super::mod_release::{self, ReleaseSpec};
 use super::nevr::{self, PluginLine};
 use super::packs::{self, PackRecord, PackSpec};
@@ -199,6 +200,10 @@ pub struct Added {
     /// as a loose DLL: what the release says about signing is about this copy.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub release: bool,
+    /// Where its version loads, as the catalogue said at install (none from older
+    /// launchers: then the catalogue's entry says, else both).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<super::catalogue::Target>,
 }
 
 impl Added {
@@ -216,6 +221,7 @@ impl Added {
             requires: e.requires.clone(),
             conflicts: e.conflicts.clone(),
             release: false,
+            target: Some(e.target),
         }
     }
 }
@@ -808,6 +814,8 @@ pub struct Plugin {
     pub pack: Option<String>,
     /// The launcher installed it from its release ([`Added::release`]).
     pub release: bool,
+    /// Where it loads: players' games, game servers, or both ([`Role`]).
+    pub target: Target,
 }
 
 impl Plugin {
@@ -1245,9 +1253,24 @@ pub fn plugins(
             let mut e = e;
             e.required |= known.is_some_and(|m| m.required);
             let release = e.launcher.as_ref().is_some_and(|a| a.release);
+            // As noted at install, else as the catalogue has it; EchoXR Hands' is for VR
+            // headsets, never a server; anything else loads on both.
+            let hands = e
+                .file
+                .eq_ignore_ascii_case(crate::core::echoxr_hands::PLUGIN);
+            let target = e
+                .launcher
+                .as_ref()
+                .and_then(|a| a.target)
+                .or_else(|| match &source {
+                    Source::Local => None,
+                    _ => known.map(|m| m.target),
+                })
+                .unwrap_or(if hands { Target::Client } else { Target::Both });
             let mut p = plugin(e, source, defaults, has, status);
             p.verified = verified;
             p.release = release;
+            p.target = target;
             p.pack = packs
                 .iter()
                 .find(|r| r.has_plugin(&p.file))
@@ -1291,6 +1314,7 @@ fn plugin(
         settings: None,
         pack: None,
         release: false,
+        target: Target::Both,
         file: e.file,
     }
 }
@@ -1373,7 +1397,7 @@ pub fn before_start(
         tracing::warn!("hand tracking: {e:#}");
     }
     // What the game needs from the catalogue (it doesn't come with the update): in place.
-    if let Err(e) = ensure_required(v, &ModCatalog::cached(), holds) {
+    if let Err(e) = ensure_required(v, &ModCatalog::cached(), holds, Role::Game) {
         tracing::warn!("required mods: {e:#}");
     }
     // Blocks as release.echovr.de has them now (else as kept last): one takes effect at the
@@ -1764,20 +1788,21 @@ fn installed_version(v: &InstalledVersion, file: &str) -> Option<String> {
         .then_some(launcher.version)
 }
 
-/// Installs the catalogue's required mods that don't come with the community update (a
-/// file `v` lacks, or one that isn't the catalogue's version), as the Mods page would. One
-/// the player went back from (`holds`, [`super::goback`]) stays at the version gone back
-/// to while its file is there.
+/// Installs the catalogue's required mods for `role` that don't come with the community
+/// update (a file `v` lacks, or one that isn't the catalogue's version), as the Mods page
+/// would. One the player went back from (`holds`, [`super::goback`]) stays at the version
+/// gone back to while its file is there.
 pub fn ensure_required(
     v: &InstalledVersion,
     catalog: &ModCatalog,
     holds: &BTreeMap<String, String>,
+    role: Role,
 ) -> Result<()> {
     let plugins = plugins_dir(v);
     for e in catalog
         .mods
         .iter()
-        .filter(|e| e.required && e.downloadable())
+        .filter(|e| e.required && e.downloadable() && role.fits(e.target))
     {
         let current = match (&e.release, e.sha256.as_deref()) {
             // A release has no one checksum (signing changes the DLL): it is the file the
@@ -1853,7 +1878,15 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     } else if nevr::login_back(v)? {
         tracing::info!("{}: plays on EchoVRCE again: its sign-in is back", v.id);
     }
-    let (lines, left) = config_lines(v, &overlay, &catalog, local, served.as_ref(), &rollback);
+    let (lines, left) = config_lines(
+        v,
+        &overlay,
+        &catalog,
+        local,
+        served.as_ref(),
+        &rollback,
+        Role::Game,
+    );
     if let Err(e) = write_json(
         &left_out_path(v),
         &serde_json::to_value(&left).unwrap_or_default(),
@@ -1863,27 +1896,96 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     nevr::write_config(v, &lines, local, backend.as_ref())
 }
 
-/// The plugins a game server in `v` loads, as the Mods page has them on for a start (a
-/// content pack's overlay early, with nEVR's early pass), and whether local plugins may
-/// load: the list [`prepare`] gives nEVR, for a server's own `config.yaml`.
-pub fn server_plugins(v: &InstalledVersion) -> (Vec<PluginLine>, bool) {
-    let overlay = Overlay::read(&choices_path(v));
+/// A game server's own say over the mods it loads ([`server_plugins`]): the Mods page's, or
+/// only what the game needs, less the ones it leaves out, with its own arguments.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServerMods {
+    /// The mods the Mods page has on load (else only the ones the game needs).
+    pub on: bool,
+    /// Plugins (file names) it leaves out. One the game needs stays; one of a content pack
+    /// leaves out the whole pack (its plugins without the rest would run on stock data).
+    pub off: Vec<String>,
+    /// Its own arguments for a plugin (file name → name → value), over the Mods page's.
+    pub args: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+impl Default for ServerMods {
+    fn default() -> Self {
+        ServerMods {
+            on: true,
+            off: Vec::new(),
+            args: BTreeMap::new(),
+        }
+    }
+}
+
+/// The plugins a game server in `v` loads, and whether local plugins may load: the list
+/// [`prepare`] gives nEVR for a start (a content pack's overlay early, with nEVR's early
+/// pass), with the mods for players' games only left out and the server's own choices
+/// (`own`) applied, for its own `config.yaml`.
+pub fn server_plugins(v: &InstalledVersion, own: &ServerMods) -> (Vec<PluginLine>, bool) {
+    let mut overlay = Overlay::read(&choices_path(v));
+    if !own.on {
+        overlay.set_enabled(false);
+    }
     let rollback = super::goback::Rollback::cached();
     let served = if overlay.enabled() {
         served_pack(v, &overlay, false, &rollback)
     } else {
         None
     };
+    let catalog = ModCatalog::cached();
     let local = nevr::local_plugins(v);
     let (lines, _) = config_lines(
         v,
         &overlay,
-        &ModCatalog::cached(),
+        &catalog,
         local,
         served.as_ref(),
         &rollback,
+        Role::Server,
     );
-    (lines, local)
+    (own_choices(lines, own, served.as_ref(), &catalog), local)
+}
+
+/// Pure: `lines` with server choices `own` applied ([`ServerMods`]).
+fn own_choices(
+    mut lines: Vec<PluginLine>,
+    own: &ServerMods,
+    served: Option<&PackRecord>,
+    catalog: &ModCatalog,
+) -> Vec<PluginLine> {
+    let named = |list: &[String], file: &str| list.iter().any(|f| f.eq_ignore_ascii_case(file));
+    let of_pack = |file: &str| {
+        file.eq_ignore_ascii_case(packs::OVERLAY_PLUGIN)
+            || served.is_some_and(|p| p.has_plugin(file))
+    };
+    let pack_off = lines
+        .iter()
+        .any(|l| of_pack(&l.file) && named(&own.off, &l.file));
+    lines.retain(|l| {
+        let required = catalog.entry_for(&l.file).is_some_and(|m| m.required);
+        required || !(named(&own.off, &l.file) || (pack_off && of_pack(&l.file)))
+    });
+    for l in &mut lines {
+        let Some((_, args)) = own
+            .args
+            .iter()
+            .find(|(f, _)| f.eq_ignore_ascii_case(&l.file))
+        else {
+            continue;
+        };
+        for (key, value) in args {
+            // As on the Mods page: nEVR would read it as an environment variable.
+            if nevr::expands_env(key) || nevr::expands_env(value) {
+                tracing::warn!("{}: argument {key} holds ${{…}}: left out", l.file);
+                continue;
+            }
+            l.args.insert(key.clone(), Value::String(value.clone()));
+        }
+    }
+    lines
 }
 
 /// Before starting the live build `v` on an EchoRelay server, where EchoLoader stands in
@@ -1916,6 +2018,7 @@ fn echorelay_plugins(v: &InstalledVersion) -> Vec<PluginLine> {
         nevr::local_plugins(v),
         served.as_ref(),
         &rollback,
+        Role::Game,
     )
     .0
 }
@@ -1981,6 +2084,23 @@ pub fn backend_of(s: &PackServer) -> Option<nevr::Backend> {
     })
 }
 
+/// Who a list of plugins is for: a player's game, or a game server. Each gets only the
+/// mods whose target fits it ([`Target`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Game,
+    Server,
+}
+
+impl Role {
+    fn fits(self, target: Target) -> bool {
+        match self {
+            Role::Game => target.in_games(),
+            Role::Server => target.on_servers(),
+        }
+    }
+}
+
 fn config_lines(
     v: &InstalledVersion,
     overlay: &Overlay,
@@ -1988,6 +2108,7 @@ fn config_lines(
     local: bool,
     served: Option<&PackRecord>,
     rollback: &super::goback::Rollback,
+    role: Role,
 ) -> (Vec<PluginLine>, Vec<LeftOut>) {
     let mods_on = overlay.enabled();
     let added = overlay.added();
@@ -2039,6 +2160,17 @@ fn config_lines(
                 .is_some_and(|r| served.is_none_or(|s| s.id != r.id))
         {
             unlisted.insert(key(&p.file));
+            continue;
+        }
+        if !role.fits(p.target) {
+            out.insert(
+                key(&p.file),
+                match role {
+                    Role::Game => "Only for game servers: the Server host loads it",
+                    Role::Server => "Only for players' games",
+                }
+                .into(),
+            );
             continue;
         }
         if !p.verified && !local {
@@ -3068,6 +3200,8 @@ pub struct ModEntry {
     pub requires: super::catalogue::Requires,
     /// Mods that can't be on beside it (ids).
     pub conflicts: Vec<String>,
+    /// Where it loads: players' games, game servers, or both.
+    pub target: super::catalogue::Target,
     /// Unlisted: added by its id ([`super::catalogue::UNLISTED`]).
     #[serde(skip)]
     pub unlisted: bool,
@@ -4335,16 +4469,16 @@ pub(crate) mod tests {
             format!("mod:{}:nvrgpurating.dll", v.id),
             "1.0.1".to_string(),
         );
-        ensure_required(&v, &catalog, &holds).unwrap();
+        ensure_required(&v, &catalog, &holds, Role::Game).unwrap();
         assert_eq!(
             std::fs::read_to_string(plugins_dir(&v).join(file)).unwrap(),
             "MZ 1.0.0"
         );
         // Not held: the catalogue's version is installed (here: tried, and the server is down).
-        assert!(ensure_required(&v, &catalog, &BTreeMap::new()).is_err());
+        assert!(ensure_required(&v, &catalog, &BTreeMap::new(), Role::Game).is_err());
         // Held but missing: the game needs it, so it is installed anyway.
         std::fs::remove_file(plugins_dir(&v).join(file)).unwrap();
-        assert!(ensure_required(&v, &catalog, &holds).is_err());
+        assert!(ensure_required(&v, &catalog, &holds, Role::Game).is_err());
     }
 
     #[test]
@@ -4444,13 +4578,164 @@ pub(crate) mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn a_mods_target_reads_leniently() {
+        let entry = |target: &str| {
+            let text = format!(
+                r#"{{"mods": [{{"id": "x", "name": "X", "version": "1.0.0", "file": "X.dll",
+                "url": "launcher/mods/X.dll", "sha256": "{}", "target": "{target}"}}]}}"#,
+                "a".repeat(64)
+            );
+            ModCatalog::parse(&text).unwrap().mods[0].target
+        };
+        assert_eq!(entry("client"), Target::Client);
+        assert_eq!(entry("Server"), Target::Server);
+        assert_eq!(entry("both"), Target::Both);
+        // A word this launcher doesn't know doesn't cost the entry: it loads on both.
+        assert_eq!(entry("everywhere"), Target::Both);
+        let none = ModCatalog::parse(
+            r#"{"mods": [{"id": "y", "name": "Y", "version": "1.0.0", "file": "Y.dll", "shipped": true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(none.mods[0].target, Target::Both);
+    }
+
+    #[test]
+    fn games_and_servers_get_the_mods_for_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        let with = |target: Target| Added {
+            target: Some(target),
+            ..Default::default()
+        };
+        put_catalogue_mod(&v, "players", "Players.dll", "1.0.0", with(Target::Client));
+        put_catalogue_mod(&v, "servers", "Servers.dll", "1.0.0", with(Target::Server));
+        put_catalogue_mod(&v, "both", "Both.dll", "1.0.0", with(Target::Both));
+        // Noted before targets were: both.
+        put_catalogue_mod(&v, "older", "Older.dll", "1.0.0", Added::default());
+        let overlay = Overlay::read(&choices_path(&v));
+        let lines = |role: Role| {
+            let (lines, left) = config_lines(
+                &v,
+                &overlay,
+                &ModCatalog::builtin(),
+                false,
+                None,
+                &super::super::goback::Rollback::default(),
+                role,
+            );
+            let files: Vec<String> = lines.into_iter().map(|l| l.file).collect();
+            let left: BTreeMap<String, String> =
+                left.into_iter().map(|l| (l.file, l.reason)).collect();
+            (files, left)
+        };
+        let (game, left) = lines(Role::Game);
+        assert!(game.contains(&"Players.dll".to_string()));
+        assert!(game.contains(&"Both.dll".to_string()));
+        assert!(game.contains(&"Older.dll".to_string()));
+        assert!(!game.contains(&"Servers.dll".to_string()));
+        assert!(left["Servers.dll"].starts_with("Only for game servers"));
+        let (server, left) = lines(Role::Server);
+        assert!(server.contains(&"Servers.dll".to_string()));
+        assert!(server.contains(&"Both.dll".to_string()));
+        assert!(server.contains(&"NvrAssetPatches.dll".to_string()));
+        assert!(!server.contains(&"Players.dll".to_string()));
+        assert_eq!(left["Players.dll"], "Only for players' games");
+    }
+
+    #[test]
+    fn a_server_leaves_out_its_own_and_sets_its_own_arguments() {
+        let line = |file: &str| PluginLine {
+            file: file.into(),
+            enabled: true,
+            args: Map::new(),
+            early: file == packs::OVERLAY_PLUGIN,
+        };
+        let lines = vec![
+            line("NvrAssetPatches.dll"),
+            line(packs::OVERLAY_PLUGIN),
+            line("PackOne.dll"),
+            line("PackTwo.dll"),
+            line("Other.dll"),
+            line("Tuned.dll"),
+        ];
+        let pack = PackRecord {
+            id: "pack".into(),
+            plugins: vec!["PackOne.dll".into(), "PackTwo.dll".into()],
+            ..Default::default()
+        };
+        let own = ServerMods {
+            on: true,
+            // The game needs Asset Patches: it stays. One of a pack's: the whole pack goes.
+            off: vec![
+                "nvrassetpatches.dll".into(),
+                "PackTwo.dll".into(),
+                "Other.dll".into(),
+            ],
+            args: [(
+                "tuned.dll".to_string(),
+                [
+                    ("teamsize".to_string(), "6".to_string()),
+                    ("home".to_string(), "${HOME}".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let out = own_choices(lines.clone(), &own, Some(&pack), &ModCatalog::builtin());
+        let files: Vec<&str> = out.iter().map(|l| l.file.as_str()).collect();
+        assert_eq!(files, ["NvrAssetPatches.dll", "Tuned.dll"]);
+        let tuned = &out[1].args;
+        assert_eq!(tuned.get("teamsize"), Some(&Value::String("6".into())));
+        assert!(tuned.get("home").is_none());
+        // Nothing of its own: the Mods page's list as it is.
+        assert_eq!(
+            own_choices(
+                lines.clone(),
+                &ServerMods::default(),
+                Some(&pack),
+                &ModCatalog::builtin()
+            ),
+            lines
+        );
+    }
+
+    #[test]
+    fn a_server_without_mods_keeps_what_the_game_needs() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = live(dir.path());
+        put_catalogue_mod(&v, "both", "Both.dll", "1.0.0", Added::default());
+        let off = ServerMods {
+            on: false,
+            ..Default::default()
+        };
+        let (lines, _) = server_plugins(&v, &off);
+        let files: Vec<&str> = lines.iter().map(|l| l.file.as_str()).collect();
+        assert_eq!(files, ["NvrAssetPatches.dll"]);
+        assert_eq!(
+            lines[0].args.get("required_only"),
+            Some(&Value::String("true".into()))
+        );
+        let (lines, _) = server_plugins(&v, &ServerMods::default());
+        assert!(lines.iter().any(|l| l.file == "Both.dll"));
+    }
+
     fn lines_and_reasons(
         v: &InstalledVersion,
         rollback: &super::super::goback::Rollback,
     ) -> (Vec<String>, BTreeMap<String, String>) {
         let overlay = Overlay::read(&choices_path(v));
-        let (lines, left) =
-            config_lines(v, &overlay, &ModCatalog::builtin(), false, None, rollback);
+        let (lines, left) = config_lines(
+            v,
+            &overlay,
+            &ModCatalog::builtin(),
+            false,
+            None,
+            rollback,
+            Role::Game,
+        );
         (
             lines.into_iter().map(|l| l.file).collect(),
             left.into_iter().map(|l| (l.file, l.reason)).collect(),
@@ -4849,7 +5134,15 @@ pub(crate) mod tests {
             ..Default::default()
         };
         assert!(served_pack(&v, &overlay, false, &blocked).is_none());
-        let (lines, _) = config_lines(&v, &overlay, &ModCatalog::builtin(), false, None, &blocked);
+        let (lines, _) = config_lines(
+            &v,
+            &overlay,
+            &ModCatalog::builtin(),
+            false,
+            None,
+            &blocked,
+            Role::Game,
+        );
         assert!(!lines
             .iter()
             .any(|l| l.file == "One.dll" || l.file == packs::OVERLAY_PLUGIN));
@@ -4878,6 +5171,7 @@ pub(crate) mod tests {
             settings: None,
             pack: None,
             release: false,
+            target: Default::default(),
         };
         let m = ModEntry {
             id: "cool".into(),

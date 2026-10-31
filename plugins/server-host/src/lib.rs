@@ -56,6 +56,8 @@ struct S {
     over: Option<Over>,
     /// The fields of the card over the servers, as typed.
     form: BTreeMap<String, String>,
+    /// The mods the server being edited can load (the `mods` service's answer).
+    mod_list: Value,
     form_error: String,
     add_n: String,
     // Console.
@@ -227,6 +229,98 @@ fn edit_form(v: &Value) -> BTreeMap<String, String> {
     .collect()
 }
 
+/// The content packs' overlay plugin: on and off with its pack, never listed by itself.
+const OVERLAY_PLUGIN: &str = "NvrContentOverlay.dll";
+
+/// Pure: the mods a server can choose from in `list` (the `mods` service's), one row per
+/// mod or content pack: (the file its switch stands for, its label, its arguments as the
+/// Mods page has them). The ones the game needs aren't a choice.
+fn mod_rows(list: &Value) -> Vec<(String, String, BTreeMap<String, String>)> {
+    let mut rows: Vec<(String, String, BTreeMap<String, String>)> = Vec::new();
+    let mut packs: Vec<String> = Vec::new();
+    for m in list["mods"].as_array().into_iter().flatten() {
+        let file = text_at(m, "file");
+        if m["required"] == true || m["enabled"] != true || file.eq_ignore_ascii_case(OVERLAY_PLUGIN)
+        {
+            continue;
+        }
+        let args: BTreeMap<String, String> = m["args"]
+            .as_object()
+            .map(|o| o.iter().map(|(k, v)| (k.clone(), text_of(v))).collect())
+            .unwrap_or_default();
+        match m["pack"].as_str() {
+            // One switch for a pack: leaving out one of its plugins leaves out all of it.
+            Some(pack) if packs.iter().any(|p| p == pack) => {}
+            Some(pack) => {
+                packs.push(pack.to_string());
+                rows.push((file, format!("{pack} (content pack)"), args));
+            }
+            None => {
+                let name = text_at(m, "name");
+                let label = if m["servers_only"] == true {
+                    format!("{name} (game servers only)")
+                } else {
+                    name
+                };
+                rows.push((file, label, args));
+            }
+        }
+    }
+    rows
+}
+
+fn text_of(v: &Value) -> String {
+    match v {
+        Value::String(t) => t.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// The form's switches and arguments for the mods of server `v` (as saved) from `list`.
+fn mod_form(v: &Value, list: &Value) -> BTreeMap<String, String> {
+    let off: Vec<String> = v["mods_off"]
+        .as_array()
+        .map(|a| a.iter().map(text_of).collect())
+        .unwrap_or_default();
+    let mut f = BTreeMap::new();
+    for (file, _, args) in mod_rows(list) {
+        let on = !off.iter().any(|o| o.eq_ignore_ascii_case(&file));
+        f.insert(format!("mod:{file}"), on.to_string());
+        for (k, page) in args {
+            let own = v["mod_args"][file.as_str()][k.as_str()].clone();
+            let value = if own.is_null() { page } else { text_of(&own) };
+            f.insert(format!("arg:{file}:{k}"), value);
+        }
+    }
+    f
+}
+
+/// Pure: what `form` sets of a server's mods against `list`: the plugins it leaves out and
+/// its own arguments (only the ones that differ from the Mods page's).
+fn own_mods(form: &BTreeMap<String, String>, list: &Value) -> (Vec<String>, Value) {
+    let mut off = Vec::new();
+    let mut args = json!({});
+    for (file, _, page) in mod_rows(list) {
+        if form.get(&format!("mod:{file}")).map(String::as_str) == Some("false") {
+            off.push(file.clone());
+        }
+        let mut mine = json!({});
+        for (k, was) in &page {
+            let Some(now) = form.get(&format!("arg:{file}:{k}")).map(|t| t.trim()) else {
+                continue;
+            };
+            if now != was.trim() {
+                mine[k.as_str()] = json!(now);
+            }
+        }
+        if mine.as_object().is_some_and(|o| !o.is_empty()) {
+            args[file.as_str()] = mine;
+        }
+    }
+    (off, args)
+}
+
 fn settings_form(st: &Value) -> BTreeMap<String, String> {
     let mut f = BTreeMap::new();
     f.insert("version".into(), text_at(st, "version"));
@@ -320,6 +414,9 @@ fn event(s: &mut S, e: Event) {
             "noise" => s.noise = on,
             "mods" => {
                 s.form.insert("mods".into(), on.to_string());
+            }
+            k if k.starts_with("mod:") => {
+                s.form.insert(k.to_string(), on.to_string());
             }
             "autostart" => {
                 act(s, "autostart", json!({"on": on}));
@@ -419,11 +516,20 @@ fn clicked(s: &mut S, id: &str) {
             if let Some(Over::Edit(name)) = s.over.clone() {
                 let mut args = json!({"name": name});
                 for (k, v) in &s.form {
+                    if k.starts_with("mod:") || k.starts_with("arg:") {
+                        continue;
+                    }
                     args[k] = if k == "mods" {
                         json!(v == "true")
                     } else {
                         json!(v)
                     };
+                }
+                // Only a launcher that lists the mods knows a server's own choices.
+                if s.mod_list.get("mods").is_some() {
+                    let (off, own) = own_mods(&s.form, &s.mod_list);
+                    args["mods_off"] = json!(off);
+                    args["mod_args"] = own;
                 }
                 match call("edit", &args) {
                     Ok(_) => {
@@ -565,7 +671,10 @@ fn row_clicked(s: &mut S, name: &str, what: &str) {
         "console" => open_console(s, name),
         "edit" => {
             if let Some(v) = server(s, name).cloned() {
+                // An older launcher has no `mods` call: then only the switch for all mods.
+                s.mod_list = call("mods", &json!({})).unwrap_or(Value::Null);
                 s.form = edit_form(&v);
+                s.form.extend(mod_form(&v, &s.mod_list));
                 s.form_error.clear();
                 s.over = Some(Over::Edit(name.to_string()));
             }
@@ -899,6 +1008,9 @@ fn edit_card(ui: &mut Ui, s: &S, name: &str) {
             "Load the mods the Mods page has on (a content pack such as EchoCombat too)",
             g("mods") == "true",
         );
+        if g("mods") == "true" && s.mod_list.get("mods").is_some() {
+            mod_fields(c, s);
+        }
         if !s.form_error.is_empty() {
             c.warn(s.form_error.clone());
         }
@@ -912,6 +1024,44 @@ fn edit_card(ui: &mut Ui, s: &S, name: &str) {
             button("cancel", "CANCEL"),
         ]);
     });
+}
+
+/// A switch for each mod the server can leave out, and its arguments while it's on.
+fn mod_fields(c: &mut Kids, s: &S) {
+    let rows = mod_rows(&s.mod_list);
+    let version = text_at(&s.mod_list, "version");
+    if s.mod_list["on"] == false {
+        c.warn(format!(
+            "The Mods page starts {version} without mods: the servers load only the ones the game needs."
+        ));
+        return;
+    }
+    if rows.is_empty() {
+        c.muted(format!(
+            "No mods for game servers on the Mods page for {version}. The ones the game needs always load."
+        ));
+        return;
+    }
+    for (file, label, args) in rows {
+        let on = s.form.get(&format!("mod:{file}")).map(String::as_str) != Some("false");
+        c.toggle(&format!("mod:{file}"), &label, on);
+        if !on {
+            continue;
+        }
+        for (k, page) in args {
+            let id = format!("arg:{file}:{k}");
+            let value = s.form.get(&id).cloned().unwrap_or_default();
+            c.field(
+                &id,
+                &format!("{label}: {k}"),
+                &value,
+                &format!("The Mods page has {page:?}"),
+            );
+        }
+    }
+    c.muted(format!(
+        "The mods the Mods page has on for {version}, less those for players' games only. The ones the game needs always load."
+    ));
 }
 
 fn settings_card(ui: &mut Ui, s: &S) {
@@ -1169,6 +1319,41 @@ mod tests {
         assert!(c.get("serverdb_uri").is_none());
         assert!(nevr_address_change(ECHOVRCE_NEVR, OLD_REGISTRATION).is_none());
         assert!(nevr_address_change("wss://other/nevr", "").is_none());
+    }
+
+    #[test]
+    fn a_servers_own_mods_from_the_form() {
+        let list = json!({"version": "Echo VR", "on": true, "mods": [
+            {"file": "NvrAssetPatches.dll", "name": "Asset Patches", "required": true, "enabled": true, "args": {}},
+            {"file": "NvrServerPatches.dll", "name": "Server Patches", "enabled": true, "servers_only": true,
+             "args": {"teamsize": "4", "bots": "false"}},
+            {"file": "NvrContentOverlay.dll", "name": "Overlay", "enabled": true, "pack": "EchoCombat", "args": {}},
+            {"file": "EchoCombat.dll", "name": "EchoCombat", "enabled": true, "pack": "EchoCombat", "args": {}},
+            {"file": "EchoCombatMaps.dll", "name": "Maps", "enabled": true, "pack": "EchoCombat", "args": {}},
+            {"file": "Off.dll", "name": "Off", "enabled": false, "args": {}},
+        ]});
+        let rows = mod_rows(&list);
+        let labels: Vec<&str> = rows.iter().map(|r| r.1.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Server Patches (game servers only)", "EchoCombat (content pack)"]
+        );
+        let saved = json!({"mods_off": ["echocombat.dll"], "mod_args": {"NvrServerPatches.dll": {"teamsize": "6"}}});
+        let mut form = mod_form(&saved, &list);
+        assert_eq!(form["mod:EchoCombat.dll"], "false");
+        assert_eq!(form["mod:NvrServerPatches.dll"], "true");
+        assert_eq!(form["arg:NvrServerPatches.dll:teamsize"], "6");
+        assert_eq!(form["arg:NvrServerPatches.dll:bots"], "false");
+        form.insert("arg:NvrServerPatches.dll:bots".into(), " true ".into());
+        let (off, args) = own_mods(&form, &list);
+        assert_eq!(off, ["EchoCombat.dll"]);
+        assert_eq!(
+            args,
+            json!({"NvrServerPatches.dll": {"teamsize": "6", "bots": "true"}})
+        );
+        // Back to the Mods page's: nothing of its own.
+        let form = mod_form(&json!({}), &list);
+        assert_eq!(own_mods(&form, &list), (Vec::new(), json!({})));
     }
 
     #[test]

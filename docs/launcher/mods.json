@@ -13,6 +13,7 @@
         "cosmetic",
         "hooks-engine"
       ],
+      "target": "both",
       "args": {
         "logging": "normal"
       },
@@ -32,6 +33,7 @@
         "network",
         "hooks-engine"
       ],
+      "target": "client",
       "shipped": true,
       "required": true
     },
@@ -50,6 +52,7 @@
         "cosmetic",
         "hooks-engine"
       ],
+      "target": "client",
       "homepage": "https://github.com/marshmallow-mia/NvrGpuRating",
       "required": true
     }

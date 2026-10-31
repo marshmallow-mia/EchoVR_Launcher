@@ -9,9 +9,13 @@
 //!
 //! The operations and their JSON: `docs/plugins/v2.md`.
 
+use std::collections::BTreeMap;
+
 use serde_json::{json, Value};
 
 use crate::core::echovrce;
+use crate::core::launcher::catalogue::Target;
+use crate::core::launcher::mods;
 use crate::core::server_host::events::Reason;
 use crate::core::server_host::status::{self, Command, State, Status};
 use crate::core::server_host::{self as host, autostart, Config, Server, SignIn};
@@ -102,6 +106,7 @@ pub fn call(op: &str, args: &Value) -> Result<Value, String> {
             status::ask(&host::server_dir(&name), cmd).map_err(|e| format!("{e:#}"))?;
             Ok(Value::Null)
         }
+        "mods" => Ok(mods_json(&Config::load())),
         "edit" => {
             let mut c = Config::load();
             edit(&mut c, &name, args)?;
@@ -215,6 +220,34 @@ fn number(args: &Value, k: &str, what: &str) -> Result<Option<u32>, String> {
     }
 }
 
+/// The mods a server can load: those of the servers' version the Mods page has (installed,
+/// for game servers or both), each with whether the page has it on and its arguments
+/// there. A server leaves out what its `mods_off` names, with its own `mod_args` over these.
+fn mods_json(c: &Config) -> Value {
+    let state = crate::core::launcher::store::LauncherState::load();
+    let Some(v) = c.version_in(&state) else {
+        return json!({"version": "", "on": false, "mods": []});
+    };
+    let view = mods::read(v);
+    let list: Vec<Value> = view
+        .plugins
+        .iter()
+        .filter(|p| p.present && (p.verified || view.local_plugins) && p.target.on_servers())
+        .map(|p| {
+            json!({
+                "file": p.file,
+                "name": p.name,
+                "required": p.required,
+                "enabled": p.enabled,
+                "servers_only": p.target == Target::Server,
+                "pack": p.pack,
+                "args": p.arg_strings(),
+            })
+        })
+        .collect();
+    json!({"version": v.name, "on": view.enabled, "mods": list})
+}
+
 /// Pure: server `name` of `c` with what `args` changes (`port`, `regions`, `guilds`,
 /// `tick_rate`, `empty_ttl`, `mods`, `extra_args`), checked against the others.
 pub fn edit(c: &mut Config, name: &str, args: &Value) -> Result<(), String> {
@@ -235,6 +268,36 @@ pub fn edit(c: &mut Config, name: &str, args: &Value) -> Result<(), String> {
             .get("mods")
             .and_then(Value::as_bool)
             .unwrap_or(old.mods),
+        mods_off: match args.get("mods_off") {
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|f| f.trim().to_string())
+                .filter(|f| !f.is_empty())
+                .collect(),
+            _ => old.mods_off.clone(),
+        },
+        mod_args: match args.get("mod_args") {
+            Some(Value::Object(o)) => o
+                .iter()
+                .filter_map(|(file, a)| {
+                    let a: BTreeMap<String, String> = a
+                        .as_object()?
+                        .iter()
+                        .map(|(k, v)| {
+                            let v = match v {
+                                Value::String(t) => t.trim().to_string(),
+                                other => other.to_string(),
+                            };
+                            (k.trim().to_string(), v)
+                        })
+                        .filter(|(k, _)| !k.is_empty())
+                        .collect();
+                    (!a.is_empty()).then(|| (file.clone(), a))
+                })
+                .collect(),
+            _ => old.mod_args.clone(),
+        },
         extra_args: text(args, "extra_args").unwrap_or(old.extra_args.clone()),
         ..old
     };
@@ -383,6 +446,8 @@ pub fn row(s: &Server, st: Option<&Status>, now: i64) -> Value {
         "tick_rate": s.tick_rate,
         "empty_ttl": s.empty_ttl,
         "mods": s.mods,
+        "mods_off": s.mods_off,
+        "mod_args": s.mod_args,
         "extra_args": s.extra_args,
         "chip": chip,
         "tone": tone,
@@ -472,6 +537,42 @@ mod tests {
         let s = c.server(&a).unwrap();
         assert_eq!((s.port, s.regions.as_str(), s.mods), (7000, "uwu", false));
         assert!(edit(&mut c, "nope", &json!({})).is_err());
+    }
+
+    #[test]
+    fn a_servers_own_mods_are_saved() {
+        let mut c = cfg();
+        let a = c.servers[0].name.clone();
+        edit(
+            &mut c,
+            &a,
+            &json!({
+                "mods_off": ["Other.dll", " ", "Pack.dll"],
+                "mod_args": {
+                    "NvrServerPatches.dll": {"teamsize": " 6 ", "bots": true, " ": "x"},
+                    "Empty.dll": {},
+                },
+            }),
+        )
+        .unwrap();
+        let s = c.server(&a).unwrap().clone();
+        assert_eq!(s.mods_off, ["Other.dll", "Pack.dll"]);
+        assert_eq!(s.mod_args.len(), 1);
+        let args = &s.mod_args["NvrServerPatches.dll"];
+        assert_eq!(
+            (args["teamsize"].as_str(), args["bots"].as_str()),
+            ("6", "true")
+        );
+        assert_eq!(args.len(), 2);
+        // An edit that doesn't name them keeps them.
+        edit(&mut c, &a, &json!({"regions": "euw"})).unwrap();
+        assert_eq!(c.server(&a).unwrap().mods_off, s.mods_off);
+        assert_eq!(c.server(&a).unwrap().mod_args, s.mod_args);
+        // The server's config as an older launcher reads it: unknown keys are skipped.
+        let saved = serde_json::to_value(c.server(&a).unwrap()).unwrap();
+        assert!(saved.get("mods_off").is_some());
+        let plain = serde_json::to_value(&c.servers[1]).unwrap();
+        assert!(plain.get("mods_off").is_none() && plain.get("mod_args").is_none());
     }
 
     #[test]

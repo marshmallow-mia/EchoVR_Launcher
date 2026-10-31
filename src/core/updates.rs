@@ -524,6 +524,7 @@ mod tests {
             settings: None,
             pack: None,
             release: false,
+            target: Default::default(),
         }
     }
 

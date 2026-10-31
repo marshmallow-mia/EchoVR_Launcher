@@ -317,6 +317,12 @@ it's in there, see [dev folders](dev-folders.md).
   there, never downloads it, and never offers it under More mods.
 - `required`: the game needs it: always on, also with mods off, and never offered under
   More mods.
+- `target`: where it loads: `client` (players' games: PLAY, `--play`), `server` (game
+  servers: the Server host, a plugin's `host` step, evr-docker and evr-ptero) or `both`.
+  Missing, or a word the launcher doesn't know: `both`. The target is noted at install, so
+  the choice stays the same when the catalogue drops the entry. PLAY leaves a `server` mod
+  out ("Only for game servers"; its row is tagged **Servers only**), and a server leaves a
+  `client` mod out. Old launchers ignore the key and load the mod everywhere.
 - `version`: shown, and compared with the installed one: a different version puts UPDATE
   on its row under Installed mods.
 - `api`, `capabilities` (`observes-only`, `cosmetic`, `alters-gameplay`, `alters-rules`,

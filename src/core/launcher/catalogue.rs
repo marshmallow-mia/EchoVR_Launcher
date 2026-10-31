@@ -126,6 +126,40 @@ impl Requires {
     }
 }
 
+/// Where a mod loads (its `echo-mod.json`'s `target`, as catalogue.json and mods.json carry
+/// it): players' games, game servers, or both. An entry without one, or with a word this
+/// launcher doesn't know, loads on both, as every mod did before servers were told apart.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(from = "String", rename_all = "lowercase")]
+pub enum Target {
+    Client,
+    Server,
+    #[default]
+    Both,
+}
+
+impl From<String> for Target {
+    fn from(s: String) -> Target {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "client" => Target::Client,
+            "server" => Target::Server,
+            _ => Target::Both,
+        }
+    }
+}
+
+impl Target {
+    /// It loads in players' games (PLAY, `--play`).
+    pub fn in_games(self) -> bool {
+        self != Target::Server
+    }
+
+    /// It loads on game servers (the Server host, a plugin's `host` step).
+    pub fn on_servers(self) -> bool {
+        self != Target::Client
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct Dependency {

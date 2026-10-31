@@ -20,6 +20,7 @@ pub mod proc;
 pub mod status;
 pub mod supervisor;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -145,8 +146,15 @@ pub struct Server {
     pub tick_rate: u32,
     /// Seconds an empty server stays in its match before going back to the lobby (0: off).
     pub empty_ttl: u32,
-    /// The mods the Mods page has on load on it too (a content pack such as EchoCombat).
+    /// The mods the Mods page has on load on it too (a content pack such as EchoCombat);
+    /// else only the ones the game needs.
     pub mods: bool,
+    /// Plugins (file names) of the Mods page's it leaves out.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mods_off: Vec<String>,
+    /// Its own arguments for a plugin (file name → name → value), over the Mods page's.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub mod_args: BTreeMap<String, BTreeMap<String, String>>,
     /// More arguments for the game, space-separated.
     pub extra_args: String,
 }
@@ -162,6 +170,8 @@ impl Default for Server {
             tick_rate: TICK_RATE,
             empty_ttl: 0,
             mods: true,
+            mods_off: Vec::new(),
+            mod_args: BTreeMap::new(),
             extra_args: String::new(),
         }
     }
@@ -175,6 +185,15 @@ impl Server {
 
     pub fn dir(&self) -> PathBuf {
         server_dir(&self.name)
+    }
+
+    /// Its say over the mods it loads.
+    pub fn own_mods(&self) -> super::launcher::mods::ServerMods {
+        super::launcher::mods::ServerMods {
+            on: self.mods,
+            off: self.mods_off.clone(),
+            args: self.mod_args.clone(),
+        }
     }
 }
 

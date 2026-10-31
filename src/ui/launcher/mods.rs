@@ -1857,7 +1857,12 @@ fn plugin_row(
         a.chip_tip(k, &key("chip"), "Set aside", design::RED, &tip);
     } else if look.held {
         a.chip_tip(k, &key("chip"), "Not loaded", design::QUEST_WARN, HELD_TIP);
-    } else if let Some(why) = &look.left_out {
+    } else if let Some(why) = look
+        .left_out
+        .as_ref()
+        // A mod for game servers isn't loaded by PLAY on purpose: its tag says so.
+        .filter(|why| !why.starts_with("Only for game servers"))
+    {
         let chip = if why.starts_with("Blocked") {
             ("Blocked", design::RED)
         } else if why.starts_with("Waiting") || why.starts_with("Needs") {
@@ -1947,6 +1952,7 @@ fn plugin_row(
         prerelease.then_some(("Prerelease", design::QUEST_WARN)),
         look.signer.and_then(signer_tag),
         p.required.then_some(("Required", design::QUEST_ON)),
+        (p.target == catalogue::Target::Server).then_some(("Servers only", design::QUEST_ON)),
         p.changed().then_some(("Changed", design::QUEST_WARN)),
     ];
     name_tags(k, x, &a, &look.name, tags.into_iter().flatten());
@@ -3814,6 +3820,7 @@ fn made_up_plugins() -> Vec<Plugin> {
         settings: None,
         pack: None,
         release: false,
+        target: Default::default(),
     };
     vec![
         plugin(
@@ -3934,6 +3941,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         settings: None,
         pack: None,
         release: false,
+        target: Default::default(),
     };
     let bare = variant == Some(SnapVariant::ModsNoLoader);
     let long = variant == Some(SnapVariant::ModsLongText);
@@ -4003,6 +4011,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         .cloned()
         .unwrap_or_default();
     plugins[0].defaults = plugins[0].args.clone();
+    let mut left_out = BTreeMap::new();
     if long {
         plugins[1].status = Some(status(
             "CombatStats.dll",
@@ -4011,6 +4020,22 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
             "skipped",
             "",
         ));
+        // A mod for game servers: PLAY leaves it out, tagged rather than warned about.
+        let mut p = plugin(
+            "ServerRules.dll",
+            "ServerRules",
+            Source::Catalog {
+                id: "server-rules".into(),
+                version: "1.0.0".into(),
+            },
+            None,
+        );
+        p.target = catalogue::Target::Server;
+        left_out.insert(
+            "serverrules.dll".to_string(),
+            "Only for game servers: the Server host loads it".to_string(),
+        );
+        plugins.push(p);
     }
     if bare {
         plugins.truncate(1);
@@ -4044,7 +4069,7 @@ fn demo(variant: Option<SnapVariant>) -> Mods {
         packs: Vec::new(),
         loads_early: true,
         repacked: false,
-        left_out: Default::default(),
+        left_out,
         quarantined: Default::default(),
         assets_enabled: true,
         asset_patches: [
@@ -4137,6 +4162,7 @@ mod tests {
             settings: None,
             pack: None,
             release: false,
+            target: Default::default(),
         };
         let rows = [
             Row::Vr(VrPart::EchoXr, None),
@@ -4176,6 +4202,7 @@ mod tests {
             settings: None,
             pack: None,
             release: false,
+            target: Default::default(),
         };
         // Not started yet: nothing to say.
         assert_eq!(state(&p), None);
@@ -4274,6 +4301,7 @@ mod tests {
             settings: None,
             pack: None,
             release: true,
+            target: Default::default(),
         }
     }
 
