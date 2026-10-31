@@ -15,7 +15,7 @@ use super::download::{redact, sha256_matches};
 use super::http::{self, Cancelled};
 use super::launcher::update_check::Channel;
 use super::manifest::{Action, Entry as ManifestEntry, Manifest};
-use super::nevr_release::{self, Release};
+use super::nevr_release::{self, Refused, Release};
 
 /// The launcher's live PC update: the community update with the mod loader, nEVR runtime
 /// (`BugSplat64.dll`), which every mod needs, in place of the old loader (EchoLoader's
@@ -192,7 +192,8 @@ fn channel_release(name: &str, cancel: &AtomicBool) -> Result<String> {
             e.step,
             e.detail
         );
-        anyhow!(e).context(format!("nEVR's {name} channel couldn't be read"))
+        e.into_error()
+            .context(format!("nEVR's {name} channel couldn't be read"))
     })
 }
 
@@ -521,7 +522,7 @@ pub fn apply_manifest(
                                     r.version,
                                     r.url
                                 );
-                                r.download(&z, cancel)?;
+                                r.download(&z, cancel).map_err(Refused::into_error)?;
                                 zip = Some(z.clone());
                                 z
                             }
@@ -675,7 +676,8 @@ pub fn with_nevr_release(
             e.step,
             e.detail
         );
-        anyhow!(e).context(format!("nEVR {v} couldn't be installed"))
+        e.into_error()
+            .context(format!("nEVR {v} couldn't be installed"))
     })?;
     Ok((in_place_of(manifest, &release), Some(release)))
 }

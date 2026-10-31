@@ -48,7 +48,7 @@ pub fn offered(cancel: &AtomicBool) -> Result<Option<QuestRelease>> {
                 e.step,
                 e.detail
             );
-            anyhow::anyhow!(e)
+            e.into_error()
         })
 }
 
@@ -85,7 +85,7 @@ pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome>
             std::fs::create_dir_all(staging())?;
             r.apk
                 .download(&apk, cancel, &mut |f| on(Step::Percent(f)))
-                .map_err(anyhow::Error::from)?;
+                .map_err(nevr_release::Refused::into_error)?;
         }
         // A clean install, never one over another build: what is installed goes first (its
         // sign-in with it), and the settings in the game's media folder, which Android takes

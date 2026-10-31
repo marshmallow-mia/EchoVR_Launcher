@@ -138,6 +138,11 @@ fn build(connect_timeout: Duration) -> Client {
 #[error("cancelled")]
 pub struct Cancelled;
 
+/// Error for a body longer than the caller allowed ([`get_capped`]): not the file asked for.
+#[derive(Debug, thiserror::Error)]
+#[error("the server sent more than {0} bytes")]
+pub struct TooLarge(pub u64);
+
 pub fn is_cancelled(e: &anyhow::Error) -> bool {
     e.downcast_ref::<Cancelled>().is_some()
 }
@@ -346,7 +351,7 @@ pub fn get_capped(
         while let Some(chunk) = next_chunk(&mut resp, cancel).await? {
             size += chunk.len() as u64;
             if size > max {
-                bail!("GET {url}: the server sent more than {max} bytes");
+                return Err(anyhow::Error::new(TooLarge(max)).context(format!("GET {url}")));
             }
             sink.write_all(&chunk).context("write")?;
             sha.update(&chunk);

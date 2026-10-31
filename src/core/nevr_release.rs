@@ -72,6 +72,24 @@ pub struct Refused {
     pub detail: String,
 }
 
+/// Not a step of the guide: the player cancelled, so nothing was checked or changed.
+pub const CANCELLED: u8 = 0;
+/// Step 8's file didn't arrive (no connection, an error from the server, a file that
+/// couldn't be saved): nothing about the release itself was wrong.
+pub const UNREACHABLE: u8 = 9;
+
+impl Refused {
+    /// As an error for the rest of the launcher: a cancel is [`super::http::Cancelled`],
+    /// which a job shows as cancelled, not as a refusal.
+    pub fn into_error(self) -> anyhow::Error {
+        if self.step == CANCELLED {
+            super::http::Cancelled.into()
+        } else {
+            anyhow::Error::new(self)
+        }
+    }
+}
+
 fn refused(step: u8, detail: impl Into<String>) -> Refused {
     Refused {
         step,
@@ -88,7 +106,9 @@ fn say(step: u8) -> &'static str {
         4 => "nEVR's release information is older than what this launcher has already seen, so it wasn't used. Nothing was changed.",
         5 => "nEVR's release information is out of date. Check your computer's clock or try again later. Nothing was changed.",
         6 => "The launcher couldn't read or save what it knows about nEVR's releases. Nothing was changed.",
+        CANCELLED => "Cancelled. Nothing was changed.",
         7 => "nEVR's release information doesn't have the nEVR this update brings. Nothing was changed.",
+        UNREACHABLE => "Couldn't download nEVR. Check your connection and free disk space, then try again. Nothing was changed.",
         _ => "A file from nEVR's release didn't match it, so it was deleted and nothing was installed.",
     }
 }
@@ -189,15 +209,15 @@ fn fetch_checked(
     on: &mut dyn FnMut(u64),
 ) -> Result<(), Refused> {
     let got = (|| {
-        let file =
-            std::fs::File::create(to).map_err(|e| refused(8, format!("{}: {e}", to.display())))?;
+        let file = std::fs::File::create(to)
+            .map_err(|e| refused(UNREACHABLE, format!("{}: {e}", to.display())))?;
         let mut file = Counted {
             inner: std::io::BufWriter::new(file),
             done: 0,
             on,
         };
         let (got, sha) = super::http::get_capped(url, size, &mut file, Some(cancel))
-            .map_err(|e| refused(8, format!("{e:#}")))?;
+            .map_err(|e| download_refused(&e))?;
         if got != size {
             return Err(refused(
                 8,
@@ -210,12 +230,26 @@ fn fetch_checked(
                 format!("{url}'s sha256 differs from the manifest"),
             ));
         }
-        std::io::Write::flush(&mut file).map_err(|e| refused(8, format!("{}: {e}", to.display())))
+        std::io::Write::flush(&mut file)
+            .map_err(|e| refused(UNREACHABLE, format!("{}: {e}", to.display())))
     })();
     if got.is_err() {
         let _ = std::fs::remove_file(to);
     }
     got
+}
+
+/// Why a release's file wasn't downloaded: the player cancelled, the server sent more
+/// than the manifest's size (step 8), or no file came at all.
+fn download_refused(e: &anyhow::Error) -> Refused {
+    let step = if super::http::is_cancelled(e) {
+        CANCELLED
+    } else if e.downcast_ref::<super::http::TooLarge>().is_some() {
+        8
+    } else {
+        UNREACHABLE
+    };
+    refused(step, format!("{e:#}"))
 }
 
 /// nEVR's Echo VR for the Quest in a release: its APK (the one build every player gets,
@@ -328,7 +362,7 @@ fn checked(cancel: &AtomicBool) -> Result<(Value, String), Refused> {
     let mut tries = 0;
     loop {
         if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(refused(1, "cancelled"));
+            return Err(refused(CANCELLED, "cancelled"));
         }
         let (bytes, sig) = fetch(&base)?;
         match accept(&bytes, &sig, &PINNED, &dir, &now()?) {
@@ -1014,6 +1048,24 @@ mod tests {
             )),
             2
         );
+    }
+
+    #[test]
+    fn tells_a_cancel_and_a_lost_download_from_a_wrong_file() {
+        let cancelled = anyhow::Error::new(crate::core::http::Cancelled).context("GET x");
+        let r = download_refused(&cancelled);
+        assert_eq!(r.step, CANCELLED);
+        assert!(crate::core::http::is_cancelled(&r.into_error()));
+
+        let long = anyhow::Error::new(crate::core::http::TooLarge(5)).context("GET x");
+        let r = download_refused(&long);
+        assert_eq!(r.step, 8);
+        assert!(r.to_string().contains("didn't match"), "{r}");
+
+        let r = download_refused(&anyhow::anyhow!("GET x: connection refused"));
+        assert_eq!(r.step, UNREACHABLE);
+        assert!(r.to_string().contains("Check your connection"), "{r}");
+        assert!(!crate::core::http::is_cancelled(&r.into_error()));
     }
 
     #[test]
