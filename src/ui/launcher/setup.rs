@@ -168,7 +168,11 @@ fn confirm_install(d: &mut Dashboard, ctx: &egui::Context, ask: InstallAsk) {
                 None => super::versions::install(d, ctx, *e),
             }
         }
-        InstallFor::Quest => quest_install(d, ctx),
+        // Echo VR already in the main profile: Reinstall, a clean install of it.
+        InstallFor::Quest => {
+            let reinstall = d.quest_info.as_ref().is_some_and(|i| i.installed);
+            quest_install(d, ctx, reinstall)
+        }
     }
 }
 
@@ -757,21 +761,22 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
     );
 }
 
-/// Puts the Quest release the launcher channel offers onto the headset, or updates it.
-pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context) {
+/// Puts the Quest release the launcher channel offers onto the headset, or updates it;
+/// `reinstall` installs it again (clean) even when it is there.
+pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, reinstall: bool) {
     let installed = d.quest_info.as_ref().is_some_and(|i| i.installed);
     d.start_job(
         ctx,
         JobKind::QuestInstall,
         QUEST_JOB,
         vec![Res::Quest],
-        if installed {
-            "Updating Echo VR on your Quest"
-        } else {
-            "Installing Echo VR on your Quest"
+        match (reinstall, installed) {
+            (true, _) => "Reinstalling Echo VR on your Quest",
+            (false, true) => "Updating Echo VR on your Quest",
+            (false, false) => "Installing Echo VR on your Quest",
         },
         "Checking nEVR's release...",
-        move |cancel, on| match quest_core::install(cancel, on) {
+        move |cancel, on| match quest_core::install(cancel, reinstall, on) {
             Ok(outcome) => JobResult::Quest(outcome),
             Err(e) => job_err(e, "Couldn't install"),
         },
@@ -1017,8 +1022,23 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     } else {
         0.0
     };
+    // The headset's profiles, when it has more than one: Echo VR goes into the main one.
+    let profiles = if quest {
+        d.quest_info
+            .as_ref()
+            .map(|i| i.profiles.clone())
+            .filter(|p| p.len() > 1)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let profile_h = dz(100.0);
+    let quest_note = quest_note(reinstall, d.quest_info.as_ref());
     if quest {
-        h += text_height(k, QUEST_NOTE, inner) + dz(24.0);
+        h += text_height(k, &quest_note, inner) + dz(24.0);
+        if !profiles.is_empty() {
+            h += q_h + profile_h + dz(24.0);
+        }
     } else {
         h += q_h + runtime_h + dz(24.0) + place_h + dz(24.0);
         if ask.copy.is_some() && !use_copy && !reinstall {
@@ -1116,10 +1136,40 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             k.put(x, y + dz(50.0), g);
         }
     } else {
-        k.caps_text(x, y, cw, QUEST_NOTE, 17.0, design::BODY, dz(PARA));
+        if !profiles.is_empty() {
+            question(k, x, y, cw, "Which profile on your Quest?");
+            y += q_h;
+            let n = profiles.len().min(4) as f32;
+            let pw = (cw - (n - 1.0) * gap) / n;
+            for (i, p) in profiles.iter().take(4).enumerate() {
+                let note = match (p.is_main(), p.echo) {
+                    (true, _) => "Echo VR goes here",
+                    (false, true) => "Echo VR is here: it is taken off",
+                    (false, false) => "The game data can't go here",
+                };
+                k.tile_off(
+                    &format!("install-profile-{i}"),
+                    x + i as f32 * (pw + gap),
+                    y,
+                    pw,
+                    profile_h,
+                    &p.name,
+                    note,
+                    p.is_main(),
+                    (!p.is_main()).then_some(
+                        "Your Quest lets this PC copy the game data only into its main profile",
+                    ),
+                );
+            }
+            y += profile_h + dz(24.0);
+        }
+        k.caps_text(x, y, cw, &quest_note, 17.0, design::BODY, dz(PARA));
     }
 
     let tip = match () {
+        _ if quest && reinstall => {
+            "Take Echo VR off your Quest and install nEVR's build again, with the game data"
+        }
         _ if quest => "Download nEVR's Echo VR and install it on your Quest",
         _ if event && use_copy => {
             "Check this copy against the event build's checksums, add it and EchoRelay's patch"
@@ -1371,5 +1421,24 @@ fn pack_server_card(d: &mut Dashboard, k: &mut Kit) {
 const PACK_SERVER_NOTE: &str = "While {name} is on, Echo VR plays on this server instead of EchoVRCE: you sign in, find matches and play there, with the others who have {name}. Its host gives you the address and its key. Leave the address empty to play on EchoVRCE.\n\nYour account there is a Discord ID and a password. The password goes into the game's config in plain text: don't reuse a real one.";
 const RELAY_NOTE: &str = "Event builds play on the community's classic lobbies server ({server}). Pick a display name and a password: your first login locks the account to that password, and it works in every event build.\n\nDon't reuse a real password: it is sent without encryption.";
 const EVENT_NOTE: &str = "An event build: it plays on the community's classic lobbies server, with EchoRelay's patch instead of the licence check. You pick your account there when you first play it.";
-/// The Install card's text for the Quest.
-const QUEST_NOTE: &str = "Echo VR on your Quest is nEVR's build, the same for every player, checked against nEVR's signed release. It goes on over USB or Wi-Fi, with the game data when the headset doesn't have it yet.\n\nAnother Echo VR build on the headset is updated to nEVR's: your in-game settings stay.";
+/// What the Quest's Install card says: the install, and for a reinstall, or Echo VR in
+/// another profile, what is taken off first.
+fn quest_note(reinstall: bool, info: Option<&crate::core::launcher::quest::QuestInfo>) -> String {
+    let main = info.and_then(|i| i.main_profile()).map_or_else(
+        || "the main profile".to_string(),
+        |n| format!("the profile \"{n}\""),
+    );
+    let mut note = QUEST_NOTE.replace("{main}", &main);
+    if reinstall {
+        note.push_str("\n\nReinstall takes Echo VR off the headset first, with its game data and sign-in (your settings stay), then installs it again.");
+    } else if let Some(p) = info.and_then(|i| i.elsewhere()) {
+        note.push_str(&format!(
+            "\n\nEcho VR in the profile \"{}\" is taken off first, with its sign-in.",
+            p.name
+        ));
+    }
+    note
+}
+
+/// The Install card's text for the Quest (`{main}`: the profile it goes into).
+const QUEST_NOTE: &str = "Echo VR on your Quest is nEVR's build, the same for every player, checked against nEVR's signed release. It goes on over USB or Wi-Fi into {main}, with the game data when the headset doesn't have it yet.\n\nAnother Echo VR build on the headset is updated to nEVR's: your in-game settings stay.";

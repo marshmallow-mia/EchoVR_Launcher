@@ -15,7 +15,7 @@ use crate::core::adb::{self, PACKAGE};
 use crate::core::download::{self, Progress};
 use crate::core::error::UiError;
 use crate::core::nevr_release::{self, QuestRelease};
-use crate::core::quest_install::{self, ApkInstall};
+use crate::core::quest_install::{self, ApkInstall, MAIN_USER};
 use crate::core::{paths, pc_update};
 
 pub const DATA_ZIP: &str = "_data.zip";
@@ -63,10 +63,12 @@ fn is_release(
         && sha(&installed.path).as_deref() == Some(r.apk.sha256.as_str())
 }
 
-/// Puts the offered nEVR release onto the headset, as nEVR's install method says (ADR 0023,
-/// "Quest plan"): a clean install of its APK (what is installed is uninstalled first, the
-/// settings kept), then the game data when it isn't there, then the checks.
-pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome> {
+/// Puts the offered nEVR release onto the headset's main profile, as nEVR's install method
+/// says (ADR 0023, "Quest plan"): a clean install of its APK (what is installed, in any
+/// profile, is uninstalled first, the settings kept), then the game data when it isn't
+/// there, then the checks. `reinstall` does the clean install even when the release is
+/// already there.
+pub fn install(cancel: &AtomicBool, reinstall: bool, on: &mut dyn FnMut(Step)) -> Result<Outcome> {
     ready()?;
     on(Step::Status("Checking nEVR's release...".into()));
     let Some(r) = offered(cancel)? else {
@@ -74,9 +76,12 @@ pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome>
     };
     let v = r.version.clone();
     let have = quest_install::installed();
-    let current = have
-        .as_ref()
-        .is_some_and(|i| is_release(i, &r, quest_install::installed_sha));
+    // Echo VR in another profile only isn't this release in the main profile: it goes, and
+    // the release comes into the main profile.
+    let current = !reinstall
+        && have
+            .as_ref()
+            .is_some_and(|i| i.in_main() && is_release(i, &r, quest_install::installed_sha));
 
     if !current {
         let apk = staging().join(format!("nevr-runtime-v{v}-quest.apk"));
@@ -103,7 +108,12 @@ pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome>
         match quest_install::install_apk(&apk) {
             ApkInstall::Done => {}
             ApkInstall::Failed(why) => bail_refused(&why)?,
-            other => bail_refused(&format!("{other:?}"))?,
+            ApkInstall::Newer => bail_refused(&format!(
+                "A newer Echo VR than nEVR {v} is still on it. Reinstall takes it off first."
+            ))?,
+            ApkInstall::OtherSigner => {
+                bail_refused("Another Echo VR build is still on it. Reinstall takes it off first.")?
+            }
         }
         if let Some(dir) = kept {
             on(Step::Status("Putting your Echo VR settings back...".into()));
@@ -134,8 +144,8 @@ pub fn install(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<Outcome>
     crate::core::quest_content::apply(cancel, &staging(), &mut |s| on(Step::Status(s)))?;
     quest_install::grant_permissions();
 
-    // What the headset reports now has to be what nEVR's manifest names.
-    let now = quest_install::installed();
+    // What the headset reports now has to be what nEVR's manifest names, in the main profile.
+    let now = quest_install::installed().filter(quest_install::Installed::in_main);
     if now.as_ref().and_then(|i| i.version_code) != Some(r.version_code) {
         bail!(
             "Your Quest doesn't report nEVR {v} after the install (versionCode {:?}). Please try again.",
@@ -188,10 +198,30 @@ fn fetch_data(r: &QuestRelease, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -
     Ok(file)
 }
 
+/// A profile on the headset, and whether Echo VR is installed in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Profile {
+    pub id: u32,
+    pub name: String,
+    pub echo: bool,
+}
+
+impl Profile {
+    /// The main profile: the one Echo VR is installed into.
+    pub fn is_main(&self) -> bool {
+        self.id == MAIN_USER
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct QuestInfo {
     pub device: Option<String>,
+    /// Echo VR is in the main profile.
     pub installed: bool,
+    /// The headset's profiles (one per Meta account), the main one first.
+    pub profiles: Vec<Profile>,
+    /// The profile in use in the headset now.
+    pub current_profile: Option<u32>,
     /// The installed APK's versionCode.
     pub version_code: Option<u64>,
     /// The nEVR release the installed APK is, when it is one.
@@ -206,11 +236,27 @@ pub struct QuestInfo {
 
 impl QuestInfo {
     pub fn version_label(&self) -> String {
+        if let (false, Some(p)) = (self.installed, self.elsewhere()) {
+            return format!("Echo VR is only in the profile \"{}\"", p.name);
+        }
         match (self.installed, &self.nevr) {
             (false, _) => "Echo VR is not installed on this Quest".into(),
             (true, Some(v)) => format!("nEVR {v}"),
             (true, None) => "Echo VR (another build)".into(),
         }
+    }
+
+    /// The main profile's name, when the headset said.
+    pub fn main_profile(&self) -> Option<&str> {
+        self.profiles
+            .iter()
+            .find(|p| p.is_main())
+            .map(|p| p.name.as_str())
+    }
+
+    /// A profile other than the main one with Echo VR in it.
+    pub fn elsewhere(&self) -> Option<&Profile> {
+        self.profiles.iter().find(|p| p.echo && !p.is_main())
     }
 
     /// The release to update to, when Echo VR is installed and isn't the offered one.
@@ -241,6 +287,15 @@ pub fn info() -> Result<QuestInfo> {
         .is_some_and(|d| super::quest_net::is_network_serial(&d.serial));
     let have = quest_install::installed();
     let version_code = have.as_ref().and_then(|i| i.version_code);
+    let mut profiles: Vec<Profile> = quest_install::users()
+        .into_iter()
+        .map(|u| Profile {
+            echo: have.as_ref().is_some_and(|i| i.users.contains(&u.id)),
+            id: u.id,
+            name: u.name,
+        })
+        .collect();
+    profiles.sort_by_key(|p| !p.is_main());
     let offered = match offered(&AtomicBool::new(false)) {
         Ok(r) => r.map(|r| (r.version, r.version_code)),
         Err(e) => {
@@ -250,7 +305,9 @@ pub fn info() -> Result<QuestInfo> {
     };
     Ok(QuestInfo {
         device,
-        installed: have.is_some(),
+        installed: have.as_ref().is_some_and(quest_install::Installed::in_main),
+        profiles,
+        current_profile: quest_install::current_user(),
         version_code,
         nevr: version_code.and_then(nevr_release::quest_version_of),
         offered,
@@ -272,6 +329,25 @@ pub fn parse_activity(output: &str) -> Option<String> {
 
 pub fn launch() -> Result<()> {
     ready()?;
+    // Echo VR is in the main profile: from another one, Android starts nothing there.
+    if let Some(now) = quest_install::current_user().filter(|u| *u != MAIN_USER) {
+        let names = quest_install::users();
+        let name = |id: u32| {
+            names
+                .iter()
+                .find(|u| u.id == id)
+                .map_or_else(|| format!("profile {id}"), |u| format!("\"{}\"", u.name))
+        };
+        return Err(UiError::new(
+            "Switch profiles in the headset",
+            format!(
+                "Your Quest is in the profile {} now. Echo VR is in the profile {}: switch to it in the headset, then press PLAY again.",
+                name(now),
+                name(MAIN_USER)
+            ),
+        )
+        .into());
+    }
     // nEVR's build lists its activity as Quest apps do (category INFO), older builds as a
     // launcher's.
     let component = [
@@ -389,6 +465,33 @@ mod tests {
     }
 
     #[test]
+    fn echo_in_another_profile_only_is_named() {
+        let mut i = QuestInfo {
+            profiles: vec![
+                Profile {
+                    id: 0,
+                    name: "Main".into(),
+                    echo: false,
+                },
+                Profile {
+                    id: 10,
+                    name: "Second".into(),
+                    echo: true,
+                },
+            ],
+            ..QuestInfo::default()
+        };
+        assert_eq!(i.main_profile(), Some("Main"));
+        assert_eq!(
+            i.version_label(),
+            "Echo VR is only in the profile \"Second\""
+        );
+        i.installed = true;
+        i.nevr = Some("6.12.0".into());
+        assert_eq!(i.version_label(), "nEVR 6.12.0");
+    }
+
+    #[test]
     fn the_release_is_installed_only_with_its_code_and_bytes() {
         let r = QuestRelease {
             version: "6.2.0".into(),
@@ -409,6 +512,7 @@ mod tests {
         let mut i = quest_install::Installed {
             path: "/data/app/base.apk".into(),
             version_code: Some(60200999),
+            users: vec![MAIN_USER],
         };
         assert!(is_release(&i, &r, |_| Some("a".repeat(64))));
         assert!(!is_release(&i, &r, |_| Some("b".repeat(64))));

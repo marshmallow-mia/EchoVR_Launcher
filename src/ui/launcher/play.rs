@@ -666,6 +666,7 @@ pub(super) fn quest_info(d: &Dashboard) -> Vec<String> {
         (_, Some(Status::Ready)) => {
             let mut parts = match &d.quest_info {
                 Some(i) if i.installed => vec!["Installed".into(), i.version_label()],
+                Some(i) if i.elsewhere().is_some() => vec![i.version_label()],
                 Some(_) => vec!["Not installed on this Quest".into()],
                 None => vec!["Reading the installed version".into()],
             };
@@ -846,7 +847,7 @@ fn run_update(d: &mut Dashboard, ctx: &egui::Context, update: Update) {
             d.queue_updates(ctx, plugins.into_iter().chain(launcher).collect());
         }
         Update::Quest => {
-            setup::quest_install(d, ctx);
+            setup::quest_install(d, ctx, false);
             d.queue_updates(ctx, launcher.into_iter().collect());
         }
         Update::Nothing => {}

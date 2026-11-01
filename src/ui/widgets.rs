@@ -449,15 +449,32 @@ impl Kit<'_> {
         note: &str,
         selected: bool,
     ) -> Resp {
+        self.tile_off(key, x, y, w, h, title, note, selected, None)
+    }
+
+    /// [`Kit::tile`], or one that can't be chosen when `off` says why (its tooltip).
+    #[allow(clippy::too_many_arguments)]
+    pub fn tile_off(
+        &mut self,
+        key: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        title: &str,
+        note: &str,
+        selected: bool,
+        off: Option<&str>,
+    ) -> Resp {
         let r = self.rect(x, y, w, h);
         self.a11y_name = Some(title.to_string());
-        let (resp, t, pressed) = self.hot(key, r, true, "");
+        let (resp, t, pressed) = self.hot(key, r, off.is_none(), off.unwrap_or(""));
         let fill = if selected {
             design::BLUE
         } else {
             Color32::from_rgba_unmultiplied(20, 20, 20, 235)
         };
-        self.button_face(r, fill, true, t, pressed);
+        self.button_face(r, fill, off.is_none(), t, pressed);
         if !selected {
             let rim = Color32::from_white_alpha((24.0 + 60.0 * t) as u8);
             self.ui
@@ -481,7 +498,11 @@ impl Kit<'_> {
                 .unwrap_or(17.5);
             self.label_galley(title, design::din(size), design::TEXT, w - 2.0 * pad)
         });
-        let color = if selected { design::TEXT } else { design::BODY };
+        let color = match (selected, off) {
+            (true, _) => design::TEXT,
+            (false, None) => design::BODY,
+            (false, Some(_)) => design::GREY,
+        };
         let notes = self.caps_block(note, 15.0, color, w - 2.0 * pad);
         let gap = dz(8.0);
         let content = g.size().y + gap + notes.iter().map(|n| n.size().y).sum::<f32>();

@@ -533,7 +533,7 @@ fn do_side(d: &mut Dashboard, ctx: &egui::Context, act: SideAct) {
         SideAct::UpdatePc(v) => versions::update(d, ctx, *v),
         SideAct::Help(url) => platform::open_url(url),
         SideAct::QuestCheck => d.check_quest(ctx, true),
-        SideAct::QuestUpdate => setup::quest_install(d, ctx),
+        SideAct::QuestUpdate => setup::quest_install(d, ctx, false),
         SideAct::Nothing => {}
     }
 }

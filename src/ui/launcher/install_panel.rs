@@ -428,16 +428,19 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         let ey = ey + dz(30.0);
         let (text, color) = match &h.echo {
             Ok(apk) => (format!("Installed: {apk}"), design::TEXT),
-            Err(note) => (note.to_string(), design::GREY),
+            Err(note) => (note.clone(), design::GREY),
         };
-        // Save logs beside it, once it is there.
+        // Save logs and Reinstall beside it, once it is there.
         let logs = h.echo.is_ok();
-        let lw = if logs {
-            k.button_width("Save logs", Some(Icon::Folder), dz(ACTION_H))
+        let (lw, rw) = if logs {
+            (
+                k.button_width("Save logs", Some(Icon::Folder), dz(ACTION_H)),
+                k.button_width("Reinstall", Some(Icon::Refresh), dz(ACTION_H)),
+            )
         } else {
-            0.0
+            (0.0, 0.0)
         };
-        let text_w = right - tx - if logs { lw + dz(12.0) } else { 0.0 };
+        let text_w = right - tx - if logs { lw + rw + dz(24.0) } else { 0.0 };
         let text_h: f32 = k
             .caps_block(&text, 16.0, color, text_w)
             .iter()
@@ -447,6 +450,24 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         hero::tile(k, x, ey, w, echo_h, false);
         let ty = ey + (echo_h - text_h) / 2.0;
         k.caps_text(tx, ty, text_w, &text, 16.0, color, 0.0);
+        let free = !d.quest_busy && d.busy_with(&[super::Res::Quest]).is_none();
+        if logs
+            && k.button(
+                "quest-reinstall",
+                right - lw - dz(12.0) - rw,
+                ey + (echo_h - dz(ACTION_H)) / 2.0,
+                rw,
+                dz(ACTION_H),
+                Tone::Dark,
+                Some(Icon::Refresh),
+                "Reinstall",
+                free,
+                "Take Echo VR off your Quest and install it again, with the game data",
+            )
+            .clicked
+        {
+            super::setup::ask_quest_install(d);
+        }
         if logs
             && k.button(
                 "quest-logs",
@@ -457,7 +478,7 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 Tone::Dark,
                 Some(Icon::Folder),
                 "Save logs",
-                !d.quest_busy && d.busy_with(&[super::Res::Quest]).is_none(),
+                free,
                 "Copy Echo VR's logs from the headset into a folder on this PC, and open it",
             )
             .clicked
@@ -716,7 +737,7 @@ struct Headset {
     color: Color32,
     device: Option<String>,
     /// The installed build's label, or why there is none to show.
-    echo: Result<String, &'static str>,
+    echo: Result<String, String>,
 }
 
 fn headset(d: &Dashboard) -> Headset {
@@ -737,8 +758,9 @@ fn headset(d: &Dashboard) -> Headset {
         device: info.as_ref().and_then(|i| i.device.clone()),
         echo: match &info {
             Some(i) if i.installed => Ok(i.version_label()),
-            Some(_) => Err("Not installed on this Quest"),
-            None => Err("Connect the headset to see what is installed"),
+            Some(i) if i.elsewhere().is_some() => Err(i.version_label()),
+            Some(_) => Err("Not installed on this Quest".into()),
+            None => Err("Connect the headset to see what is installed".into()),
         },
     }
 }

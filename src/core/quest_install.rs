@@ -1,6 +1,12 @@
 //! The steps that put nEVR's Echo VR onto a Quest over adb: what is installed, the APK
 //! (in place, or after an uninstall the player agreed to), the game data, permissions.
 //!
+//! A Quest can have several profiles (Android users, one per Meta account). The APK is one
+//! for the whole headset, but each profile has the app or not, and its own storage. adb's
+//! shell reaches only the main profile's storage (`/sdcard`; Android 14 refuses
+//! `/storage/emulated/<other>` even with that profile started), and nEVR's release build
+//! doesn't fetch its game data itself, so Echo VR goes into the main profile only.
+//!
 //! Every step that matters is checked: the Java installer ignored the result of
 //! `adb install`, so a failed install still ended in "Installation is complete!".
 
@@ -22,6 +28,9 @@ use super::nevr_release::Member;
 pub const DATA_DIR: &str = "/sdcard/Android/media/com.readyatdawn.r15/files";
 /// Where older installers put the game data; nEVR's build reads it there too.
 pub const LEGACY_DATA_DIR: &str = "/sdcard/readyatdawn";
+
+/// The main profile (Android's user 0): the one whose storage adb reaches.
+pub const MAIN_USER: u32 = 0;
 
 /// Message for "several usable devices", listing what adb saw.
 pub fn multi_device_message() -> String {
@@ -106,17 +115,96 @@ pub struct Installed {
     /// The installed APK's path on the headset.
     pub path: String,
     pub version_code: Option<u64>,
+    /// The profiles that have it. The APK is one for the headset, so Echo VR in any profile
+    /// keeps an older version from going on in place.
+    pub users: Vec<u32>,
 }
 
-/// What is installed, read from `pm path` and `dumpsys package`; `None` when nothing is.
+impl Installed {
+    /// Whether the main profile has it (the one the launcher installs into and plays).
+    pub fn in_main(&self) -> bool {
+        self.users.contains(&MAIN_USER)
+    }
+}
+
+/// What is installed, in any profile, read from `dumpsys package`; `None` when no profile
+/// has it. (`pm path` answers for the profile in use only: Echo VR in another profile looked
+/// missing, so the install skipped its uninstall and was refused as a downgrade.)
 pub fn installed() -> Option<Installed> {
+    let dump = adb::shell(&format!("dumpsys package {PACKAGE}"));
+    if let Some(i) = parse_dumpsys(&dump.output) {
+        return Some(i);
+    }
+    // A build whose dumpsys doesn't list profiles: the main profile's, as before.
     let out = adb::exec(&["shell", "pm", "path", PACKAGE]);
     let path = parse_pm_path(&out.output)?;
-    let dump = adb::shell(&format!("dumpsys package {PACKAGE} | grep versionCode="));
     Some(Installed {
         path,
         version_code: parse_version_code(&dump.output),
+        users: vec![MAIN_USER],
     })
+}
+
+/// Pure: Echo VR from `dumpsys package <pkg>`: its APK (`codePath` + `base.apk`), its
+/// versionCode and the profiles with `installed=true`; `None` when no profile has it, or
+/// when the output doesn't say per profile.
+pub fn parse_dumpsys(output: &str) -> Option<Installed> {
+    let code_path = output
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("codePath="))?
+        .trim();
+    let users: Vec<u32> = output
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains("installed=true"))
+        .filter_map(|l| l.strip_prefix("User ")?.split(':').next()?.parse().ok())
+        .collect();
+    if users.is_empty() {
+        return None;
+    }
+    Some(Installed {
+        path: format!("{code_path}/base.apk"),
+        version_code: parse_version_code(output),
+        users,
+    })
+}
+
+/// A profile on the headset (an Android user, one per Meta account).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestUser {
+    pub id: u32,
+    pub name: String,
+}
+
+/// The headset's profiles, from `pm list users`.
+pub fn users() -> Vec<QuestUser> {
+    parse_users(&adb::exec(&["shell", "pm", "list", "users"]).output)
+}
+
+/// Pure: the `UserInfo{<id>:<name>:<flags>}` lines of `pm list users`.
+pub fn parse_users(output: &str) -> Vec<QuestUser> {
+    output
+        .lines()
+        .filter_map(|l| {
+            let inner = l.trim().strip_prefix("UserInfo{")?.split_once('}')?.0;
+            let (id, rest) = inner.split_once(':')?;
+            // A name may hold ':' itself; the flags after the last one are hex.
+            let name = rest.rsplit_once(':').map_or(rest, |(n, _)| n);
+            Some(QuestUser {
+                id: id.parse().ok()?,
+                name: name.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The profile in use in the headset now.
+pub fn current_user() -> Option<u32> {
+    adb::exec(&["shell", "am", "get-current-user"])
+        .output
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Pure: the APK's path from `pm path <pkg>` (keyed off a `package:` line rather than the
@@ -191,17 +279,26 @@ pub fn install_result(code: Option<i32>, output: &str) -> ApkInstall {
     }
 }
 
-/// Installs the APK at `apk`, in place of what is installed (`-r`: its data stays).
+/// Installs the APK at `apk` for the main profile, in place of what is installed (`-r`: its
+/// data stays).
 pub fn install_apk(apk: &Path) -> ApkInstall {
-    let r = adb::exec(&["install", "-r", "-g", &apk.to_string_lossy()]);
+    let user = MAIN_USER.to_string();
+    let r = adb::exec(&[
+        "install",
+        "--user",
+        &user,
+        "-r",
+        "-g",
+        &apk.to_string_lossy(),
+    ]);
     install_result(r.code, &r.output)
 }
 
-/// Uninstalls Echo VR (the player agreed: Android removes its app data with it).
+/// Uninstalls Echo VR from every profile (the player agreed: Android removes its app data
+/// with it).
 pub fn uninstall() -> Result<()> {
     let r = adb::exec(&["uninstall", PACKAGE]);
-    if !r.success() && parse_pm_path(&adb::exec(&["shell", "pm", "path", PACKAGE]).output).is_some()
-    {
+    if !r.success() && installed().is_some() {
         return Err(UiError::new(
             "Uninstall failed",
             format!(
@@ -325,10 +422,10 @@ pub fn push_data(zip: &Path, status: &mut dyn FnMut(String)) -> Result<()> {
 pub fn grant_permissions() {
     shell_ok(&format!("mkdir -p {DATA_DIR}/_local"));
     for script in [
-        format!("appops set {PACKAGE} MANAGE_EXTERNAL_STORAGE allow"),
-        format!("pm grant {PACKAGE} android.permission.READ_EXTERNAL_STORAGE"),
-        format!("pm grant {PACKAGE} android.permission.WRITE_EXTERNAL_STORAGE"),
-        format!("pm grant {PACKAGE} android.permission.RECORD_AUDIO"),
+        format!("appops set --user {MAIN_USER} {PACKAGE} MANAGE_EXTERNAL_STORAGE allow"),
+        format!("pm grant --user {MAIN_USER} {PACKAGE} android.permission.READ_EXTERNAL_STORAGE"),
+        format!("pm grant --user {MAIN_USER} {PACKAGE} android.permission.WRITE_EXTERNAL_STORAGE"),
+        format!("pm grant --user {MAIN_USER} {PACKAGE} android.permission.RECORD_AUDIO"),
     ] {
         let r = adb::shell(&script);
         if !r.success() {
@@ -387,6 +484,44 @@ mod tests {
             Some(sha)
         );
         assert_eq!(first_hash("sha256sum: not found"), None);
+    }
+
+    #[test]
+    fn reads_every_profile_from_dumpsys() {
+        // A Quest 3 on 2026-10-31: Echo VR in profile 10 only, profile 0 in use.
+        let out = "Packages:\n  Package [com.readyatdawn.r15] (5a1f2e):\n    codePath=/data/app/~~AnVi==/com.readyatdawn.r15-Esbd==\n    versionCode=61400999 minSdk=29 targetSdk=29\n    User 0: ceDataInode=0 installed=false hidden=false suspended=false\n      firstInstallTime=2026-10-31 19:53:54\n    User 10: ceDataInode=1098181 installed=true hidden=false suspended=false\n    runtime permissions:\n    User 0:\n    User 10:\n";
+        let i = parse_dumpsys(out).unwrap();
+        assert_eq!(
+            i.path,
+            "/data/app/~~AnVi==/com.readyatdawn.r15-Esbd==/base.apk"
+        );
+        assert_eq!(i.version_code, Some(61400999));
+        assert_eq!(i.users, [10]);
+        assert!(!i.in_main());
+        let none = out.replace("installed=true", "installed=false");
+        assert_eq!(parse_dumpsys(&none), None);
+        assert_eq!(
+            parse_dumpsys("Unable to find package: com.readyatdawn.r15"),
+            None
+        );
+    }
+
+    #[test]
+    fn reads_the_profiles() {
+        let out = "Users:\n\tUserInfo{0:marshmallowMia:4c13} running\n\tUserInfo{10:marshmallow-mia:410}\n\tUserInfo{11:a:b:410}\n";
+        let names: Vec<(u32, String)> = parse_users(out)
+            .into_iter()
+            .map(|u| (u.id, u.name))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                (0, "marshmallowMia".into()),
+                (10, "marshmallow-mia".into()),
+                (11, "a:b".into())
+            ]
+        );
+        assert!(parse_users("Error: no users").is_empty());
     }
 
     #[test]

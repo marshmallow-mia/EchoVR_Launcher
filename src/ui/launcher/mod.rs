@@ -41,7 +41,7 @@ use crate::core::error::UiError;
 use crate::core::launcher::catalog::{Catalog, Platform, VersionEntry};
 use crate::core::launcher::feed;
 use crate::core::launcher::game::{self, GameState, Local, Monitor};
-use crate::core::launcher::quest::QuestInfo;
+use crate::core::launcher::quest::{self, QuestInfo};
 use crate::core::launcher::store::{InstalledVersion, LauncherState, Runtime, SteamVrVia, Target};
 use crate::core::launcher::update_check;
 use crate::core::launcher::versions::Step;
@@ -1830,6 +1830,19 @@ impl Dashboard {
             offered: Some(("6.2.0".into(), 60200999)),
             wifi_ip: Some(std::net::Ipv4Addr::new(192, 168, 178, 45)),
             over_network: false,
+            profiles: vec![
+                quest::Profile {
+                    id: 0,
+                    name: "Player".into(),
+                    echo: true,
+                },
+                quest::Profile {
+                    id: 10,
+                    name: "Second account".into(),
+                    echo: false,
+                },
+            ],
+            current_profile: Some(0),
         });
         self.update_note.clear();
         self.vrce = echovrce::Vrce::default();
@@ -2313,6 +2326,8 @@ impl Dashboard {
                 self.platform = Platform::Quest;
                 if let Some(i) = &mut self.quest_info {
                     (i.installed, i.version_code, i.nevr) = (false, None, None);
+                    // Another build in the second profile only.
+                    i.profiles.iter_mut().for_each(|p| p.echo = !p.is_main());
                 }
             }
             // Set up with the plugin list above.
@@ -4696,7 +4711,7 @@ impl Dashboard {
             Action::Play(id) => play::play_version(self, ctx, &id),
             Action::RestartGame => play::restart(self),
             Action::FixSteamEntry => setup::windows_steam(self, ctx, true),
-            Action::UpdateQuest => setup::quest_install(self, ctx),
+            Action::UpdateQuest => setup::quest_install(self, ctx, false),
             Action::SteamVrLibrary => setup::steamvr_library(self, ctx, true),
             Action::OpenUrl(url) => crate::core::platform::open_url(&url),
             Action::JoinInvite(id) => servers::join_invite(self, ctx, &id),
