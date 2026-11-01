@@ -101,6 +101,9 @@ pub fn game_args(profile: &LaunchProfile, lobby: Option<&str>) -> Vec<String> {
 pub struct Tools<'a> {
     pub revive_dir: Option<&'a str>,
     pub vd_streamer: Option<&'a Path>,
+    /// `EchoXR.exe`'s own arguments from a dev code ([`echoxr::dev_args`]), after the
+    /// profile's.
+    pub echoxr_args: &'a [String],
 }
 
 pub fn build(
@@ -116,6 +119,7 @@ pub fn build(
     // Desktop's own. Its arguments first; the game gets the rest.
     if profile.through_echoxr() {
         let mut a = profile.echoxr_args();
+        a.extend(tools.echoxr_args.iter().cloned());
         a.extend(args);
         return Ok(Command {
             program: cwd.join(echoxr::LAUNCHER),
@@ -401,6 +405,37 @@ mod tests {
         let c = build(&vd(VdVia::VdXr), exe, &Tools::default(), Some(LOBBY)).unwrap();
         assert_eq!(c.program, bin.join(echoxr::LAUNCHER));
         assert_eq!(c.args, ["--runtime", "active", "-lobbyid", LOBBY, "-foo"]);
+        // A dev code's EchoXR arguments: EchoXR.exe's, so after the profile's, before the game's.
+        let verbose = ["--verbose".to_string(), "max".to_string()];
+        let dev = Tools {
+            echoxr_args: &verbose,
+            ..Default::default()
+        };
+        let c = build(&vd(VdVia::VdXr), exe, &dev, Some(LOBBY)).unwrap();
+        assert_eq!(
+            c.args,
+            [
+                "--runtime",
+                "active",
+                "--verbose",
+                "max",
+                "-lobbyid",
+                LOBBY,
+                "-foo"
+            ]
+        );
+        // Not through EchoXR: the game never gets them.
+        let c = build(
+            &vd(VdVia::Meta),
+            exe,
+            &Tools {
+                vd_streamer: Some(Path::new("C:/vd.exe")),
+                ..dev
+            },
+            None,
+        )
+        .unwrap();
+        assert!(!c.args.iter().any(|a| a == "--verbose"));
         // Event builds: EchoXR.exe from the bin folder, only its own arguments; in the
         // Oculus mode VD's streamer, from the game folder.
         let win7 = Path::new("C:/E/ready-at-dawn-echo-arena/bin/win7");

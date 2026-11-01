@@ -31,6 +31,9 @@ pub struct Build {
     url: &'static str,
     sha256: &'static str,
     files: [(&'static str, &'static str); 4],
+    /// Whether its `EchoXR.exe` takes `--verbose` (0.6.3 on); an older one would hand it on
+    /// to the game, and the event builds quit on an option they don't know.
+    verbose: bool,
 }
 
 /// EchoXR's OpenXR layer (marshmallow-mia/EchoXR 0.6.1, its GitHub release): unpacked into the
@@ -64,23 +67,27 @@ static PINNED: Build = Build {
             "5f835583f77a886ed9341abb672ebfd65c3615e847018c208c967afca9e3fa3e",
         ),
     ],
+    verbose: false,
 };
 
 /// Test builds a dev code can choose instead of [`PINNED`] (its `channel.json`'s `"echoxr"`,
 /// [`dev_code::echoxr`](crate::core::launcher::dev_code::echoxr)). Only these: a code can't
-/// bring any other build, and the administrator helper takes these too. 0.6.2 says which GPU
-/// wait held the game's queue when SteamVR's D3D12 path hangs (DXGI_ERROR_DEVICE_HUNG).
+/// bring any other build, and the administrator helper takes these too. 0.6.3 logs what the
+/// GPU was doing when SteamVR's D3D12 path hangs (DXGI_ERROR_DEVICE_HUNG): video memory,
+/// allocations, each queue's work, all of DRED, and with `--verbose max` (the code's
+/// `"echoxr_verbose": "max"`) a line a second.
 static TESTS: [Build; 1] = [Build {
-    version: "0.6.2",
-    zip: "EchoXR-OpenXR-v0.6.2.zip",
-    url: "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.2-rc1/EchoXR-OpenXR-v0.6.2.zip",
-    sha256: "b93edd7b48810f50e49beb69f2f208ae64af0c702be09025008dfb346a355695",
+    version: "0.6.3",
+    zip: "EchoXR-OpenXR-v0.6.3.zip",
+    url: "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.3-rc1/EchoXR-OpenXR-v0.6.3.zip",
+    sha256: "a0a3af70228fb81af6a2c3554ddb47f87f4bb32f4f717e83e9731226b40f070f",
     files: [
-        (LAUNCHER, "10d19f1f448fa21d2a97a937c9dafb6904d32654eaa7e522bd911e3495c237d8"),
-        ("EchoXR/LibOVRRT64_1.dll", "009b68463c7fdb7a00001f733045b5af7ed4b9f0fccbbe747cedff46ed0ace40"),
-        ("EchoXR/openxr_loader.dll", "23146f6f1ae2818984b957c9bb55af2d242a5a57ef0f691f6a57c53eeb34b4f3"),
-        (PLATFORM_IN_ECHOXR, "fb88bddcac3dd2235df32f67b58d7b9df92e2bb54a2fe02be812a64452e6bc3a"),
+        (LAUNCHER, "1f4ad3cd8f2e2c253659d57b5977d2d32cf3bdeefe1db5d90fd711f051d1071f"),
+        ("EchoXR/LibOVRRT64_1.dll", "f373450d2eca5e15b75ce3ce438930f92c7981eaff80025381d2d8e32c180079"),
+        ("EchoXR/openxr_loader.dll", "41adfb2a41c7387822efe6a2b335eb6f3358d659f82c812dcabad712cc618d68"),
+        (PLATFORM_IN_ECHOXR, "132c56651ab436b668ddb65cedf29a9356f38b8f3be760c1e9d19aef8d6356d5"),
     ],
+    verbose: true,
 }];
 
 /// Pure: the build for a dev code's choice `wanted`: that test build, else the pinned one.
@@ -103,6 +110,28 @@ pub fn knows_test(version: &str) -> bool {
 /// [`build`]'s version.
 pub fn version() -> &'static str {
     build().version
+}
+
+/// Pure: `EchoXR.exe`'s own arguments a dev code adds for build `b`: its `--verbose` level
+/// (`verbose`), for a build that takes it.
+fn args_for(b: &Build, verbose: Option<&str>) -> Vec<String> {
+    match verbose {
+        Some(level) if b.verbose => vec!["--verbose".into(), level.into()],
+        _ => Vec::new(),
+    }
+}
+
+/// `EchoXR.exe`'s own arguments from a dev code ([`dev_code::echoxr_verbose`]), for
+/// [`build`] (reads the kept `channel.json`, no network).
+///
+/// [`dev_code::echoxr_verbose`]: crate::core::launcher::dev_code::echoxr_verbose
+pub fn dev_args() -> Vec<String> {
+    args_for(build(), crate::core::launcher::dev_code::echoxr_verbose())
+}
+
+/// Whether test build `version` logs everything with `--verbose max`.
+pub fn test_logs_more(version: &str) -> bool {
+    TESTS.iter().any(|b| b.version == version && b.verbose)
 }
 
 /// Every build the launcher knows.
@@ -546,13 +575,24 @@ mod tests {
     #[test]
     fn a_dev_code_picks_only_a_known_test_build() {
         assert_eq!(pick(None).version, PINNED.version);
-        assert_eq!(pick(Some("0.6.2")).version, "0.6.2");
-        assert_eq!(pick(Some("0.6.2")).zip, "EchoXR-OpenXR-v0.6.2.zip");
-        for other in ["9.9.9", "", "0.6.1 ", "../x"] {
+        assert_eq!(pick(Some("0.6.3")).version, "0.6.3");
+        assert_eq!(pick(Some("0.6.3")).zip, "EchoXR-OpenXR-v0.6.3.zip");
+        for other in ["9.9.9", "", "0.6.1 ", "../x", "0.6.2"] {
             assert_eq!(pick(Some(other)).version, PINNED.version, "{other:?}");
         }
         // No code in tests: the pinned build.
         assert_eq!(build().version, PINNED.version);
+        // --verbose only for a build whose EchoXR.exe takes it: an older one hands it to the
+        // game.
+        assert!(!PINNED.verbose);
+        assert!(args_for(&PINNED, Some("max")).is_empty());
+        for b in TESTS.iter().filter(|b| b.verbose) {
+            assert_eq!(args_for(b, Some("max")), ["--verbose", "max"]);
+            assert!(args_for(b, None).is_empty());
+            assert!(test_logs_more(b.version));
+        }
+        assert!(!test_logs_more(PINNED.version));
+        assert!(dev_args().is_empty());
         // Every build has its own zip name, so they're kept side by side.
         let names: std::collections::BTreeSet<_> = builds().map(|b| b.zip).collect();
         assert_eq!(names.len(), builds().count());

@@ -172,9 +172,11 @@ fn play_here(ask: &Ask) -> i32 {
     let vd_streamer = (profile.runtime == Runtime::VirtualDesktop && !profile.through_echoxr())
         .then(launch::vd_streamer)
         .flatten();
+    let echoxr_args = crate::core::echoxr::dev_args();
     let tools = launch::Tools {
         revive_dir: revive_dir.as_deref(),
         vd_streamer: vd_streamer.as_deref(),
+        echoxr_args: &echoxr_args,
     };
     let exe = v.exe_path();
     let command = if event {

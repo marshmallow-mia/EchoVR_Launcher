@@ -10,7 +10,9 @@
 //! `quest/updates-nevr-<name>/` (Quest) on top of the followed channel's, so a code can
 //! bring an nEVR release (and its files) before the channels have it. With
 //! `"echoxr": "<version>"` (our folders only, not a gated one) EchoXR starts use that test
-//! build, if the launcher pins it ([`crate::core::echoxr::build`]).
+//! build, if the launcher pins it ([`crate::core::echoxr::build`]), and with
+//! `"echoxr_verbose": "max"` its `runtime.log` logs everything (`EchoXR.exe --verbose max`, a
+//! build that takes it).
 //!
 //! A third-party developer's channel (restricted, or public) isn't under `launcher/dev/`:
 //! it's behind the EchoVRCE sign-in, `launcher/gated/dev/<code>/` ([`crate::core::http::GATED`]).
@@ -236,6 +238,8 @@ pub enum Status {
         overlay: Option<String>,
         /// The EchoXR test build it names, if any.
         echoxr: Option<String>,
+        /// Its `echoxr_verbose`, if any.
+        echoxr_verbose: Option<&'static str>,
     },
     /// The server couldn't be asked (the message, without the code).
     Failed(String),
@@ -261,6 +265,7 @@ impl Status {
                 name,
                 overlay,
                 echoxr,
+                echoxr_verbose,
             } => {
                 let mut line = format!(
                     "{}: {mods} {}, {plugins} {}.",
@@ -275,7 +280,12 @@ impl Status {
                 }
                 if let Some(v) = echoxr {
                     line.push_str(&if crate::core::echoxr::knows_test(v) {
-                        format!(" EchoXR starts use its test build {v}.")
+                        let all = *echoxr_verbose == Some("max")
+                            && crate::core::echoxr::test_logs_more(v);
+                        format!(
+                            " EchoXR starts use its test build {v}{}.",
+                            if all { ", logging everything" } else { "" }
+                        )
                     } else {
                         format!(" Its EchoXR test build {v} needs a newer launcher.")
                     });
@@ -381,6 +391,25 @@ fn parse_echoxr(text: &str) -> Option<String> {
     .then(|| e.to_string())
 }
 
+/// Pure: the `echoxr_verbose` in a `channel.json`: "default" or "max".
+fn parse_echoxr_verbose(text: &str) -> Option<&'static str> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    match v.get("echoxr_verbose")?.as_str()?.trim() {
+        "default" => Some("default"),
+        "max" => Some("max"),
+        _ => None,
+    }
+}
+
+/// How much EchoXR logs, as the first of our codes that says so gives (its `channel.json`'s
+/// `echoxr_verbose`, as kept last: no network); not from a gated channel.
+pub fn echoxr_verbose() -> Option<&'static str> {
+    codes()
+        .iter()
+        .filter(|c| !is_gated(c))
+        .find_map(|c| kept_one(c, "channel").and_then(|(_, t)| parse_echoxr_verbose(&t)))
+}
+
 /// The EchoXR test build the first of our codes that names one gives (its `channel.json`'s
 /// `echoxr`, as kept last: no network). A third-party developer's gated channel can't choose
 /// one.
@@ -478,6 +507,9 @@ pub fn check(code: &str) -> Status {
         overlay: channel.as_deref().and_then(parse_overlay),
         echoxr: (!is_gated(code))
             .then(|| channel.as_deref().and_then(parse_echoxr))
+            .flatten(),
+        echoxr_verbose: (!is_gated(code))
+            .then(|| channel.as_deref().and_then(parse_echoxr_verbose))
             .flatten(),
         mods: mods
             .and_then(|t| super::mods::ModCatalog::parse_dev(&t, code).ok())
@@ -585,7 +617,8 @@ mod tests {
                 plugins: 2,
                 name: None,
                 overlay: None,
-                echoxr: None
+                echoxr: None,
+                echoxr_verbose: None
             }
             .line(),
             "Dev folder: 1 mod, 2 plugins."
@@ -596,7 +629,8 @@ mod tests {
                 plugins: 1,
                 name: Some("cat's channel".into()),
                 overlay: None,
-                echoxr: None
+                echoxr: None,
+                echoxr_verbose: None
             }
             .line(),
             "cat's channel: 0 mods, 1 plugin."
@@ -607,7 +641,8 @@ mod tests {
                 plugins: 0,
                 name: Some("nEVR 6 test".into()),
                 overlay: Some("nevr6".into()),
-                echoxr: None
+                echoxr: None,
+                echoxr_verbose: None
             }
             .line(),
             "nEVR 6 test: 1 mod, 0 plugins. Echo VR updates include its test channel nevr6 (PC and Quest)."
@@ -618,10 +653,23 @@ mod tests {
                 plugins: 0,
                 name: Some("EchoXR test".into()),
                 overlay: None,
-                echoxr: Some("0.6.2".into())
+                echoxr: Some("0.6.3".into()),
+                echoxr_verbose: None
             }
             .line(),
-            "EchoXR test: 0 mods, 0 plugins. EchoXR starts use its test build 0.6.2."
+            "EchoXR test: 0 mods, 0 plugins. EchoXR starts use its test build 0.6.3."
+        );
+        assert_eq!(
+            Status::Found {
+                mods: 0,
+                plugins: 0,
+                name: Some("EchoXR test".into()),
+                overlay: None,
+                echoxr: Some("0.6.3".into()),
+                echoxr_verbose: Some("max")
+            }
+            .line(),
+            "EchoXR test: 0 mods, 0 plugins. EchoXR starts use its test build 0.6.3, logging everything."
         );
         assert_eq!(
             Status::Found {
@@ -629,7 +677,8 @@ mod tests {
                 plugins: 0,
                 name: None,
                 overlay: None,
-                echoxr: Some("9.0.0".into())
+                echoxr: Some("9.0.0".into()),
+                echoxr_verbose: Some("max")
             }
             .line(),
             "Dev folder: 0 mods, 0 plugins. Its EchoXR test build 9.0.0 needs a newer launcher."
@@ -671,6 +720,22 @@ mod tests {
             parse_echoxr(r#"{"name": "t", "echoxr": " 0.6.2 "}"#).as_deref(),
             Some("0.6.2")
         );
+        assert_eq!(
+            parse_echoxr_verbose(r#"{"echoxr": "0.6.3", "echoxr_verbose": " max "}"#),
+            Some("max")
+        );
+        assert_eq!(
+            parse_echoxr_verbose(r#"{"echoxr_verbose": "default"}"#),
+            Some("default")
+        );
+        for bad in [
+            r#"{"echoxr": "0.6.3"}"#,
+            r#"{"echoxr_verbose": "MAX"}"#,
+            r#"{"echoxr_verbose": "all"}"#,
+            r#"{"echoxr_verbose": 1}"#,
+        ] {
+            assert_eq!(parse_echoxr_verbose(bad), None, "{bad}");
+        }
         for bad in [
             r#"{"name": "t"}"#,
             r#"{"echoxr": ""}"#,

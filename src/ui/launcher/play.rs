@@ -1800,9 +1800,11 @@ fn start(d: &mut Dashboard, ctx: &egui::Context, lobby: Option<Join>) {
     let vd_streamer = (profile.runtime == Runtime::VirtualDesktop && !profile.through_echoxr())
         .then(launch::vd_streamer)
         .flatten();
+    let echoxr_args = crate::core::echoxr::dev_args();
     let tools = launch::Tools {
         revive_dir: revive_dir.as_deref(),
         vd_streamer: vd_streamer.as_deref(),
+        echoxr_args: &echoxr_args,
     };
     // What the streamer can't hand the game (event builds start without options anyway).
     let left_out = match v.publisher_lock {

@@ -525,9 +525,16 @@ pub fn game_command(
     } else {
         bin.join(exe)
     };
+    // EchoXR.exe's own arguments from a dev code first, the game's after.
+    let own = if xr.is_some() {
+        echoxr::dev_args()
+    } else {
+        Vec::new()
+    };
     let mut c = std::process::Command::new(proton_dir().join("proton"));
     c.arg("waitforexitandrun")
         .arg(program)
+        .args(own)
         .args(args)
         .current_dir(bin)
         .envs(proton_env(steam_root, Some(&game_root)))
