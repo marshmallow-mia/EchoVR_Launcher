@@ -26,6 +26,14 @@ A folder can name its channel in a root-owned `channel.json` (`{"name": "…"}`;
 writes it): Advanced settings shows the name, and alerts can aim at the channel
 ([alerts.md](alerts.md)).
 
+Since 0.13.9 a maintainer's `channel.json` (never a gated third-party one's) may name an
+EchoXR test build, `{"name": "EchoXR test", "echoxr": "0.6.2"}`: with the code set, EchoXR
+starts download and use that build instead of the pinned one. Only a build the launcher
+itself pins as a test build (`TESTS` in `src/core/echoxr.rs`, by SHA-256 like the pinned
+one) can be named, so a folder can't bring any other code; Advanced settings says when the
+named build needs a newer launcher. Removing the code goes back to the pinned build at the
+next PLAY.
+
 A maintainer's folder (under `launcher/dev/`, never a gated third-party one) may also hold a
 `news.json` in the feed's format (`launcher/feed/news.json`, see `src/core/launcher/feed.rs`)
 with its images beside it (plain file names): since 0.13.2 the Play page shows its `main`

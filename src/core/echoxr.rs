@@ -23,6 +23,16 @@ use crate::core::launcher::store::{LaunchProfile, Runtime, VdVia};
 use crate::core::launcher::versions::Step;
 use crate::core::paths;
 
+/// One EchoXR build: its GitHub release zip, pinned by its SHA-256, and the files in it that
+/// do the work, with theirs.
+pub struct Build {
+    pub version: &'static str,
+    zip: &'static str,
+    url: &'static str,
+    sha256: &'static str,
+    files: [(&'static str, &'static str); 4],
+}
+
 /// EchoXR's OpenXR layer (marshmallow-mia/EchoXR 0.6.1, its GitHub release): unpacked into the
 /// game's bin folder (`bin/win10`, or an event build's `bin/win7`). Built with the static C
 /// runtime, so it needs no Visual C++ runtime. 0.6.1 waits until SteamVR hands back a
@@ -31,35 +41,80 @@ use crate::core::paths;
 /// `EchoXR.txt` (the Controllers plugin) and takes the hands from the grip pose; 0.5.0 runs
 /// the five event builds; 0.4.2
 /// brings the Platform SDK stand-in; 0.4.1 made it run under GE-Proton.
-pub const VERSION: &str = "0.6.1";
-const ZIP: &str = "EchoXR-OpenXR-v0.6.1.zip";
-const URL: &str =
-    "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.1-rc1/EchoXR-OpenXR-v0.6.1.zip";
-const SHA256: &str = "eba2ceac77983cce76efad4dd51f88379a1a29308a6886b7d164331ba9ff3504";
+static PINNED: Build = Build {
+    version: "0.6.1",
+    zip: "EchoXR-OpenXR-v0.6.1.zip",
+    url: "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.1-rc1/EchoXR-OpenXR-v0.6.1.zip",
+    sha256: "eba2ceac77983cce76efad4dd51f88379a1a29308a6886b7d164331ba9ff3504",
+    files: [
+        (
+            LAUNCHER,
+            "f2b0ae414dacb1898c388acd1d862ab0e6e8f26fd7c06ee42a8a92ea39265f2a",
+        ),
+        (
+            "EchoXR/LibOVRRT64_1.dll",
+            "1036d447d4fdaf4ca00033849c455158e5b631efc94e9dfef576fe7823385b87",
+        ),
+        (
+            "EchoXR/openxr_loader.dll",
+            "8ab063099f5e5e393364bec19fdce0f7703ed85a96ee25535378c89d4e4386af",
+        ),
+        (
+            PLATFORM_IN_ECHOXR,
+            "5f835583f77a886ed9341abb672ebfd65c3615e847018c208c967afca9e3fa3e",
+        ),
+    ],
+};
+
+/// Test builds a dev code can choose instead of [`PINNED`] (its `channel.json`'s `"echoxr"`,
+/// [`dev_code::echoxr`](crate::core::launcher::dev_code::echoxr)). Only these: a code can't
+/// bring any other build, and the administrator helper takes these too. 0.6.2 says which GPU
+/// wait held the game's queue when SteamVR's D3D12 path hangs (DXGI_ERROR_DEVICE_HUNG).
+static TESTS: [Build; 1] = [Build {
+    version: "0.6.2",
+    zip: "EchoXR-OpenXR-v0.6.2.zip",
+    url: "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.2-rc1/EchoXR-OpenXR-v0.6.2.zip",
+    sha256: "b93edd7b48810f50e49beb69f2f208ae64af0c702be09025008dfb346a355695",
+    files: [
+        (LAUNCHER, "10d19f1f448fa21d2a97a937c9dafb6904d32654eaa7e522bd911e3495c237d8"),
+        ("EchoXR/LibOVRRT64_1.dll", "009b68463c7fdb7a00001f733045b5af7ed4b9f0fccbbe747cedff46ed0ace40"),
+        ("EchoXR/openxr_loader.dll", "23146f6f1ae2818984b957c9bb55af2d242a5a57ef0f691f6a57c53eeb34b4f3"),
+        (PLATFORM_IN_ECHOXR, "fb88bddcac3dd2235df32f67b58d7b9df92e2bb54a2fe02be812a64452e6bc3a"),
+    ],
+}];
+
+/// Pure: the build for a dev code's choice `wanted`: that test build, else the pinned one.
+fn pick(wanted: Option<&str>) -> &'static Build {
+    wanted
+        .and_then(|v| TESTS.iter().find(|b| b.version == v))
+        .unwrap_or(&PINNED)
+}
+
+/// The EchoXR build this launcher puts in place: a dev code's test build, else the pinned one.
+pub fn build() -> &'static Build {
+    pick(crate::core::launcher::dev_code::echoxr().as_deref())
+}
+
+/// Whether `version` is one of the test builds this launcher pins.
+pub fn knows_test(version: &str) -> bool {
+    TESTS.iter().any(|b| b.version == version)
+}
+
+/// [`build`]'s version.
+pub fn version() -> &'static str {
+    build().version
+}
+
+/// Every build the launcher knows.
+fn builds() -> impl Iterator<Item = &'static Build> {
+    std::iter::once(&PINNED).chain(TESTS.iter())
+}
+
 /// Who made it, as the Mods page credits it: EchoXR, and what it builds on.
 pub const AUTHORS: &str =
     "heisthecat31, marshmallow-mia, Villagers654 (RiftLift), CrossVR (Revive)";
 /// What starts the game, in its `bin/win10`.
 pub const LAUNCHER: &str = "EchoXR.exe";
-/// The files that do the work, with their hashes.
-const FILES: [(&str, &str); 4] = [
-    (
-        LAUNCHER,
-        "f2b0ae414dacb1898c388acd1d862ab0e6e8f26fd7c06ee42a8a92ea39265f2a",
-    ),
-    (
-        "EchoXR/LibOVRRT64_1.dll",
-        "1036d447d4fdaf4ca00033849c455158e5b631efc94e9dfef576fe7823385b87",
-    ),
-    (
-        "EchoXR/openxr_loader.dll",
-        "8ab063099f5e5e393364bec19fdce0f7703ed85a96ee25535378c89d4e4386af",
-    ),
-    (
-        PLATFORM_IN_ECHOXR,
-        "5f835583f77a886ed9341abb672ebfd65c3615e847018c208c967afca9e3fa3e",
-    ),
-];
 /// EchoXR's Platform SDK stand-in, as the zip has it.
 pub const PLATFORM_IN_ECHOXR: &str = "EchoXR/LibOVRPlatform64_1.dll";
 /// The Platform SDK loader's file name.
@@ -146,7 +201,7 @@ pub fn store_dir() -> PathBuf {
 }
 
 fn zip_path() -> PathBuf {
-    store_dir().join(ZIP)
+    store_dir().join(build().zip)
 }
 
 /// Whether EchoXR has been fetched (and is still there).
@@ -173,9 +228,10 @@ pub fn fetch_pinned(
 /// Fetches EchoXR when it is missing.
 pub fn fetch(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
     std::fs::create_dir_all(store_dir())?;
-    if !download::sha256_matches(&zip_path(), SHA256) {
-        on(Step::Status(format!("Downloading EchoXR {VERSION}...")));
-        let zip = fetch_pinned(URL, ZIP, SHA256, cancel, on)?;
+    let b = build();
+    if !download::sha256_matches(&zip_path(), b.sha256) {
+        on(Step::Status(format!("Downloading EchoXR {}...", b.version)));
+        let zip = fetch_pinned(b.url, b.zip, b.sha256, cancel, on)?;
         std::fs::copy(&zip, zip_path()).context("keep EchoXR")?;
         let _ = std::fs::remove_file(zip);
     }
@@ -197,11 +253,11 @@ pub fn remove_old_meta(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether `file` is EchoXR's Platform SDK stand-in (or Meta's loader an older launcher
-/// put in place): the launcher's to remove.
+/// Whether `file` is EchoXR's Platform SDK stand-in (any build's, or Meta's loader an older
+/// launcher put in place): the launcher's to remove.
 pub fn is_launchers_platform(file: &Path) -> bool {
-    FILES
-        .iter()
+    builds()
+        .flat_map(|b| b.files.iter())
         .filter(|(n, _)| *n == PLATFORM_IN_ECHOXR)
         .chain(OLD_META.iter().filter(|(n, _)| *n == PLATFORM_DLL))
         .any(|(_, sha)| download::sha256_matches(file, sha))
@@ -228,24 +284,29 @@ pub fn platform_beside_game(bin: &Path) -> Result<()> {
 pub fn install_into(bin: &Path) -> Result<()> {
     let zip = std::fs::File::open(zip_path())
         .context("EchoXR isn't downloaded: PLAY in the launcher downloads it")?;
-    install_zip(zip, bin)
+    install_zip(zip, build(), bin)
 }
 
-/// The pinned zip, as the launcher keeps it (for the administrator helper, which checks it).
+/// [`build`]'s zip, as the launcher keeps it (for the administrator helper, which checks it).
 pub fn zip_file() -> PathBuf {
     zip_path()
 }
 
-/// Whether `zip` is the pinned EchoXR zip.
-pub fn is_pinned_zip(zip: &mut (impl std::io::Read + std::io::Seek)) -> Result<bool> {
+/// Which of the launcher's EchoXR builds `zip` is, if it is one (the pinned one or a test
+/// build: never another zip).
+pub fn known_zip(zip: &mut (impl std::io::Read + std::io::Seek)) -> Result<Option<&'static Build>> {
     zip.rewind()?;
-    let ok = download::sha256_reader(zip)?.eq_ignore_ascii_case(SHA256);
+    let sha = download::sha256_reader(zip)?;
     zip.rewind()?;
-    Ok(ok)
+    Ok(builds().find(|b| b.sha256.eq_ignore_ascii_case(&sha)))
 }
 
-/// [`install_into`] from the zip `zip`.
-pub fn install_zip(zip: impl std::io::Read + std::io::Seek, bin: &Path) -> Result<()> {
+/// [`install_into`] from the zip `zip` of `build`.
+pub fn install_zip(
+    zip: impl std::io::Read + std::io::Seek,
+    build: &Build,
+    bin: &Path,
+) -> Result<()> {
     let mut archive = zip::ZipArchive::new(zip)?;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
@@ -259,7 +320,7 @@ pub fn install_zip(zip: impl std::io::Read + std::io::Seek, bin: &Path) -> Resul
         }
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut entry, &mut bytes)?;
-        if let Some((_, sha)) = FILES.iter().find(|(n, _)| Path::new(n) == rel) {
+        if let Some((_, sha)) = build.files.iter().find(|(n, _)| Path::new(n) == rel) {
             if !download::sha256_reader(&mut bytes.as_slice())?.eq_ignore_ascii_case(sha) {
                 bail!("{} in EchoXR's zip isn't the expected build", rel.display());
             }
@@ -392,11 +453,11 @@ mod tests {
         let ini = bin.join(DIR).join("echoxr.ini");
         std::fs::create_dir_all(ini.parent().unwrap()).unwrap();
         std::fs::write(&ini, OLD_INI).unwrap();
-        install_zip(std::io::Cursor::new(zip.get_ref().clone()), bin).unwrap();
+        install_zip(std::io::Cursor::new(zip.get_ref().clone()), &PINNED, bin).unwrap();
         assert!(!ini.exists());
         // Someone's own ini stays.
         std::fs::write(&ini, "CheckForUpdates = 1\r\n").unwrap();
-        install_zip(std::io::Cursor::new(zip.into_inner()), bin).unwrap();
+        install_zip(std::io::Cursor::new(zip.into_inner()), &PINNED, bin).unwrap();
         assert!(ini.exists());
     }
 
@@ -452,23 +513,59 @@ mod tests {
         assert!(!copy.exists());
     }
 
-    /// The pinned EchoXR zip is on files.echovr.de, its files are the pinned builds, and
-    /// it unpacks into a game folder with the launcher's echoxr.ini.
+    /// Every EchoXR zip the launcher knows is on GitHub, and its files are the pinned ones.
     #[test]
     #[ignore = "network"]
     fn installs_the_pinned_echoxr() {
-        let dir = tempfile::tempdir().unwrap();
-        let zip = dir.path().join(ZIP);
-        crate::core::http::download_to(URL, &zip, None).unwrap();
-        assert!(download::sha256_matches(&zip, SHA256));
-        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
-        for (name, sha) in FILES {
-            let mut bytes = Vec::new();
-            std::io::Read::read_to_end(&mut archive.by_name(name).unwrap(), &mut bytes).unwrap();
+        for b in builds() {
+            let dir = tempfile::tempdir().unwrap();
+            let zip = dir.path().join(b.zip);
+            crate::core::http::download_to(b.url, &zip, None).unwrap();
+            assert!(download::sha256_matches(&zip, b.sha256), "{}", b.version);
+            let mut f = std::fs::File::open(&zip).unwrap();
             assert_eq!(
-                download::sha256_reader(&mut bytes.as_slice()).unwrap(),
-                sha,
-                "{name}"
+                known_zip(&mut f).unwrap().map(|k| k.version),
+                Some(b.version)
+            );
+            let mut archive = zip::ZipArchive::new(f).unwrap();
+            for (name, sha) in b.files {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut archive.by_name(name).unwrap(), &mut bytes)
+                    .unwrap();
+                assert_eq!(
+                    download::sha256_reader(&mut bytes.as_slice()).unwrap(),
+                    sha,
+                    "{} {name}",
+                    b.version
+                );
+            }
+        }
+    }
+
+    /// A dev code picks a test build by its version; anything else is the pinned build.
+    #[test]
+    fn a_dev_code_picks_only_a_known_test_build() {
+        assert_eq!(pick(None).version, PINNED.version);
+        assert_eq!(pick(Some("0.6.2")).version, "0.6.2");
+        assert_eq!(pick(Some("0.6.2")).zip, "EchoXR-OpenXR-v0.6.2.zip");
+        for other in ["9.9.9", "", "0.6.1 ", "../x"] {
+            assert_eq!(pick(Some(other)).version, PINNED.version, "{other:?}");
+        }
+        // No code in tests: the pinned build.
+        assert_eq!(build().version, PINNED.version);
+        // Every build has its own zip name, so they're kept side by side.
+        let names: std::collections::BTreeSet<_> = builds().map(|b| b.zip).collect();
+        assert_eq!(names.len(), builds().count());
+        for b in builds() {
+            assert!(b
+                .url
+                .starts_with("https://github.com/marshmallow-mia/EchoXR/releases/download/"));
+            assert!(b.url.ends_with(b.zip));
+            assert_eq!(b.sha256.len(), 64, "{}", b.version);
+            assert!(
+                b.files.iter().all(|(_, sha)| sha.len() == 64),
+                "{}",
+                b.version
             );
         }
     }

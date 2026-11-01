@@ -13,7 +13,9 @@ pins now.
 ## How the launcher uses EchoXR
 
 The pinned `EchoXR-OpenXR-v0.4.1.zip` (EchoXR's GitHub release, SHA-256 checked, as is
-each file in it) is unpacked into the game's `bin/win10`:
+each file in it) is unpacked into the game's `bin/win10`. A dev code can choose one of the
+test builds the launcher also pins instead ([dev-folders.md](dev-folders.md)); each build's
+zip is kept under its own name:
 
 | File | What it is |
 |---|---|

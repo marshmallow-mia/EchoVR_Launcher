@@ -8,7 +8,9 @@
 //! `channel.json` (`{"name": "…"}`, root's) naming the channel, and with `"overlay": "<name>"`
 //! a test channel for Echo VR's updates: `updates-nevr-<name>/` (PC) and
 //! `quest/updates-nevr-<name>/` (Quest) on top of the followed channel's, so a code can
-//! bring an nEVR release (and its files) before the channels have it.
+//! bring an nEVR release (and its files) before the channels have it. With
+//! `"echoxr": "<version>"` (our folders only, not a gated one) EchoXR starts use that test
+//! build, if the launcher pins it ([`crate::core::echoxr::build`]).
 //!
 //! A third-party developer's channel (restricted, or public) isn't under `launcher/dev/`:
 //! it's behind the EchoVRCE sign-in, `launcher/gated/dev/<code>/` ([`crate::core::http::GATED`]).
@@ -232,6 +234,8 @@ pub enum Status {
         name: Option<String>,
         /// The test channel for Echo VR's updates it names, if any.
         overlay: Option<String>,
+        /// The EchoXR test build it names, if any.
+        echoxr: Option<String>,
     },
     /// The server couldn't be asked (the message, without the code).
     Failed(String),
@@ -256,6 +260,7 @@ impl Status {
                 plugins,
                 name,
                 overlay,
+                echoxr,
             } => {
                 let mut line = format!(
                     "{}: {mods} {}, {plugins} {}.",
@@ -267,6 +272,13 @@ impl Status {
                     line.push_str(&format!(
                         " Echo VR updates include its test channel {o} (PC and Quest)."
                     ));
+                }
+                if let Some(v) = echoxr {
+                    line.push_str(&if crate::core::echoxr::knows_test(v) {
+                        format!(" EchoXR starts use its test build {v}.")
+                    } else {
+                        format!(" Its EchoXR test build {v} needs a newer launcher.")
+                    });
                 }
                 line
             }
@@ -359,6 +371,26 @@ fn parse_overlay(text: &str) -> Option<String> {
     .then(|| o.to_string())
 }
 
+/// Pure: the `echoxr` in a `channel.json`: a version, 1 to 16 of 0-9, a-z, `.` and `-`.
+fn parse_echoxr(text: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(text).ok()?;
+    let e = v.get("echoxr")?.as_str()?.trim();
+    ((1..=16).contains(&e.len())
+        && e.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'))
+    .then(|| e.to_string())
+}
+
+/// The EchoXR test build the first of our codes that names one gives (its `channel.json`'s
+/// `echoxr`, as kept last: no network). A third-party developer's gated channel can't choose
+/// one.
+pub fn echoxr() -> Option<String> {
+    codes()
+        .iter()
+        .filter(|c| !is_gated(c))
+        .find_map(|c| kept_one(c, "channel").and_then(|(_, t)| parse_echoxr(&t)))
+}
+
 /// The test channel for Echo VR's updates the first code that names one gives (its
 /// `channel.json`'s `overlay`, as kept last: no network).
 pub fn overlay() -> Option<String> {
@@ -444,6 +476,9 @@ pub fn check(code: &str) -> Status {
     Status::Found {
         name: channel.as_deref().and_then(parse_channel),
         overlay: channel.as_deref().and_then(parse_overlay),
+        echoxr: (!is_gated(code))
+            .then(|| channel.as_deref().and_then(parse_echoxr))
+            .flatten(),
         mods: mods
             .and_then(|t| super::mods::ModCatalog::parse_dev(&t, code).ok())
             .map_or(0, |c| c.mods.len()),
@@ -549,7 +584,8 @@ mod tests {
                 mods: 1,
                 plugins: 2,
                 name: None,
-                overlay: None
+                overlay: None,
+                echoxr: None
             }
             .line(),
             "Dev folder: 1 mod, 2 plugins."
@@ -559,7 +595,8 @@ mod tests {
                 mods: 0,
                 plugins: 1,
                 name: Some("cat's channel".into()),
-                overlay: None
+                overlay: None,
+                echoxr: None
             }
             .line(),
             "cat's channel: 0 mods, 1 plugin."
@@ -569,10 +606,33 @@ mod tests {
                 mods: 1,
                 plugins: 0,
                 name: Some("nEVR 6 test".into()),
-                overlay: Some("nevr6".into())
+                overlay: Some("nevr6".into()),
+                echoxr: None
             }
             .line(),
             "nEVR 6 test: 1 mod, 0 plugins. Echo VR updates include its test channel nevr6 (PC and Quest)."
+        );
+        assert_eq!(
+            Status::Found {
+                mods: 0,
+                plugins: 0,
+                name: Some("EchoXR test".into()),
+                overlay: None,
+                echoxr: Some("0.6.2".into())
+            }
+            .line(),
+            "EchoXR test: 0 mods, 0 plugins. EchoXR starts use its test build 0.6.2."
+        );
+        assert_eq!(
+            Status::Found {
+                mods: 0,
+                plugins: 0,
+                name: None,
+                overlay: None,
+                echoxr: Some("9.0.0".into())
+            }
+            .line(),
+            "Dev folder: 0 mods, 0 plugins. Its EchoXR test build 9.0.0 needs a newer launcher."
         );
     }
 
@@ -606,6 +666,20 @@ mod tests {
             r#"{"overlay": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
         ] {
             assert_eq!(parse_overlay(bad), None, "{bad}");
+        }
+        assert_eq!(
+            parse_echoxr(r#"{"name": "t", "echoxr": " 0.6.2 "}"#).as_deref(),
+            Some("0.6.2")
+        );
+        for bad in [
+            r#"{"name": "t"}"#,
+            r#"{"echoxr": ""}"#,
+            r#"{"echoxr": "0.6.2/../x"}"#,
+            r#"{"echoxr": "V0.6"}"#,
+            r#"{"echoxr": 6}"#,
+            r#"{"echoxr": "0.0.0.0.0.0.0.0.0"}"#,
+        ] {
+            assert_eq!(parse_echoxr(bad), None, "{bad}");
         }
     }
 

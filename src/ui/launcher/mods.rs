@@ -2227,13 +2227,13 @@ fn echoxr_detail(linux: bool) -> String {
     if linux {
         format!(
             "v{}  ·  by {}  ·  Echo VR in your headset on SteamVR or WiVRn",
-            echoxr::VERSION,
+            echoxr::version(),
             echoxr::AUTHORS
         )
     } else {
         format!(
             "v{}  ·  by {}  ·  SteamVR without Revive, and Virtual Desktop",
-            echoxr::VERSION,
+            echoxr::version(),
             echoxr::AUTHORS
         )
     }

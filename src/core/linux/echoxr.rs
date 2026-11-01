@@ -52,7 +52,7 @@ pub fn local_app_data() -> PathBuf {
 fn marker_text() -> String {
     format!(
         "{{\"proton\":\"{PROTON}\",\"echoxr\":\"{}\",\"platform\":{PLATFORM_REV}}}",
-        echoxr::VERSION
+        echoxr::version()
     )
 }
 
@@ -70,7 +70,7 @@ pub fn catch_up_echoxr(cancel: &AtomicBool) -> Result<()> {
     if echoxr::is_fetched() || !proton_dir().join("proton").is_file() {
         return Ok(());
     }
-    tracing::info!("EchoXR {} isn't here yet: fetching it", echoxr::VERSION);
+    tracing::info!("EchoXR {} isn't here yet: fetching it", echoxr::version());
     echoxr::fetch(cancel, &mut |_| {})?;
     let marker = root().join(MARKER);
     if std::fs::read_to_string(&marker).is_ok_and(|old| only_echoxr_differs(&old, &marker_text())) {
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn a_new_echoxr_alone_keeps_the_setup() {
         let new = marker_text();
-        let old = new.replace(echoxr::VERSION, "0.5.0");
+        let old = new.replace(echoxr::version(), "0.5.0");
         assert_ne!(old, new);
         assert!(only_echoxr_differs(&old, &new));
         // Another Proton or Platform SDK revision still needs the window's setup.

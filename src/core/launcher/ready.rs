@@ -193,6 +193,7 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
     }
     super::dev_code::kept("mods").hash(&mut h);
     crate::core::echoxr::is_fetched().hash(&mut h);
+    crate::core::echoxr::version().hash(&mut h);
     super::echoxr_settings::current(state).hash(&mut h);
     (cfg!(target_os = "linux") && crate::core::linux::echoxr::is_set_up()).hash(&mut h);
     let bin = v.bin_dir();

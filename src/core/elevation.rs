@@ -414,17 +414,18 @@ fn add_defender_exclusion(dir: &std::path::Path) -> Result<()> {
 }
 
 /// The helper's EchoXR: the zip at `zip` into the Meta library's Echo VR (`bin`), if it is
-/// the pinned build (held against writes from the check to the copy), then EchoXR's copy
-/// of the game (EchoXR brings its Platform SDK stand-in).
+/// one of the launcher's builds (the pinned one or a dev code's test build, held against
+/// writes from the check to the copy), then EchoXR's copy of the game (EchoXR brings its
+/// Platform SDK stand-in).
 fn install_meta_echoxr(bin: &std::path::Path, zip: &str) -> Result<()> {
     if !std::path::Path::new(zip).is_absolute() {
         bail!("refusing EchoXR at {zip:?}");
     }
     let mut f = open_locked(zip)?;
-    if !super::echoxr::is_pinned_zip(&mut f)? {
-        bail!("refusing an EchoXR zip that isn't the pinned build");
-    }
-    super::echoxr::install_zip(f, bin)?;
+    let Some(build) = super::echoxr::known_zip(&mut f)? else {
+        bail!("refusing an EchoXR zip that isn't one of the launcher's builds");
+    };
+    super::echoxr::install_zip(f, build, bin)?;
     super::echoxr::refresh_openxr_exe(bin)?;
     super::echoxr::make_openxr_exe(bin)
 }
