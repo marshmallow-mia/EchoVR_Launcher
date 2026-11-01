@@ -293,6 +293,8 @@ enum Msg {
     LinkHandler(links::Handler, Option<String>),
     /// The headset's logs were saved into this folder, or why not.
     QuestLogs(Result<PathBuf, UiError>),
+    /// The Quest's logs saved for "Upload logs" (or why not).
+    QuestLogsForUpload(Result<PathBuf, UiError>),
     /// The logs were uploaded: the service's reference, or why not.
     /// The upload's reference (or why it failed), and the reported mod's name for a report.
     /// The reference, and how many of the logs found went; for a report, the mod's name.
@@ -797,6 +799,8 @@ pub struct Dashboard {
     back_after_sign_in: Option<Page>,
     /// "Upload logs" waits for the EchoVRCE sign-in (or its renewal): since when.
     upload_after_sign_in: Option<std::time::Instant>,
+    /// "Upload logs" with a Quest connected: its logs are saved first.
+    upload_quest: settings::QuestLogsFirst,
     /// A start waits for the game that is closing (Virtual Desktop's answer): since when.
     play_when_closed: Option<std::time::Instant>,
     /// The version whose mod loader the "Windows blocked" question is about.
@@ -2873,6 +2877,15 @@ impl Dashboard {
                         ),
                     }
                 }
+                Msg::QuestLogsForUpload(r) => {
+                    self.quest_busy = false;
+                    if let Err(e) = r {
+                        // The upload goes on with the logs saved before, if any.
+                        tracing::warn!("logs: the Quest's logs weren't saved: {}", e.message);
+                    }
+                    self.upload_quest = settings::QuestLogsFirst::Saved;
+                    settings::ask_upload(self);
+                }
                 Msg::QuestLogs(r) => {
                     self.quest_busy = false;
                     match r {
@@ -3045,6 +3058,21 @@ impl Dashboard {
         let ready = self.quest_conn.status == Some(Status::Ready);
         // Probing while a Quest job runs would trip over its adb restarts.
         let quest_job = self.jobs.contains_key(setup::QUEST_JOB);
+        if self.upload_quest == settings::QuestLogsFirst::Wanted {
+            if self.quest_busy || quest_job {
+                // Not now: the upload goes on without them.
+                self.upload_quest = settings::QuestLogsFirst::Saved;
+                settings::ask_upload(self);
+            } else {
+                self.upload_quest = settings::QuestLogsFirst::Saving;
+                self.quest_busy = true;
+                self.worker.spawn(ctx, |tx| {
+                    let r = crate::core::launcher::quest::pull_logs()
+                        .map_err(|e| UiError::from_anyhow(&e, "Couldn't save the logs"));
+                    tx.send(Msg::QuestLogsForUpload(r));
+                });
+            }
+        }
         if ready && self.quest_info.is_none() && !self.quest_busy && !quest_job {
             self.quest_busy = true;
             self.worker.spawn(ctx, |tx| {

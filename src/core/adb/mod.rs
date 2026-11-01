@@ -236,6 +236,16 @@ pub fn pull(remote: &str, local: &Path) -> bool {
     exec(&["pull", remote, &local.to_string_lossy()]).success()
 }
 
+/// Pulls the `remotes` into the folder `local` in one call, keeping their times (`-a`:
+/// without it every file is as new as the pull).
+pub fn pull_many(remotes: &[&str], local: &Path) -> bool {
+    let local = local.to_string_lossy();
+    let mut args = vec!["pull", "-a"];
+    args.extend_from_slice(remotes);
+    args.push(&local);
+    exec(&args).success()
+}
+
 /// Runs `start-server` then `devices -l`, decides which device to target and caches it.
 pub fn probe() -> Selection {
     exec(&["start-server"]);

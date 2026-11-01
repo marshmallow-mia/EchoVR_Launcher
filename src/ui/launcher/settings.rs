@@ -1690,6 +1690,18 @@ pub(super) fn ask_delete_cache(d: &mut Dashboard) {
     );
 }
 
+/// Where "Upload logs" is with saving a connected Quest's logs first.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum QuestLogsFirst {
+    #[default]
+    No,
+    /// To be saved (the next frame starts it).
+    Wanted,
+    Saving,
+    /// Saved, or not this time: the upload goes on.
+    Saved,
+}
+
 /// Finds the logs and asks which go (`upload_card`), saying what that shares and with whom.
 pub(super) fn ask_upload(d: &mut Dashboard) {
     // Uploads are for players signed in with EchoVRCE (the service checks it).
@@ -1731,6 +1743,17 @@ pub(super) fn ask_upload(d: &mut Dashboard) {
             "Logs can be uploaded by players signed in with EchoVRCE: sign in here, and the upload goes on.",
         );
         return;
+    }
+    // A connected Quest's logs are saved first, so today's go too.
+    match d.upload_quest {
+        QuestLogsFirst::Wanted | QuestLogsFirst::Saving => return,
+        QuestLogsFirst::Saved => d.upload_quest = QuestLogsFirst::No,
+        QuestLogsFirst::No if !d.demo && d.quest_info.is_some() => {
+            d.upload_quest = QuestLogsFirst::Wanted;
+            d.notify("Saving your Quest's logs first…");
+            return;
+        }
+        QuestLogsFirst::No => {}
     }
     let found = if d.demo {
         logs::Found {

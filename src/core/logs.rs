@@ -2,7 +2,8 @@
 //! Echo VR's (each installed version's `_local/r14logs`), EchoXR's, nEVR's in every folder
 //! it writes to ([`nevr::log_places`], [`nevr::bin_places`]: its starts, crash records and
 //! reports, its host's and boot logs, its plugins'), the Server host's servers' (their
-//! consoles and their own nEVR folders), and the Quest logs saved last. One plain-text
+//! consoles and their own nEVR folders), and the Quest's logs saved last (Echo VR's,
+//! nEVR's own log and crash records, the game's logcat capture, AssetPatches'). One plain-text
 //! bundle (no archive, nothing to unpack), each file cut to its newest part and cleaned so
 //! the upload service always takes a real log (it refuses anything that isn't plain text).
 //!
@@ -276,7 +277,7 @@ pub(crate) fn newest_in(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<(PathBuf
 /// Pure: whether `name` is a log (or a crash dump, to be named): a `.log`, `.txt` or
 /// `.jsonl`, nEVR's sent or refused crash reports, a `.dmp`. Never a sign-in or its
 /// install id.
-fn is_log(name: &str) -> bool {
+pub(crate) fn is_log(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     !n.starts_with('.')
         && n != "install-id.txt"
@@ -474,10 +475,12 @@ impl Collector {
             });
             let crash = s.run.is_some()
                 || (f.starts_with("nevr-host-") && f.contains(".report.txt"))
-                || nevr::is_host_fallback(&f);
+                || nevr::is_host_fallback(&f)
+                || (s.kind == Kind::Quest && in_quest_crashes(&s.path));
             let key = (s.kind == Kind::Launcher && LAUNCHER_LOGS[..5].contains(&f.as_str()))
                 || f == nevr::HOST_LOG
-                || f == "nevr-boot.jsonl";
+                || f == "nevr-boot.jsonl"
+                || (s.kind == Kind::Quest && f == QUEST_NEVR_LOG);
             let folder = s.path.parent().unwrap_or(Path::new("")).to_path_buf();
             s.rank = if crash {
                 Rank::Crash
@@ -496,6 +499,17 @@ impl Collector {
             .sources
             .sort_by_key(|s| (s.rank, std::cmp::Reverse(s.modified)));
     }
+}
+
+/// nEVR's own log on the Quest (its rotations are named `nevr-sentinel.<time>.log`).
+const QUEST_NEVR_LOG: &str = "nevr-sentinel.log";
+
+/// Pure: whether a saved Quest log is one of nEVR's crash records (what it writes beside a
+/// crash dump, in its `nevr-crashes` folder or, failing that, in `/data/local/tmp`'s).
+fn in_quest_crashes(path: &Path) -> bool {
+    path.parent()
+        .and_then(Path::file_name)
+        .is_some_and(|d| d == "nevr-crashes" || d == "tmp-crashes")
 }
 
 /// A game server of the Server host: its name and folder.
@@ -561,7 +575,13 @@ fn collect_from(
     }
     // The Quest's logs as "Quest logs" saved them last (a folder each time).
     if let Some((dir, _)) = newest_in_dirs(&log_dir.join("quest")) {
-        c.dir(Kind::Quest, "quest", &dir, true, &is_log);
+        c.dir(
+            Kind::Quest,
+            "quest",
+            &dir,
+            true,
+            &crate::core::launcher::quest::is_quest_log,
+        );
     }
     c.rank();
     c.found
@@ -1289,6 +1309,11 @@ mod tests {
             &logs.join("quest/2026-10-03_10-00-00/r14logs/a.log"),
             "quest\n",
         );
+        let quest = logs.join("quest/2026-10-03_10-00-00");
+        write(&quest.join("data/nevr-sentinel.log"), "{}\n");
+        write(&quest.join("data/nevr-crashes/c1.dmp.maps"), "maps\n");
+        write(&quest.join("media/files/afk/afklog.0.txt"), "logcat\n");
+        write(&quest.join("data/device_login.txt"), "secret\n");
         let found = collect_from(
             &logs,
             &nevr::log_places_in(&local, &local.join("Temp"), ""),
@@ -1303,7 +1328,28 @@ mod tests {
         );
         assert_eq!(names(&found, Kind::EchoXr), ["pc-latest.launcher.log"]);
         assert_eq!(names(&found, Kind::Echo).len(), 7);
-        assert_eq!(names(&found, Kind::Quest), ["quest.r14logs.a.log"]);
+        assert_eq!(
+            names(&found, Kind::Quest),
+            [
+                "quest.data.nevr-crashes.c1.dmp.maps",
+                "quest.data.nevr-sentinel.log",
+                "quest.media.files.afk.afklog.0.txt",
+                "quest.r14logs.a.log",
+            ],
+            "never the Quest's sign-in"
+        );
+        let rank = |name: &str| {
+            found
+                .sources
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.rank)
+        };
+        assert_eq!(
+            rank("quest.data.nevr-crashes.c1.dmp.maps"),
+            Some(Rank::Crash)
+        );
+        assert_eq!(rank("quest.data.nevr-sentinel.log"), Some(Rank::Key));
         let plugin = names(&found, Kind::Plugin);
         assert_eq!(plugin.len(), 30 + 5, "{plugin:?}");
         for n in [

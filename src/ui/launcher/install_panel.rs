@@ -479,7 +479,7 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 Some(Icon::Folder),
                 "Save logs",
                 free,
-                "Copy Echo VR's logs from the headset into a folder on this PC, and open it",
+                "Copy Echo VR's and nEVR's logs from the headset into a folder on this PC, and open it. Upload logs takes them from a connected Quest by itself.",
             )
             .clicked
         {

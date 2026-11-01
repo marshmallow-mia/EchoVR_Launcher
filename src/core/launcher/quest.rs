@@ -382,15 +382,68 @@ pub fn stop() -> Result<()> {
     Ok(())
 }
 
-/// Where Echo VR keeps its logs on the headset, and the folder each one is saved as.
-fn log_dirs() -> [(String, &'static str); 2] {
+/// Where Echo VR and nEVR keep their logs on the headset, and the folder each one's are
+/// saved in. nEVR has moved its own between builds (6.12 writes `nevr-sentinel.log` and
+/// `nevr-crashes/` into the app's `Android/data` folder, 6.14 wrote them into
+/// `Android/media`), so its logs are looked for by name in every place it has used.
+fn log_roots() -> [(String, &'static str); 5] {
     [
         ("/sdcard/r14logs".into(), "r14logs"),
-        (
-            format!("/sdcard/Android/data/{PACKAGE}/files/_local/r14logs"),
-            "_local-r14logs",
-        ),
+        (format!("/sdcard/Android/data/{PACKAGE}/files"), "data"),
+        (format!("/sdcard/Android/media/{PACKAGE}"), "media"),
+        ("/sdcard/readyatdawn".into(), "readyatdawn"),
+        // Where nEVR's crash records go when it can't write the others.
+        ("/data/local/tmp/nevr-crashes".into(), "tmp-crashes"),
     ]
+}
+
+/// Folders the search doesn't go into: the game data, not logs.
+const NOT_LOGS: [&str; 3] = ["_data", "RAD", "_temp"];
+
+/// Pure: whether the headset's file `name` is a log to save: a log as Upload logs takes
+/// them, or the address map nEVR writes beside a crash dump. Never nEVR's sign-in
+/// (`device_login.txt`), the player value beside the game's logcat capture (`user.txt`),
+/// nor a crash dump itself (it can hold sign-in tokens).
+pub fn is_quest_log(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    !matches!(n.as_str(), "device_login.txt" | "user.txt")
+        && !n.ends_with(".dmp")
+        && (crate::core::logs::is_log(&n) || n.ends_with(".dmp.maps"))
+}
+
+/// Pure: the logs in `find`'s `listing` of [`log_roots`], by the folder each goes into
+/// (`<label>/<its folder below the root>`), with their paths on the headset.
+fn quest_logs(listing: &str) -> Vec<(PathBuf, Vec<String>)> {
+    let roots = log_roots();
+    let mut by_dir: Vec<(PathBuf, Vec<String>)> = Vec::new();
+    for path in listing
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('/'))
+    {
+        let Some((root, label)) = roots
+            .iter()
+            .find(|(r, _)| path.starts_with(&format!("{r}/")))
+        else {
+            continue;
+        };
+        let rel = &path[root.len() + 1..];
+        let mut parts: Vec<&str> = rel.split('/').collect();
+        let Some(name) = parts.pop() else { continue };
+        if !is_quest_log(name)
+            || parts
+                .iter()
+                .any(|p| p.is_empty() || *p == ".." || p.starts_with('.') || NOT_LOGS.contains(p))
+        {
+            continue;
+        }
+        let dir = parts.iter().fold(PathBuf::from(label), |d, p| d.join(p));
+        match by_dir.iter_mut().find(|(d, _)| *d == dir) {
+            Some((_, files)) => files.push(path.to_string()),
+            None => by_dir.push((dir, vec![path.to_string()])),
+        }
+    }
+    by_dir
 }
 
 /// Pure: the folder one save of the headset's logs goes into, named by when it was made.
@@ -407,28 +460,123 @@ pub fn logs_folder(at: time::OffsetDateTime) -> PathBuf {
     paths::log_dir().join("quest").join(name)
 }
 
-/// Saves Echo VR's logs from the headset into a new folder beside the launcher's logs,
-/// and returns it.
+/// Saves Echo VR's and nEVR's logs of the last two weeks from the headset into a new
+/// folder beside the launcher's logs, with their times, and returns it. Only logs leave
+/// the headset (see [`is_quest_log`]).
 pub fn pull_logs() -> Result<PathBuf> {
     ready()?;
+    let roots: Vec<String> = log_roots().into_iter().map(|(r, _)| r).collect();
+    let prune = NOT_LOGS
+        .iter()
+        .map(|n| format!("-name {n}"))
+        .collect::<Vec<_>>()
+        .join(" -o ");
+    let find = format!(
+        "find {} -maxdepth 4 \\( {prune} \\) -prune -o -type f -mtime -14 -print 2>/dev/null",
+        roots.join(" ")
+    );
+    // find exits 1 for a root that isn't there: what it listed counts.
+    let listing = adb::exec(&["shell", &find]).output;
     let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
     let dest = logs_folder(now);
-    std::fs::create_dir_all(&dest)?;
-    let saved = log_dirs()
-        .into_iter()
-        .filter(|(remote, name)| adb::pull(remote, &dest.join(name)))
-        .count();
+    let mut saved = 0;
+    for (dir, files) in quest_logs(&listing) {
+        let local = dest.join(&dir);
+        std::fs::create_dir_all(&local)?;
+        let files: Vec<&str> = files.iter().map(String::as_str).collect();
+        if adb::pull_many(&files, &local) {
+            saved += files.len();
+        } else {
+            tracing::warn!("Quest logs: couldn't save all of {}", dir.display());
+        }
+    }
     if saved == 0 {
         let _ = std::fs::remove_dir_all(&dest);
         bail!("There are no Echo VR logs on your Quest yet: play it once, then try again.");
     }
-    tracing::info!("saved the Quest's logs to {}", dest.display());
+    tracing::info!("saved {saved} of the Quest's logs to {}", dest.display());
     Ok(dest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_logs_leave_the_headset() {
+        for keep in [
+            "nevr-sentinel.log",
+            "nevr-sentinel.1793471728040.log",
+            "nevr-sentinel.session-1793471728040.log",
+            "afklog.0.txt",
+            "assetpatch.log",
+            "[r14(client)]-[11-01-2026]_[11-42-47]_10549.log",
+            "6f1c-22.dmp.maps",
+        ] {
+            assert!(is_quest_log(keep), "{keep}");
+        }
+        for drop in [
+            "device_login.txt",
+            "DEVICE_LOGIN.TXT",
+            "user.txt",
+            "config.yaml",
+            "install-id.txt",
+            "nevr-data-packages.verified",
+            "afklog.on",
+            "ffr.off",
+            "6f1c-22.dmp",
+            "2dfe2e7610506f03",
+        ] {
+            assert!(!is_quest_log(drop), "{drop}");
+        }
+    }
+
+    #[test]
+    fn quest_logs_keep_their_folders() {
+        let listing = format!(
+            "/sdcard/r14logs/[r14(client)]-[11-01-2026]_[11-42-47]_10549.log\n\
+             /sdcard/r14logs/[r14(client)]-[10-31-2026]_[19-43-05]_14427.log\n\
+             /sdcard/Android/data/{PACKAGE}/files/nevr-sentinel.log\n\
+             /sdcard/Android/data/{PACKAGE}/files/device_login.txt\n\
+             /sdcard/Android/data/{PACKAGE}/files/nevr-crashes/c1.dmp\n\
+             /sdcard/Android/data/{PACKAGE}/files/nevr-crashes/c1.dmp.maps\n\
+             /sdcard/Android/media/{PACKAGE}/files/afk/afklog.0.txt\n\
+             /sdcard/Android/media/{PACKAGE}/files/afk/user.txt\n\
+             /sdcard/Android/media/{PACKAGE}/files/afk/afklog.on\n\
+             /sdcard/Android/media/{PACKAGE}/files/_data/5932408047/rad15/x.txt\n\
+             /sdcard/Android/media/{PACKAGE}/asset_patches/assetpatch.log\n\
+             /sdcard/Android/media/{PACKAGE}/asset_patches/489bb35d53ca50e9/2dfe2e7610506f03\n\
+             /sdcard/Android/media/{PACKAGE}/files/nevr-sentinel.session-1.log\n\
+             /sdcard/Android/media/{PACKAGE}2/files/x.log\n\
+             find: /sdcard/readyatdawn: No such file or directory\n"
+        );
+        let got: Vec<(String, Vec<String>)> = quest_logs(&listing)
+            .into_iter()
+            .map(|(d, f)| {
+                let names = f.iter().map(|p| p.rsplit('/').next().unwrap().to_string());
+                (d.to_string_lossy().replace('\\', "/"), names.collect())
+            })
+            .collect();
+        let want = [
+            (
+                "r14logs",
+                vec![
+                    "[r14(client)]-[11-01-2026]_[11-42-47]_10549.log",
+                    "[r14(client)]-[10-31-2026]_[19-43-05]_14427.log",
+                ],
+            ),
+            ("data", vec!["nevr-sentinel.log"]),
+            ("data/nevr-crashes", vec!["c1.dmp.maps"]),
+            ("media/files/afk", vec!["afklog.0.txt"]),
+            ("media/asset_patches", vec!["assetpatch.log"]),
+            ("media/files", vec!["nevr-sentinel.session-1.log"]),
+        ];
+        let want: Vec<(String, Vec<String>)> = want
+            .into_iter()
+            .map(|(d, f)| (d.to_string(), f.into_iter().map(String::from).collect()))
+            .collect();
+        assert_eq!(got, want);
+    }
 
     #[test]
     fn quest_logs_go_into_a_dated_folder() {
