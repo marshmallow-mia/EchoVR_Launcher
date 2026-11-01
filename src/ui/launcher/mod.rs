@@ -61,7 +61,7 @@ pub struct Credit {
 pub const CREDITS: &[Credit] = &[
     Credit {
         name: "Echo VR Launcher",
-        by: "marshmallow-mia (development) and sickmave (design)",
+        by: "marshmallow-mia (development), sickmave (design) and Crafter (contributions)",
         what: "Installs, updates and starts Echo VR, its mods and VR on Windows and Linux.",
         licence: "GPL-3.0",
         url: env!("CARGO_PKG_REPOSITORY"),
