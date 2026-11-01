@@ -1326,7 +1326,11 @@ mod tests {
             "{}",
             &t[..200]
         );
-        assert!(t.contains("FILE echoxr/pc-latest.launcher.log 19\n===== launch =====\n"));
+        assert!(
+            t.contains("FILE echoxr/pc-latest.launcher.log 19\n===== launch =====\n"),
+            "{}",
+            t.lines().take(40).collect::<Vec<_>>().join("\n")
+        );
         assert!(t.ends_with("END\n"));
         assert_eq!(t.matches("\nFILE ").count(), Limits::FALLBACK.max_files);
         assert_eq!((b.sent, b.found), (23, found.sources.len()));
