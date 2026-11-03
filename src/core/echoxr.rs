@@ -36,38 +36,40 @@ pub struct Build {
     verbose: bool,
 }
 
-/// EchoXR's OpenXR layer (marshmallow-mia/EchoXR 0.6.1, its GitHub release): unpacked into the
+/// EchoXR's OpenXR layer (marshmallow-mia/EchoXR 0.6.4, its GitHub release): unpacked into the
 /// game's bin folder (`bin/win10`, or an event build's `bin/win7`). Built with the static C
-/// runtime, so it needs no Visual C++ runtime. 0.6.1 waits until SteamVR hands back a
-/// swapchain image (D3D12 hung the GPU while the lobby loaded) and logs why a graphics device
-/// stopped; 0.6.0 reads the controller settings in
+/// runtime, so it needs no Visual C++ runtime. 0.6.4 stops SteamVR's D3D12 swapchain copy from
+/// hanging the GPU (DXGI_ERROR_DEVICE_HUNG while other players' cosmetics loaded): each release
+/// waits for the previous one's copy, and the barriers use Echo VR's real image states; 0.6.3
+/// logs what the GPU was doing (`--verbose`); 0.6.1 waits until SteamVR hands back a swapchain
+/// image; 0.6.0 reads the controller settings in
 /// `EchoXR.txt` (the Controllers plugin) and takes the hands from the grip pose; 0.5.0 runs
 /// the five event builds; 0.4.2
 /// brings the Platform SDK stand-in; 0.4.1 made it run under GE-Proton.
 static PINNED: Build = Build {
-    version: "0.6.1",
-    zip: "EchoXR-OpenXR-v0.6.1.zip",
-    url: "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.1-rc1/EchoXR-OpenXR-v0.6.1.zip",
-    sha256: "eba2ceac77983cce76efad4dd51f88379a1a29308a6886b7d164331ba9ff3504",
+    version: "0.6.4",
+    zip: "EchoXR-OpenXR-v0.6.4.zip",
+    url: "https://github.com/marshmallow-mia/EchoXR/releases/download/v0.6.4-rc1/EchoXR-OpenXR-v0.6.4.zip",
+    sha256: "1a4de62836f433671f759c46464610a156eaf3560ae831aacf1ff3599be2247b",
     files: [
         (
             LAUNCHER,
-            "f2b0ae414dacb1898c388acd1d862ab0e6e8f26fd7c06ee42a8a92ea39265f2a",
+            "d79c026595bdbfa01b202fdf48d47285677e498929e05042432e046ee9a8d207",
         ),
         (
             "EchoXR/LibOVRRT64_1.dll",
-            "1036d447d4fdaf4ca00033849c455158e5b631efc94e9dfef576fe7823385b87",
+            "8a05ba9cf377e1643d37c417c3fe064c018b58a3af18344d6e1884544d3e9b7f",
         ),
         (
             "EchoXR/openxr_loader.dll",
-            "8ab063099f5e5e393364bec19fdce0f7703ed85a96ee25535378c89d4e4386af",
+            "5c8e622279f37d11c11dd5d62b728c9ec3344432362df7f5d09da70a32ab6b53",
         ),
         (
             PLATFORM_IN_ECHOXR,
-            "5f835583f77a886ed9341abb672ebfd65c3615e847018c208c967afca9e3fa3e",
+            "1efa465ac3357a721c9610833972861b6eaa06650a6271faf134f4347ff97498",
         ),
     ],
-    verbose: false,
+    verbose: true,
 };
 
 /// Test builds a dev code can choose instead of [`PINNED`] (its `channel.json`'s `"echoxr"`,
@@ -582,10 +584,11 @@ mod tests {
         }
         // No code in tests: the pinned build.
         assert_eq!(build().version, PINNED.version);
-        // --verbose only for a build whose EchoXR.exe takes it: an older one hands it to the
-        // game.
-        assert!(!PINNED.verbose);
-        assert!(args_for(&PINNED, Some("max")).is_empty());
+        // --verbose only for a build whose EchoXR.exe takes it (0.6.3 on): an older one hands it
+        // to the game.
+        assert!(PINNED.verbose);
+        assert_eq!(args_for(&PINNED, Some("max")), ["--verbose", "max"]);
+        assert!(args_for(&PINNED, None).is_empty());
         for b in TESTS.iter().filter(|b| b.verbose) {
             assert_eq!(args_for(b, Some("max")), ["--verbose", "max"]);
             assert!(args_for(b, None).is_empty());
