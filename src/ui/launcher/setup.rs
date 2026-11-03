@@ -783,17 +783,6 @@ pub(super) fn quest_install(d: &mut Dashboard, ctx: &egui::Context, reinstall: b
     );
 }
 
-/// The launcher's channel has no Quest release (no `# nEVR quest:` line, or `none`).
-pub(super) fn quest_not_offered(d: &mut Dashboard) {
-    d.dialogs.info(
-        "Not on this channel yet",
-        &format!(
-            "Echo VR for the Quest isn't offered on the {} channel yet. Once it is, it installs from here. Settings > Advanced shows which channel you follow.",
-            d.state.launcher_channel.label()
-        ),
-    );
-}
-
 // ---- overlay cards ----
 
 pub(super) fn draw_overlay(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {

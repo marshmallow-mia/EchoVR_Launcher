@@ -28,24 +28,11 @@ pub const PC_MANIFEST_URL: &str = "https://release.echovr.de/updates-nevr/update
 /// replacements too, its own on top.
 pub const BETA_OVERLAY: &str = "https://release.echovr.de/updates-nevr-beta/update.manifest";
 pub const ALPHA_OVERLAY: &str = "https://release.echovr.de/updates-nevr-alpha/update.manifest";
-/// The Quest's twins of these, which name only the nEVR release whose APK goes onto the
-/// headset (`# nEVR quest:`); the same rule, the same channels.
-pub const QUEST_MANIFEST_URL: &str = "https://release.echovr.de/quest/updates-nevr/update.manifest";
-pub const QUEST_BETA_OVERLAY: &str =
-    "https://release.echovr.de/quest/updates-nevr-beta/update.manifest";
-pub const QUEST_ALPHA_OVERLAY: &str =
-    "https://release.echovr.de/quest/updates-nevr-alpha/update.manifest";
-
 /// A dev code's test channel `name` (its `channel.json`'s `overlay`,
 /// [`crate::core::launcher::dev_code::overlay`]) on the live PC update, on top of the
 /// followed channel's overlays.
 pub fn dev_overlay(name: &str) -> String {
     format!("https://release.echovr.de/updates-nevr-{name}/update.manifest")
-}
-
-/// The Quest's twin of [`dev_overlay`].
-pub fn quest_dev_overlay(name: &str) -> String {
-    format!("https://release.echovr.de/quest/updates-nevr-{name}/update.manifest")
 }
 
 /// Pure: a channel's overlays, then a dev code's test channel (last: it wins).
@@ -117,56 +104,6 @@ pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
         text.push_str(&channel_line(&name, &v));
     }
     Ok((m, text))
-}
-
-/// The overlays on the Quest's update for `channel`, in the order they apply.
-pub fn quest_overlays(channel: Channel) -> &'static [&'static str] {
-    match channel {
-        Channel::Main => &[],
-        Channel::Beta => &[QUEST_BETA_OVERLAY],
-        Channel::Alpha => &[QUEST_BETA_OVERLAY, QUEST_ALPHA_OVERLAY],
-    }
-}
-
-/// The nEVR release, or channel of nEVR's, whose APK the followed launcher channel puts on
-/// the Quest: main's `# nEVR quest:` line with the channel's overlays on top. `None` when
-/// none is offered there (no line, or `none`).
-pub fn quest_nevr_release() -> Result<Option<String>> {
-    let main = quest_url(QUEST_MANIFEST_URL);
-    let text = http::get_text_opt(&main)
-        .with_context(|| format!("Could not download the Quest's update ({main})"))?
-        .unwrap_or_default();
-    let channel = *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
-    crate::core::launcher::dev_code::refresh_channels();
-    let urls = with_dev(
-        quest_overlays(channel),
-        crate::core::launcher::dev_code::overlay().map(|o| quest_dev_overlay(&o)),
-    );
-    let mut over = Vec::new();
-    for o in &urls {
-        let t = http::get_text_opt(&quest_url(o))
-            .with_context(|| format!("Could not download the channel's Quest update ({o})"))?;
-        if let Some(t) = t {
-            over.push((o.as_str(), t));
-        }
-    }
-    let (m, _) = with_overlays(QUEST_MANIFEST_URL, &text, &over)?;
-    Ok(m.nevr_release("quest").map(str::to_string))
-}
-
-/// Debug builds: `ECHOVR_QUEST_UPDATES=<url>` reads the Quest's update folders
-/// (`<url>/updates-nevr/update.manifest`, ...) from a test server.
-fn quest_url(url: &str) -> String {
-    match std::env::var("ECHOVR_QUEST_UPDATES")
-        .ok()
-        .filter(|_| cfg!(debug_assertions))
-    {
-        Some(base) => url.replace(
-            "https://release.echovr.de/quest",
-            base.trim_end_matches('/'),
-        ),
-        None => url.to_string(),
-    }
 }
 
 /// The channel of nEVR's `m` names for this platform, when it names one and no version.
@@ -1450,46 +1387,7 @@ mod tests {
         assert_eq!(overlays(Channel::Main), &[] as &[&str]);
         assert_eq!(overlays(Channel::Beta), &[BETA_OVERLAY]);
         assert_eq!(overlays(Channel::Alpha), &[BETA_OVERLAY, ALPHA_OVERLAY]);
-        // The Quest's: the same chain in its twin folders.
-        assert_eq!(quest_overlays(Channel::Main), &[] as &[&str]);
-        assert_eq!(
-            quest_overlays(Channel::Alpha),
-            &[QUEST_BETA_OVERLAY, QUEST_ALPHA_OVERLAY]
-        );
-        for u in [QUEST_MANIFEST_URL, QUEST_BETA_OVERLAY, QUEST_ALPHA_OVERLAY] {
-            assert!(
-                u.starts_with("https://release.echovr.de/quest/updates-nevr"),
-                "{u}"
-            );
-        }
-        let (m, _) = with_overlays(
-            QUEST_MANIFEST_URL,
-            "# nEVR quest: none\n",
-            &[(QUEST_ALPHA_OVERLAY, "# nEVR quest: beta\n".into())],
-        )
-        .unwrap();
-        assert_eq!(m.nevr_release("quest"), Some("beta"));
-        // A dev code's test channel comes last, over the followed channel's: here a release
-        // over main's none and alpha's channel, on the Quest and the PC alike.
-        let dev = with_dev(
-            quest_overlays(Channel::Alpha),
-            Some(quest_dev_overlay("nevr6")),
-        );
-        assert_eq!(
-            dev,
-            [
-                QUEST_BETA_OVERLAY,
-                QUEST_ALPHA_OVERLAY,
-                "https://release.echovr.de/quest/updates-nevr-nevr6/update.manifest"
-            ]
-        );
-        let over: Vec<(&str, String)> = dev
-            .iter()
-            .map(|o| o.as_str())
-            .zip(["", "# nEVR quest: beta\n", "# nEVR quest: 6.2.0\n"].map(String::from))
-            .collect();
-        let (m, _) = with_overlays(QUEST_MANIFEST_URL, "# nEVR quest: none\n", &over).unwrap();
-        assert_eq!(m.nevr_release("quest"), Some("6.2.0"));
+        // A dev code's test channel comes last, over the followed channel's.
         assert_eq!(
             with_dev(overlays(Channel::Main), Some(dev_overlay("nevr6"))),
             ["https://release.echovr.de/updates-nevr-nevr6/update.manifest"]

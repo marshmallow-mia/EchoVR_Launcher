@@ -1,22 +1,25 @@
 //! Echo VR on the Quest: nEVR's build, from nEVR's signed releases, installed and
 //! updated over adb; which version is installed, and starting/stopping it.
 //!
-//! Which release goes onto the headset is ours to say (the Quest's `# nEVR quest:` line,
-//! [`pc_update::quest_nevr_release`]); what its files are, nEVR's signed manifest says
-//! ([`nevr_release::quest_release`]). The APK is the same for every player.
+//! Which release goes onto the headset is the player's pick of nEVR's channels (stable or
+//! beta, [`QuestChannel`], Play's picker), straight from nEVR's signed manifest the way
+//! Crafter's Quest installer does it ([`nevr_release::quest_offer`]): nothing of ours in
+//! between. The APK is the same for every player of a channel.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
+use std::sync::Mutex;
 
 use anyhow::{bail, Result};
+use serde::{Deserialize, Serialize};
 
 use super::versions::Step;
 use crate::core::adb::{self, PACKAGE};
 use crate::core::download::{self, Progress};
 use crate::core::error::UiError;
 use crate::core::nevr_release::{self, QuestRelease};
+use crate::core::paths;
 use crate::core::quest_install::{self, ApkInstall, MAIN_USER};
-use crate::core::{paths, pc_update};
 
 pub const DATA_ZIP: &str = "_data.zip";
 /// How an install or update ended.
@@ -26,30 +29,107 @@ pub enum Outcome {
     Installed(String),
     /// It already was.
     UpToDate(String),
-    /// The followed launcher channel offers no Echo VR for the Quest.
-    NotOffered,
+}
+
+/// nEVR's channel a Quest follows: Play's picker, launcher.json's `quest_channel`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum QuestChannel {
+    /// nEVR's tested releases; what Crafter's installer installs too.
+    #[default]
+    Stable,
+    Beta,
+}
+
+/// Unknown names (a channel a later launcher knows) are stable.
+impl<'de> Deserialize<'de> for QuestChannel {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = String::deserialize(d)?;
+        Ok(QuestChannel::ALL
+            .into_iter()
+            .find(|c| c.name() == name)
+            .unwrap_or_default())
+    }
+}
+
+impl QuestChannel {
+    pub const ALL: [QuestChannel; 2] = [QuestChannel::Stable, QuestChannel::Beta];
+
+    /// nEVR's name for it ("stable"), as in its manifest and launcher.json.
+    pub fn name(self) -> &'static str {
+        match self {
+            QuestChannel::Stable => "stable",
+            QuestChannel::Beta => "beta",
+        }
+    }
+
+    /// "Stable"
+    pub fn label(self) -> &'static str {
+        match self {
+            QuestChannel::Stable => "Stable",
+            QuestChannel::Beta => "Beta",
+        }
+    }
+
+    /// What following it means.
+    pub fn note(self) -> &'static str {
+        match self {
+            QuestChannel::Stable => "nEVR's tested releases",
+            QuestChannel::Beta => "nEVR's newest builds. They can have bugs",
+        }
+    }
+}
+
+static CHANNEL: Mutex<QuestChannel> = Mutex::new(QuestChannel::Stable);
+
+/// Takes launcher.json's Quest channel; called whenever the settings are loaded or saved.
+pub fn set_channel(channel: QuestChannel) {
+    *CHANNEL.lock().unwrap_or_else(|p| p.into_inner()) = channel;
+}
+
+/// The channel the Quest follows now.
+pub fn channel() -> QuestChannel {
+    *CHANNEL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 fn staging() -> PathBuf {
     paths::downloads_dir()
 }
 
-/// The release the followed launcher channel offers for the Quest, checked against nEVR's
-/// signed manifest; `None` when it offers none.
-pub fn offered(cancel: &AtomicBool) -> Result<Option<QuestRelease>> {
-    let Some(which) = pc_update::quest_nevr_release()? else {
-        return Ok(None);
-    };
-    nevr_release::quest_release(&which, cancel)
-        .map(Some)
-        .map_err(|e| {
-            tracing::warn!(
-                "Quest: nEVR's release refused at step {}: {}",
-                e.step,
-                e.detail
-            );
-            e.into_error()
-        })
+/// What nEVR's manifest offers the Quest now: its channels' releases, and the followed
+/// one's ([`channel`]). An `Err` is the manifest refused.
+pub fn offer(cancel: &AtomicBool) -> Result<nevr_release::QuestOffer> {
+    nevr_release::quest_offer(channel().name(), cancel).map_err(|e| refused(e).into_error())
+}
+
+/// The release the followed channel offers, checked against nEVR's signed manifest.
+pub fn offered(cancel: &AtomicBool) -> Result<QuestRelease> {
+    offer(cancel)?.release.map_err(|e| {
+        let e = refused(e);
+        if e.step != 7 {
+            return e.into_error();
+        }
+        UiError::new(
+            "Not on this channel",
+            format!(
+                "nEVR has no Echo VR for the Quest on its {} channel right now. Pick the other one under VERSION on the Play page, or try again later.",
+                channel().label()
+            ),
+        )
+        .into()
+    })
+}
+
+fn refused(e: nevr_release::Refused) -> nevr_release::Refused {
+    if e.step != nevr_release::CANCELLED {
+        tracing::warn!(
+            "Quest: nEVR's {} release refused at step {}: {}",
+            channel().name(),
+            e.step,
+            e.detail
+        );
+    }
+    e
 }
 
 /// Pure: whether what is installed is release `r`'s APK (its versionCode, then its bytes:
@@ -63,17 +143,38 @@ fn is_release(
         && sha(&installed.path).as_deref() == Some(r.apk.sha256.as_str())
 }
 
-/// Puts the offered nEVR release onto the headset's main profile, as nEVR's install method
-/// says (ADR 0023, "Quest plan"): a clean install of its APK (what is installed, in any
-/// profile, is uninstalled first, the settings kept), then the game data when it isn't
-/// there, then the checks. `reinstall` does the clean install even when the release is
-/// already there.
+/// How the release goes onto the headset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    /// Over what the main profile has (`adb install -r`): its settings and app data stay.
+    InPlace,
+    /// Settings copied off, uninstalled, installed, settings put back: Reinstall, the
+    /// fallback when the update in place didn't go through, or Echo VR only in another profile.
+    Clean,
+    /// Nothing on the headset: installed, and a copy of settings still waiting goes back.
+    Fresh,
+}
+
+/// Pure: the route for what is installed (`have`) and whether Reinstall was asked for.
+fn route(have: Option<&quest_install::Installed>, reinstall: bool) -> Route {
+    match have {
+        None => Route::Fresh,
+        Some(i) if i.in_main() && !reinstall => Route::InPlace,
+        Some(_) => Route::Clean,
+    }
+}
+
+/// Puts the offered nEVR release onto the headset's main profile: nEVR's APKs share one
+/// signing key, so an update goes on in place and keeps the settings and the app's data.
+/// Only when that doesn't go through (another signer, a newer build, another refusal), when
+/// Echo VR is only in another profile, or when `reinstall` asks for it, is it a clean install:
+/// the settings are copied off first (nothing is uninstalled when that fails), then uninstall,
+/// install, settings back. Then the game data when it isn't there, then the checks.
+/// `reinstall` also does it when the release is already there.
 pub fn install(cancel: &AtomicBool, reinstall: bool, on: &mut dyn FnMut(Step)) -> Result<Outcome> {
     ready()?;
     on(Step::Status("Checking nEVR's release...".into()));
-    let Some(r) = offered(cancel)? else {
-        return Ok(Outcome::NotOffered);
-    };
+    let r = offered(cancel)?;
     let v = r.version.clone();
     let have = quest_install::installed();
     // Echo VR in another profile only isn't this release in the main profile: it goes, and
@@ -92,38 +193,55 @@ pub fn install(cancel: &AtomicBool, reinstall: bool, on: &mut dyn FnMut(Step)) -
                 .download(&apk, cancel, &mut |f| on(Step::Percent(f)))
                 .map_err(nevr_release::Refused::into_error)?;
         }
-        // A clean install, never one over another build: what is installed goes first (its
-        // sign-in with it), and the settings in the game's media folder, which Android takes
-        // with the app, come back after.
-        let kept = if have.is_some() {
-            on(Step::Status("Keeping your Echo VR settings...".into()));
-            let kept = quest_install::save_settings(&staging().join("quest-settings"));
+        let settings = staging().join("quest-settings");
+        let mut way = route(have.as_ref(), reinstall);
+        if way == Route::InPlace {
             on(Step::Status(format!("Updating to nEVR {v}...")));
-            quest_install::uninstall()?;
-            kept
-        } else {
-            None
-        };
-        on(Step::Status("Installing Echo VR on your Quest...".into()));
-        match quest_install::install_apk(&apk) {
-            ApkInstall::Done => {}
-            ApkInstall::Failed(why) => bail_refused(&why)?,
-            ApkInstall::Newer => bail_refused(&format!(
-                "A newer Echo VR than nEVR {v} is still on it. Reinstall takes it off first."
-            ))?,
-            ApkInstall::OtherSigner => {
-                bail_refused("Another Echo VR build is still on it. Reinstall takes it off first.")?
+            match quest_install::install_apk(&apk) {
+                ApkInstall::Done => {}
+                why => {
+                    tracing::warn!(
+                        "Quest: the update in place didn't go through ({why:?}); reinstalling"
+                    );
+                    on(Step::Status(
+                        "The update didn't go through. Reinstalling, your settings are kept..."
+                            .into(),
+                    ));
+                    way = Route::Clean;
+                }
             }
         }
-        if let Some(dir) = kept {
-            on(Step::Status("Putting your Echo VR settings back...".into()));
-            if quest_install::restore_settings(&dir) {
-                let _ = std::fs::remove_dir_all(dir.parent().unwrap_or(&dir));
-            } else {
-                tracing::warn!(
-                    "Quest: settings not put back; a copy is in {}",
-                    dir.display()
-                );
+        if way == Route::Clean {
+            on(Step::Status("Keeping your Echo VR settings...".into()));
+            // An Err stops here, before anything is uninstalled.
+            quest_install::save_settings(&settings)?;
+            on(Step::Status(format!("Reinstalling nEVR {v}...")));
+            quest_install::uninstall()?;
+        }
+        if way != Route::InPlace {
+            on(Step::Status("Installing Echo VR on your Quest...".into()));
+            match quest_install::install_apk(&apk) {
+                ApkInstall::Done => {}
+                ApkInstall::Failed(why) => bail_refused(&why)?,
+                ApkInstall::Newer => bail_refused(&format!(
+                    "A newer Echo VR than nEVR {v} is still on it and couldn't be taken off."
+                ))?,
+                ApkInstall::OtherSigner => {
+                    bail_refused("Another Echo VR build is still on it and couldn't be taken off.")?
+                }
+            }
+            // The copy stays until it is back on the headset: a failed install above keeps it
+            // for the next one.
+            if settings.is_dir() {
+                on(Step::Status("Putting your Echo VR settings back...".into()));
+                if quest_install::restore_settings(&settings) {
+                    let _ = std::fs::remove_dir_all(&settings);
+                } else {
+                    tracing::warn!(
+                        "Quest: settings not put back; a copy is in {}",
+                        settings.display()
+                    );
+                }
             }
         }
         let _ = std::fs::remove_file(&apk);
@@ -139,9 +257,6 @@ pub fn install(cancel: &AtomicBool, reinstall: bool, on: &mut dyn FnMut(Step)) -
             bail!("The game data didn't arrive complete on your Quest. Please try again.");
         }
     }
-    // The community content (the Echo Combat update's asset patches), as Crafter's
-    // installer adds it.
-    crate::core::quest_content::apply(cancel, &staging(), &mut |s| on(Step::Status(s)))?;
     quest_install::grant_permissions();
 
     // What the headset reports now has to be what nEVR's manifest names, in the main profile.
@@ -226,8 +341,11 @@ pub struct QuestInfo {
     pub version_code: Option<u64>,
     /// The nEVR release the installed APK is, when it is one.
     pub nevr: Option<String>,
-    /// The release the launcher channel offers, and its versionCode.
+    /// The release the followed channel offers, and its versionCode.
     pub offered: Option<(String, u64)>,
+    /// nEVR's channels and the release each has now (`None`: no Quest release there), when
+    /// its manifest was read.
+    pub channels: Vec<(QuestChannel, Option<String>)>,
     /// Its Wi-Fi address, when it was read over USB.
     pub wifi_ip: Option<std::net::Ipv4Addr>,
     /// ADB reaches it over the network rather than USB.
@@ -259,10 +377,14 @@ impl QuestInfo {
         self.profiles.iter().find(|p| p.echo && !p.is_main())
     }
 
-    /// The release to update to, when Echo VR is installed and isn't the offered one.
+    /// The release to update to, when Echo VR is installed and is another build or an older
+    /// nEVR. A newer one isn't taken back to an older channel's release (Reinstall does that).
     pub fn update_offered(&self) -> Option<&str> {
         match &self.offered {
-            Some((v, code)) if self.installed && self.version_code != Some(*code) => {
+            Some((v, code))
+                if self.installed
+                    && (self.nevr.is_none() || self.version_code.is_none_or(|c| c < *code)) =>
+            {
                 Some(v.as_str())
             }
             _ => None,
@@ -296,11 +418,20 @@ pub fn info() -> Result<QuestInfo> {
         })
         .collect();
     profiles.sort_by_key(|p| !p.is_main());
-    let offered = match offered(&AtomicBool::new(false)) {
-        Ok(r) => r.map(|r| (r.version, r.version_code)),
+    let (offered, channels) = match offer(&AtomicBool::new(false)) {
+        Ok(o) => (
+            o.release.ok().map(|r| (r.version, r.version_code)),
+            QuestChannel::ALL
+                .into_iter()
+                .map(|c| {
+                    let v = o.channels.iter().find(|(n, _)| n == c.name());
+                    (c, v.and_then(|(_, v)| v.clone()))
+                })
+                .collect(),
+        ),
         Err(e) => {
             tracing::info!("Quest: no release offer read: {e:#}");
-            None
+            (None, Vec::new())
         }
     };
     Ok(QuestInfo {
@@ -311,6 +442,7 @@ pub fn info() -> Result<QuestInfo> {
         version_code,
         nevr: version_code.and_then(nevr_release::quest_version_of),
         offered,
+        channels,
         wifi_ip: super::quest_net::ip_over_usb(),
         over_network,
     })
@@ -597,6 +729,23 @@ mod tests {
     }
 
     #[test]
+    fn the_quest_channel_is_stable_unless_picked() {
+        assert_eq!(QuestChannel::default(), QuestChannel::Stable);
+        let names: Vec<&str> = QuestChannel::ALL.iter().map(|c| c.name()).collect();
+        assert_eq!(names, nevr_release::QUEST_CHANNELS);
+        for c in QuestChannel::ALL {
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(json, format!("\"{}\"", c.name()));
+            assert_eq!(serde_json::from_str::<QuestChannel>(&json).unwrap(), c);
+        }
+        // A channel a later launcher knows: stable.
+        assert_eq!(
+            serde_json::from_str::<QuestChannel>("\"nightly\"").unwrap(),
+            QuestChannel::Stable
+        );
+    }
+
+    #[test]
     fn version_label_and_offer() {
         let mut i = QuestInfo::default();
         assert!(i.version_label().contains("not installed"));
@@ -610,6 +759,26 @@ mod tests {
         assert_eq!(i.update_offered(), Some("6.2.0"));
         i.version_code = Some(60200999);
         assert_eq!(i.update_offered(), None);
+        // Beta's newer build stays when Stable is older.
+        (i.version_code, i.nevr) = (Some(60300999), Some("6.3.0".into()));
+        assert_eq!(i.update_offered(), None);
+    }
+
+    #[test]
+    fn an_update_goes_on_in_place() {
+        let mut i = quest_install::Installed {
+            path: "/data/app/base.apk".into(),
+            version_code: Some(60100999),
+            users: vec![MAIN_USER],
+        };
+        assert_eq!(route(None, false), Route::Fresh);
+        assert_eq!(route(None, true), Route::Fresh);
+        assert_eq!(route(Some(&i), false), Route::InPlace);
+        assert_eq!(route(Some(&i), true), Route::Clean);
+        i.users = vec![10];
+        assert_eq!(route(Some(&i), false), Route::Clean);
+        i.users = vec![MAIN_USER, 10];
+        assert_eq!(route(Some(&i), false), Route::InPlace);
     }
 
     #[test]

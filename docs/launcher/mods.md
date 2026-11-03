@@ -51,28 +51,34 @@ the runtime goes in before the host, and Undo update puts both back.
 From 0.13.0-alpha.8 on the Quest gets nEVR's signed APK, the same for every player: the
 `quest-apk` of a release in the same signed manifest (package `com.readyatdawn.r15`; its
 `version_code` and `signer_cert_sha256` must be there), downloaded from the manifest's own
-folder and checked by size and sha256 (`src/core/launcher/quest.rs`). Which release, our
-line says, in the Quest's own update folders on release.echovr.de:
+folder and checked by size and sha256 (`src/core/launcher/quest.rs`). Which release, the
+player picks under VERSION on Play's Quest side: nEVR's `stable` channel (the default) or
+its `beta`, the release that channel has in nEVR's manifest now, the way Crafter's Quest
+installer does it. Nothing of ours is read for it (from 0.13.11 on; before, a
+`# nEVR quest:` line in `/quest/updates-nevr*/` on release.echovr.de said, and older
+launchers still read it there). A channel without a Quest release says so and installs
+nothing.
 
-```text
-# nEVR quest: beta
-```
+Only nEVR-signed files go onto the headset: the APK and the release's `game-data` zip (from
+0.13.11 on; 0.13.4 to 0.13.10 also pushed the unsigned community list in
+release.echovr.de's `/quest/updates/`, which the launcher no longer reads).
 
-- `/quest/updates-nevr/update.manifest` is main's, `/quest/updates-nevr-beta/` and
-  `/quest/updates-nevr-alpha/` (each an `update.manifest`) are the channels' overlays, read
-  as on PC (alpha, then beta, then main; a missing one counts as main's). They carry only
-  this line: no file lists are applied on the Quest.
-- `none` or no line: the Quest side says the launcher's channel has no Quest release yet.
-
-The install is `adb install -r -g`. Another signer (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`)
-or a newer build on the headset (`INSTALL_FAILED_VERSION_DOWNGRADE`) is uninstalled first,
-as part of the update without a question: Android deletes `Android/media/com.readyatdawn.r15`
-with the app, so the player's settings there (`files/RAD/`) are copied off before and put
-back after, and the game data is copied again. The game data stays where it was: the mirrors' `quest/_data.zip`,
-whose sha256 must be the release's signed `game-data` one. It is copied only when one of
-that entry's `contents` is missing (or another size) in
-`/sdcard/Android/media/com.readyatdawn.r15/files` or `/sdcard/readyatdawn`. Afterwards the
-headset's versionCode must be the release's, and its data complete.
+nEVR's APKs share one signing key, so an update goes on in place (`adb install -r -g`): the
+settings, the sign-in and the app's own data stay. Play offers it only when the channel's
+release is newer than what is installed (or what is installed isn't nEVR's): moving from a
+newer Beta to an older Stable doesn't go back by itself, Reinstall does. Only when the update
+in place doesn't go through (another signer, `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; a newer
+build, `INSTALL_FAILED_VERSION_DOWNGRADE`; any other refusal), when Echo VR is only in
+another profile, or when the player presses Reinstall, is it a clean install: Android
+deletes `Android/media/com.readyatdawn.r15` and the app's data with the app, so everything
+the player has in its `files/` except `_data` (game data) and `_temp` (crashes) is copied off
+first (`RAD/` with the settings, `_local/`, `afk/`, ...) into the launcher's
+`downloads/quest-settings/`. When that copy fails nothing is uninstalled. The copy goes back
+after the install and is deleted only once it is back, so a failed install keeps it for the
+next one. The game data is the release's `game-data` zip from nEVR's folder, whose sha256
+must be the signed one; it is copied only when one of that entry's `contents` is missing (or
+another size) in `/sdcard/Android/media/com.readyatdawn.r15/files` or `/sdcard/readyatdawn`.
+Afterwards the headset's versionCode must be the release's, and its data complete.
 
 **nEVR's root.** From nevr-runtime #1104 on (ADR 0012 there), the host loads its runtime
 only from nEVR's root, `%LOCALAPPDATA%\nevr\echovr` (the Wine prefix's on Linux), never from

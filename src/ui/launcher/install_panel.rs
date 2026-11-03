@@ -462,7 +462,7 @@ pub(super) fn quest(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
                 Some(Icon::Refresh),
                 "Reinstall",
                 free,
-                "Take Echo VR off your Quest and install it again, with the game data",
+                "Take Echo VR off your Quest and install it again, with the game data. Your settings are copied off first and put back",
             )
             .clicked
         {

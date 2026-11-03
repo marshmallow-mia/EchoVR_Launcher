@@ -480,7 +480,10 @@ fn quest_hero(d: &mut Dashboard) -> Hero {
         h.tip = if busy {
             busy_tip.clone()
         } else {
-            "Download nEVR's Echo VR and install it on your Quest".into()
+            format!(
+                "Download nEVR's Echo VR ({}) and install it on your Quest",
+                d.state.quest_channel.label()
+            )
         };
         h.side = Side::Blue {
             icon: Icon::Refresh,

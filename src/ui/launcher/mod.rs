@@ -623,8 +623,8 @@ pub enum SnapVariant {
     QuestFresh,
     /// The Quest side's Headsets list: USB, network, unauthorized and ADB-only finds.
     QuestHeadsets,
-    /// The Quest side, the launcher's channel without a Quest release.
-    QuestNotOffered,
+    /// The Quest side with its channel picker (VERSION) open.
+    QuestChannelMenu,
     /// The Quest side, Echo VR running on the headset (seen through its API).
     QuestRunning,
     /// PLAY was clicked; the game isn't up yet.
@@ -1832,6 +1832,10 @@ impl Dashboard {
             version_code: Some(60200999),
             nevr: Some("6.2.0".into()),
             offered: Some(("6.2.0".into(), 60200999)),
+            channels: vec![
+                (quest::QuestChannel::Stable, Some("6.2.0".into())),
+                (quest::QuestChannel::Beta, Some("6.3.0".into())),
+            ],
             wifi_ip: Some(std::net::Ipv4Addr::new(192, 168, 178, 45)),
             over_network: false,
             profiles: vec![
@@ -2321,10 +2325,10 @@ impl Dashboard {
                     addr: std::net::SocketAddrV4::new(ip(90), 37199),
                 }];
             }
-            Some(SnapVariant::QuestNotOffered) => {
+            Some(SnapVariant::QuestChannelMenu) => {
                 self.platform = Platform::Quest;
-                self.state.launcher_channel = update_check::Channel::Beta;
-                setup::quest_not_offered(self);
+                let id = crate::ui::widgets::menu_id(play::QUEST_CHANNEL_MENU);
+                ctx.data_mut(|d| d.insert_temp(id, true));
             }
             Some(SnapVariant::QuestFresh) => {
                 self.platform = Platform::Quest;
@@ -2745,9 +2749,10 @@ impl Dashboard {
                                     self.enable_quest_network(ctx, ip);
                                 }
                             }
-                            // A newer nEVR build for it: said once a run.
-                            if let Some(v) = i.update_offered() {
-                                if self.quest_offer_told.as_deref() != Some(v) {
+                            // A newer nEVR build for it: said once a run, and taken back
+                            // once there is none (installed, or another channel picked).
+                            match i.update_offered() {
+                                Some(v) if self.quest_offer_told.as_deref() != Some(v) => {
                                     self.quest_offer_told = Some(v.to_string());
                                     self.notify_with(
                                         &format!("nEVR {v} is out for your Quest"),
@@ -2755,6 +2760,8 @@ impl Dashboard {
                                         notices::Action::UpdateQuest,
                                     );
                                 }
+                                Some(_) => {}
+                                None => self.notices.withdraw(&notices::Action::UpdateQuest),
                             }
                             self.quest_info = Some(i)
                         }
@@ -3413,7 +3420,6 @@ impl Dashboard {
                     Outcome::UpToDate(v) => {
                         self.notify(&format!("Your Quest has nEVR {v}, the latest"))
                     }
-                    Outcome::NotOffered => setup::quest_not_offered(self),
                 }
             }
             JobResult::Failed(None) => {

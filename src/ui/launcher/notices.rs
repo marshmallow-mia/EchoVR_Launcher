@@ -174,11 +174,38 @@ impl Notices {
         self.queue.clear();
         self.counted = None;
     }
+
+    /// Takes back the notices whose button does `action` (what they offered is done).
+    pub fn withdraw(&mut self, action: &Action) {
+        let shown = self
+            .queue
+            .front()
+            .map(|n| n.action.as_ref().map(|(_, a)| a));
+        if shown == Some(Some(action)) {
+            self.counted = None;
+        }
+        self.queue
+            .retain(|n| n.action.as_ref().map(|(_, a)| a) != Some(action));
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_done_offer_is_taken_back() {
+        let mut q = Notices::default();
+        q.push(
+            Notice::info("nEVR 6.16.4 is out for your Quest").with("Update", Action::UpdateQuest),
+        );
+        q.push(Notice::info("b"));
+        q.withdraw(&Action::UpdateQuest);
+        assert_eq!(
+            q.current().map(|(n, more)| (n.text.as_str(), more)),
+            Some(("b", 0))
+        );
+    }
 
     #[test]
     fn time_runs_only_while_the_window_is_in_front() {

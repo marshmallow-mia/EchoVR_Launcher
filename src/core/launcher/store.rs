@@ -196,6 +196,8 @@ pub struct LauncherState {
     pub quest_ip: Option<String>,
     /// Reach the Quest's ADB over the network too (turned on over USB once).
     pub quest_adb_network: bool,
+    /// nEVR's channel the Quest installs from (Play's picker): stable unless picked.
+    pub quest_channel: super::quest::QuestChannel,
     /// The EchoVRCE account echovrce.com inside the launcher was signed in for.
     pub vrce_site_account: Option<String>,
     /// Linux: the Steam shortcut that starts Echo VR (its appid), once set up.
@@ -383,6 +385,7 @@ impl Default for LauncherState {
             show_launch_options: false,
             quest_ip: None,
             quest_adb_network: false,
+            quest_channel: Default::default(),
             vrce_site_account: None,
             linux_appid: None,
             steam_flatpak_override: false,
@@ -441,6 +444,7 @@ impl LauncherState {
         let s = Self::load_upgraded(&state_file());
         crate::core::pc_update::set_channel(s.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(s.launcher_channel);
+        super::quest::set_channel(s.quest_channel);
         super::dev_code::set_all(&s.dev_codes);
         super::prefs::set(&s);
         s
@@ -510,6 +514,7 @@ impl LauncherState {
     pub fn save(&self) -> Result<()> {
         crate::core::pc_update::set_channel(self.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(self.launcher_channel);
+        super::quest::set_channel(self.quest_channel);
         super::dev_code::set_all(&self.dev_codes);
         super::prefs::set(self);
         self.save_to(&state_file())
@@ -930,6 +935,29 @@ mod tests {
             .unwrap()
             .contains(r#""launcher_channel": "beta""#));
         assert_eq!(LauncherState::load_from(&f).launcher_channel, Channel::Beta);
+    }
+
+    #[test]
+    fn keeps_the_quest_channel() {
+        use super::super::quest::QuestChannel;
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        assert_eq!(
+            LauncherState::load_from(&f).quest_channel,
+            QuestChannel::Stable
+        );
+        std::fs::write(&f, r#"{"schema":3}"#).unwrap();
+        let mut s = LauncherState::load_from(&f);
+        assert_eq!(s.quest_channel, QuestChannel::Stable);
+        s.quest_channel = QuestChannel::Beta;
+        s.save_to(&f).unwrap();
+        assert!(std::fs::read_to_string(&f)
+            .unwrap()
+            .contains(r#""quest_channel": "beta""#));
+        assert_eq!(
+            LauncherState::load_from(&f).quest_channel,
+            QuestChannel::Beta
+        );
     }
 
     fn catalog() -> Catalog {

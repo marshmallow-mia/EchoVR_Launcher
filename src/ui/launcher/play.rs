@@ -66,6 +66,8 @@ const CARDS: [Dr; 2] = [
 const PICKER: Dr = Dr::new(878.0, 265.0, 260.0, 43.0);
 const PICKER_CAPTION_Y: f32 = 248.4;
 pub(super) const VERSION_MENU: &str = "version-picker";
+/// The Quest side's picker in the same place: nEVR's channel.
+pub(super) const QUEST_CHANNEL_MENU: &str = "quest-channel-picker";
 const PICKER_RADIUS: f32 = 8.0;
 /// The menu reaches from the picker to the column's right edge.
 const PICKER_MENU_W: f32 = INFO_RIGHT - PICKER.x;
@@ -110,8 +112,9 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         None => buttons(d, kit, ctx, a),
     }
     hero::switch(kit, "side", 0.0, &mut d.platform);
-    if d.platform == Platform::Pc {
-        version_picker(d, kit);
+    match d.platform {
+        Platform::Pc => version_picker(d, kit),
+        Platform::Quest => quest_channel_picker(d, kit, ctx),
     }
     news(d, kit);
     panel::at_right(kit, |k| now::show(d, k, ctx));
@@ -1025,71 +1028,9 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
         (true, "The version PLAY starts: click to switch".to_string())
     };
 
-    let caption = kit.spaced_galley(
-        "VERSION",
-        design::din(PICKER_CAPTION_SIZE),
-        CAPTION,
-        dz(0.9),
-        false,
-    );
-    let (cx, cy) = (dz(PICKER.x), dz(PICKER_CAPTION_Y) - caption_top(kit));
-    kit.put(cx, cy, caption);
-
-    // Narrower with the page (the rail unfolded): to the column's edge.
-    let r = kit.drect(PICKER.wider((INFO_RIGHT + kit.dx() - PICKER.x - PICKER.w).min(0.0)));
-    let (resp, t, pressed) = kit.hot(VERSION_MENU, r, enabled, &tip);
-    let open = enabled && kit.menu_open(VERSION_MENU);
-    let fill = if pressed {
-        Color32::from_gray(12)
-    } else {
-        style::mix(design::DARK, Color32::from_gray(40), t)
-    };
-    let radius = dz(PICKER_RADIUS);
-    kit.ui.painter().rect_filled(r, radius, fill);
-    if open {
-        kit.ui.painter().rect_stroke(
-            r,
-            radius,
-            egui::Stroke::new(dz(2.0), design::BLUE),
-            egui::StrokeKind::Inside,
-        );
-    }
-    let fg = if enabled {
-        design::TEXT
-    } else {
-        Color32::from_gray(150)
-    };
-    let chevron = dz(15.0);
-    let pad = dz(18.0);
-    // A long name in a narrow picker gets smaller before it is cut.
-    let room = r.width() - 2.0 * pad - chevron - dz(10.0);
-    let name = current_name.to_uppercase();
-    let size = [17.0, 15.5, 14.0]
-        .into_iter()
-        .find(|&s| {
-            kit.spaced_galley(&name, design::din(s), fg, dz(1.2), false)
-                .size()
-                .x
-                <= room
-        })
-        .unwrap_or(14.0);
-    let g = kit.spaced_fit(&name, design::din(size), fg, dz(1.2), false, room);
-    let gy = r.center().y - g.size().y / 2.0;
-    kit.ui.painter().galley(pos2(r.min.x + pad, gy), g, fg);
-    style::icon_at(
-        kit.ui.painter(),
-        Icon::ChevronDown,
-        pos2(r.max.x - pad - chevron, r.center().y - chevron / 2.0),
-        chevron,
-        fg,
-    );
-    if resp.clicked {
-        kit.toggle_menu(VERSION_MENU);
+    let Some(r) = picker_face(kit, VERSION_MENU, &current_name, enabled, &tip) else {
         return;
-    }
-    if !enabled {
-        return;
-    }
+    };
 
     let checked = |id: &str| current_id.as_deref() == Some(id);
     let mut items: Vec<MenuItem> = installed
@@ -1164,6 +1105,144 @@ fn version_picker(d: &mut Dashboard, kit: &mut Kit) {
         }
         Some(_) => d.page = Page::Install,
         None => {}
+    }
+}
+
+/// The picker's face right of the switch: the VERSION caption, the box with `name` and a
+/// chevron, its menu `key` opened and closed by a click. The box, when its menu may show.
+fn picker_face(
+    kit: &mut Kit,
+    key: &str,
+    name: &str,
+    enabled: bool,
+    tip: &str,
+) -> Option<egui::Rect> {
+    let caption = kit.spaced_galley(
+        "VERSION",
+        design::din(PICKER_CAPTION_SIZE),
+        CAPTION,
+        dz(0.9),
+        false,
+    );
+    let (cx, cy) = (dz(PICKER.x), dz(PICKER_CAPTION_Y) - caption_top(kit));
+    kit.put(cx, cy, caption);
+
+    // Narrower with the page (the rail unfolded): to the column's edge.
+    let r = kit.drect(PICKER.wider((INFO_RIGHT + kit.dx() - PICKER.x - PICKER.w).min(0.0)));
+    let (resp, t, pressed) = kit.hot(key, r, enabled, tip);
+    let open = enabled && kit.menu_open(key);
+    let fill = if pressed {
+        Color32::from_gray(12)
+    } else {
+        style::mix(design::DARK, Color32::from_gray(40), t)
+    };
+    let radius = dz(PICKER_RADIUS);
+    kit.ui.painter().rect_filled(r, radius, fill);
+    if open {
+        kit.ui.painter().rect_stroke(
+            r,
+            radius,
+            egui::Stroke::new(dz(2.0), design::BLUE),
+            egui::StrokeKind::Inside,
+        );
+    }
+    let fg = if enabled {
+        design::TEXT
+    } else {
+        Color32::from_gray(150)
+    };
+    let chevron = dz(15.0);
+    let pad = dz(18.0);
+    // A long name in a narrow picker gets smaller before it is cut.
+    let room = r.width() - 2.0 * pad - chevron - dz(10.0);
+    let name = name.to_uppercase();
+    let size = [17.0, 15.5, 14.0]
+        .into_iter()
+        .find(|&s| {
+            kit.spaced_galley(&name, design::din(s), fg, dz(1.2), false)
+                .size()
+                .x
+                <= room
+        })
+        .unwrap_or(14.0);
+    let g = kit.spaced_fit(&name, design::din(size), fg, dz(1.2), false, room);
+    let gy = r.center().y - g.size().y / 2.0;
+    kit.ui.painter().galley(pos2(r.min.x + pad, gy), g, fg);
+    style::icon_at(
+        kit.ui.painter(),
+        Icon::ChevronDown,
+        pos2(r.max.x - pad - chevron, r.center().y - chevron / 2.0),
+        chevron,
+        fg,
+    );
+    if resp.clicked {
+        kit.toggle_menu(key);
+        return None;
+    }
+    enabled.then_some(r)
+}
+
+/// VERSION on the Quest side: nEVR's channel the Quest installs from, the way Crafter's
+/// Quest installer offers it: Stable (the default) or Beta, each with the release it has
+/// now. A pick is kept and the headset's offer read again, so the orange button says when
+/// it brings another release.
+fn quest_channel_picker(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
+    use crate::core::launcher::quest::QuestChannel;
+    let current = d.state.quest_channel;
+    let busy = d.quest_conn.checking || d.quest_busy || d.busy_with(&[Res::Quest]).is_some();
+    let (enabled, tip) = if d.quest_game().is_running() {
+        (false, "Close Echo VR on the headset to switch channels")
+    } else if busy {
+        (false, "Wait until the Quest is done")
+    } else {
+        (
+            true,
+            "nEVR's channel your Quest installs from: click to switch",
+        )
+    };
+    let Some(r) = picker_face(kit, QUEST_CHANNEL_MENU, current.label(), enabled, tip) else {
+        return;
+    };
+    let info = d.quest_info.as_ref();
+    let items: Vec<MenuItem> = QuestChannel::ALL
+        .iter()
+        .map(|&c| {
+            // None: nEVR's manifest wasn't read (no headset yet).
+            let release = info.filter(|i| !i.channels.is_empty()).map(|i| {
+                i.channels
+                    .iter()
+                    .find(|(x, _)| *x == c)
+                    .and_then(|(_, v)| v.clone())
+            });
+            let on_it = |v: &str| info.is_some_and(|i| i.installed && i.nevr.as_deref() == Some(v));
+            let (detail, detail_color) = match release {
+                Some(Some(v)) if on_it(&v) => (format!("nEVR {v}  ·  Installed"), design::QUEST_ON),
+                Some(Some(v)) => (format!("nEVR {v}"), design::GREY),
+                Some(None) => ("No Quest release now".into(), design::GREY),
+                None => (String::new(), design::GREY),
+            };
+            MenuItem::Pick {
+                label: c.label().into(),
+                detail,
+                detail_color,
+                checked: c == current,
+                tip: c.note().into(),
+            }
+        })
+        .collect();
+    let w = r.width().max(dz(PICKER_MENU_W));
+    let anchor = egui::Rect::from_min_size(r.min, egui::vec2(w, r.height()));
+    if let Some(&c) = kit
+        .menu_at(QUEST_CHANNEL_MENU, anchor, &items)
+        .and_then(|i| QuestChannel::ALL.get(i))
+    {
+        if c != current {
+            d.state.quest_channel = c;
+            d.save();
+            if d.quest_conn.status == Some(Status::Ready) {
+                d.check_quest(ctx, false);
+            }
+        }
     }
 }
 

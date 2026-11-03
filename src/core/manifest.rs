@@ -27,9 +27,9 @@
 //!   # nEVR linux:   beta
 //! ```
 //!
-//! The Quest's update (`quest/updates-nevr/`, and its channels' overlays) has only a line
-//! of its own, `# nEVR quest: <version|channel|none>`: the nEVR release whose APK goes onto
-//! the headset ([`crate::core::nevr_release::quest_release`]).
+//! Launchers before 0.13.11 read a Quest line too, `# nEVR quest: <version|channel|none>`
+//! (`quest/updates-nevr/`); the Quest follows nEVR's channels on its own now
+//! ([`crate::core::nevr_release::quest_offer`]).
 //!
 //! Manifest paths end up in local filesystem paths, so entry paths are validated strictly
 //! here.

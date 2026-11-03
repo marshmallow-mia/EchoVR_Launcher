@@ -275,16 +275,36 @@ pub struct GameData {
     pub contents: Vec<Member>,
 }
 
-/// Steps 1 to 8 up to the APK: the Quest release `which` names, a version or one of nEVR's
-/// channels (the release it has now).
-pub fn quest_release(which: &str, cancel: &AtomicBool) -> Result<QuestRelease, Refused> {
+/// nEVR's channels a Quest can follow, in the order the launcher offers them.
+pub const QUEST_CHANNELS: [&str; 2] = ["stable", "beta"];
+
+/// What nEVR's signed manifest offers a Quest: every one of [`QUEST_CHANNELS`] with the
+/// release it has now (`None` when it has none with a Quest APK the launcher can check),
+/// and the release of the channel the player follows, or why there is none.
+#[derive(Debug)]
+pub struct QuestOffer {
+    pub channels: Vec<(String, Option<String>)>,
+    pub release: Result<QuestRelease, Refused>,
+}
+
+/// Steps 1 to 8 up to the APK for nEVR's channel `channel`, the way Crafter's Quest
+/// installer does it: the channel's release straight from nEVR's manifest, no update of
+/// ours in between. An `Err` is the manifest itself refused.
+pub fn quest_offer(channel: &str, cancel: &AtomicBool) -> Result<QuestOffer, Refused> {
     let (m, base) = checked(cancel)?;
-    let version = if channel_ok(which) {
-        channel_in(&m, which)?
-    } else {
-        which.to_string()
-    };
-    quest_in(&m, &version, &base)
+    Ok(quest_offer_in(&m, channel, &base))
+}
+
+/// Pure: [`quest_offer`] in the checked manifest `m`.
+fn quest_offer_in(m: &Value, channel: &str, base: &str) -> QuestOffer {
+    let release_of = |name: &str| channel_in(m, name).and_then(|v| quest_in(m, &v, base));
+    QuestOffer {
+        channels: QUEST_CHANNELS
+            .iter()
+            .map(|c| (c.to_string(), release_of(c).ok().map(|r| r.version)))
+            .collect(),
+        release: release_of(channel),
+    }
 }
 
 /// The release whose Quest APK has `version_code`, from the manifest checked last (no
@@ -1228,6 +1248,51 @@ mod tests {
         assert!(q.data.sha256.starts_with("fc2eedeacc50"));
         assert!(q.data.url.ends_with("/data/echovr-data-fc2eedeacc50.zip"));
         assert_eq!((q.data.size, q.data.contents.len()), (937395400, 4));
+    }
+
+    #[test]
+    fn a_quest_follows_the_channel_it_picks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (m, s) = fixture("quest");
+        accept(&m, &s, &PINNED, dir.path(), BEFORE).unwrap();
+        let mut m = stored(dir.path()).unwrap();
+        // The fixture has beta only: stable offers nothing, and says which it has.
+        let o = quest_offer_in(&m, "beta", BASE);
+        assert_eq!(o.release.unwrap().version, "6.2.0");
+        assert_eq!(
+            o.channels,
+            [
+                ("stable".into(), None),
+                ("beta".into(), Some("6.2.0".into()))
+            ]
+        );
+        let e = quest_offer_in(&m, "stable", BASE).release.unwrap_err();
+        assert_eq!(e.step, 7);
+        assert!(
+            e.detail.contains("no channel stable (it has beta)"),
+            "{e:?}"
+        );
+        // Stable on the older release: each channel its own.
+        m["channels"]["stable"] = "6.1.0".into();
+        let o = quest_offer_in(&m, "stable", BASE);
+        assert_eq!(
+            o.channels,
+            [
+                ("stable".into(), Some("6.1.0".into())),
+                ("beta".into(), Some("6.2.0".into()))
+            ]
+        );
+        let r = o.release.unwrap();
+        assert_eq!(r.version, "6.1.0");
+        assert!(r.apk.url.ends_with("/v6.1.0/nevr-runtime-v6.1.0-quest.apk"));
+        // A channel on a release without a Quest APK isn't offered.
+        m["releases"]["6.1.0"]["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|a| a["kind"] != "quest-apk");
+        let o = quest_offer_in(&m, "stable", BASE);
+        assert_eq!(o.channels[0], ("stable".into(), None));
+        assert_eq!(o.release.unwrap_err().step, 8);
     }
 
     #[test]

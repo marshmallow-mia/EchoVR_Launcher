@@ -340,32 +340,79 @@ pub fn parse_stat(output: &str) -> HashMap<&str, u64> {
         .collect()
 }
 
-/// Copies the game data zip at `zip` onto the headset and unpacks it into [`DATA_DIR`].
-/// The player's settings in the game's media folder. Android deletes that folder with the
-/// app, so replacing another build keeps a copy and puts it back.
-const SETTINGS: &str = "RAD";
+/// What of the game's media `files/` isn't the player's: the game data (downloaded again when
+/// it is missing) and crash dumps. Everything else there (`RAD/` with the settings and sign-in,
+/// `_local/`, `afk/` and whatever a later build keeps) is copied off before an uninstall, which
+/// takes the whole media folder with the app, and put back after.
+const NOT_SETTINGS: [&str; 2] = ["_data", "_temp"];
 
-/// Copies the player's settings off the headset into `dir`: the copy, or `None` when there
-/// are none (or they couldn't be copied).
-pub fn save_settings(dir: &Path) -> Option<PathBuf> {
-    let _ = std::fs::remove_dir_all(dir);
-    std::fs::create_dir_all(dir).ok()?;
-    let remote = format!("{DATA_DIR}/{SETTINGS}");
-    if !shell_ok(&format!("test -d {remote}")) {
-        return None;
-    }
-    let saved = dir.join(SETTINGS);
-    (adb::pull(&remote, dir) && saved.is_dir()).then_some(saved)
+/// Pure: the entries of `ls -1A` of the media `files/` that [`save_settings`] keeps.
+pub fn settings_entries(listing: &str) -> Vec<&str> {
+    listing
+        .lines()
+        .map(str::trim)
+        .filter(|n| {
+            !n.is_empty()
+                && !n.contains('/')
+                && *n != "."
+                && *n != ".."
+                && !NOT_SETTINGS.contains(n)
+        })
+        .collect()
 }
 
-/// Puts settings [`save_settings`] kept back on the headset.
+/// Copies the player's settings off the headset into `dir` (one entry per folder or file of
+/// the media `files/`, [`settings_entries`]), replacing an older copy only once the new one is
+/// complete. `Ok(None)`: there is nothing to keep. An `Err` means there was something and it
+/// couldn't be copied: nothing may be uninstalled then.
+pub fn save_settings(dir: &Path) -> Result<Option<PathBuf>> {
+    let ls = adb::shell(&format!("if [ -d {DATA_DIR} ]; then ls -1A {DATA_DIR}; fi"));
+    let refuse = |why: &str| -> anyhow::Error {
+        tracing::warn!("Quest: settings not saved: {why}");
+        UiError::new(
+            "Settings not saved",
+            "The launcher couldn't copy your Echo VR settings off the Quest, so nothing was uninstalled. Check the connection and try again.",
+        )
+        .into()
+    };
+    if !ls.success() {
+        return Err(refuse(last_line(&ls.output)));
+    }
+    let names = settings_entries(&ls.output);
+    if names.is_empty() {
+        return Ok(None);
+    }
+    let new = dir.with_extension("new");
+    let _ = std::fs::remove_dir_all(&new);
+    std::fs::create_dir_all(&new).map_err(|e| refuse(&e.to_string()))?;
+    let remotes: Vec<String> = names.iter().map(|n| format!("{DATA_DIR}/{n}")).collect();
+    let remotes: Vec<&str> = remotes.iter().map(String::as_str).collect();
+    if !adb::pull_many(&remotes, &new) || names.iter().any(|n| !new.join(n).exists()) {
+        let _ = std::fs::remove_dir_all(&new);
+        return Err(refuse("adb pull failed"));
+    }
+    let _ = std::fs::remove_dir_all(dir);
+    std::fs::rename(&new, dir).map_err(|e| refuse(&e.to_string()))?;
+    Ok(Some(dir.to_path_buf()))
+}
+
+/// Puts settings [`save_settings`] kept back on the headset: every entry of `saved` into the
+/// media `files/`.
 pub fn restore_settings(saved: &Path) -> bool {
     shell_ok(&format!("mkdir -p {DATA_DIR}"));
-    let ok = adb::exec(&["push", &saved.to_string_lossy(), &format!("{DATA_DIR}/")]).success();
-    shell_ok(&format!("chmod -R 777 {DATA_DIR}/{SETTINGS}"));
+    let Ok(entries) = std::fs::read_dir(saved) else {
+        return false;
+    };
+    let mut ok = true;
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        ok &= adb::exec(&["push", &e.path().to_string_lossy(), &format!("{DATA_DIR}/")]).success();
+        shell_ok(&format!("chmod -R 777 '{DATA_DIR}/{name}'"));
+    }
     ok
 }
 
+/// Copies the game data zip at `zip` onto the headset and unpacks it into [`DATA_DIR`].
 pub fn push_data(zip: &Path, status: &mut dyn FnMut(String)) -> Result<()> {
     let name = zip
         .file_name()
@@ -438,6 +485,16 @@ pub fn grant_permissions() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_settings_are_everything_but_game_data_and_crashes() {
+        assert_eq!(
+            settings_entries("RAD\n_data\n_local\n_temp\nafk\n\n.\n..\nx/y\n.hidden\n"),
+            vec!["RAD", "_local", "afk", ".hidden"]
+        );
+        assert!(settings_entries("").is_empty());
+        assert!(settings_entries("_data\n_temp\n").is_empty());
+    }
 
     #[test]
     fn install_result_detection() {

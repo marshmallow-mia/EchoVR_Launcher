@@ -196,9 +196,9 @@ pub fn shots() -> Vec<Shot> {
             SnapVariant::QuestHeadsets,
         ),
         (
-            "install_quest_not_offered",
-            Page::Install,
-            SnapVariant::QuestNotOffered,
+            "play_quest_channel_menu",
+            Page::Play,
+            SnapVariant::QuestChannelMenu,
         ),
         (
             "install_quest_fresh",

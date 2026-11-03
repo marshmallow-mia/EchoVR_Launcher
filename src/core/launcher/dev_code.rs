@@ -6,9 +6,9 @@
 //! entries too, over published ones with the same id (the first code's over a later one's).
 //! A code is 26 base32 characters (130 bits), never logged. A folder may also have a
 //! `channel.json` (`{"name": "…"}`, root's) naming the channel, and with `"overlay": "<name>"`
-//! a test channel for Echo VR's updates: `updates-nevr-<name>/` (PC) and
-//! `quest/updates-nevr-<name>/` (Quest) on top of the followed channel's, so a code can
-//! bring an nEVR release (and its files) before the channels have it. With
+//! a test channel for Echo VR's PC update: `updates-nevr-<name>/` on top of the followed
+//! channel's, so a code can bring an nEVR release (and its files) before the channels have
+//! it. (The Quest follows nEVR's channels, Play's picker.) With
 //! `"echoxr": "<version>"` (our folders only, not a gated one) EchoXR starts use that test
 //! build, if the launcher pins it ([`crate::core::echoxr::build`]), and with
 //! `"echoxr_verbose": "max"` its `runtime.log` logs everything (`EchoXR.exe --verbose max`, a

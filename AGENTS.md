@@ -120,7 +120,6 @@ These only work in debug builds:
 | `ECHOVR_FAKE_LAUNCHER_UPDATE=0.99.0` | Pretends that launcher version is out. A version like `0.99.0-beta.1` is seen on beta and alpha. |
 | `ECHOVR_UPDATE_MIRROR=<url>` | Fetches the launcher's own update from a test server. |
 | `ECHOVR_UPDATE_MANIFEST=<url>` | Reads that PC update manifest instead of the live one. |
-| `ECHOVR_QUEST_UPDATES=<url>` | Reads the Quest's update folders from a test server. |
 | `ECHOVR_CDN=<url>` or `off` | Uses another CDN, or none. |
 | `ECHOVR_NEVR_RELEASES=<url>` | Uses a mirror of nEVR's signed releases. Only releases signed with the pinned keys still pass. |
 | `ECHOVR_LOG_UPLOAD_URL=<url>` | Sends Upload logs to a local service. |
