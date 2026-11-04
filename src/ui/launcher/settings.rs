@@ -1083,22 +1083,40 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         d.save();
     }
     y += h + dz(6.0);
-    let (flipped, h) = option(
-        kit,
-        "animated-background",
-        &mut d.state.animated_background,
-        "Animated background",
-        "",
-        x,
-        y,
-        w,
-        true,
-        "The moving picture behind the pages. Off, a still picture stands there and the launcher uses almost no CPU or GPU.",
-    );
-    if flipped {
-        d.save();
+    if d.software_render {
+        // No graphics card draws the window: the video would take several cores.
+        let mut off = false;
+        let (_, h) = option(
+            kit,
+            "animated-background",
+            &mut off,
+            "Animated background (needs a GPU)",
+            "",
+            x,
+            y,
+            w,
+            false,
+            "Stays still: this PC draws the launcher without its graphics card (check the graphics driver), and the moving picture would keep several CPU cores busy",
+        );
+        y += h + dz(6.0);
+    } else {
+        let (flipped, h) = option(
+            kit,
+            "animated-background",
+            &mut d.state.animated_background,
+            "Animated background",
+            "",
+            x,
+            y,
+            w,
+            true,
+            "The moving picture behind the pages. Off, a still picture stands there and the launcher uses almost no CPU or GPU.",
+        );
+        if flipped {
+            d.save();
+        }
+        y += h + dz(6.0);
     }
-    y += h + dz(6.0);
     // spark:// links (Windows, Linux).
     if let Some(handler) = d
         .link_handler

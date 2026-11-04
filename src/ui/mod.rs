@@ -62,6 +62,8 @@ struct App {
     uwu_hooked: bool,
     /// `ECHOVR_FRAME_LOG=1`: frames per second and their causes, in the log.
     frame_log: frame_log::FrameLog,
+    /// The renderer was looked at (`Dashboard::software_render`).
+    renderer_known: bool,
     /// Tests: scale images in the background, as the real app does, despite `demo`.
     #[cfg(test)]
     async_assets: bool,
@@ -90,6 +92,17 @@ impl eframe::App for App {
             self.uwu_hooked = true;
         }
         self.frame_log.frame(&ctx);
+        if !self.renderer_known {
+            self.renderer_known = true;
+            let info = frame.wgpu_render_state().map(|r| r.adapter.get_info());
+            if let Some(i) = info.filter(|i| i.device_type == eframe::wgpu::DeviceType::Cpu) {
+                tracing::info!(
+                    "drawn without a graphics card ({}): the background stays still",
+                    i.name
+                );
+                self.menu.software_render = true;
+            }
+        }
         fit_zoom(&ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));

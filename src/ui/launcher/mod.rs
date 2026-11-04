@@ -972,6 +972,9 @@ pub struct Dashboard {
     last_input: f64,
     /// The thread that looks for handed-over links and the tray's "open" runs.
     handover_watched: bool,
+    /// The window is drawn without a graphics card (llvmpipe, WARP): the background stays
+    /// still, whatever "Animated background" says (the video alone took cores there).
+    pub software_render: bool,
 }
 
 /// How long the background video plays on without input before it holds its frame (and
@@ -3619,7 +3622,8 @@ impl Dashboard {
     }
 
     /// The designer's video, or its first frame (snapshots, Settings' "Animated
-    /// background" off, and until the first frame is decoded), covering the window. It
+    /// background" off, a software renderer, and until the first frame is decoded),
+    /// covering the window. It
     /// holds while the window isn't focused, while Echo VR runs, and after [`IDLE_HOLD`]
     /// without input: then nothing asks for frames, and the launcher draws none.
     fn background(&mut self, kit: &mut Kit, ctx: &egui::Context) {
@@ -3633,7 +3637,7 @@ impl Dashboard {
         if input {
             self.last_input = now;
         }
-        if !self.state.animated_background {
+        if !self.state.animated_background || self.software_render {
             // Its thread ends and its texture goes.
             self.video = Default::default();
         } else if !self.demo {
