@@ -6,6 +6,7 @@ mod controls;
 mod cuts;
 mod design;
 mod dialogs;
+mod frame_log;
 #[cfg(test)]
 mod headless;
 mod kit;
@@ -59,6 +60,8 @@ struct App {
     snapshots: Option<snapshot::Snapshotter>,
     /// The uwu easter egg's colours are hooked into the context (once).
     uwu_hooked: bool,
+    /// `ECHOVR_FRAME_LOG=1`: frames per second and their causes, in the log.
+    frame_log: frame_log::FrameLog,
     /// Tests: scale images in the background, as the real app does, despite `demo`.
     #[cfg(test)]
     async_assets: bool,
@@ -86,6 +89,7 @@ impl eframe::App for App {
             ctx.add_plugin(uwu::UwuPlugin);
             self.uwu_hooked = true;
         }
+        self.frame_log.frame(&ctx);
         fit_zoom(&ctx);
         if ctx.input(|i| i.key_pressed(egui::Key::F11)) {
             let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));

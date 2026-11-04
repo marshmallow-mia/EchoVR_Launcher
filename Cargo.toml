@@ -19,6 +19,8 @@ crc32fast = "1.5"
 flate2 = "1"
 tar = "0.4"
 bytes = "1"
+# The background video's frames, written straight into egui's pixels.
+bytemuck = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 arboard = { version = "3", default-features = false }
 dirs = "7.0.0"

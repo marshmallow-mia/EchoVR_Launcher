@@ -255,6 +255,8 @@ pub struct LauncherState {
     pub vrce_zoom: u16,
     /// Updates found are announced on the desktop too.
     pub desktop_notifications: bool,
+    /// The designer's video plays behind the pages (else its first frame stands still).
+    pub animated_background: bool,
     /// The tray keeps looking for updates while the launcher is closed.
     pub tray: bool,
     /// The tray starts at login.
@@ -403,6 +405,7 @@ impl Default for LauncherState {
             plugin_grants: Default::default(),
             vrce_zoom: 100,
             desktop_notifications: true,
+            animated_background: true,
             tray: true,
             tray_at_login: false,
             relay_account: None,
@@ -762,6 +765,24 @@ mod tests {
         // A 0.12 launcher that saved over it kept only `dev_code`, maybe another one.
         std::fs::write(&f, format!(r#"{{"schema":3,"dev_code":"{B}"}}"#)).unwrap();
         assert_eq!(LauncherState::load_from(&f).dev_codes, vec![B.to_string()]);
+    }
+
+    #[test]
+    fn animated_background_stays_on_for_older_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        // A launcher.json from before the switch: the video plays, as it did.
+        std::fs::write(&f, r#"{"desktop_notifications": false}"#).unwrap();
+        let s = LauncherState::load_from(&f);
+        assert!(s.animated_background);
+        assert!(!s.desktop_notifications);
+        // Turned off, it stays off.
+        let off = LauncherState {
+            animated_background: false,
+            ..s
+        };
+        off.save_to(&f).unwrap();
+        assert!(!LauncherState::load_from(&f).animated_background);
     }
 
     #[test]

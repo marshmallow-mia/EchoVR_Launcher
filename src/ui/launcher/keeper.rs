@@ -3,6 +3,7 @@
 //! the choices made here (see `core::launcher::ready`).
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::core::launcher::ready;
@@ -28,6 +29,44 @@ pub(super) struct Keeper {
     worker: Worker<Done>,
     busy: bool,
     at: Option<Instant>,
+    /// What the watching thread compares with (`None` until it runs).
+    watch: Option<Arc<Mutex<Watch>>>,
+}
+
+/// The watching thread's copy: the choices as they are now, and the fingerprints made
+/// ready (or waiting for a retry).
+#[derive(Default)]
+struct Watch {
+    state: Option<LauncherState>,
+    applied: HashMap<String, u64>,
+    waiting: HashMap<String, (u64, Instant)>,
+}
+
+/// Every [`CHECK_EVERY`] off the window's thread: a frame only when a version's fingerprint
+/// is new (so an idle window draws nothing for this). The frame's tick does the rest.
+fn watch(ctx: egui::Context, shared: Arc<Mutex<Watch>>) {
+    let _ = std::thread::Builder::new()
+        .name("ready-keeper".into())
+        .spawn(move || loop {
+            std::thread::sleep(CHECK_EVERY);
+            let (state, applied, waiting) = {
+                let w = shared.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(state) = w.state.clone() else {
+                    continue;
+                };
+                (state, w.applied.clone(), w.waiting.clone())
+            };
+            let due = state.versions.iter().filter(|v| v.present()).any(|v| {
+                let fingerprint = ready::fingerprint(&state, v);
+                applied.get(&v.id) != Some(&fingerprint)
+                    && !waiting.get(&v.id).is_some_and(|(failed, until)| {
+                        *failed == fingerprint && Instant::now() < *until
+                    })
+            });
+            if due {
+                ctx.request_repaint();
+            }
+        });
 }
 
 impl Keeper {
@@ -36,6 +75,30 @@ impl Keeper {
         self.applied
             .insert(v.id.clone(), ready::fingerprint(state, v));
         self.retry.remove(&v.id);
+    }
+
+    /// Keeps the watching thread's copy current (and starts it).
+    fn share(&mut self, ctx: &egui::Context, state: &LauncherState) {
+        let shared = self.watch.get_or_insert_with(|| {
+            let shared = Arc::new(Mutex::new(Watch::default()));
+            watch(ctx.clone(), shared.clone());
+            shared
+        });
+        let mut w = shared.lock().unwrap_or_else(|e| e.into_inner());
+        if w.state.as_ref() != Some(state) {
+            w.state = Some(state.clone());
+        }
+        if w.applied != self.applied {
+            w.applied = self.applied.clone();
+        }
+        let waiting: HashMap<String, (u64, Instant)> = self
+            .retry
+            .iter()
+            .map(|(id, (f, until, _))| (id.clone(), (*f, *until)))
+            .collect();
+        if w.waiting != waiting {
+            w.waiting = waiting;
+        }
     }
 
     /// Every frame: makes one version ready when its fingerprint changed since, on the
@@ -68,11 +131,11 @@ impl Keeper {
                 }
             }
         }
+        self.share(ctx, state);
         if self.busy || self.at.is_some_and(|t| t.elapsed() < CHECK_EVERY) {
             return;
         }
         self.at = Some(Instant::now());
-        ctx.request_repaint_after(CHECK_EVERY);
         for v in state.versions.iter().filter(|v| v.present()) {
             if skip(v) {
                 continue;

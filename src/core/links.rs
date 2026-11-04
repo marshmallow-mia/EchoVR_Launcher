@@ -233,6 +233,11 @@ pub fn hand_over(link: &str) -> bool {
     another_launcher_running()
 }
 
+/// Whether a link waits to be taken (looked at without taking it).
+pub fn incoming_waiting() -> bool {
+    incoming_file().exists()
+}
+
 /// A link left for the launcher, taken (so it is acted on once).
 pub fn take_incoming() -> Option<String> {
     take(&incoming_file())

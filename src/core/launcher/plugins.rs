@@ -176,7 +176,7 @@ fn own_files(folder: &Path, page: &PluginPage) -> BTreeMap<String, String> {
             if path.is_dir() {
                 todo.push((path, format!("{rel}/")));
             } else if !theirs.contains(&rel) {
-                if let Ok(sha) = download::sha256_file(&path) {
+                if let Some(sha) = sha256_kept(&path) {
                     out.insert(rel, sha);
                 }
             }
@@ -185,9 +185,37 @@ fn own_files(folder: &Path, page: &PluginPage) -> BTreeMap<String, String> {
     out
 }
 
+/// The sha256 of the file at `path`, hashed again only when its size, modification or
+/// (Unix) change time is new: the keeper looks at the plugins every few seconds.
+fn sha256_kept(path: &Path) -> Option<String> {
+    use std::sync::{Mutex, OnceLock};
+    type Stamp = (u64, Option<std::time::SystemTime>, i64);
+    static KEPT: OnceLock<Mutex<std::collections::HashMap<PathBuf, (Stamp, String)>>> =
+        OnceLock::new();
+    let meta = std::fs::metadata(path).ok()?;
+    #[cfg(unix)]
+    let changed = std::os::unix::fs::MetadataExt::ctime_nsec(&meta)
+        + std::os::unix::fs::MetadataExt::ctime(&meta) * 1_000_000_000;
+    #[cfg(not(unix))]
+    let changed = 0;
+    let stamp: Stamp = (meta.len(), meta.modified().ok(), changed);
+    let kept = KEPT.get_or_init(Default::default);
+    if let Some((s, sha)) = kept.lock().ok()?.get(path) {
+        if *s == stamp {
+            return Some(sha.clone());
+        }
+    }
+    let sha = download::sha256_file(path).ok()?;
+    if let Ok(mut k) = kept.lock() {
+        k.insert(path.to_path_buf(), (stamp, sha.clone()));
+    }
+    Some(sha)
+}
+
 /// How far plugin `page` in `folder` can be trusted; notes its files when the launcher
-/// installed it but didn't note them yet.
-fn trust_of(folder: &Path, page: &PluginPage) -> (Trust, Option<String>) {
+/// installed it but didn't note them yet. `log`: says so when they changed (the plugins
+/// page does; the keeper's look every few seconds doesn't).
+fn trust_of(folder: &Path, page: &PluginPage, log: bool) -> (Trust, Option<String>) {
     let Some(mut note) = note_in(folder) else {
         return (Trust::Hand, None);
     };
@@ -202,10 +230,12 @@ fn trust_of(folder: &Path, page: &PluginPage) -> (Trust, Option<String>) {
     let trust = if note.files == now {
         Trust::Catalog
     } else {
-        tracing::warn!(
-            "plugin {}: its files changed since the launcher installed them",
-            folder.display()
-        );
+        if log {
+            tracing::warn!(
+                "plugin {}: its files changed since the launcher installed them",
+                folder.display()
+            );
+        }
         Trust::Changed
     };
     (trust, Some(note.version))
@@ -261,7 +291,7 @@ fn read_logging(folder: &Path, log: bool) -> Option<Installed> {
         }
         return None;
     }
-    let (trust, from_catalog) = trust_of(folder, &page);
+    let (trust, from_catalog) = trust_of(folder, &page, log);
     let first_party = signed_by(folder, &page, &crate::core::signing::PLUGIN_KEYS);
     if log && !first_party && folder.join(SIGNATURE).exists() {
         tracing::warn!(

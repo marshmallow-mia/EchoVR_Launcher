@@ -40,7 +40,7 @@ wasmtime::component::bindgen!({
 pub use echovr::launcher::types::{self, Node, Tone};
 
 /// How often wasmtime's clock ticks: a call's time budget is counted in these.
-const TICK: Duration = Duration::from_millis(10);
+const TICK: Duration = Duration::from_millis(50);
 /// `init` may take this long, every other call [`CALL_BUDGET`].
 const INIT_BUDGET: Duration = Duration::from_secs(2);
 const CALL_BUDGET: Duration = Duration::from_millis(500);

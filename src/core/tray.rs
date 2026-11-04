@@ -204,6 +204,11 @@ pub fn take_window_forward() -> bool {
     take("show-window")
 }
 
+/// Whether the tray asked the window to come forward (looked at without taking it).
+pub fn window_forward_waiting() -> bool {
+    request_file("show-window").exists()
+}
+
 /// The window asks the tray to look for updates now (Settings changed, an update done).
 pub fn ask_check() {
     leave("tray-check");

@@ -249,8 +249,15 @@ impl Vrce {
                 self.check(ctx, tokens);
             }
         }
-        if let Some(t) = self.next_check {
-            ctx.request_repaint_after(t.saturating_duration_since(Instant::now()));
+        // A frame when the next check comes due. Not once it's due: then a check runs
+        // (or a sign-in, or the session is loading), and its answer brings the next frame
+        // itself; asking for one now would draw frames back to back until then.
+        if let Some(wait) = self
+            .next_check
+            .map(|t| t.saturating_duration_since(Instant::now()))
+            .filter(|w| !w.is_zero())
+        {
+            ctx.request_repaint_after(wait);
         }
         notice
     }

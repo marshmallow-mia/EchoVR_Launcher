@@ -967,7 +967,16 @@ pub struct Dashboard {
     /// Pages drawn at least once, seen or not (`prewarm`).
     warmed: std::collections::HashSet<Page>,
     video: super::video::BackgroundVideo,
+    /// When the player last moved the mouse, typed, scrolled or clicked
+    /// (`egui::InputState::time`): the video holds after [`IDLE_HOLD`] without.
+    last_input: f64,
+    /// The thread that looks for handed-over links and the tray's "open" runs.
+    handover_watched: bool,
 }
+
+/// How long the background video plays on without input before it holds its frame (and
+/// the launcher stops drawing).
+const IDLE_HOLD: f64 = 30.0;
 
 impl Dashboard {
     fn save(&self) {
@@ -1073,19 +1082,28 @@ impl Dashboard {
 
     /// Once a second: a spark:// link this launcher was started with, or that one started
     /// by a click handed over, opens the "Join a lobby" card (the window coming to the
-    /// front).
+    /// front). A thread looks for them meanwhile and brings a frame only when one waits.
     fn take_link(&mut self, ctx: &egui::Context) {
         if self.demo {
             return;
         }
         let second = std::time::Duration::from_secs(1);
+        if cfg!(any(windows, target_os = "linux")) && !self.handover_watched {
+            self.handover_watched = true;
+            let ctx = ctx.clone();
+            let _ = std::thread::Builder::new()
+                .name("handover-watch".into())
+                .spawn(move || loop {
+                    std::thread::sleep(second);
+                    if links::incoming_waiting() || crate::core::tray::window_forward_waiting() {
+                        ctx.request_repaint();
+                    }
+                });
+        }
         if self.link_checked.is_some_and(|t| t.elapsed() < second) {
             return;
         }
         self.link_checked = Some(std::time::Instant::now());
-        if cfg!(any(windows, target_os = "linux")) {
-            ctx.request_repaint_after(second);
-        }
         // The tray's "Open Echo VR Launcher" while this one is open.
         if crate::core::tray::take_window_forward() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -3600,14 +3618,28 @@ impl Dashboard {
         }
     }
 
-    /// The designer's video, or its first frame (snapshots, and until the first frame is
-    /// decoded), covering the window. It holds while the window isn't focused and while
-    /// Echo VR runs.
+    /// The designer's video, or its first frame (snapshots, Settings' "Animated
+    /// background" off, and until the first frame is decoded), covering the window. It
+    /// holds while the window isn't focused, while Echo VR runs, and after [`IDLE_HOLD`]
+    /// without input: then nothing asks for frames, and the launcher draws none.
     fn background(&mut self, kit: &mut Kit, ctx: &egui::Context) {
         let window = kit.window();
-        if !self.demo {
+        let (now, input) = ctx.input(|i| {
+            (
+                i.time,
+                !i.events.is_empty() || i.pointer.is_moving() || i.pointer.any_down(),
+            )
+        });
+        if input {
+            self.last_input = now;
+        }
+        if !self.state.animated_background {
+            // Its thread ends and its texture goes.
+            self.video = Default::default();
+        } else if !self.demo {
             let focused = ctx.input(|i| i.viewport().focused) != Some(false);
-            let play = focused && !self.game().is_running();
+            let idle = now - self.last_input > IDLE_HOLD;
+            let play = focused && !idle && !self.game().is_running();
             if let Some(tex) = self.video.frame(ctx, play) {
                 // Part of the UI: the uwu easter egg tints it.
                 crate::ui::uwu::mark_tint(tex.id());

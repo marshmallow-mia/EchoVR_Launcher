@@ -13,6 +13,9 @@ const BYTES: &[u8] = include_bytes!("../../assets/video/background.h264");
 const FPS: f64 = 30.0;
 /// Decoded frames kept ready.
 const AHEAD: usize = 4;
+/// How early a frame may be shown: the wake-up asked for lands a little before it's due,
+/// and without this every frame of the video took two of the window's.
+const EARLY: f64 = 0.008;
 
 #[derive(Default)]
 pub struct BackgroundVideo {
@@ -32,13 +35,16 @@ impl BackgroundVideo {
         let frames = self.frames.get_or_insert_with(start);
         let now = ctx.input(|i| i.time);
         let dt = 1.0 / FPS;
-        if self.texture.is_none() || (play && now - self.shown_at >= dt) {
+        // Due, but the decoder hadn't one ready (it falls behind when the drawing takes the
+        // CPU, as with a software renderer): look again in half a frame, not right away.
+        let mut late = false;
+        if self.texture.is_none() || (play && now - self.shown_at >= dt - EARLY) {
             // Every frame that came due since the last one shown: more than one when the
             // screen refreshes slower than the video plays.
             let due = if self.texture.is_none() {
                 1
             } else {
-                (((now - self.shown_at) / dt).floor() as usize).clamp(1, AHEAD)
+                (((now - self.shown_at + EARLY) / dt).floor() as usize).clamp(1, AHEAD)
             };
             let mut latest = None;
             let mut taken = 0;
@@ -48,7 +54,10 @@ impl BackgroundVideo {
                         latest = Some(img);
                         taken += 1;
                     }
-                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Empty) => {
+                        late = taken == 0;
+                        break;
+                    }
                     Err(TryRecvError::Disconnected) => {
                         tracing::warn!("background video stopped");
                         self.frames = None;
@@ -71,8 +80,15 @@ impl BackgroundVideo {
             }
         }
         if play || self.texture.is_none() {
-            let wait = (self.shown_at + dt - now).clamp(0.005, dt);
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
+            let wait = if late {
+                dt / 2.0
+            } else {
+                (self.shown_at + dt - now).clamp(0.005, dt)
+            };
+            // egui wakes that much earlier than asked (it takes off the frame time it
+            // predicts): asked for as it is, every frame of the video took two or more.
+            let predicted = ctx.input(|i| i.predicted_dt) as f64;
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait + predicted));
         }
         self.texture.as_ref()
     }
@@ -94,15 +110,16 @@ fn start() -> Receiver<ColorImage> {
                     return;
                 }
             };
-            let mut rgba = Vec::new();
             for nal in openh264::nal_units(bytes) {
                 match decoder.decode(nal) {
                     Ok(Some(yuv)) => {
                         decoded += 1;
                         let (w, h) = yuv.dimensions();
-                        rgba.resize(w * h * 4, 0);
-                        yuv.write_rgba8(&mut rgba);
-                        let img = ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+                        // Straight into the texture's pixels: opaque, so premultiplied as
+                        // they are (no second pass over them).
+                        let mut pixels = vec![egui::Color32::BLACK; w * h];
+                        yuv.write_rgba8(bytemuck::cast_slice_mut(&mut pixels));
+                        let img = ColorImage::new([w, h], pixels);
                         if tx.send(img).is_err() {
                             return;
                         }
