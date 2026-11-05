@@ -644,19 +644,34 @@ impl PluginCatalog {
         Ok(c)
     }
 
-    /// `dev`'s entries over these: a published one with a dev entry's id gives way to it;
-    /// the dev entries come first.
+    /// `dev`'s entries over these: a published one with a dev entry's id gives way to it,
+    /// unless it is a newer version (a dev folder left behind would otherwise hold its
+    /// players on an old one, "up to date"); the dev entries come first.
     pub fn with_dev(mut self, dev: PluginCatalog) -> PluginCatalog {
-        self.plugins
-            .retain(|p| !dev.plugins.iter().any(|d| d.id == p.id));
-        let mut plugins = dev.plugins;
-        plugins.append(&mut self.plugins);
-        self.plugins = plugins;
+        let mut dev = dev.plugins;
+        dev.retain(|d| {
+            let newer = self
+                .plugins
+                .iter()
+                .find(|p| p.id == d.id && super::update_check::is_newer(&p.version, &d.version));
+            if let Some(p) = newer {
+                tracing::info!(
+                    "dev plugins catalogue: {} {} left out, {} is newer",
+                    d.id,
+                    d.version,
+                    p.version
+                );
+            }
+            newer.is_none()
+        });
+        self.plugins.retain(|p| !dev.iter().any(|d| d.id == p.id));
+        dev.append(&mut self.plugins);
+        self.plugins = dev;
         self
     }
 
     /// Several dev folders' entries over these, `devs` in their codes' order: for an id
-    /// several of them have, the first code's.
+    /// several of them have, the first code's (unless another one's is newer).
     pub fn with_devs(self, devs: Vec<PluginCatalog>) -> PluginCatalog {
         // The last code's go on first, so an earlier code's entry ends up over it.
         devs.into_iter().rev().fold(self, PluginCatalog::with_dev)
@@ -1056,6 +1071,45 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// A dev folder left behind with an older version than the published one (Server host
+    /// 0.1.0 in a dev folder over the catalogue's 1.1.1) doesn't hold its players on it.
+    #[test]
+    fn older_dev_entry_gives_way_to_a_newer_published_one() {
+        const CODE: &str = "abcdefghijklmnopqrstuvwxyz";
+        let sha = "b".repeat(64);
+        let entry = |id: &str, version: &str| {
+            format!(
+                r#"{{"id": "{id}", "name": "{id}", "version": "{version}",
+                  "url": "files/{id}-{version}.zip", "sha256": "{sha}"}}"#
+            )
+        };
+        let published = PluginCatalog::parse(&format!(
+            r#"{{"plugins": [{}, {}, {}]}}"#,
+            entry("server-host", "1.1.1"),
+            entry("controllers", "0.2.0"),
+            entry("event-lobbies", "0.2.0")
+        ))
+        .unwrap();
+        let dev = PluginCatalog::parse_dev(
+            &format!(
+                r#"{{"plugins": [{}, {}, {}]}}"#,
+                entry("server-host", "0.1.0"),
+                entry("controllers", "0.3.0-dev.1"),
+                entry("event-lobbies", "0.2.0")
+            ),
+            CODE,
+        )
+        .unwrap();
+        let both = published.with_dev(dev);
+        let got = |id: &str| both.entry(id).map(|e| (e.version.clone(), e.dev)).unwrap();
+        // Older than the published one: the published one stays.
+        assert_eq!(got("server-host"), ("1.1.1".into(), false));
+        // Newer, or the same version: the dev folder's, as before.
+        assert_eq!(got("controllers"), ("0.3.0-dev.1".into(), true));
+        assert_eq!(got("event-lobbies"), ("0.2.0".into(), true));
+        assert_eq!(both.plugins.len(), 3);
     }
     use crate::core::launcher::store::{GameServer, InstalledVersion, PackServer, RelayAccount};
 
