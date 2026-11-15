@@ -1375,7 +1375,9 @@ pub(super) fn snap_server_host(d: &mut Dashboard, v: Option<super::SnapVariant>)
             name: name.into(),
             state,
             since: t - 47 * 60,
-            updated: t + 3600,
+            // Written again for each shot, which takes seconds: fresh for its 45 s. (One
+            // from the future reads as old, as after the clock went back.)
+            updated: t,
             port: host::FIRST_PORT + i as u16,
             public_ip: "203.0.113.7".into(),
             runtime: "5.4.3+0.3caed2ef".into(),
