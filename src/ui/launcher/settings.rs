@@ -1110,22 +1110,25 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (x, w) = (dz(panel::X), dz(PANEL_W));
     let mut y = dz(panel::BODY_Y);
 
-    let (flipped, h) = tip_option(
-        kit,
-        "minimize",
-        &mut d.state.minimize_on_launch,
-        "Minimize when Echo VR starts",
-        "Keeps the launcher out of the way while you play.",
-        x,
-        y,
-        w,
-        true,
-        "",
-    );
-    if flipped {
-        d.save();
+    // Host-only mode: nobody plays on this PC, and the servers don't minimize it.
+    if !d.state.host_only {
+        let (flipped, h) = tip_option(
+            kit,
+            "minimize",
+            &mut d.state.minimize_on_launch,
+            "Minimize when Echo VR starts",
+            "Keeps the launcher out of the way while you play.",
+            x,
+            y,
+            w,
+            true,
+            "",
+        );
+        if flipped {
+            d.save();
+        }
+        y += h + dz(6.0);
     }
-    y += h + dz(6.0);
     if d.software_render {
         // No graphics card draws the window: the video would take several cores.
         let mut off = false;
