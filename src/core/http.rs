@@ -42,6 +42,16 @@ pub fn client() -> &'static Client {
     CLIENT.get_or_init(|| build(Duration::from_secs(20)))
 }
 
+/// For sending a large body (Upload logs). It has no read timeout: reqwest starts that
+/// timer when the request goes out and only winds it up again once the answer's headers
+/// are in, so with [`client`] a whole upload and the service's checks had to fit into
+/// [`STALL_TIMEOUT`] (a host's full bundle on a busy home line doesn't). The request sets
+/// its own total timeout instead.
+pub fn upload_client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| build_with(Duration::from_secs(20), None))
+}
+
 /// Where only some players may fetch from: dev channels and private mods behind the EchoVRCE
 /// sign-in (release.echovr.de's echo-access). Requests there carry the EchoVRCE session.
 pub const GATED: &str = "https://release.echovr.de/launcher/gated/";
@@ -121,16 +131,22 @@ pub fn client_for(url: &str) -> &'static Client {
 }
 
 fn build(connect_timeout: Duration) -> Client {
+    build_with(connect_timeout, Some(STALL_TIMEOUT))
+}
+
+/// A client that gives up after `read` without a byte (`None`: never by itself).
+pub(crate) fn build_with(connect_timeout: Duration, read: Option<Duration>) -> Client {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
-    Client::builder()
+    let mut b = Client::builder()
         .user_agent(USER_AGENT)
-        .connect_timeout(connect_timeout)
-        .read_timeout(STALL_TIMEOUT)
-        .build()
-        .expect("HTTP client")
+        .connect_timeout(connect_timeout);
+    if let Some(read) = read {
+        b = b.read_timeout(read);
+    }
+    b.build().expect("HTTP client")
 }
 
 /// Error for a transfer the user cancelled. Callers check for it with `is_cancelled`.

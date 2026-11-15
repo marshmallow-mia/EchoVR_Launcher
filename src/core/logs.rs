@@ -25,7 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 
 use super::launcher::nevr::{self, Place};
 use super::launcher::store::InstalledVersion;
@@ -1026,14 +1026,33 @@ pub struct Uploader {
     pub report: Option<(String, String)>,
 }
 
+/// How long sending the bundle and the service's checks may take together (its file type
+/// check takes a while). The service itself gives up after 600 s.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(630);
+
 /// Sends `bundle`; the reference the service gives it, or what went wrong in plain words.
 pub fn upload(bundle: Vec<u8>, who: &Uploader) -> Result<String> {
-    let url = upload_url();
+    upload_with(
+        super::http::upload_client(),
+        &upload_url(),
+        UPLOAD_TIMEOUT,
+        bundle,
+        who,
+    )
+}
+
+/// [`upload`] with `client` to `url`, given `timeout` for all of it.
+fn upload_with(
+    client: &reqwest::Client,
+    url: &str,
+    timeout: Duration,
+    bundle: Vec<u8>,
+    who: &Uploader,
+) -> Result<String> {
     let (status, body) = super::http::block_on(async {
-        let mut req = super::http::client()
-            .post(&url)
-            // Sending, then the service's checks (its file type check takes a while).
-            .timeout(Duration::from_secs(600))
+        let mut req = client
+            .post(url)
+            .timeout(timeout)
             .header("Content-Type", "text/plain; charset=utf-8")
             .header("Authorization", format!("Bearer {}", who.token));
         if let Some(oid) = &who.oid {
@@ -1046,11 +1065,13 @@ pub fn upload(bundle: Vec<u8>, who: &Uploader) -> Result<String> {
             let note: String = note.chars().take(500).collect();
             req = req.header("X-Report-Note", enc(&note));
         }
-        let resp = req
-            .body(bundle)
-            .send()
-            .await
-            .context("Couldn't reach the log upload service")?;
+        let resp = req.body(bundle).send().await.map_err(|e| {
+            if e.is_timeout() && !e.is_connect() {
+                anyhow!("The upload took too long. Your connection may be busy: try again, or stop some servers first.")
+            } else {
+                anyhow::Error::new(e).context("Couldn't reach the log upload service")
+            }
+        })?;
         let status = resp.status().as_u16();
         Ok::<_, anyhow::Error>((status, resp.text().await.unwrap_or_default()))
     })?;
@@ -1579,6 +1600,81 @@ mod tests {
         assert!(!t.contains("FILE plugin/old.log"));
         assert!(t.contains("left out plugin/old.log 600.0 KB: over the service's size limit"));
         assert!(t.contains("trimmed  plugin/new.log 399.9 KB of 600.0 KB (its newest part)"));
+    }
+
+    /// A service that takes the body, then `secs` for its checks, then answers with a
+    /// reference: its address.
+    fn slow_service(secs: u64) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/launcher/logs", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut c in listener.incoming().flatten() {
+                let (mut got, mut buf) = (Vec::new(), [0u8; 16384]);
+                let mut want = None;
+                loop {
+                    let n = c.read(&mut buf).unwrap_or(0);
+                    got.extend_from_slice(&buf[..n]);
+                    if want.is_none() {
+                        if let Some(at) = got.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let head = String::from_utf8_lossy(&got[..at]).to_lowercase();
+                            let len: usize = head
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .and_then(|v| v.trim().parse().ok())
+                                .unwrap_or(0);
+                            want = Some(at + 4 + len);
+                        }
+                    }
+                    if n == 0 || want.is_some_and(|w| got.len() >= w) {
+                        break;
+                    }
+                }
+                std::thread::sleep(Duration::from_secs(secs));
+                let body = r#"{"code":"ABCDEFGH"}"#;
+                let _ = write!(
+                    c,
+                    "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        url
+    }
+
+    /// An upload that takes longer than the other requests' read timeout still goes
+    /// through: that timer runs from the request's start, over the whole upload and the
+    /// service's checks (a host's 66 MB bundle was cut off after 60 s, 0.13.14).
+    #[test]
+    fn a_slow_upload_is_not_cut_off() {
+        let who = Uploader {
+            token: "a-token-of-twenty-characters".into(),
+            oid: None,
+            report: None,
+        };
+        let url = slow_service(3);
+        let body = || vec![b'a'; 256 << 10];
+        let long = Duration::from_secs(60);
+        // What the launcher's other requests use, with 1 s for its 60 s: cut off.
+        let stalls = crate::core::http::build_with(long, Some(Duration::from_secs(1)));
+        let err = upload_with(&stalls, &url, long, body(), &who)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("The upload took too long"), "{err}");
+        // The upload's own client waits for the answer.
+        let code = upload_with(crate::core::http::upload_client(), &url, long, body(), &who);
+        assert_eq!(code.unwrap(), "ABCDEFGH");
+        // Its total timeout still ends an upload that never finishes, in the same words.
+        let err = upload_with(
+            crate::core::http::upload_client(),
+            &url,
+            Duration::from_secs(1),
+            body(),
+            &who,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.starts_with("The upload took too long"), "{err}");
     }
 
     /// Bundled and sent to a local service:
