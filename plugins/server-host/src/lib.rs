@@ -1141,7 +1141,7 @@ fn background_card(ui: &mut Ui, s: &S) {
             "webhook",
             "Discord webhook (optional)",
             if webhook {
-                "A webhook is set: type a new one, or save it empty to remove it"
+                "A webhook is set: save it empty to remove it"
             } else {
                 "https://discord.com/api/webhooks/…"
             },
