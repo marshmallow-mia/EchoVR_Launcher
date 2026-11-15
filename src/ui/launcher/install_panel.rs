@@ -207,7 +207,8 @@ fn folder_line(d: &Dashboard, v: &InstalledVersion) -> (String, Color32) {
     }
 }
 
-/// PLAY and MANAGE from `x`, or the progress of a job on the version in their place.
+/// PLAY (USE in host-only mode) and MANAGE from `x`, or the progress of a job on the
+/// version in their place.
 fn actions(
     d: &mut Dashboard,
     k: &mut Kit,
@@ -222,10 +223,25 @@ fn actions(
         return;
     }
     let ok = files_ok(d, v);
-    let tip = if ok {
-        "Select this version and go to Play"
-    } else {
-        "The game files are missing"
+    // Host-only mode has no Play page: the selected live build is the one the servers run
+    // (unless Server host settings name another), so the button selects it there.
+    let host_only = d.state.host_only;
+    let chosen = d.state.selected.as_deref() == Some(v.id.as_str());
+    let live = v.publisher_lock.is_none();
+    let (label, enabled, tip) = match (ok, host_only) {
+        (false, _) => ("Play", false, "The game files are missing"),
+        (true, false) => ("Play", true, "Select this version and go to Play"),
+        (true, true) if !live => ("Use", false, "Event builds can't host servers"),
+        (true, true) if chosen => (
+            "Use",
+            false,
+            "The servers run this build, unless Server host settings name another",
+        ),
+        (true, true) => (
+            "Use",
+            true,
+            "Run the servers on this build, unless Server host settings name another",
+        ),
     };
     let play_w = dz(PLAY_W);
     if k.button(
@@ -236,13 +252,18 @@ fn actions(
         h,
         Tone::Go,
         None,
-        "Play",
-        ok,
+        label,
+        enabled,
         tip,
     )
     .clicked
     {
-        play_version(d, &v.id);
+        if host_only {
+            d.state.selected = Some(v.id.clone());
+            d.save();
+        } else {
+            play_version(d, &v.id);
+        }
     }
     let mx = x + play_w + dz(ACTION_GAP);
     versions::manage_menu(d, k, ctx, v, mx, y, dz(MANAGE_W), h);
