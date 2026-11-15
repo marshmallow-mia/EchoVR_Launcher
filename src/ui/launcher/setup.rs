@@ -761,29 +761,21 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
     );
 }
 
-/// Prepares Echo VR on Linux for the game servers alone (the Server host's Doctor): GE-Proton,
-/// EchoXR and the Wine prefix the servers run through. Unlike [`linux_setup`] it doesn't add
-/// Echo VR to Steam, so Steam stays open; PLAY still does that when it is first used.
+/// Gets GE-Proton for the game servers alone (the Server host's Doctor). The servers run
+/// through it without Steam, each in a Wine prefix of its own, so unlike [`linux_setup`]
+/// this needs no Steam and leaves EchoXR and the game's prefix to PLAY.
 pub(super) fn linux_server_setup(d: &mut Dashboard, ctx: &egui::Context) {
-    use crate::core::linux::{echoxr, steam};
-    let Some(root) = steam::root() else {
-        d.dialogs.error(
-            "Steam not found",
-            "The servers run through Steam's Proton on Linux: install Steam, sign in once, and try again.",
-            Default::default(),
-        );
-        return;
-    };
+    use crate::core::linux::echoxr;
     d.start_job(
         ctx,
         JobKind::Revive,
         LINUX_JOB,
         vec![Res::Vr],
-        "Preparing Echo VR for the servers",
+        "Getting GE-Proton for the servers",
         "Preparing...",
-        move |cancel, on| match echoxr::setup(&root, cancel, on) {
+        move |cancel, on| match echoxr::fetch_proton(cancel, on) {
             Ok(()) => JobResult::ServersLinuxReady,
-            Err(e) => job_err(e, "Couldn't set up GE-Proton for the servers"),
+            Err(e) => job_err(e, "Couldn't get GE-Proton for the servers"),
         },
     );
 }

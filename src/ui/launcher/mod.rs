@@ -201,8 +201,7 @@ enum JobResult {
     },
     /// SteamVR through EchoXR is set up (Windows).
     EchoXrReady,
-    /// Linux: GE-Proton and its prefix are set up for the game servers, without Steam's
-    /// shortcut.
+    /// Linux: GE-Proton is there for the game servers (they need no Steam).
     ServersLinuxReady,
     /// Windows: Echo VR is in Steam's library (its appid) or out of it.
     WindowsSteam(Option<u32>),
@@ -3492,7 +3491,6 @@ impl Dashboard {
                 }
             }
             JobResult::ServersLinuxReady => {
-                self.linux_set_up = true;
                 self.notify("GE-Proton is set up: the servers can start");
             }
             JobResult::WindowsSteam(appid) => {

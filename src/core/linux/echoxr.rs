@@ -320,12 +320,11 @@ fn proton(steam_root: &Path, verb: &str, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Sets everything up (each step skipped when already done): GE-Proton, EchoXR, Meta's
-/// Platform SDK loader, and the prefix.
-pub fn setup(steam_root: &Path, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
+/// GE-Proton into the launcher's folder, unless it is there: all the game servers need
+/// on Linux (they run through it with no Steam, each in a prefix of its own). Steam, EchoXR
+/// and the game's prefix are PLAY's ([`setup`]).
+pub fn fetch_proton(cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
     std::fs::create_dir_all(root())?;
-    let _ = std::fs::remove_file(root().join(MARKER));
-
     if !proton_dir().join("proton").is_file() {
         on(Step::Status(format!("Downloading {PROTON}...")));
         let archive = echoxr::fetch_pinned(
@@ -342,12 +341,36 @@ pub fn setup(steam_root: &Path, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -
             .with_context(|| format!("unpack {PROTON}"))?;
         let _ = std::fs::remove_file(&archive);
     }
+    Ok(())
+}
+
+/// Sets everything up (each step skipped when already done): GE-Proton, EchoXR, Meta's
+/// Platform SDK loader, and the prefix.
+pub fn setup(steam_root: &Path, cancel: &AtomicBool, on: &mut dyn FnMut(Step)) -> Result<()> {
+    std::fs::create_dir_all(root())?;
+    let _ = std::fs::remove_file(root().join(MARKER));
+
+    fetch_proton(cancel, on)?;
     if !proton_dir()
         .join("files/lib/wine/x86_64-windows/wineopenxr.dll")
         .is_file()
     {
         bail!("{PROTON} has no OpenXR bridge (wineopenxr), which EchoXR needs");
     }
+
+    on(Step::Status(format!("Downloading {PROTON}...")));
+    let archive = echoxr::fetch_pinned(
+        PROTON_URL,
+        &format!("{PROTON}.tar.gz"),
+        PROTON_SHA256,
+        cancel,
+        on,
+    )?;
+    on(Step::Status(format!("Unpacking {PROTON}...")));
+    let gz = flate2::read::GzDecoder::new(std::fs::File::open(&archive)?);
+    tar::Archive::new(gz)
+        .unpack(root())
+        .with_context(|| format!("unpack {PROTON}"))?;
 
     echoxr::fetch(cancel, on)?;
 
