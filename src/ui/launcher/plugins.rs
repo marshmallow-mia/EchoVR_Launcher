@@ -3542,8 +3542,8 @@ fn host_only_wants_server_host(d: &mut Dashboard, ctx: &egui::Context) {
                     .is_some_and(|c| c.blocked_reason(&p.page.id, &p.page.version).is_some())
         });
         if is_off(d, SERVER_HOST) && !blocked {
+            // It says "Plugin turned on" itself.
             set_off(d, SERVER_HOST, false);
-            d.notify("Server host turned on for Host-only mode");
         }
         return;
     }
