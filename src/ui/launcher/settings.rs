@@ -328,6 +328,24 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
     y += start_points(d, kit, ctx, x, y, w, compact);
     kit.caption(x, y, "Extra arguments");
     y += dz(30.0);
+    let vd_oculus =
+        d.state.profile.runtime == Runtime::VirtualDesktop && !d.state.profile.through_echoxr();
+    let args_note = if vd_oculus {
+        "Not in Virtual Desktop's Oculus mode: VD starts Echo VR without them."
+    } else {
+        "Added to every start as typed; quotes group words. Desktop shortcuts get them too."
+    };
+    // Two servers or more below (the live build's, the classic lobbies', a content
+    // pack's): the card is full, and this note goes into the field's tooltip too.
+    let packs = pack_list(d);
+    let servers = usize::from(d.state.game_server.is_some())
+        + usize::from(d.state.has_event_builds())
+        + packs.len();
+    let args_tip = if servers >= 2 {
+        format!("Passed to echovr.exe after the options above. {args_note}")
+    } else {
+        "Passed to echovr.exe after the options above".to_string()
+    };
     changed |= kit.field(
         "opt-args",
         &mut d.state.profile.extra_args,
@@ -337,24 +355,12 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
         BTN_H,
         "e.g. -mp -http",
         false,
-        "Passed to echovr.exe after the options above",
+        &args_tip,
     );
-    y += BTN_H + dz(12.0);
-    let vd_oculus =
-        d.state.profile.runtime == Runtime::VirtualDesktop && !d.state.profile.through_echoxr();
-    y += kit.caps_text(
-        x,
-        y,
-        w,
-        if vd_oculus {
-            "Not in Virtual Desktop's Oculus mode: VD starts Echo VR without them."
-        } else {
-            "Added to every start as typed; quotes group words. Desktop shortcuts get them too."
-        },
-        14.0,
-        design::GREY,
-        0.0,
-    );
+    y += BTN_H;
+    if servers < 2 {
+        y += dz(12.0) + kit.caps_text(x, y + dz(12.0), w, args_note, 14.0, design::GREY, 0.0);
+    }
     if changed {
         d.save();
     }
@@ -366,14 +372,19 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
     if d.state.has_event_builds() {
         y = classic_lobbies(d, kit, x, y + dz(26.0), w);
     }
-    // Content packs installed anywhere: each one's server (EchoCombat's).
+    for (id, name) in packs {
+        y = pack_server(d, kit, x, y + dz(22.0), w, &id, &name);
+    }
+}
+
+/// Content packs installed anywhere (their id and name), once each: each one's server
+/// (EchoCombat's) has a row in Launch options.
+fn pack_list(d: &mut Dashboard) -> Vec<(String, String)> {
     let mut packs: Vec<(String, String)> =
         d.packs().into_iter().map(|(_, p)| (p.id, p.name)).collect();
     packs.sort();
     packs.dedup_by(|a, b| a.0 == b.0);
-    for (id, name) in packs {
-        y = pack_server(d, kit, x, y + dz(22.0), w, &id, &name);
-    }
+    packs
 }
 
 /// Where Echo VR also starts from, through the launcher (`--play`): Steam's library on
@@ -607,7 +618,7 @@ fn classic_lobbies(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> 
     }
     let note = match &d.state.relay_account {
         Some(a) => format!("You play there as {}.", a.name),
-        None => "An event build asks for your account there when you first play it.".into(),
+        None => "An event build asks for your account there the first time.".into(),
     };
     let ny = fy + BTN_H + dz(12.0);
     ny + kit.caps_text(x, ny, w, &note, 14.0, design::GREY, 0.0)
