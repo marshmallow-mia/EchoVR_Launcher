@@ -159,8 +159,8 @@ fn glibc_at_least(version: &str, major: u32, minor: u32) -> bool {
 }
 
 /// Linux: what the launcher's GE-Proton needs from the system: glibc 2.38 or newer (its
-/// Wine won't load on older ones, such as Debian 12), and the Vulkan loader (its start
-/// script loads it even for a server).
+/// Wine won't load on older ones, such as Debian 12), 32-bit glibc (its Wine's preloader),
+/// and the Vulkan loader (its start script loads it even for a server).
 #[cfg(target_os = "linux")]
 fn linux_checks() -> Vec<Check> {
     let mut out = Vec::new();
@@ -175,6 +175,7 @@ fn linux_checks() -> Vec<Check> {
             Fix::None,
         ));
     }
+    out.extend(loader32_check(std::path::Path::new(LOADER32).exists()));
     let name = std::ffi::CString::new("libvulkan.so.1").unwrap_or_default();
     let h = unsafe { libc::dlopen(name.as_ptr(), libc::RTLD_LAZY) };
     if h.is_null() {
@@ -188,6 +189,25 @@ fn linux_checks() -> Vec<Check> {
         unsafe { libc::dlclose(h) };
     }
     out
+}
+
+/// The 32-bit programs' loader, where every Linux has it once it runs them.
+#[cfg(target_os = "linux")]
+const LOADER32: &str = "/lib/ld-linux.so.2";
+
+/// Pure: GE-Proton's Wine starts each program through its 32-bit preloader, so without
+/// 32-bit glibc (as on a server system with no Steam) every server ends at once with
+/// "/lib/ld-linux.so.2: could not open" and starts again.
+#[cfg(target_os = "linux")]
+fn loader32_check(there: bool) -> Option<Check> {
+    (!there).then(|| {
+        check(
+            "32-bit",
+            Level::Bad,
+            "32-bit glibc is missing: GE-Proton's Wine won't start without it. Install it (libc6-i386 on Debian and Ubuntu, glibc.i686 on Fedora, lib32-glibc on Arch).",
+            Fix::None,
+        )
+    })
 }
 
 fn account_check(c: &Config, by_code: bool) -> Check {
@@ -398,6 +418,15 @@ mod tests {
         assert!(glibc_at_least("2.41", 2, 38));
         assert!(!glibc_at_least("2.36", 2, 38));
         assert!(glibc_at_least("3.0", 2, 38));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tells_missing_32_bit_glibc() {
+        assert_eq!(loader32_check(true), None);
+        let c = loader32_check(false).unwrap();
+        assert_eq!((c.level, c.fix), (Level::Bad, Fix::None));
+        assert!(c.text.contains("libc6-i386"));
     }
 
     #[test]
