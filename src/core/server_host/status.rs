@@ -256,6 +256,28 @@ impl Tail {
         }
     }
 
+    /// Goes on from the file's last `back` bytes when more than that came since the last
+    /// read: a console that wasn't on screen for a while starts again from there, as a
+    /// new one does, instead of reading all it missed. Whether it skipped.
+    pub fn skip_to_last(&mut self, back: u64) -> bool {
+        let Ok(mut f) = std::fs::File::open(&self.path) else {
+            return false;
+        };
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let mut head = vec![0u8; 64.min(len as usize)];
+        let _ = f.read_exact(&mut head);
+        let same =
+            self.head.is_empty() || head.starts_with(&self.head[..self.head.len().min(head.len())]);
+        let from = if same && len >= self.pos { self.pos } else { 0 };
+        if len - from <= back {
+            return false;
+        }
+        self.pos = len - back;
+        self.head = head;
+        self.partial.clear();
+        true
+    }
+
     /// Follows the file `path` from its start.
     pub fn file(path: &Path) -> Tail {
         Tail {
@@ -341,5 +363,16 @@ mod tests {
         c.host("two\r\n");
         assert_eq!(t.read(), vec!["[host] two"]);
         assert!(t.read().is_empty());
+
+        // Little came meanwhile: nothing skipped.
+        c.line("three");
+        assert!(!t.skip_to_last(1 << 20));
+        assert_eq!(t.read(), vec!["three"]);
+        // More than `back` came: only the last bytes are read.
+        for i in 0..100 {
+            c.line(&format!("line {i:03}"));
+        }
+        assert!(t.skip_to_last(9));
+        assert_eq!(t.read(), vec!["line 099"]);
     }
 }

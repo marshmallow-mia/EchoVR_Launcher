@@ -84,11 +84,13 @@ struct LogStream {
 
 /// How long after its last frame a console still counts as looked at.
 const LOG_WATCHED: Duration = Duration::from_millis(1500);
+/// How much of its log a console shows when it opens, or comes back on screen.
+const LOG_BACK: u64 = 2 * 1024 * 1024;
 
 impl LogStream {
     fn new(dir: &std::path::Path) -> LogStream {
         LogStream {
-            tail: status::Tail::new(dir, 2 * 1024 * 1024),
+            tail: status::Tail::new(dir, LOG_BACK),
             lines: VecDeque::new(),
             scroll: 0.0,
             follow: true,
@@ -236,6 +238,13 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
                 if l.read_at
                     .is_none_or(|t| t.elapsed() >= Duration::from_millis(500))
                 {
+                    // Back on screen after a while: from the log's last 2 MB, as when it
+                    // opened, rather than all it missed (4 MB a frame on this thread).
+                    let away = l.read_at.is_some_and(|t| t.elapsed() > 2 * LOG_WATCHED);
+                    if away && l.tail.skip_to_last(LOG_BACK) {
+                        l.lines.clear();
+                        l.changes += 1;
+                    }
                     l.read_at = Some(std::time::Instant::now());
                     let new = l.tail.read();
                     if !new.is_empty() {
