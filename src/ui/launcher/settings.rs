@@ -1170,7 +1170,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         y,
         w,
         true,
-        "For a PC that only runs game servers. The launcher shows the Server host, Install, Plugins and Settings, and stops what it does in the background for playing: watching for Echo VR and the Quest, lobbies, friends, news and the moving background.",
+        "For a PC that only runs game servers. The launcher shows the Server host, Install, Mods, Plugins and Settings, and stops what it does in the background for playing: watching for Echo VR and the Quest, lobbies, friends, news and the moving background.",
     );
     if flipped {
         d.save();

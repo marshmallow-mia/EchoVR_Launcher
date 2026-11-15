@@ -1088,13 +1088,14 @@ impl Dashboard {
         self.refresh_catalog(ctx);
     }
 
-    /// Whether `page` is there: all of them, but in host-only mode only Install (the
-    /// servers run the Echo VR installed here), the plugins' tabs, Plugins and Settings.
+    /// Whether `page` is there: all of them, but in host-only mode only Install and Mods
+    /// (the servers run the Echo VR installed here, with the mods chosen there), the
+    /// plugins' tabs, Plugins and Settings.
     fn page_there(&self, page: Page) -> bool {
         !self.state.host_only
             || matches!(
                 page,
-                Page::Install | Page::Plugins | Page::Plugin(_) | Page::Settings
+                Page::Install | Page::Mods | Page::Plugins | Page::Plugin(_) | Page::Settings
             )
     }
 
@@ -3993,7 +3994,7 @@ impl Dashboard {
                 true,
             ),
         ];
-        // Host-only mode: the plugins' tabs, Plugins and Settings alone.
+        // Host-only mode: Install, Mods, the plugins' tabs, Plugins and Settings alone.
         items.retain(|r| self.page_there(r.page));
         for (k, &i) in pinned.iter().enumerate() {
             let cy = tab_y(k);
@@ -5072,11 +5073,13 @@ fn rail_layout(tabs: usize, dy: f32, host_only: bool) -> RailLayout {
     let first_divider = y + gap(3);
     let community = [first_divider + gap(4), first_divider + gap(4) + RAIL_PITCH];
     let second_divider = community[1] + gap(5);
-    // Host-only mode has Install alone above the plugins' tabs: it stands where Play
-    // does, a divider and the tabs under it.
+    // Host-only mode has Install and Mods above the plugins' tabs: Install stands where
+    // Play does, Mods under it, then a divider and the tabs.
     let (first_divider, second_divider) = if host_only {
         game[1] = PLAY;
-        (PLAY + NATURAL[3], PLAY + NATURAL[3])
+        game[2] = PLAY + NATURAL[1];
+        let divider = game[2] + NATURAL[3];
+        (divider, divider)
     } else {
         (first_divider, second_divider)
     };
@@ -5173,11 +5176,12 @@ mod tests {
     #[test]
     fn host_only_rail_starts_with_the_plugin_tabs() {
         let l = super::rail_layout(2, 0.0, true);
-        // Install where Play stands, a divider, then the tabs.
+        // Install where Play stands, Mods under it, a divider, then the tabs.
         assert_eq!(l.game[1], 150.0);
-        assert_eq!(l.dividers[1], 200.0);
-        assert_eq!(l.first, 244.0);
-        assert_eq!(l.hub, 244.0 + 2.0 * super::RAIL_PITCH);
+        assert_eq!(l.game[2], 222.0);
+        assert_eq!(l.dividers[1], 272.0);
+        assert_eq!(l.first, 316.0);
+        assert_eq!(l.hub, 316.0 + 2.0 * super::RAIL_PITCH);
         assert_eq!(l.scroll_max, 0.0);
         assert!(l.hub < l.settings);
         // More tabs than fit scroll, as ever.

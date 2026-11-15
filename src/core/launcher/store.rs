@@ -258,7 +258,7 @@ pub struct LauncherState {
     /// The designer's video plays behind the pages (else its first frame stands still).
     pub animated_background: bool,
     /// Host-only mode, for a PC that only runs game servers: the window shows the plugins'
-    /// tabs (the Server host), Install, Plugins and Settings, and doesn't watch for a game or a
+    /// tabs (the Server host), Install, Mods, Plugins and Settings, and doesn't watch for a game or a
     /// Quest, keep versions ready, ask EchoVRCE for lobbies, friends and invites, fetch
     /// the news or play the background video.
     pub host_only: bool,
