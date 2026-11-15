@@ -55,6 +55,20 @@ pub const MAX_SERVERS: usize = 32;
 /// Snapshots: made-up servers in a folder of their own instead.
 static SNAP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// A server was to start but no Echo VR it can run is installed: the window asks whether
+/// to install it.
+static GAME_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Notes that a start found no Echo VR to run (see [`take_game_wanted`]).
+pub fn want_game() {
+    GAME_WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a start found no Echo VR to run since the last call.
+pub fn take_game_wanted() -> bool {
+    GAME_WANTED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Snapshots: the servers' files are in `dir` from now on (not the player's).
 pub fn snap_dir(dir: PathBuf) {
     let _ = SNAP_DIR.set(dir);

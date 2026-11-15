@@ -73,6 +73,15 @@ pub fn call(op: &str, args: &Value) -> Result<Value, String> {
             {
                 return Err("Sign the servers in first: they need an account of their own on EchoVRCE (Account). From nEVR 6.9.0 on they need none: update the game.".into());
             }
+            // No Echo VR to run: nothing starts, and the window asks whether to install it
+            // (the supervisor would only say "can't start" in each console).
+            if run
+                && c.version_in(&crate::core::launcher::store::LauncherState::load())
+                    .is_none()
+            {
+                host::want_game();
+                return Ok(Value::Null);
+            }
             for n in &names {
                 match c.server_mut(n) {
                     Some(sv) => sv.run = run,

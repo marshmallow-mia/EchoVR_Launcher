@@ -177,6 +177,10 @@ fn demo_net(url: &str) -> (u16, String) {
 /// Every running schema 2 plugin, each frame: what they sent, the answers to their
 /// questions, what they know of the launcher.
 pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
+    // A server was started without Echo VR on this PC.
+    if !d.demo && crate::core::server_host::take_game_wanted() {
+        super::plugin_services::ask_for_game(d);
+    }
     // The answer to a plugin's question.
     if let Some(a) = d.dialogs.take(ASK_KEY) {
         if let Some(v) = d.plugins.code.values_mut().find(|v| v.asked.is_some()) {

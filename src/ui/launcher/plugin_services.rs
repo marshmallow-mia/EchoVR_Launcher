@@ -30,6 +30,32 @@ pub(super) fn guild_note(guilds: &[String]) -> String {
     }
 }
 
+/// A server was to start, but Echo VR isn't installed (or its files are gone): asks whether
+/// to install it, with the Install card of the newest Echo VR. Without the list of
+/// versions (offline) it opens the Install page and says why.
+pub(super) fn ask_for_game(d: &mut Dashboard) {
+    let newest = d
+        .catalog
+        .as_ref()
+        .and_then(|c| c.pc().find(|e| e.publisher_lock.is_none()))
+        .cloned();
+    match newest {
+        Some(e) if d.overlay.is_none() => {
+            d.notify("The servers need Echo VR on this PC: install it, then start them");
+            setup::ask_install(d, e);
+        }
+        _ => {
+            d.page = Page::Install;
+            d.dialogs.message(
+                "",
+                "Echo VR isn't installed",
+                "The servers run Echo VR from this PC. Install it here on the Install page, then start the servers.",
+                crate::ui::dialogs::Icon::Warning,
+            );
+        }
+    }
+}
+
 /// Runs operation `op` for plugin `p` (its call's `ticket`).
 pub(super) fn start(
     d: &mut Dashboard,
@@ -156,7 +182,12 @@ pub(super) fn start(
         }
         "fix" => match s("kind").as_str() {
             "game" => {
-                d.page = Page::Play;
+                // Host-only mode has no Play page.
+                d.page = if d.state.host_only {
+                    Page::Install
+                } else {
+                    Page::Play
+                };
                 answer(Ok(Value::Null));
             }
             "firewall" => {

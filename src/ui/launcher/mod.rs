@@ -1083,10 +1083,14 @@ impl Dashboard {
         self.refresh_catalog(ctx);
     }
 
-    /// Whether `page` is there: all of them, but in host-only mode only the plugins' tabs,
-    /// Plugins and Settings.
+    /// Whether `page` is there: all of them, but in host-only mode only Install (the
+    /// servers run the Echo VR installed here), the plugins' tabs, Plugins and Settings.
     fn page_there(&self, page: Page) -> bool {
-        !self.state.host_only || matches!(page, Page::Plugins | Page::Plugin(_) | Page::Settings)
+        !self.state.host_only
+            || matches!(
+                page,
+                Page::Install | Page::Plugins | Page::Plugin(_) | Page::Settings
+            )
     }
 
     /// Host-only mode: a page that isn't there gives way to the Server host's tab (the
@@ -4164,8 +4168,14 @@ impl Dashboard {
             ctx.data_mut(|d| d.insert_temp(key, true));
         }
         // The dividers, as wide as the rail; unfolded, the group's name in the middle.
-        let dividers: &[f32] = if host_only { &[] } else { &lay.dividers };
-        for (cy, name) in dividers.iter().zip(["Community", "Plugins"]) {
+        // Host-only mode has the one above the plugins' tabs.
+        let dividers = &lay.dividers[usize::from(host_only)..];
+        let names_of = if host_only {
+            &["Plugins"][..]
+        } else {
+            &["Community", "Plugins"][..]
+        };
+        for (cy, name) in dividers.iter().zip(names_of.iter().copied()) {
             let line = |kit: &Kit, x0: f32, x1: f32| {
                 let r = kit.drect(Dr::new(0.0, cy - 1.0, 0.0, 2.0));
                 let r = egui::Rect::from_x_y_ranges(x0..=x1, r.y_range());
@@ -4488,7 +4498,9 @@ impl Dashboard {
             .painter()
             .rect_filled(kit.drect(bar), dz(6.0), design::BAR);
 
+        let host_only = self.state.host_only;
         let (qtext, qcolor) = match self.platform {
+            _ if host_only => ("Host-only mode", design::RIM_TOP),
             Platform::Pc => self.pc_chip(),
             Platform::Quest => self.quest_chip(),
         };
@@ -4506,6 +4518,12 @@ impl Dashboard {
             .painter()
             .galley(r.center() - g.size() / 2.0, g, design::TEXT);
         match self.platform {
+            _ if host_only => {
+                let tip = "This PC only runs game servers: the pages for playing are away. Click to turn it off in Settings.";
+                if kit.hot("host-only-chip", r, true, tip).0.clicked {
+                    self.page = Page::Settings;
+                }
+            }
             Platform::Pc => {
                 let to_install = !matches!(self.target(), Target::Installed(_));
                 let tip = if to_install {
@@ -4634,6 +4652,8 @@ impl Dashboard {
                 Some(n) => format!("{n}…"),
                 None => "Starting Echo VR…".into(),
             }
+        } else if host_only {
+            "This PC only runs game servers".to_string()
         } else {
             game.label()
         };
@@ -5032,12 +5052,15 @@ fn rail_layout(tabs: usize, dy: f32, host_only: bool) -> RailLayout {
     let first_divider = y + gap(3);
     let community = [first_divider + gap(4), first_divider + gap(4) + RAIL_PITCH];
     let second_divider = community[1] + gap(5);
-    // Host-only mode has no pages above the plugins' tabs: they start where Play does.
-    let first = if host_only {
-        PLAY
+    // Host-only mode has Install alone above the plugins' tabs: it stands where Play
+    // does, a divider and the tabs under it.
+    let (first_divider, second_divider) = if host_only {
+        game[1] = PLAY;
+        (PLAY + NATURAL[3], PLAY + NATURAL[3])
     } else {
-        second_divider + gap(6)
+        (first_divider, second_divider)
     };
+    let first = second_divider + if host_only { NATURAL[6] } else { gap(6) };
     // All of them, or as many as fit, scrolling.
     let hub = (first + tabs as f32 * RAIL_PITCH).min(settings - ABOVE_SETTINGS);
     let half = RAIL_PITCH / 2.0;
@@ -5130,8 +5153,11 @@ mod tests {
     #[test]
     fn host_only_rail_starts_with_the_plugin_tabs() {
         let l = super::rail_layout(2, 0.0, true);
-        assert_eq!(l.first, 150.0);
-        assert_eq!(l.hub, 150.0 + 2.0 * super::RAIL_PITCH);
+        // Install where Play stands, a divider, then the tabs.
+        assert_eq!(l.game[1], 150.0);
+        assert_eq!(l.dividers[1], 200.0);
+        assert_eq!(l.first, 244.0);
+        assert_eq!(l.hub, 244.0 + 2.0 * super::RAIL_PITCH);
         assert_eq!(l.scroll_max, 0.0);
         assert!(l.hub < l.settings);
         // More tabs than fit scroll, as ever.
