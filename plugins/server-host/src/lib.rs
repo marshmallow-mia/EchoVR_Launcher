@@ -919,7 +919,7 @@ fn settings_card(ui: &mut Ui, s: &S) {
     let g = |k: &str| f.get(k).cloned().unwrap_or_default();
     let info = parse(&host::launcher_info());
     let mut versions: Vec<(String, String)> =
-        vec![(String::new(), "The live build PLAY starts".into())];
+        vec![(String::new(), "The default live build".into())];
     for v in info["versions"].as_array().into_iter().flatten() {
         if v["live"] == true {
             versions.push((text_at(v, "id"), text_at(v, "name")));
