@@ -3539,6 +3539,10 @@ fn demo() -> PluginsUi {
         ),
     ] {
         if let Some(p) = core::read_description(text).0 {
+            // In place of the built-in catalogue's entry, as a newer catalogue or a dev
+            // folder's entry takes its place for players: two cards for one plugin share
+            // their buttons' ids.
+            catalog.plugins.retain(|e| e.id != p.id);
             catalog.plugins.push(core::PluginEntry {
                 id: p.id.clone(),
                 name: p.name.clone(),
