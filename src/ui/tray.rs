@@ -75,9 +75,12 @@ fn checker(status: impl Fn(String) + Send + 'static) {
                     alerts::notify_desktop(&alerts::not_yet_notified(&unseen));
                 }
                 status(status_text(&check.findings));
-                // Echo VR started from anywhere meanwhile: signed in, its folder ready.
-                game_sign_in::renew_stored(&state.versions);
-                keeper.keep(&state);
+                // Echo VR started from anywhere meanwhile: signed in, its folder ready. Not
+                // in host-only mode, as in the window: nobody plays on this PC.
+                if !state.host_only {
+                    game_sign_in::renew_stored(&state.versions);
+                    keeper.keep(&state);
+                }
                 last = Some(Instant::now());
             }
             std::thread::sleep(Duration::from_secs(2));

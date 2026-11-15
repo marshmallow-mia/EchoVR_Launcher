@@ -77,6 +77,14 @@ impl Keeper {
         self.retry.remove(&v.id);
     }
 
+    /// Host-only mode: the watching thread looks at nothing (it would ask for a frame every
+    /// 2 s for a change nothing applies), until [`Keeper::tick`] shares the choices again.
+    pub fn pause(&mut self) {
+        if let Some(shared) = &self.watch {
+            shared.lock().unwrap_or_else(|e| e.into_inner()).state = None;
+        }
+    }
+
     /// Keeps the watching thread's copy current (and starts it).
     fn share(&mut self, ctx: &egui::Context, state: &LauncherState) {
         let shared = self.watch.get_or_insert_with(|| {

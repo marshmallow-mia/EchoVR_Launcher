@@ -3122,6 +3122,9 @@ impl Dashboard {
         // Host-only mode: nothing here plays, so no game's sign-in is kept, no version
         // kept ready, and EchoVRCE isn't asked for lobbies, friends and invites.
         let playing = !self.state.host_only;
+        if !playing {
+            self.ready.pause();
+        }
         if playing {
             self.game_sign_in
                 .tick(ctx, session.clone(), &self.state.versions, self.demo);
