@@ -26,8 +26,10 @@ pub enum Fix {
     None,
     /// The Account part of the page.
     SignIn,
-    /// Play's PLAY or Settings (install, update, Linux setup).
+    /// Play's PLAY or Settings (install, update); Install in host-only mode.
     Game,
+    /// Linux: GE-Proton, which the servers run through, set up by the launcher.
+    Proton,
     /// Windows: the firewall rule for these ports (through the admin helper).
     Firewall(Vec<u16>),
     /// Windows: the servers' folder out of Windows Security's scans.
@@ -75,10 +77,7 @@ pub fn run(c: &Config, running: &[String]) -> Vec<Check> {
                 _ => out.push(check(
                     "Game",
                     Level::Bad,
-                    format!(
-                        "{} has no nEVR in its slot: update the game on Play.",
-                        v.name
-                    ),
+                    format!("{} has no nEVR in its slot: update it to nEVR.", v.name),
                     Fix::Game,
                 )),
             }
@@ -98,8 +97,8 @@ pub fn run(c: &Config, running: &[String]) -> Vec<Check> {
             out.push(check(
                 "Proton",
                 Level::Bad,
-                "Echo VR isn't set up on Linux yet: PLAY it once (it sets up GE-Proton).",
-                Fix::Game,
+                "GE-Proton isn't set up yet: the servers run through it.",
+                Fix::Proton,
             ));
         }
     }

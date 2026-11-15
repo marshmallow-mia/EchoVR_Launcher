@@ -184,7 +184,8 @@ pub(super) fn start(
         }
         "doctor" if d.demo => answer(Ok(super::plugin_ui::snap_checks())),
         "doctor" => {
-            std::thread::spawn(move || answer(Ok(doctor_json(&Config::load()))));
+            let host_only = d.state.host_only;
+            std::thread::spawn(move || answer(Ok(doctor_json(&Config::load(), host_only))));
         }
         "fix" => match s("kind").as_str() {
             "game" => {
@@ -194,6 +195,10 @@ pub(super) fn start(
                 } else {
                     Page::Play
                 };
+                answer(Ok(Value::Null));
+            }
+            "proton" => {
+                setup::linux_server_setup(d, ctx);
                 answer(Ok(Value::Null));
             }
             "firewall" => {
@@ -291,8 +296,9 @@ fn firewall_ports(c: &Config) -> Vec<u16> {
 }
 
 /// The Doctor's checks as a plugin shows them: each one's name, level, text and the fix
-/// it offers (`kind`: `sign-in`, `game`, `firewall` or `defender`; empty: none).
-fn doctor_json(c: &Config) -> Value {
+/// it offers (`kind`: `sign-in`, `game`, `proton`, `firewall` or `defender`; empty: none).
+/// In host-only mode `game` leads to Install, as there is no Play page.
+fn doctor_json(c: &Config, host_only: bool) -> Value {
     let now = echovrce::now();
     let running: Vec<String> = c
         .servers
@@ -310,7 +316,9 @@ fn doctor_json(c: &Config) -> Value {
                 let (kind, label) = match &ch.fix {
                     Fix::None => ("", ""),
                     Fix::SignIn => ("sign-in", "Account"),
+                    Fix::Game if host_only => ("game", "Go to Install"),
                     Fix::Game => ("game", "Go to Play"),
+                    Fix::Proton => ("proton", "Set up"),
                     Fix::Firewall(_) => ("firewall", "Let them in"),
                     Fix::Defender => ("defender", "Allow"),
                 };
