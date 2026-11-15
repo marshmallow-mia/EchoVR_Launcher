@@ -883,6 +883,18 @@ fn handle(
                 game.kill();
             }
         }
+        Kind::PortTaken => {
+            // It stays up in "broadcaster error" and never registers: no point waiting
+            // for the register timeout.
+            o.reason = ev.reason;
+            o.detail = format!(
+                "port {} (UDP) is in use by another program on this PC: close Echo VR or what else uses it, or give the server another port",
+                ev.port
+            );
+            o.clean = false;
+            console.host(&format!("{}; ending the game", o.detail));
+            game.kill();
+        }
         Kind::Registered => {
             o.registered = true;
             shared.update(|s| {
