@@ -178,8 +178,16 @@ impl Farm<'_> {
                 }
                 Err(e) => return Err(e).with_context(|| format!("read the game's {name}")),
             };
-            let text = with_port(&orig, self.port)
-                .with_context(|| format!("no \"port\" in the game's {name}"))?;
+            let text = match with_port(&orig, self.port) {
+                Some(t) => t,
+                // The client's file only keeps servers apart while they sign in: a game
+                // whose file has no port still runs with it as it is, as before.
+                None if i > 0 => {
+                    tracing::warn!("server host: no \"port\" in the game's {name}: kept as it is");
+                    orig
+                }
+                None => anyhow::bail!("no \"port\" in the game's {name}"),
+            };
             write_atomic(&self.root.join(rel), &text)?;
         }
         Ok(())
@@ -544,5 +552,13 @@ mod tests {
         farm.build().unwrap();
         assert!(!root.join(NETCONFIG_CLIENT).exists());
         assert!(root.join(NETCONFIG).is_file());
+
+        // A client's file without a port: kept as it is, and the server still builds.
+        std::fs::write(g.join(NETCONFIG_CLIENT), "{ \"retries\": 2 }").unwrap();
+        farm.build().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(NETCONFIG_CLIENT)).unwrap(),
+            "{ \"retries\": 2 }"
+        );
     }
 }
