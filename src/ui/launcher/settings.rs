@@ -38,9 +38,17 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if !kit.ghost {
         answers(d, ctx);
     }
-    game(d, kit, ctx);
     // Side by side, sharing the extra width; taller in a taller window.
     let (half, dy) = (kit.dx() / 2.0, kit.dy());
+    if d.state.host_only {
+        // Nobody plays on this PC: how you play and the launch options don't apply.
+        // Storage stays (the servers' Echo VR is in the library), where Game starts.
+        let top = Dr::new(LOWER[0].x, GAME.y, LOWER[0].w, LOWER[0].h);
+        storage(d, kit, top.wider(half).taller(dy));
+        panel::at_right(kit, |k| launcher(d, k, ctx));
+        return;
+    }
+    game(d, kit, ctx);
     launch_options(d, kit, ctx, LOWER[0].wider(half).taller(dy));
     storage(d, kit, LOWER[1].moved(half).wider(half).taller(dy));
     panel::at_right(kit, |k| launcher(d, k, ctx));
