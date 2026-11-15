@@ -1101,6 +1101,8 @@ mod tests {
         let p = p.unwrap();
         assert!(p.is_code());
         assert_eq!(p.permissions["services"][0], "server-host");
+        // A short summary for its card; the rest in its tip.
+        assert!(p.summary.len() < 160 && p.description.len() > p.summary.len());
     }
 
     /// A plugin's longer `description` (its card's tip) is read beside its summary, in
