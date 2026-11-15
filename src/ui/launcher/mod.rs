@@ -735,6 +735,9 @@ pub enum SnapVariant {
     ServerHostDoctor,
     ServerHostEdit,
     ServerHostSettings,
+    /// Host-only mode with the Server host plugin: its tab, and Settings.
+    HostOnly,
+    HostOnlySettings,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -1076,11 +1079,51 @@ impl Dashboard {
                 tx.send(Msg::LinkHandler(links::handler(), err));
             });
         }
-        let c = ctx.clone();
-        let monitor = Monitor::start(move || c.request_repaint());
-        monitor.set_quest_ip(self.quest_ip());
-        self.monitor = Some(monitor);
+        self.watch_games(ctx);
         self.refresh_catalog(ctx);
+    }
+
+    /// Whether `page` is there: all of them, but in host-only mode only the plugins' tabs,
+    /// Plugins and Settings.
+    fn page_there(&self, page: Page) -> bool {
+        !self.state.host_only || matches!(page, Page::Plugins | Page::Plugin(_) | Page::Settings)
+    }
+
+    /// Host-only mode: a page that isn't there gives way to the Server host's tab (the
+    /// Plugins page while that plugin isn't installed, or isn't read yet).
+    fn keep_to_host_pages(&mut self) {
+        if self.page_there(self.page) {
+            return;
+        }
+        let id = crate::core::server_host::PLUGIN_ID;
+        self.page = match self.plugins.list.iter().position(|p| p.page.id == id) {
+            Some(i) => Page::Plugin(i as u8),
+            None => {
+                self.plugins.open_when_read = Some(id.to_string());
+                Page::Plugins
+            }
+        };
+    }
+
+    /// The game and Quest monitors run, except in host-only mode: started when it is
+    /// off (at the start, or once it is turned off), ended when it is turned on.
+    fn watch_games(&mut self, ctx: &egui::Context) {
+        if self.demo {
+            return;
+        }
+        match (&self.monitor, self.state.host_only) {
+            (None, false) => {
+                let c = ctx.clone();
+                let monitor = Monitor::start(move || c.request_repaint());
+                monitor.set_quest_ip(self.quest_ip());
+                self.monitor = Some(monitor);
+            }
+            (Some(m), true) => {
+                m.stop();
+                self.monitor = None;
+            }
+            _ => {}
+        }
     }
 
     /// Once a second: a spark:// link this launcher was started with, or that one started
@@ -1901,6 +1944,10 @@ impl Dashboard {
             self.snap_variant == Some(SnapVariant::PluginControllers),
         );
         plugin_ui::snap_server_host(self, self.snap_variant);
+        self.state.host_only = matches!(
+            self.snap_variant,
+            Some(SnapVariant::HostOnly | SnapVariant::HostOnlySettings)
+        );
         self.state.rail_open = demo_state().rail_open;
         self.state.rail_order.clear();
         self.state.rail_unpinned.clear();
@@ -2370,6 +2417,8 @@ impl Dashboard {
                 | SnapVariant::ServerHostDoctor
                 | SnapVariant::ServerHostEdit
                 | SnapVariant::ServerHostSettings
+                | SnapVariant::HostOnly
+                | SnapVariant::HostOnlySettings
                 | SnapVariant::ManyPlugins
                 | SnapVariant::ManyPluginsOpen
                 | SnapVariant::ManyPluginsMenu,
@@ -3053,32 +3102,39 @@ impl Dashboard {
         self.after_sign_in();
         echovrce::site_linked(self);
         let session = self.vrce.session();
-        self.game_sign_in
-            .tick(ctx, session.clone(), &self.state.versions, self.demo);
-        self.keep_ready(ctx);
-        let shown = match self.page {
-            Page::Servers => servers::Shown::Servers,
-            Page::Play => servers::Shown::Play,
-            Page::Friends => servers::Shown::Friends,
-            _ => servers::Shown::Neither,
-        };
-        for n in self.servers.tick(ctx, session, shown) {
-            // An invite reaches the desktop too, as updates do.
-            if self.state.desktop_notifications
-                && matches!(n.action, Some((_, notices::Action::JoinInvite(_))))
-            {
-                crate::core::desktop_notify::show("Echo VR", &n.text);
+        // Host-only mode: nothing here plays, so no game's sign-in is kept, no version
+        // kept ready, and EchoVRCE isn't asked for lobbies, friends and invites.
+        let playing = !self.state.host_only;
+        if playing {
+            self.game_sign_in
+                .tick(ctx, session.clone(), &self.state.versions, self.demo);
+            self.keep_ready(ctx);
+            let shown = match self.page {
+                Page::Servers => servers::Shown::Servers,
+                Page::Play => servers::Shown::Play,
+                Page::Friends => servers::Shown::Friends,
+                _ => servers::Shown::Neither,
+            };
+            for n in self.servers.tick(ctx, session, shown) {
+                // An invite reaches the desktop too, as updates do.
+                if self.state.desktop_notifications
+                    && matches!(n.action, Some((_, notices::Action::JoinInvite(_))))
+                {
+                    crate::core::desktop_notify::show("Echo VR", &n.text);
+                }
+                self.notices.push(n);
             }
-            self.notices.push(n);
+            servers::follow_up(self, ctx);
         }
-        servers::follow_up(self, ctx);
         self.library_follows(ctx);
         // Queued updates waiting for a plugin's install (its end isn't a job's).
         if !self.update_queue.is_empty() {
             self.run_update_queue(ctx);
         }
         plugins::tick(self, ctx);
-        play::watch_login(self, ctx);
+        if playing {
+            play::watch_login(self, ctx);
+        }
         self.take_link(ctx);
         self.check_updates(ctx);
         self.check_catalogs(ctx);
@@ -3558,10 +3614,14 @@ impl Dashboard {
             self.warmed.clear();
         }
         self.poll(&ctx);
-        self.poll_feed(&ctx);
+        if !self.state.host_only {
+            self.poll_feed(&ctx);
+        }
         if self.demo {
             self.apply_snap_variant(&ctx);
         }
+        self.watch_games(&ctx);
+        self.keep_to_host_pages();
         // Track how long the game has been running.
         match (self.game().is_running(), self.game_since) {
             (true, None) => {
@@ -3637,7 +3697,7 @@ impl Dashboard {
         if input {
             self.last_input = now;
         }
-        if !self.state.animated_background || self.software_render {
+        if !self.state.animated_background || self.software_render || self.state.host_only {
             // Its thread ends and its texture goes.
             self.video = Default::default();
         } else if !self.demo {
@@ -3693,7 +3753,10 @@ impl Dashboard {
         if kit.assets.sync.get() || ctx.cumulative_frame_nr() == 0 {
             return;
         }
-        let Some(page) = Page::ALL.into_iter().find(|p| !self.warmed.contains(p)) else {
+        let Some(page) = Page::ALL
+            .into_iter()
+            .find(|p| !self.warmed.contains(p) && self.page_there(*p))
+        else {
             return;
         };
         self.warmed.insert(page);
@@ -3822,7 +3885,8 @@ impl Dashboard {
     /// under them, Settings at the bottom. More plugin tabs than fit scroll.
     fn rail(&mut self, kit: &mut Kit, ctx: &egui::Context, shift: f32) {
         let pinned = plugins::pinned(self);
-        let lay = rail_layout(pinned.len(), kit.dy());
+        let host_only = self.state.host_only;
+        let lay = rail_layout(pinned.len(), kit.dy(), host_only);
         let shown_h = lay.area.1 - lay.area.0;
         // The open plugin's tab scrolled into view when the page changes.
         let scroll = &mut self.plugins.rail_scroll;
@@ -3905,6 +3969,8 @@ impl Dashboard {
                 true,
             ),
         ];
+        // Host-only mode: the plugins' tabs, Plugins and Settings alone.
+        items.retain(|r| self.page_there(r.page));
         for (k, &i) in pinned.iter().enumerate() {
             let cy = tab_y(k);
             // Only what can show (part of a tab at the area's edges).
@@ -4098,7 +4164,8 @@ impl Dashboard {
             ctx.data_mut(|d| d.insert_temp(key, true));
         }
         // The dividers, as wide as the rail; unfolded, the group's name in the middle.
-        for (cy, name) in lay.dividers.iter().zip(["Community", "Plugins"]) {
+        let dividers: &[f32] = if host_only { &[] } else { &lay.dividers };
+        for (cy, name) in dividers.iter().zip(["Community", "Plugins"]) {
             let line = |kit: &Kit, x0: f32, x1: f32| {
                 let r = kit.drect(Dr::new(0.0, cy - 1.0, 0.0, 2.0));
                 let r = egui::Rect::from_x_y_ranges(x0..=x1, r.y_range());
@@ -4936,7 +5003,7 @@ const RAIL_PITCH: f32 = 56.0;
 /// design. The design's spacing while they fit; with more, Play moves up first (from
 /// 232.5 to 150), then the gaps shrink (the game's pages from 72 apart down to 60), and
 /// then the plugin tabs scroll.
-fn rail_layout(tabs: usize, dy: f32) -> RailLayout {
+fn rail_layout(tabs: usize, dy: f32, host_only: bool) -> RailLayout {
     /// Play at the highest; as designed it is `DROP` lower.
     const PLAY: f32 = 150.0;
     const DROP: f32 = 82.5;
@@ -4965,7 +5032,12 @@ fn rail_layout(tabs: usize, dy: f32) -> RailLayout {
     let first_divider = y + gap(3);
     let community = [first_divider + gap(4), first_divider + gap(4) + RAIL_PITCH];
     let second_divider = community[1] + gap(5);
-    let first = second_divider + gap(6);
+    // Host-only mode has no pages above the plugins' tabs: they start where Play does.
+    let first = if host_only {
+        PLAY
+    } else {
+        second_divider + gap(6)
+    };
     // All of them, or as many as fit, scrolling.
     let hub = (first + tabs as f32 * RAIL_PITCH).min(settings - ABOVE_SETTINGS);
     let half = RAIL_PITCH / 2.0;
@@ -5056,21 +5128,32 @@ mod tests {
     /// The rail as designed while its plugin tabs fit, tighter with more, scrolling with
     /// more still, never into Settings, and a taller window gives room back.
     #[test]
+    fn host_only_rail_starts_with_the_plugin_tabs() {
+        let l = super::rail_layout(2, 0.0, true);
+        assert_eq!(l.first, 150.0);
+        assert_eq!(l.hub, 150.0 + 2.0 * super::RAIL_PITCH);
+        assert_eq!(l.scroll_max, 0.0);
+        assert!(l.hub < l.settings);
+        // More tabs than fit scroll, as ever.
+        assert!(super::rail_layout(20, 0.0, true).scroll_max > 0.0);
+    }
+
+    #[test]
     fn rail_layout_fits_the_tabs() {
         use super::{rail_layout, RAIL_PITCH};
-        let base = rail_layout(0, 0.0);
+        let base = rail_layout(0, 0.0, false);
         assert_eq!(base.game, [232.5, 304.5, 376.5, 448.5]);
         assert_eq!(base.dividers, [498.5, 642.5]);
         assert_eq!(base.community, [542.5, 598.5]);
         assert_eq!(base.first, 686.5);
         assert_eq!(
-            rail_layout(4, 0.0).game,
+            rail_layout(4, 0.0, false).game,
             base.game,
             "four tabs fit as designed"
         );
         for dy in [0.0, 60.0, 200.0, 600.0] {
             for tabs in 0..=20 {
-                let l = rail_layout(tabs, dy);
+                let l = rail_layout(tabs, dy, false);
                 for w in l.game.windows(2) {
                     assert!(w[1] - w[0] >= 60.0 - 1e-3, "{tabs} tabs, dy {dy}: {l:?}");
                 }
@@ -5090,20 +5173,20 @@ mod tests {
             }
         }
         // With more, Play moves up first, the gaps as designed.
-        let six = rail_layout(6, 0.0);
+        let six = rail_layout(6, 0.0, false);
         assert!(six.game[0] < base.game[0] && six.game[0] > 150.0, "{six:?}");
         assert!((six.game[1] - six.game[0] - 72.0).abs() < 1e-3);
         // Then the gaps shrink: seven tabs at the top, then they scroll.
-        assert_eq!(rail_layout(7, 0.0).game[0], 150.0);
-        assert_eq!(rail_layout(7, 0.0).scroll_max, 0.0);
-        assert!(rail_layout(8, 0.0).scroll_max > 0.0);
+        assert_eq!(rail_layout(7, 0.0, false).game[0], 150.0);
+        assert_eq!(rail_layout(7, 0.0, false).scroll_max, 0.0);
+        assert!(rail_layout(8, 0.0, false).scroll_max > 0.0);
         assert_eq!(
-            rail_layout(8, 300.0).scroll_max,
+            rail_layout(8, 300.0, false).scroll_max,
             0.0,
             "a taller window fits them"
         );
         assert_eq!(
-            rail_layout(4, 300.0).game,
+            rail_layout(4, 300.0, false).game,
             base.game,
             "Play no lower when taller"
         );

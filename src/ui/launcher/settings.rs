@@ -1117,6 +1117,22 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         y += h + dz(6.0);
     }
+    let (flipped, h) = option(
+        kit,
+        "host-only",
+        &mut d.state.host_only,
+        "Host-only mode",
+        "For a PC that only runs game servers: just the Server host, Plugins and Settings.",
+        x,
+        y,
+        w,
+        true,
+        "For a PC that only runs game servers. The launcher shows the Server host, Plugins and Settings, and stops what it does in the background for playing: watching for Echo VR and the Quest, lobbies, friends, news and the moving background.",
+    );
+    if flipped {
+        d.save();
+    }
+    y += h + dz(6.0);
     // spark:// links (Windows, Linux).
     if let Some(handler) = d
         .link_handler

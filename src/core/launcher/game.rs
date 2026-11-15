@@ -576,6 +576,8 @@ pub struct Monitor {
     ours: Arc<Mutex<Option<Ours>>>,
     quest: Arc<Mutex<GameState>>,
     quest_ip: Arc<Mutex<Option<std::net::Ipv4Addr>>>,
+    /// Its threads end (host-only mode turned on: nothing watches for a game then).
+    stopped: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -599,15 +601,18 @@ impl Monitor {
         };
         let on_change = Arc::new(on_change);
         let (quest, quest_ip, notify) = (m.quest.clone(), m.quest_ip.clone(), on_change.clone());
+        let stopped = m.stopped.clone();
         std::thread::Builder::new()
             .name("quest-monitor".into())
-            .spawn(move || loop {
-                let ip = *lock(&quest_ip);
-                let next = ip.map_or(GameState::NotRunning, super::quest_net::api_state);
-                if store(&quest, next) {
-                    notify();
+            .spawn(move || {
+                while !stopped.load(std::sync::atomic::Ordering::Relaxed) {
+                    let ip = *lock(&quest_ip);
+                    let next = ip.map_or(GameState::NotRunning, super::quest_net::api_state);
+                    if store(&quest, next) {
+                        notify();
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
                 }
-                std::thread::sleep(Duration::from_secs(2));
             })
             .expect("spawn quest monitor");
         let me = m.clone();
@@ -615,7 +620,7 @@ impl Monitor {
             .name("game-monitor".into())
             .spawn(move || {
                 let mut scanner = Scanner::new();
-                loop {
+                while !me.stopped.load(std::sync::atomic::Ordering::Relaxed) {
                     if store(&me.local, me.poll(&mut scanner)) {
                         on_change();
                     }
@@ -624,6 +629,12 @@ impl Monitor {
             })
             .expect("spawn game monitor");
         m
+    }
+
+    /// Ends the polling threads (each at its next look).
+    pub fn stop(&self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// One scan: which games run, which is ours, and the clients' state.
