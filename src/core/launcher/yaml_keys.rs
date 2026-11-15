@@ -188,7 +188,7 @@ pub fn apply_from(
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
         }
-        write_atomic(path, &out)?;
+        write_atomic(path, &out, false)?;
     }
     if new_notes != notes {
         save_notes(path, &new_notes)?;
@@ -196,16 +196,34 @@ pub fn apply_from(
     Ok(out)
 }
 
+/// Saves the notes on `path`, readable only by this user where the OS can say: they can
+/// hold what the launcher set (a server's password among it).
 pub fn save_notes(path: &Path, notes: &Notes) -> Result<()> {
     let text = serde_json::to_string_pretty(notes)?;
-    write_atomic(&notes_path(path), &text)
+    write_atomic(&notes_path(path), &text, true)
 }
 
-fn write_atomic(path: &Path, text: &str) -> Result<()> {
+fn part_of(path: &Path) -> PathBuf {
     let mut part = path.as_os_str().to_os_string();
     part.push(".part");
-    let part = PathBuf::from(part);
+    PathBuf::from(part)
+}
+
+/// Writes `text` to `path` through a `.part` file, with the permissions the file had (the
+/// player's choice), or only this user's when `private`.
+fn write_atomic(path: &Path, text: &str, private: bool) -> Result<()> {
+    let part = part_of(path);
     std::fs::write(&part, text).with_context(|| format!("Couldn't write {}", part.display()))?;
+    if let Ok(m) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&part, m.permissions());
+    }
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&part, std::fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    let _ = private;
     std::fs::rename(&part, path).with_context(|| {
         let _ = std::fs::remove_file(&part);
         format!("Couldn't replace {}", path.display())
@@ -715,6 +733,17 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         apply(&path, &e, H, &[]).unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), at);
+        // The file's permissions stay (the player's choice); the notes are this user's.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+            apply(&path, &[Edit::inline(&["y"], "1")], H, &[]).unwrap();
+            assert_eq!(mode(&path), 0o640);
+            assert_eq!(mode(&notes_path(&path)), 0o600);
+            apply(&path, &[Edit::none(&["y"])], H, &[]).unwrap();
+        }
         apply(&path, &[Edit::none(&["x-local-plugins"])], H, &[]).unwrap();
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),

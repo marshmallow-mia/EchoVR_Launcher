@@ -741,19 +741,6 @@ pub fn plugin_list(plugins: &[PluginLine]) -> super::yaml_keys::Val {
     Val::Block(out)
 }
 
-/// Pure: a `config.yaml`'s `plugins:` list (and the local plugins' key), as text.
-pub fn render_plugin_list(plugins: &[PluginLine], local: bool) -> String {
-    let mut out = String::new();
-    if local {
-        out.push_str(&format!("{}: true\n", super::mods::LOCAL_PLUGINS_KEY));
-    }
-    match plugin_list(plugins) {
-        super::yaml_keys::Val::Inline(v) => out.push_str(&format!("plugins: {v}\n")),
-        super::yaml_keys::Val::Block(b) => out.push_str(&format!("plugins:\n{b}")),
-    }
-    out
-}
-
 /// Sets the launcher's keys for a start of `v` in its `config.yaml`, and in the player's
 /// own an older nEVR reads before it. Returns the player's own configs an older launcher
 /// had kept as `.old` that are back now.

@@ -321,7 +321,9 @@ A `host` step writes a server's own setup into the live build, in `_local/<folde
 - **`config.yaml`:** the server account (`discord_id`, `password`), the services it signs
   in and registers with (`socket_uri`, `serverdb_uri`, `http_uri`, `http_key`, `server_key`),
   its `regions` and `guilds` (each comma-separated), and with `mods` (the default) the
-  plugins the Mods page has on, a content pack's included.
+  plugins the Mods page has on, a content pack's included. The step sets only these keys:
+  what the host added to the file by hand stays when the step runs again, and a value the
+  step leaves empty keeps the host's own.
 - **`config.json`:** the file the game's `-config-path` names. Its folder is where nEVR
   finds that `config.yaml`. A runtime from nevr-runtime #1255 on refuses `-config-path`:
   it gets `-config <config.json> -config-file <config.yaml>` instead.
