@@ -109,6 +109,9 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
   holds. A server picks up a new nEVR at its next start.
 - nEVR ignores `-port`, so each server has its own `netconfig_dedicatedserver.json` with
   its port.
+- While it signs in, a server opens the game client's port for about two seconds
+  (`netconfig_client.json`: 6794, then 6795 and 6796). Each server has its own copy of that
+  file too, with its own port, so servers never wait for or take each other's port.
 - nEVR ends a server after every match. The server host starts it again after 5 seconds.
   - After an error it waits 5 seconds, then doubles the wait up to 5 minutes.
   - A refused sign-in or wrong settings wait 10 minutes, or until something changes.
