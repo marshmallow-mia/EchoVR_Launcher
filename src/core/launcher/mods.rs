@@ -1812,20 +1812,6 @@ pub fn ensure_required(
 /// loads only its required patches). A plugin the launcher added whose file no longer
 /// matches the checksum it noted is left out.
 pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
-    // A config.yaml of someone's own (by hand, an older tool's) would decide the plugins
-    // and the server instead of the Mods page and the plugins: kept as .old.
-    for old in nevr::migrate_own_configs(v)? {
-        tracing::info!(
-            "{}: a config.yaml of your own is kept as {}: the launcher's applies",
-            v.id,
-            old.display()
-        );
-        notice(
-            &old,
-            "config.yaml",
-            "the launcher's mods and server settings apply now",
-        );
-    }
     let overlay = Overlay::read(&choices_path(v));
     let catalog = ModCatalog::cached();
     let local = nevr::local_plugins(v);
@@ -1860,7 +1846,15 @@ pub fn prepare(v: &InstalledVersion, servers: &Servers) -> Result<()> {
     ) {
         tracing::warn!("why plugins were left out not kept: {e:#}");
     }
-    nevr::write_config(v, &lines, local, backend.as_ref())
+    // The player's config.yaml keeps what they set: only the plugins and the server change.
+    for old in nevr::write_config(v, &lines, backend.as_ref())? {
+        tracing::info!(
+            "{}: your own config.yaml (kept as {} by an older launcher) is back, with the launcher's plugins set in it",
+            v.id,
+            old.display()
+        );
+    }
+    Ok(())
 }
 
 /// The plugins a game server in `v` loads, as the Mods page has them on for a start (a
@@ -5197,7 +5191,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_config_yaml_of_your_own_is_kept_as_old() {
+    fn a_config_yaml_of_your_own_keeps_what_you_set() {
         // As a player had it: their own config.yaml with the pack's overlay and plugins,
         // and a config.json of their own.
         let dir = tempfile::tempdir().unwrap();
@@ -5210,25 +5204,26 @@ pub(crate) mod tests {
         with_pack(&v);
         let local = nevr::local_dir(&v);
         std::fs::create_dir_all(&local).unwrap();
-        let own =
-            "plugins:\n  - name: \"NvrContentOverlay\"\n    early: true\n  - name: \"Music\"\n";
+        let own = "# mine\nplugins:\n  - name: \"NvrContentOverlay\"\n    early: true\n  - name: \"Music\"\nnetwork:\n  tick_rate_hz: 90\n";
         std::fs::write(local.join(nevr::CONFIG), own).unwrap();
         std::fs::write(local.join(nevr::GAME_CONFIG), "{\"fov\": 90}").unwrap();
         take_notices();
         before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
+        // The Mods page's plugins are set in it; the rest stays.
         let yaml = std::fs::read_to_string(local.join(nevr::CONFIG)).unwrap();
         assert!(yaml.contains("\"NvrContentOverlay.dll\"") && yaml.contains("\"One.dll\""));
         assert!(!yaml.contains("Music"));
-        assert_eq!(
-            std::fs::read_to_string(local.join("config.yaml.old")).unwrap(),
-            own
-        );
+        assert!(yaml.contains("# mine\n") && yaml.contains("network:\n  tick_rate_hz: 90\n"));
+        assert!(!local.join("config.yaml.old").exists());
         assert!(!local.join(nevr::GAME_CONFIG).exists());
         assert!(local.join(nevr::GAME_CONFIG_OLD).is_file());
         let notices = take_notices();
-        assert_eq!(notices.len(), 2, "{notices:?}");
-        // The next start has nothing to move and says nothing.
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        // The next start keeps it too (a required plugin may have come), and says nothing.
         before_start(&v, false, &Servers::default(), &BTreeMap::new()).unwrap();
+        let again = std::fs::read_to_string(local.join(nevr::CONFIG)).unwrap();
+        assert!(again.contains("# mine\n") && again.contains("tick_rate_hz: 90"));
+        assert!(!local.join("config.yaml.old").exists());
         assert!(take_notices().is_empty());
     }
 

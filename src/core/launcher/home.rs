@@ -315,8 +315,16 @@ fn plan(game: &Path, bin: &Path, home: &Path) -> Plan {
     }
     // The launcher's config.yaml: nEVR 6.0 reads only the root's (it says to delete this one).
     let config = local.join(nevr::CONFIG);
-    if std::fs::read_to_string(&config).is_ok_and(|t| nevr::written_by_launcher(&t)) {
-        p.into_home.push((config, home.join(nevr::CONFIG)));
+    if std::fs::read_to_string(&config).is_ok_and(|t| nevr::launchers_copy(&t)) {
+        p.into_home.push((config.clone(), home.join(nevr::CONFIG)));
+        // What the launcher set in it goes along.
+        let notes = super::yaml_keys::notes_path(&config);
+        if notes.is_file() {
+            p.into_home.push((
+                notes,
+                super::yaml_keys::notes_path(&home.join(nevr::CONFIG)),
+            ));
+        }
     }
     // A host step's folders (its config.yaml, config.json and start script).
     for e in std::fs::read_dir(&local).into_iter().flatten().flatten() {

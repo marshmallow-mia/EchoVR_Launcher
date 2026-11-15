@@ -403,10 +403,7 @@ pub fn take_away() -> bool {
 }
 
 fn take_away_from(root: &Path, record: &Path) -> bool {
-    let config = root.join(nevr::CONFIG);
-    if std::fs::read_to_string(&config).is_ok_and(|t| nevr::written_by_launcher(&t)) {
-        let _ = std::fs::remove_file(&config);
-    }
+    nevr::take_back_config(&root.join(nevr::CONFIG));
     let target = root.join(nevr::RUNTIME);
     let noted = read_record(record);
     // The plugins it put there go too (#1250 on), and its content packs.
@@ -561,8 +558,7 @@ mod tests {
     }
 
     /// Before a start of a real game folder (`ECHOVR_TEST_BIN`), into a root of its own
-    /// (`ECHOVR_TEST_ROOT`): `cargo test puts_a_game_folders_runtime -- --ignored`. Its
-    /// `config.yaml` too when `ECHOVR_TEST_CONFIG` names one.
+    /// (`ECHOVR_TEST_ROOT`): `cargo test puts_a_game_folders_runtime -- --ignored`.
     #[test]
     #[ignore]
     fn puts_a_game_folders_runtime_into_its_root() {
@@ -571,10 +567,6 @@ mod tests {
         let record = root.with_file_name("launcher-nevr-root.json");
         put_in_place(&bin, &root, &record, false).unwrap();
         plugins_into(&bin, &root, &record, false).unwrap();
-        if let Ok(config) = std::env::var("ECHOVR_TEST_CONFIG") {
-            let text = std::fs::read_to_string(config).unwrap();
-            println!("config: {:?}", nevr::config_into(&root, &text).unwrap());
-        }
         println!("{}", std::fs::read_to_string(&record).unwrap());
     }
 

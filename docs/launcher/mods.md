@@ -140,7 +140,7 @@ data folder, `nevr\<version id>\` (on Windows `%LOCALAPPDATA%\EchoVR_Launcher\ne
 | `nevr-runtime.dll`: the runtime that goes into nEVR's root before each start | `bin/win10/nevr-root/nevr-runtime.dll` |
 | `plugins\`: the version's mods, their sidecars and settings files, EchoXR Hands | `bin/win10/plugins` |
 | `launcher-mods.json`, `launcher-shipped.json`, `launcher-left-out.json`, `quarantine\`, `previous-mods\` | `_local` |
-| `config.yaml`: the launcher's, copied into nEVR's root before each start | `_local/config.yaml` |
+| `config.yaml`: the launcher's copy, whose keys are set in nEVR's root's before each start (with `config.yaml.launcher.json`) | `_local/config.yaml` |
 | `previous-update\`: what the last update replaced (Undo update) | `_local/previous-update` |
 | a host step's folders | `_local/<folder>` |
 | `structure.json`: which game folder it is for | |
@@ -177,7 +177,7 @@ The launcher never edits the community update's files. It writes (on the new lay
 
 | File | What it holds |
 |---|---|
-| `_local/config.yaml` (the game's `_local`) | nEVR's plugin list, written before every start from the plugins in `bin/win10/plugins` and the launcher's choices; with mods off only the required plugins (NvrAssetPatches with `required_only`). When a pack that is on has a server of its own, also that server and the account there ([below](#a-packs-own-server)) |
+| `_local/config.yaml` (the game's `_local`) | nEVR's plugin list, set before every start from the plugins in `bin/win10/plugins` and the launcher's choices (the rest of the file is yours); with mods off only the required plugins (NvrAssetPatches with `required_only`). When a pack that is on has a server of its own, also that server and the account there ([below](#a-packs-own-server)) |
 | `_local/launcher-mods.json` | the choices: "Start without mods" (`enabled`), a plugin on or off and its arguments (`overrides`), the plugins it added (`add`, each with its `sha256`) |
 | `_local/.credentials.json` | the game's own EchoVRCE sign-in (see below); `.credentials.json.echovrce` while a start plays on a pack's own server |
 | `_local/launcher-shipped.json` | the plugins the last community update placed in `plugins/`, by their checksums (0.12.4 on; going back to the update before forgets it) |
@@ -230,23 +230,34 @@ before a start with nEVR the launcher keeps any `config.json` in a `_local` nEVR
 back first. The `config.json` the launcher writes for an EchoRelay server stays: it goes
 with EchoRelay's other files when nEVR is back.
 
-**A `config.yaml` of your own** is kept as `config.yaml.old` (`.old.2`, …) before a start,
-and the launcher writes its own, so the Mods page's choices and a plugin's server reach the
-game. The launcher's own starts with `# Written by the Echo VR launcher` (on any line: the
-local plugins' switch may be above it), or sets nothing but `x-local-plugins`; a
-`config.yaml` nearer the exe, which nEVR would read first, goes too. A switch for local
-plugins in the one kept as `.old` stays on. A game server of your own gets a setup in a
-folder of its own, which this leaves alone: see [the plugins' `host`
-step](../plugins/pages.md#a-game-servers-setup).
+**`config.yaml` is yours.** Before a start the launcher sets only its own keys in it, line
+by line, and leaves every other line as it is (comments, order, keys it doesn't know):
+
+- `plugins:`, from the Mods page;
+- while a start plays on another server than EchoVRCE: `services.socket_uri`,
+  `identity.discord_id` and `auth.http_uri`, `auth.password`, `auth.server_key`.
+
+`config.yaml.launcher.json` beside it notes what the launcher set. A key it no longer
+needs goes only while it still holds the launcher's value, and the value you had there
+before comes back (your own server after a pack's). A value you changed stays yours. The
+file starts with the line `# The Echo VR launcher sets plugins here …`.
+
+Launchers up to 0.13 wrote the whole file (it started with `# Written by the Echo VR
+launcher`) and kept one of your own as `config.yaml.old`. Such a file is started again:
+from the newest `.old` beside it, with its local plugins' switch, and the launcher's keys
+set in it. A game server of your own gets a setup in a folder of its own, which this
+leaves alone: see [the plugins' `host` step](../plugins/pages.md#a-game-servers-setup).
 
 nEVR looks for `_local/config.yaml` beside the exe, then one and two folders up (the
-game's own `_local`); the first found wins, so one nearer the exe is kept as `.old` too.
+game's own `_local`); the first found wins, so one of yours nearer the exe gets the
+launcher's keys too.
 From nevr-runtime #1255 on, nEVR reads `config.yaml` only from its root (or the file
 `-config-file` names) and no longer from `_local`. The launcher tells such a runtime by
 that option's name in it: it still writes the version's `config.yaml` into its `_local`
-(the root is one for every version), and before every start copies it into the root, where
-one it didn't write is kept as `config.yaml.old` first. Uninstalling the versions takes its
-copy out of the root again. Its game servers name their `config.yaml` with `-config-file`
+(the root is one for every version), and before every start sets the same keys in the
+root's, with the local plugins' switch as that copy has it; the rest of the root's is
+yours. Uninstalling the versions takes the launcher's keys out of the root's again (and
+the file, when nothing else is in it). Its game servers name their `config.yaml` with `-config-file`
 and the game's JSON with `-config` (such a runtime refuses `-config-path`). nEVR refuses to start with a `dbgcore.dll` beside the exe (the old
 loader's place, in any case of its name): PLAY takes it out first, and the update manifest deletes it.
 

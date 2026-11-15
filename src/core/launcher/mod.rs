@@ -37,3 +37,4 @@ pub mod store;
 pub mod test_feed;
 pub mod update_check;
 pub mod versions;
+pub mod yaml_keys;
