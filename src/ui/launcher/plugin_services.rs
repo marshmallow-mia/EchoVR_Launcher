@@ -67,10 +67,7 @@ pub(super) fn start(
     };
     match op {
         "running" => {
-            let demo = d.demo;
-            std::thread::spawn(move || {
-                answer(Ok(json!(demo || crate::core::tray::server_host_running())))
-            });
+            answer(Ok(json!(d.demo || host::supervisor::alive())));
         }
         "link-mine" => {
             if d.vrce.session().is_none() {

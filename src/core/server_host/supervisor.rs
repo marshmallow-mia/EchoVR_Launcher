@@ -36,8 +36,34 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(25);
 const BACKOFF_FIRST: Duration = Duration::from_secs(5);
 const BACKOFF_MAX: Duration = Duration::from_secs(300);
 const FAILED_WAIT: Duration = Duration::from_secs(600);
+/// How often a running server's log folders are searched for a newer log than the one
+/// being read.
+const LOG_LOOK: Duration = Duration::from_secs(2);
 /// The supervisor ends this long after the last server stopped.
 const IDLE_EXIT: Duration = Duration::from_secs(10);
+
+/// The file in the server host's folder the supervisor writes the time into while it
+/// runs, every 5 s.
+const ALIVE: &str = "alive";
+/// A supervisor that hasn't written [`ALIVE`] for this long is gone.
+const ALIVE_FOR: i64 = 20;
+
+/// Whether the supervisor runs, by what it writes: its own time ([`ALIVE`]), or a server's
+/// status it keeps fresh (a supervisor from before 0.13.15, still running after the
+/// launcher's update, writes only those). The Server host page asks this every 3 s;
+/// looking through every process of the PC for it that often cost more than the page's
+/// servers did to watch.
+pub fn alive() -> bool {
+    let t = now();
+    let wrote = std::fs::read_to_string(super::dir().join(ALIVE))
+        .ok()
+        .and_then(|text| text.trim().parse::<i64>().ok())
+        .is_some_and(|at| (t - at).abs() <= ALIVE_FOR);
+    wrote
+        || Config::load().servers.iter().any(|s| {
+            status::read(&s.dir()).is_some_and(|st| st.fresh(t) && st.state != State::Stopped)
+        })
+}
 
 fn now() -> i64 {
     std::time::SystemTime::now()
@@ -154,6 +180,7 @@ pub fn main() -> i32 {
         if last_look.elapsed() >= Duration::from_secs(5) {
             last_look = Instant::now();
             let t = now();
+            let _ = std::fs::write(super::dir().join(ALIVE), t.to_string());
             for s in &cfg.servers {
                 if let Some(st) = status::read(&s.dir()) {
                     for a in watch.look(&st, s.run, t) {
@@ -172,6 +199,7 @@ pub fn main() -> i32 {
         }
         std::thread::sleep(Duration::from_secs(1));
     }
+    let _ = std::fs::remove_file(super::dir().join(ALIVE));
     tracing::info!("server host: no server left to run, ended");
     0
 }
@@ -575,21 +603,27 @@ fn lines(
     std::thread::spawn(move || {
         let mut file: Option<PathBuf> = None;
         let mut tail: Option<status::Tail> = None;
+        let mut looked: Option<Instant> = None;
         while !stop.load(Ordering::Relaxed) {
             // The newest of nEVR's logs since the start (it starts a new one at 50 MB).
-            if let Some((newest, _)) = log_dirs
-                .iter()
-                .filter_map(|d| {
-                    crate::core::logs::newest_in(d, nevr::is_run_log)
-                        .into_iter()
-                        .next()
-                })
-                .filter(|(_, t)| *t >= since)
-                .max_by_key(|(_, t)| *t)
-            {
-                if file.as_ref() != Some(&newest) {
-                    tail = Some(status::Tail::file(&newest));
-                    file = Some(newest);
+            // Looked for at once until there is one, then every [`LOG_LOOK`]: the folders
+            // keep a log for every run, and listing them asks each file for its time.
+            if file.is_none() || looked.is_none_or(|l| l.elapsed() >= LOG_LOOK) {
+                looked = Some(Instant::now());
+                if let Some((newest, _)) = log_dirs
+                    .iter()
+                    .filter_map(|d| {
+                        crate::core::logs::newest_in(d, nevr::is_run_log)
+                            .into_iter()
+                            .next()
+                    })
+                    .filter(|(_, t)| *t >= since)
+                    .max_by_key(|(_, t)| *t)
+                {
+                    if file.as_ref() != Some(&newest) {
+                        tail = Some(status::Tail::file(&newest));
+                        file = Some(newest);
+                    }
                 }
             }
             if let Some(t) = &mut tail {
