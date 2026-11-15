@@ -92,6 +92,30 @@ fn option(
     (flipped, dz(38.0) + h + dz(26.0))
 }
 
+/// [`option`] for the Launcher column: its note goes into the tooltip, ahead of `tip`.
+/// That column has the most options and About under them; with their notes it ran into
+/// About on a 720p window (Windows and Linux, with spark:// links).
+#[allow(clippy::too_many_arguments)]
+fn tip_option(
+    kit: &mut Kit,
+    key: &str,
+    on: &mut bool,
+    label: &str,
+    note: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    enabled: bool,
+    tip: &str,
+) -> (bool, f32) {
+    let tip = match (note.is_empty(), tip.is_empty()) {
+        (true, _) => tip.to_string(),
+        (false, true) => note.to_string(),
+        (false, false) => format!("{note}\n\n{tip}"),
+    };
+    option(kit, key, on, label, "", x, y, w, enabled, &tip)
+}
+
 // ---- the cards ----
 
 /// GAME: how you play, as the Install card asks it (a tile each), and the SteamVR
@@ -764,7 +788,7 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
 fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
     use crate::core::tray;
     let mut y = y;
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "desktop-notifications",
         &mut d.state.desktop_notifications,
@@ -780,7 +804,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         d.save();
     }
     y += h + dz(6.0);
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "tray",
         &mut d.state.tray,
@@ -806,7 +830,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
     }
     y += h + dz(6.0);
     let mut login = d.state.tray_at_login;
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "tray-login",
         &mut login,
@@ -1078,7 +1102,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (x, w) = (dz(panel::X), dz(PANEL_W));
     let mut y = dz(panel::BODY_Y);
 
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "minimize",
         &mut d.state.minimize_on_launch,
@@ -1097,7 +1121,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if d.software_render {
         // No graphics card draws the window: the video would take several cores.
         let mut off = false;
-        let (_, h) = option(
+        let (_, h) = tip_option(
             kit,
             "animated-background",
             &mut off,
@@ -1111,7 +1135,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         );
         y += h + dz(6.0);
     } else {
-        let (flipped, h) = option(
+        let (flipped, h) = tip_option(
             kit,
             "animated-background",
             &mut d.state.animated_background,
@@ -1128,12 +1152,12 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         y += h + dz(6.0);
     }
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "host-only",
         &mut d.state.host_only,
         "Host-only mode",
-        "For a PC that only runs game servers: the Server host, Install, Plugins and Settings.",
+        "",
         x,
         y,
         w,
@@ -1155,7 +1179,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Handler::Other(_) => "Spark opens them now. Tick to have the launcher open them instead.",
             _ => "Match links from Discord, echo.taxi or the browser open the launcher, ready to join.",
         };
-        let (flipped, h) = option(
+        let (flipped, h) = tip_option(
             kit,
             "spark-links",
             &mut on,
