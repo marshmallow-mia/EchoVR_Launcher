@@ -1326,7 +1326,7 @@ pub(super) fn snap_server_host(d: &mut Dashboard, v: Option<super::SnapVariant>)
     d.plugins.list.retain(|p| p.page.id != id);
     stop(d, id);
     let queued = match v {
-        Some(V::ServerHost | V::HostOnly | V::HostOnlySettings) => vec![],
+        Some(V::ServerHost | V::HostOnly | V::HostOnlySettings | V::HostOnlyInstall) => vec![],
         Some(V::ServerHostConsole) => vec![UiEvent::Tab("tab".into(), 1)],
         Some(V::ServerHostDoctor) => vec![UiEvent::Tab("tab".into(), 2)],
         Some(V::ServerHostEdit) => vec![UiEvent::Clicked("servers/echo-2/edit".into())],

@@ -738,6 +738,8 @@ pub enum SnapVariant {
     /// Host-only mode with the Server host plugin: its tab, and Settings.
     HostOnly,
     HostOnlySettings,
+    /// Host-only mode, a server started without Echo VR: the Install card, for servers.
+    HostOnlyInstall,
 }
 
 /// Snapshots: the game as the monitor would see it.
@@ -1950,7 +1952,11 @@ impl Dashboard {
         plugin_ui::snap_server_host(self, self.snap_variant);
         self.state.host_only = matches!(
             self.snap_variant,
-            Some(SnapVariant::HostOnly | SnapVariant::HostOnlySettings)
+            Some(
+                SnapVariant::HostOnly
+                    | SnapVariant::HostOnlySettings
+                    | SnapVariant::HostOnlyInstall
+            )
         );
         self.state.rail_open = demo_state().rail_open;
         self.state.rail_order.clear();
@@ -2303,6 +2309,10 @@ impl Dashboard {
             }
             Some(SnapVariant::VrceSigning) => self.vrce.demo(false),
             Some(SnapVariant::VrceSigningHere) => self.vrce.demo_here(),
+            Some(SnapVariant::HostOnlyInstall) => {
+                self.state.versions.clear();
+                plugin_services::ask_for_game(self);
+            }
             Some(SnapVariant::InstallAskQuest) => {
                 self.platform = Platform::Quest;
                 setup::ask_quest_install(self);

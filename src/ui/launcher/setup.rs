@@ -999,6 +999,8 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
         .into_iter()
         .filter(|rt| !(event && *rt == Runtime::Flat))
         .collect();
+    // Host-only mode: nobody plays here, so the card doesn't ask how.
+    let for_servers = d.state.host_only && !quest && !event;
     let (w, pad, gap) = (dz(1100.0), dz(30.0), dz(16.0));
     let inner = w - 2.0 * pad;
     let (q_h, runtime_h, place_h) = (dz(40.0), dz(130.0), dz(50.0));
@@ -1029,7 +1031,12 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
             h += q_h + profile_h + dz(24.0);
         }
     } else {
-        h += q_h + runtime_h + dz(24.0) + place_h + dz(24.0);
+        h += if for_servers {
+            text_height(k, SERVERS_NOTE, inner)
+        } else {
+            q_h + runtime_h
+        };
+        h += dz(24.0) + place_h + dz(24.0);
         if ask.copy.is_some() && !use_copy && !reinstall {
             h += found_h;
         }
@@ -1044,29 +1051,34 @@ fn install_card(d: &mut Dashboard, k: &mut Kit, ctx: &egui::Context) {
     let mut change = false;
     let mut choose = false;
     if let Some(root) = &root {
-        question(k, x, y, cw, "How do you play Echo VR?");
-        y += q_h;
-        let n = offered.len() as f32;
-        let rw = (cw - (n - 1.0) * gap) / n;
-        for (i, rt) in offered.iter().enumerate() {
-            let rx = x + i as f32 * (rw + gap);
-            let on = ask.runtime == *rt;
-            if k.tile(
-                &format!("install-runtime-{i}"),
-                rx,
-                y,
-                rw,
-                runtime_h,
-                runtime_label(*rt),
-                runtime_note(*rt),
-                on,
-            )
-            .clicked
-            {
-                ask.runtime = *rt;
+        if for_servers {
+            y += k.caps_text(x, y, cw, SERVERS_NOTE, 17.0, design::BODY, dz(PARA));
+        } else {
+            question(k, x, y, cw, "How do you play Echo VR?");
+            y += q_h;
+            let n = offered.len() as f32;
+            let rw = (cw - (n - 1.0) * gap) / n;
+            for (i, rt) in offered.iter().enumerate() {
+                let rx = x + i as f32 * (rw + gap);
+                let on = ask.runtime == *rt;
+                if k.tile(
+                    &format!("install-runtime-{i}"),
+                    rx,
+                    y,
+                    rw,
+                    runtime_h,
+                    runtime_label(*rt),
+                    runtime_note(*rt),
+                    on,
+                )
+                .clicked
+                {
+                    ask.runtime = *rt;
+                }
             }
+            y += runtime_h;
         }
-        y += runtime_h + dz(24.0);
+        y += dz(24.0);
         let (caption, path) = match &ask.copy {
             Some(copy) if use_copy => ("Echo VR is in", copy.as_str()),
             _ if reinstall => ("Its folder", root.as_str()),
@@ -1409,6 +1421,8 @@ fn pack_server_card(d: &mut Dashboard, k: &mut Kit) {
 
 const PACK_SERVER_NOTE: &str = "While {name} is on, Echo VR plays on this server instead of EchoVRCE: you sign in, find matches and play there, with the others who have {name}. Its host gives you the address and its key. Leave the address empty to play on EchoVRCE.\n\nYour account there is a Discord ID and a password. The password goes into the game's config in plain text: don't reuse a real one.";
 const RELAY_NOTE: &str = "Event builds play on the community's classic lobbies server ({server}). Pick a display name and a password: your first login locks the account to that password, and it works in every event build.\n\nDon't reuse a real password: it is sent without encryption.";
+/// What the Install card says in host-only mode, where it asks nothing about playing.
+const SERVERS_NOTE: &str = "For the game servers on this PC (host-only mode): no headset or VR software is needed. The Server host runs this Echo VR with nEVR.";
 const EVENT_NOTE: &str = "An event build: it plays on the community's classic lobbies server, with EchoRelay's patch instead of the licence check. You pick your account there when you first play it.";
 /// What the Quest's Install card says: the install, and for a reinstall, or Echo VR in
 /// another profile, what is taken off first.
