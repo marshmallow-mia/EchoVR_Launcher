@@ -39,9 +39,15 @@ pub(super) fn ask_for_game(d: &mut Dashboard) {
         .as_ref()
         .and_then(|c| c.pc().find(|e| e.publisher_lock.is_none()))
         .cloned();
+    // Only event builds here: they can't host, so a live one is what is missing.
+    let events_only = d.state.versions.iter().any(|v| v.present());
     match newest {
         Some(e) if d.overlay.is_none() => {
-            d.notify("The servers need Echo VR on this PC: install it, then start them");
+            d.notify(if events_only {
+                "Event builds can't host: install the live build, then start the servers"
+            } else {
+                "The servers need Echo VR on this PC: install it, then start them"
+            });
             setup::ask_install(d, e);
         }
         _ => {
