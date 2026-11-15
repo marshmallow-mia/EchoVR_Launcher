@@ -3,7 +3,7 @@
 //! Windows directory junctions, which need no admin rights), while `bin/win10` is a copy of
 //! its files and plugins, so a game or mod update never meets a file a server holds, and a
 //! server takes a new nEVR at its next start. `_local` is the server's own: its
-//! `config.yaml`, `config.json` and sign-in.
+//! `config.yaml` (the host's, where the page's keys are set), `config.json` and sign-in.
 //!
 //! nEVR ignores `-port` (5.4.2): the broadcaster binds the port in
 //! `netconfig_dedicatedserver.json`, so each server has its own copy of that file, with its
@@ -48,8 +48,8 @@ pub struct Farm<'a> {
     /// The server's own.
     pub root: &'a Path,
     pub port: u16,
-    /// `_local/config.yaml`.
-    pub config_yaml: &'a str,
+    /// The keys set in `_local/config.yaml` ([`super::config::edits`]).
+    pub config_yaml: &'a [crate::core::launcher::yaml_keys::Edit],
     /// `_local/config.json`.
     pub config_json: &'a str,
 }
@@ -88,7 +88,7 @@ impl Farm<'_> {
         self.sync_bin()?;
         self.write_netconfig()?;
         let local = self.local();
-        write_atomic(&local.join("config.yaml"), self.config_yaml)?;
+        super::config::write(&local.join("config.yaml"), self.config_yaml)?;
         write_atomic(&local.join("config.json"), self.config_json)?;
         std::fs::write(&marker, from)?;
         Ok(())
@@ -436,6 +436,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::launcher::yaml_keys::Edit;
 
     const NET: &str = "{\n  // the dedicated server\n  \"port\" : 6792,\n  \"retries\": 3,\n  \"other_port\": 1\n}\n";
 
@@ -491,7 +492,7 @@ mod tests {
             game: &g,
             root: &root,
             port: 6801,
-            config_yaml: "services: {}\n",
+            config_yaml: &[Edit::inline(&["services", "socket_uri"], "\"ws://h\"")],
             config_json: "{}",
         };
         farm.build().unwrap();
@@ -519,10 +520,22 @@ mod tests {
         let client = std::fs::read_to_string(root.join(NETCONFIG_CLIENT)).unwrap();
         assert!(client.contains("\"port\": 6801,") && client.contains("\"retries\": 0,"));
         assert!(!is_link(&root.join(NETCONFIG_CLIENT)));
+        let yaml = root.join("_local/config.yaml");
         assert_eq!(
-            std::fs::read_to_string(root.join("_local/config.yaml")).unwrap(),
-            "services: {}\n"
+            std::fs::read_to_string(&yaml).unwrap(),
+            format!(
+                "{}\nservices:\n  socket_uri: \"ws://h\"\n",
+                super::super::config::HEADER
+            )
         );
+        // The host's own keys and comments stay at the next start.
+        let mine = format!(
+            "{}\n# mine\nservices:\n  socket_uri: \"ws://h\"\nnetwork:\n  foo: 1\n",
+            super::super::config::HEADER
+        );
+        std::fs::write(&yaml, &mine).unwrap();
+        farm.build().unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), mine);
         assert!(root.join("_local/r14logs").is_dir());
 
         // An update: a plugin gone, nEVR changed; the server's sign-in stays.

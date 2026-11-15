@@ -439,7 +439,7 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     } else {
         (Vec::new(), false)
     };
-    let yaml = config::render(&cfg, &server, &plugins, local);
+    let yaml = config::edits(&cfg, &server, &plugins, local);
     let json = config::game_config(&cfg.publisher_lock);
     let game = Path::new(&v.root).join(paths::ARENA_DIR);
     let root = super::farm_root(dir);

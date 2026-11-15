@@ -102,7 +102,10 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
   - `root/`: the server's own game folder.
     - `bin/win10` is a copy of the game's files and plugins.
     - Everything else links to the installed game.
-    - `_local` has the server's `config.yaml`, `config.json` and sign-in.
+    - `_local` has the server's `config.yaml`, `config.json` and sign-in. `config.yaml` is
+      yours: at every start the Server host sets only the keys its page has (services,
+      account, network, guilds, mods) and keeps every other line. A field left empty on
+      the page leaves your own value there. `config.yaml.launcher.json` notes what it set.
   - `status.json`, `console.log` and `control`.
 
   The installed game itself never changes. A game or mod update never meets a file a server
