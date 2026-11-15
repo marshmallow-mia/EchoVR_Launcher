@@ -4536,7 +4536,7 @@ impl Dashboard {
             .galley(r.center() - g.size() / 2.0, g, design::TEXT);
         match self.platform {
             _ if host_only => {
-                let tip = "This PC only runs game servers: the pages for playing are away. Click to turn it off in Settings.";
+                let tip = "This PC only runs game servers, so the pages for playing are hidden. Click to turn it off in Settings.";
                 if kit.hot("host-only-chip", r, true, tip).0.clicked {
                     self.page = Page::Settings;
                 }

@@ -1067,7 +1067,9 @@ fn upload_with(
         }
         let resp = req.body(bundle).send().await.map_err(|e| {
             if e.is_timeout() && !e.is_connect() {
-                anyhow!("The upload took too long. Your connection may be busy: try again, or stop some servers first.")
+                anyhow!(
+                    "The upload took too long. Your connection may be busy: try again in a while."
+                )
             } else {
                 anyhow::Error::new(e).context("Couldn't reach the log upload service")
             }
