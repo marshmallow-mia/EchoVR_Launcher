@@ -197,10 +197,9 @@ pub(super) fn start(
                 };
                 answer(Ok(Value::Null));
             }
-            "proton" => {
-                setup::linux_server_setup(d, ctx);
-                answer(Ok(Value::Null));
-            }
+            // Answered once GE-Proton is there (or couldn't be got: the launcher says why),
+            // so the Doctor checks again then, not while it downloads.
+            "proton" => setup::linux_server_setup(d, ctx, move || answer(Ok(Value::Null))),
             "firewall" => {
                 let ports = firewall_ports(&Config::load());
                 let mut consent = setup::consent_asker(d.worker.tx(ctx));

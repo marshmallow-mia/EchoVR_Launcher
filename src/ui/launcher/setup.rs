@@ -763,9 +763,19 @@ pub(super) fn linux_setup(d: &mut Dashboard, ctx: &egui::Context) {
 
 /// Gets GE-Proton for the game servers alone (the Server host's Doctor). The servers run
 /// through it without Steam, each in a Wine prefix of its own, so unlike [`linux_setup`]
-/// this needs no Steam and leaves EchoXR and the game's prefix to PLAY.
-pub(super) fn linux_server_setup(d: &mut Dashboard, ctx: &egui::Context) {
+/// this needs no Steam and leaves EchoXR and the game's prefix to PLAY. `done` runs once it
+/// ended either way (the Doctor checks again then); a second click while it runs only
+/// waits for it.
+pub(super) fn linux_server_setup(
+    d: &mut Dashboard,
+    ctx: &egui::Context,
+    done: impl FnOnce() + Send + 'static,
+) {
     use crate::core::linux::echoxr;
+    if d.jobs.contains_key(LINUX_JOB) {
+        d.notify("GE-Proton is still being set up: the Doctor checks again once it is done");
+        return done();
+    }
     d.start_job(
         ctx,
         JobKind::Revive,
@@ -773,9 +783,13 @@ pub(super) fn linux_server_setup(d: &mut Dashboard, ctx: &egui::Context) {
         vec![Res::Vr],
         "Getting GE-Proton for the servers",
         "Preparing...",
-        move |cancel, on| match echoxr::fetch_proton(cancel, on) {
-            Ok(()) => JobResult::ServersLinuxReady,
-            Err(e) => job_err(e, "Couldn't get GE-Proton for the servers"),
+        move |cancel, on| {
+            let r = echoxr::fetch_proton(cancel, on);
+            done();
+            match r {
+                Ok(()) => JobResult::ServersLinuxReady,
+                Err(e) => job_err(e, "Couldn't get GE-Proton for the servers"),
+            }
         },
     );
 }
