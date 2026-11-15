@@ -181,12 +181,21 @@ pub fn main() -> i32 {
             last_look = Instant::now();
             let t = now();
             let _ = std::fs::write(super::dir().join(ALIVE), t.to_string());
+            let mut alerts = Vec::new();
             for s in &cfg.servers {
                 if let Some(st) = status::read(&s.dir()) {
-                    for a in watch.look(&st, s.run, t) {
-                        notify::send(&cfg.alerts, &a);
-                    }
+                    alerts.extend(watch.look(&st, s.run, t));
                 }
+            }
+            // Sent beside this loop: a slow Discord (up to 2 minutes a post) held up starts,
+            // stops and the time in ALIVE, so the page took the server host for gone.
+            if !alerts.is_empty() {
+                let to = cfg.alerts.clone();
+                std::thread::spawn(move || {
+                    for a in &alerts {
+                        notify::send(&to, a);
+                    }
+                });
             }
         }
         if workers.is_empty() && !cfg.servers.iter().any(|s| s.run) {

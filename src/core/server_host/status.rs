@@ -94,9 +94,10 @@ pub struct Status {
 }
 
 impl Status {
-    /// Whether the supervisor wrote it lately (else it is gone, and this is old).
+    /// Whether the supervisor wrote it lately (else it is gone, and this is old). Either
+    /// way round: after the clock went back, a status from "the future" is old too.
     pub fn fresh(&self, now: i64) -> bool {
-        now - self.updated <= 3 * HEARTBEAT_S
+        (now - self.updated).abs() <= 3 * HEARTBEAT_S
     }
 
     /// The overview's words for what it is doing.
@@ -315,6 +316,7 @@ mod tests {
         assert_eq!(read(dir.path()).unwrap(), s);
         assert!(s.fresh(140));
         assert!(!s.fresh(200));
+        assert!(!s.fresh(0));
         assert!(s.summary(200).starts_with("Not running"));
         assert_eq!(s.summary(110), "Ready");
         assert!(!State::InSession.idle());
