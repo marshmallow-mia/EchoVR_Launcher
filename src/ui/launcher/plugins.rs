@@ -58,6 +58,10 @@ pub(super) struct PluginsUi {
     /// When the catalogue was read (the built-in one is replaced when it can be).
     catalog_at: Option<std::time::Instant>,
     started: bool,
+    /// The installed plugins were read at least once (`list` is what is there).
+    listed: bool,
+    /// Host-only mode already asked to get (or turned on) the Server host this run.
+    pub(super) host_only_asked: bool,
     /// The library, scrolled (logical pixels), and which plugins it shows.
     library_scroll: f32,
     filter: Filter,
@@ -233,6 +237,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
         match m {
             Msg::Read(list) => {
                 d.plugins.list = list;
+                d.plugins.listed = true;
                 d.plugins
                     .views
                     .retain(|id, _| d.plugins.list.iter().any(|p| &p.page.id == id));
@@ -305,6 +310,7 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
         }
     }
     consent_answers(d, ctx);
+    host_only_wants_server_host(d, ctx);
     if let Some(ans) = d.dialogs.take(REMOVE_KEY) {
         if let (true, Some(id)) = (ans.is_yes(), d.plugins.remove_asked.take()) {
             // Got again later, it starts on the rail, and is asked about again.
@@ -3512,6 +3518,50 @@ pub(super) fn update_newest(d: &mut Dashboard, ctx: &egui::Context, id: &str) ->
     }
 }
 
+/// The plugin Host-only mode runs the servers with.
+const SERVER_HOST: &str = "server-host";
+
+/// Host-only mode without the Server host: once a run, it is offered ("Get Server host?",
+/// which says what it can do), or turned on again when it was turned off. Without the
+/// catalogue's entry (offline) it waits for the next catalogue.
+fn host_only_wants_server_host(d: &mut Dashboard, ctx: &egui::Context) {
+    if !d.state.host_only || d.plugins.host_only_asked || !d.plugins.listed {
+        return;
+    }
+    if d.plugins.busy.is_some() || d.plugins.staged.is_some() {
+        return;
+    }
+    if d.plugins.list.iter().any(|p| p.page.id == SERVER_HOST) {
+        d.plugins.host_only_asked = true;
+        // One the signed catalogue turned off stays off.
+        let blocked = d.plugins.list.iter().any(|p| {
+            p.page.id == SERVER_HOST
+                && d.plugins
+                    .catalog
+                    .as_ref()
+                    .is_some_and(|c| c.blocked_reason(&p.page.id, &p.page.version).is_some())
+        });
+        if is_off(d, SERVER_HOST) && !blocked {
+            set_off(d, SERVER_HOST, false);
+            d.notify("Server host turned on for Host-only mode");
+        }
+        return;
+    }
+    let Some(e) = d
+        .plugins
+        .catalog
+        .as_ref()
+        .and_then(|c| c.entry(SERVER_HOST))
+        .filter(|e| e.downloadable())
+        .cloned()
+    else {
+        return;
+    };
+    d.plugins.host_only_asked = true;
+    tracing::info!("host-only mode: offering the Server host {}", e.version);
+    get(d, ctx, e, "Server host added");
+}
+
 fn get(d: &mut Dashboard, ctx: &egui::Context, e: core::PluginEntry, done: &str) {
     d.plugins.busy = Some(e.id.clone());
     let done = done.to_string();
@@ -3982,6 +4032,48 @@ mod tests {
         let (s, _) = d.plugins.staged.as_ref().unwrap();
         let added = s.needs.missing(&needs);
         assert_eq!(added.lines(), ["Talk to stats.example.com"]);
+    }
+
+    #[test]
+    fn host_only_mode_turns_the_server_host_on_once() {
+        let root = tempfile::tempdir().unwrap();
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/plugins/server-host");
+        let dst = root.path().join(SERVER_HOST);
+        std::fs::create_dir_all(&dst).unwrap();
+        for f in ["plugin.json", "plugin.wasm"] {
+            std::fs::copy(src.join(f), dst.join(f)).unwrap();
+        }
+        // Snapshot mode: nothing is saved to the real launcher state.
+        let mut d = Dashboard {
+            demo: true,
+            ..Default::default()
+        };
+        let ctx = egui::Context::default();
+        d.plugins.list = core::installed_in(root.path());
+        assert!(d.plugins.list.iter().any(|p| p.page.id == SERVER_HOST));
+        d.state.plugins_off.insert(SERVER_HOST.into());
+
+        // Not in Host-only mode, or before the list is read: nothing.
+        d.plugins.listed = true;
+        host_only_wants_server_host(&mut d, &ctx);
+        d.state.host_only = true;
+        d.plugins.listed = false;
+        host_only_wants_server_host(&mut d, &ctx);
+        assert!(is_off(&d, SERVER_HOST) && !d.plugins.host_only_asked);
+
+        // Host-only mode: turned on again, once a run.
+        d.plugins.listed = true;
+        host_only_wants_server_host(&mut d, &ctx);
+        assert!(!is_off(&d, SERVER_HOST) && d.plugins.host_only_asked);
+        set_off(&mut d, SERVER_HOST, true);
+        host_only_wants_server_host(&mut d, &ctx);
+        assert!(is_off(&d, SERVER_HOST));
+
+        // Not installed, and no catalogue yet (offline): it waits for one.
+        d.plugins.list.clear();
+        d.plugins.host_only_asked = false;
+        host_only_wants_server_host(&mut d, &ctx);
+        assert!(!d.plugins.host_only_asked && d.plugins.busy.is_none());
     }
 
     #[test]
