@@ -2870,18 +2870,25 @@ struct CardInfo {
     meta: String,
     tags: Vec<(String, egui::Color32)>,
     summary: String,
+    /// The longer text for its tip; empty: the summary.
+    description: String,
     two_buttons: bool,
     /// More for its tip.
     note: Option<String>,
 }
 
 impl CardInfo {
-    /// The card's tip: its name, line and whole summary.
+    /// The card's tip: its name, line and its description, or else its whole summary.
     fn tip(&self) -> String {
-        let mut tip = if self.meta.is_empty() {
-            format!("{}\n{}", self.name, self.summary)
+        let text = if self.description.is_empty() {
+            &self.summary
         } else {
-            format!("{} ({})\n{}", self.name, self.meta, self.summary)
+            &self.description
+        };
+        let mut tip = if self.meta.is_empty() {
+            format!("{}\n{text}", self.name)
+        } else {
+            format!("{} ({})\n{text}", self.name, self.meta)
         };
         if let Some(note) = &self.note {
             tip.push_str(&format!("\n\n{note}"));
@@ -2947,6 +2954,7 @@ fn installed_info(d: &Dashboard, i: u8) -> CardInfo {
         meta: meta.join(" · "),
         tags,
         summary: p.page.summary.clone(),
+        description: p.page.description.clone(),
         two_buttons: update,
         note: (!p.warnings.is_empty())
             .then(|| "This plugin may not work right: tell its author (the launcher's log lists what's wrong).".into()),
@@ -2973,6 +2981,7 @@ fn offered_info(e: &core::PluginEntry) -> CardInfo {
         meta: meta.join(" · "),
         tags,
         summary: e.summary.clone(),
+        description: e.description.clone(),
         two_buttons: false,
         note: None,
     }
@@ -3547,6 +3556,7 @@ fn demo() -> PluginsUi {
                 id: p.id.clone(),
                 name: p.name.clone(),
                 summary: p.summary.clone(),
+                description: p.description.clone(),
                 author: p.author.clone(),
                 version: p.version.clone(),
                 url: format!("https://release.echovr.de/launcher/plugins/{}.zip", p.id),

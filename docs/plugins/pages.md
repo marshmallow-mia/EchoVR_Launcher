@@ -45,7 +45,8 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
   launcher's built-in draft is [../launcher/plugins.json](../launcher/plugins.json).
 - **A catalogue entry:** it names a zip with `plugin.json` at its root (or in one top folder) and its
   `sha256`, like a mod: `id`, `name`, `summary`, `author`, `version`, `url`, `sha256`, `homepage`,
-  and `icon` (as in `plugin.json`: the card's icon before the plugin is got).
+  and `icon` (as in `plugin.json`: the card's icon before the plugin is got). `description`
+  is optional, as in `plugin.json`.
   - A different `version` puts **Update** on the plugin.
   - An update keeps the plugin's settings files.
   - **When the catalogue is read:** at the start, every 30 seconds while the launcher is open
@@ -167,6 +168,9 @@ the signature before beside the new one).
 ```
 
 - **`id`:** lowercase letters, digits, `.`, `-`, `_`. **`name`** is the tab's name.
+- **`summary`:** what the Plugins page's card shows, best in one or two lines.
+  **`description`** (optional): more on what it does, in the card's tip in place
+  of the summary. Older launchers ignore it.
 - **`icon`:** the tab's icon: `plugin`, `calendar`, `globe` or `controller`.
 - **`settings`:** what the plugin keeps, in the format of mods' settings
   ([settings.md](settings.md)): keys, types, defaults, checks.

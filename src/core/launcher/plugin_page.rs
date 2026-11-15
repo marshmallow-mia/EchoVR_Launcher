@@ -32,6 +32,9 @@ pub struct PluginPage {
     pub version: String,
     pub author: String,
     pub summary: String,
+    /// Optional: more on what it does than `summary`, for its card's tip on the Plugins
+    /// page (the card shows the summary).
+    pub description: String,
     /// Its rail tab's icon, one of [`ICONS`].
     pub icon: String,
     pub settings: Option<Settings>,
@@ -355,6 +358,7 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
                 version: s(&v, "version"),
                 author: s(&v, "author"),
                 summary: s(&v, "summary"),
+                description: s(&v, "description"),
                 icon,
                 settings,
                 wasm,
@@ -486,6 +490,7 @@ pub fn parse(text: &str) -> (Option<PluginPage>, Vec<Warning>) {
         version: s(&v, "version"),
         author: s(&v, "author"),
         summary: s(&v, "summary"),
+        description: s(&v, "description"),
         icon,
         settings,
         data,
@@ -1096,6 +1101,31 @@ mod tests {
         let p = p.unwrap();
         assert!(p.is_code());
         assert_eq!(p.permissions["services"][0], "server-host");
+    }
+
+    /// A plugin's longer `description` (its card's tip) is read beside its summary, in
+    /// both schemas; without one it is empty and the tip has the summary.
+    #[test]
+    fn reads_a_description() {
+        for schema in [1, 2] {
+            let wasm = if schema == 2 {
+                r#","wasm":"plugin.wasm""#
+            } else {
+                r#","page":{"columns":[[]]}"#
+            };
+            let text = format!(
+                r#"{{"schema":{schema},"id":"x","name":"X","summary":"Short.","description":"Longer."{wasm}}}"#
+            );
+            let (p, w) = parse(&text);
+            assert!(w.is_empty(), "{w:?}");
+            let p = p.unwrap();
+            assert_eq!(
+                (p.summary.as_str(), p.description.as_str()),
+                ("Short.", "Longer.")
+            );
+            let (p, _) = parse(&text.replace(r#","description":"Longer.""#, ""));
+            assert_eq!(p.unwrap().description, "");
+        }
     }
 
     /// The Controllers plugin reads without a warning, with one form per section, its

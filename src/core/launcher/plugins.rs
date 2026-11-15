@@ -493,6 +493,8 @@ pub struct PluginEntry {
     pub id: String,
     pub name: String,
     pub summary: String,
+    /// Optional: the longer text for its card's tip, as `plugin.json`'s `description`.
+    pub description: String,
     pub author: String,
     pub version: String,
     /// A zip with `plugin.json` at its root: relative to the download mirrors, or https on
