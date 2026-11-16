@@ -861,6 +861,32 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
                 .error("Couldn't change it", &format!("{e:#}"), Default::default()),
         }
     }
+    y += h + dz(6.0);
+    // nEVR's channel Echo VR updates to on this PC (the Quest has its own, on Play): stable
+    // unless ticked. A switch is an update of Echo VR's, offered like any other.
+    use crate::core::nevr_release::NevrChannel;
+    let mut beta = d.state.nevr_channel == NevrChannel::Beta;
+    let (flipped, h) = option(
+        kit,
+        "nevr-beta",
+        &mut beta,
+        "nEVR beta",
+        "Echo VR updates to nEVR's newest builds before they reach stable. They can have bugs.",
+        x,
+        y,
+        w,
+        true,
+        "",
+    );
+    if flipped {
+        d.state.nevr_channel = if beta {
+            NevrChannel::Beta
+        } else {
+            NevrChannel::Stable
+        };
+        d.save();
+        d.updates.check_soon();
+    }
     y += h + dz(12.0);
     // A test channel for the PC update (launcher.json's update_manifest, or the
     // environment's ECHOVR_UPDATE_MANIFEST): said here while it applies.

@@ -35,11 +35,14 @@ pub const CATALOG_INTERVAL: Duration = Duration::from_secs(30);
 pub enum Finding {
     /// A newer launcher release.
     Launcher { version: String, url: String },
-    /// An installed Echo VR's update manifest changed (`hash`: the new one's).
+    /// An installed Echo VR's update manifest changed (`hash`: the new one's). `nevr`: the
+    /// nEVR release it brings when that isn't the one installed (a new one on the followed
+    /// channel of nEVR's, or the other channel picked), and whether it is a newer one.
     Game {
         id: String,
         name: String,
         hash: String,
+        nevr: Option<(String, bool)>,
     },
     /// A catalogue plugin in an installed version has another version in the catalogue.
     Plugin {
@@ -88,6 +91,17 @@ impl Finding {
             Finding::Launcher { version, .. } => {
                 format!("Echo VR Launcher {version} is available")
             }
+            // As the Quest's: "nEVR 6.16.5 is out for your Quest".
+            Finding::Game {
+                name,
+                nevr: Some((v, true)),
+                ..
+            } => format!("nEVR {v} is out for {name}"),
+            Finding::Game {
+                name,
+                nevr: Some((v, false)),
+                ..
+            } => format!("{name} can update to nEVR {v}"),
             Finding::Game { name, .. } => format!("An update for {name} is available"),
             Finding::Plugin {
                 version_name,
@@ -144,6 +158,31 @@ fn fake_game_update() -> bool {
     cfg!(debug_assertions) && std::env::var_os("ECHOVR_FAKE_UPDATE").is_some()
 }
 
+/// The nEVR release the update `m` brings to `v`, when it names one (its channel's, read
+/// already) and `v` has another one, and whether that is newer. Read only for an update
+/// found, so the check doesn't read every nEVR DLL every time.
+fn nevr_brought(
+    m: &crate::core::manifest::Manifest,
+    v: &InstalledVersion,
+) -> Option<(String, bool)> {
+    let to = m
+        .nevr_release(crate::core::nevr_release::PLATFORM)
+        .filter(|r| crate::core::nevr_release::semver_ok(r))?;
+    let dll = std::fs::read(v.bin_dir().join(mods::SLOT)).ok();
+    let have = dll.and_then(|b| super::launcher::nevr::version_in(&b));
+    nevr_offer(to, have.as_deref())
+}
+
+/// Pure: [`nevr_brought`] for nEVR `to` with `have` installed (`None`: no nEVR, or one
+/// without a version).
+fn nevr_offer(to: &str, have: Option<&str>) -> Option<(String, bool)> {
+    match have {
+        Some(h) if h == to => None,
+        Some(h) => Some((to.to_string(), update_check::is_newer(to, h))),
+        None => Some((to.to_string(), true)),
+    }
+}
+
 /// Looks for updates (network; seconds). Failures leave a kind out quietly.
 pub fn check(state: &LauncherState) -> Check {
     let mut out = Check {
@@ -166,7 +205,7 @@ pub fn check(state: &LauncherState) -> Check {
         };
         // The live build's: main's with the channel's overlays (pc_update::fetch_manifest).
         match crate::core::pc_update::fetch_manifest(&url) {
-            Ok((_, text)) => {
+            Ok((m, text)) => {
                 let hash = sha256_hex(text.as_bytes());
                 match game_state(v.manifest_sha256.as_deref(), &hash, fake_game_update()) {
                     GameState::Baseline => out.baselines.push((v.id.clone(), hash)),
@@ -174,6 +213,7 @@ pub fn check(state: &LauncherState) -> Check {
                         id: v.id.clone(),
                         name: v.name.clone(),
                         hash,
+                        nevr: nevr_brought(&m, v),
                     }),
                     GameState::Current => {}
                 }
@@ -507,6 +547,41 @@ mod tests {
     use super::*;
     use crate::core::launcher::mods::{ModEntry, Plugin};
 
+    #[test]
+    fn says_which_nevr_an_update_brings() {
+        // A new one on the channel followed: as the Quest's.
+        assert_eq!(
+            nevr_offer("6.17.0", Some("6.16.5")),
+            Some(("6.17.0".into(), true))
+        );
+        // Back to Stable from Beta: an older one.
+        assert_eq!(
+            nevr_offer("6.16.5", Some("6.17.0")),
+            Some(("6.16.5".into(), false))
+        );
+        assert_eq!(nevr_offer("6.16.5", None), Some(("6.16.5".into(), true)));
+        // The same nEVR: only other files changed.
+        assert_eq!(nevr_offer("6.16.5", Some("6.16.5")), None);
+        let game = |nevr| Finding::Game {
+            id: "pc".into(),
+            name: "Echo VR (PC, latest)".into(),
+            hash: "ab".into(),
+            nevr,
+        };
+        assert_eq!(
+            game(Some(("6.17.0".into(), true))).text(),
+            "nEVR 6.17.0 is out for Echo VR (PC, latest)"
+        );
+        assert_eq!(
+            game(Some(("6.16.5".into(), false))).text(),
+            "Echo VR (PC, latest) can update to nEVR 6.16.5"
+        );
+        assert_eq!(
+            game(None).text(),
+            "An update for Echo VR (PC, latest) is available"
+        );
+    }
+
     fn plugin(file: &str, source: Source) -> Plugin {
         Plugin {
             file: file.into(),
@@ -545,6 +620,7 @@ mod tests {
             id: "pc-latest".into(),
             name: "Echo VR".into(),
             hash: "cd".into(),
+            nevr: None,
         };
         assert!(!held(&state, &f));
         state.holds.insert("game:pc-latest".into(), "cd".into());
@@ -631,6 +707,7 @@ mod tests {
             id: "pc".into(),
             name: "Echo VR".into(),
             hash: "ab".into(),
+            nevr: None,
         };
         assert_eq!(
             not_yet_announced_in(&file, std::slice::from_ref(&launcher), false),
@@ -690,6 +767,7 @@ mod tests {
             id: "pc".into(),
             name: "Echo VR (PC, latest)".into(),
             hash: "ab".into(),
+            nevr: None,
         }];
         let (s, b) = notification_text(&one);
         assert_eq!(s, "Update available");

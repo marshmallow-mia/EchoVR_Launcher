@@ -1187,7 +1187,7 @@ fn picker_face(
 /// now. A pick is kept and the headset's offer read again, so the orange button says when
 /// it brings another release.
 fn quest_channel_picker(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
-    use crate::core::launcher::quest::QuestChannel;
+    use crate::core::nevr_release::NevrChannel;
     let current = d.state.quest_channel;
     let busy = d.quest_conn.checking || d.quest_busy || d.busy_with(&[Res::Quest]).is_some();
     let (enabled, tip) = if d.quest_game().is_running() {
@@ -1204,7 +1204,7 @@ fn quest_channel_picker(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         return;
     };
     let info = d.quest_info.as_ref();
-    let items: Vec<MenuItem> = QuestChannel::ALL
+    let items: Vec<MenuItem> = NevrChannel::ALL
         .iter()
         .map(|&c| {
             // None: nEVR's manifest wasn't read (no headset yet).
@@ -1234,7 +1234,7 @@ fn quest_channel_picker(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let anchor = egui::Rect::from_min_size(r.min, egui::vec2(w, r.height()));
     if let Some(&c) = kit
         .menu_at(QUEST_CHANNEL_MENU, anchor, &items)
-        .and_then(|i| QuestChannel::ALL.get(i))
+        .and_then(|i| NevrChannel::ALL.get(i))
     {
         if c != current {
             d.state.quest_channel = c;

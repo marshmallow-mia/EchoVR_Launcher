@@ -655,6 +655,8 @@ pub enum SnapVariant {
     NoticeAction,
     /// A notice about something that went wrong (red, with a close).
     NoticeError,
+    /// Echo VR's update brings another nEVR: said like the Quest's, with Update.
+    NoticeNevr,
     /// Advanced settings: "Switch to Beta?" asked.
     DialogChannel,
     /// Play: Windows blocked the mod loader, allow it?
@@ -1906,8 +1908,14 @@ impl Dashboard {
             nevr: Some("6.2.0".into()),
             offered: Some(("6.2.0".into(), 60200999)),
             channels: vec![
-                (quest::QuestChannel::Stable, Some("6.2.0".into())),
-                (quest::QuestChannel::Beta, Some("6.3.0".into())),
+                (
+                    crate::core::nevr_release::NevrChannel::Stable,
+                    Some("6.2.0".into()),
+                ),
+                (
+                    crate::core::nevr_release::NevrChannel::Beta,
+                    Some("6.3.0".into()),
+                ),
             ],
             wifi_ip: Some(std::net::Ipv4Addr::new(192, 168, 178, 45)),
             over_network: false,
@@ -2049,6 +2057,7 @@ impl Dashboard {
                         id: "pc-latest".into(),
                         name: "Echo VR (PC, latest)".into(),
                         hash: "ab".into(),
+                        nevr: Some(("6.16.5".into(), true)),
                     },
                     Finding::Plugin {
                         version_id: "pc-latest".into(),
@@ -2227,6 +2236,17 @@ impl Dashboard {
                     notices::Action::UndoCard,
                 );
                 self.notify("Invited Mia");
+            }
+            Some(SnapVariant::NoticeNevr) => {
+                use crate::core::updates::Finding;
+                let f = Finding::Game {
+                    id: "pc-latest".into(),
+                    name: "Echo VR (PC, latest)".into(),
+                    hash: "ab".into(),
+                    nevr: Some(("6.17.0".into(), true)),
+                };
+                self.updates.findings = vec![f.clone()];
+                self.notify_with(&f.text(), "Update", notices::Action::Update(vec![f]));
             }
             Some(SnapVariant::NoticeError) => {
                 self.notify_error("Couldn't invite Mia: EchoVRCE didn't answer. Try again in a moment")

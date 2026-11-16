@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::catalog::{Catalog, VersionEntry};
 use super::update_check::Channel;
+use crate::core::nevr_release::NevrChannel;
 use crate::core::paths;
 
 pub const SCHEMA: u32 = 3;
@@ -197,7 +198,10 @@ pub struct LauncherState {
     /// Reach the Quest's ADB over the network too (turned on over USB once).
     pub quest_adb_network: bool,
     /// nEVR's channel the Quest installs from (Play's picker): stable unless picked.
-    pub quest_channel: super::quest::QuestChannel,
+    pub quest_channel: NevrChannel,
+    /// nEVR's channel Echo VR on the PC updates to where its update follows nEVR's channels
+    /// (Settings' "nEVR beta"): stable unless picked.
+    pub nevr_channel: NevrChannel,
     /// The EchoVRCE account echovrce.com inside the launcher was signed in for.
     pub vrce_site_account: Option<String>,
     /// Linux: the Steam shortcut that starts Echo VR (its appid), once set up.
@@ -393,6 +397,7 @@ impl Default for LauncherState {
             quest_ip: None,
             quest_adb_network: false,
             quest_channel: Default::default(),
+            nevr_channel: Default::default(),
             vrce_site_account: None,
             linux_appid: None,
             steam_flatpak_override: false,
@@ -453,6 +458,7 @@ impl LauncherState {
         let s = Self::load_upgraded(&state_file());
         crate::core::pc_update::set_channel(s.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(s.launcher_channel);
+        crate::core::pc_update::set_nevr_channel(s.nevr_channel);
         super::quest::set_channel(s.quest_channel);
         super::dev_code::set_all(&s.dev_codes);
         super::prefs::set(&s);
@@ -523,6 +529,7 @@ impl LauncherState {
     pub fn save(&self) -> Result<()> {
         crate::core::pc_update::set_channel(self.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(self.launcher_channel);
+        crate::core::pc_update::set_nevr_channel(self.nevr_channel);
         super::quest::set_channel(self.quest_channel);
         super::dev_code::set_all(&self.dev_codes);
         super::prefs::set(self);
@@ -966,25 +973,47 @@ mod tests {
 
     #[test]
     fn keeps_the_quest_channel() {
-        use super::super::quest::QuestChannel;
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("launcher.json");
         assert_eq!(
             LauncherState::load_from(&f).quest_channel,
-            QuestChannel::Stable
+            NevrChannel::Stable
         );
         std::fs::write(&f, r#"{"schema":3}"#).unwrap();
         let mut s = LauncherState::load_from(&f);
-        assert_eq!(s.quest_channel, QuestChannel::Stable);
-        s.quest_channel = QuestChannel::Beta;
+        assert_eq!(s.quest_channel, NevrChannel::Stable);
+        s.quest_channel = NevrChannel::Beta;
         s.save_to(&f).unwrap();
         assert!(std::fs::read_to_string(&f)
             .unwrap()
             .contains(r#""quest_channel": "beta""#));
         assert_eq!(
             LauncherState::load_from(&f).quest_channel,
-            QuestChannel::Beta
+            NevrChannel::Beta
         );
+    }
+
+    #[test]
+    fn echo_vr_follows_nevr_stable_unless_beta_is_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        assert_eq!(
+            LauncherState::load_from(&f).nevr_channel,
+            NevrChannel::Stable
+        );
+        // From before the setting (when Main's update followed nEVR's beta): stable.
+        std::fs::write(&f, r#"{"schema":3}"#).unwrap();
+        let mut s = LauncherState::load_from(&f);
+        assert_eq!(s.nevr_channel, NevrChannel::Stable);
+        s.nevr_channel = NevrChannel::Beta;
+        s.save_to(&f).unwrap();
+        assert!(std::fs::read_to_string(&f)
+            .unwrap()
+            .contains(r#""nevr_channel": "beta""#));
+        let s = LauncherState::load_from(&f);
+        assert_eq!(s.nevr_channel, NevrChannel::Beta);
+        // Each on its own: the Quest's stays stable.
+        assert_eq!(s.quest_channel, NevrChannel::Stable);
     }
 
     fn catalog() -> Catalog {

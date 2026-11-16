@@ -20,7 +20,9 @@
 //! The PC update (main's or a channel's overlay) may name a release of nEVR from nEVR's own
 //! signed releases ([`crate::core::nevr_release`]) per platform, which then replaces its
 //! nEVR line; `none` turns off one the overlay would inherit. A channel of nEVR's (`beta`)
-//! names the release that channel has when the update is read:
+//! names the release that channel has when the update is read. For `stable` and `beta` the
+//! player's pick of the two is taken instead (Settings' "nEVR beta",
+//! `pc_update::channel_for`); launchers before that setting follow the name as given:
 //!
 //! ```text
 //!   # nEVR windows: 5.8.1

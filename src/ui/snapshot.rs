@@ -316,6 +316,7 @@ pub fn shots() -> Vec<Shot> {
         ("mods_vd", Page::Mods, SnapVariant::SettingsVirtualDesktop),
         ("play_vd_switch", Page::Play, SnapVariant::DialogVdSwitch),
         ("play_notice_action", Page::Play, SnapVariant::NoticeAction),
+        ("play_notice_nevr", Page::Play, SnapVariant::NoticeNevr),
         (
             "servers_notice_error",
             Page::Servers,
