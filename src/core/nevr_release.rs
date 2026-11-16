@@ -275,10 +275,59 @@ pub struct GameData {
     pub contents: Vec<Member>,
 }
 
-/// nEVR's channels a Quest can follow, in the order the launcher offers them.
-pub const QUEST_CHANNELS: [&str; 2] = ["stable", "beta"];
+/// One of nEVR's channels, the way a player follows it: the Quest (Play's picker,
+/// launcher.json's `quest_channel`) and Echo VR on the PC (Settings' "nEVR beta",
+/// `nevr_channel`), each on its own. Stable unless picked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NevrChannel {
+    /// nEVR's tested releases; what Crafter's installer installs too.
+    #[default]
+    Stable,
+    Beta,
+}
 
-/// What nEVR's signed manifest offers a Quest: every one of [`QUEST_CHANNELS`] with the
+/// Unknown names (a channel a later launcher knows) are stable.
+impl<'de> serde::Deserialize<'de> for NevrChannel {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let name = <String as serde::Deserialize>::deserialize(d)?;
+        Ok(NevrChannel::ALL
+            .into_iter()
+            .find(|c| c.name() == name)
+            .unwrap_or_default())
+    }
+}
+
+impl NevrChannel {
+    /// In the order the launcher offers them.
+    pub const ALL: [NevrChannel; 2] = [NevrChannel::Stable, NevrChannel::Beta];
+
+    /// nEVR's name for it ("stable"), as in its manifest and launcher.json.
+    pub fn name(self) -> &'static str {
+        match self {
+            NevrChannel::Stable => "stable",
+            NevrChannel::Beta => "beta",
+        }
+    }
+
+    /// "Stable"
+    pub fn label(self) -> &'static str {
+        match self {
+            NevrChannel::Stable => "Stable",
+            NevrChannel::Beta => "Beta",
+        }
+    }
+
+    /// What following it means.
+    pub fn note(self) -> &'static str {
+        match self {
+            NevrChannel::Stable => "nEVR's tested releases",
+            NevrChannel::Beta => "nEVR's newest builds. They can have bugs",
+        }
+    }
+}
+
+/// What nEVR's signed manifest offers a Quest: every one of [`NevrChannel::ALL`] with the
 /// release it has now (`None` when it has none with a Quest APK the launcher can check),
 /// and the release of the channel the player follows, or why there is none.
 #[derive(Debug)]
@@ -299,9 +348,12 @@ pub fn quest_offer(channel: &str, cancel: &AtomicBool) -> Result<QuestOffer, Ref
 fn quest_offer_in(m: &Value, channel: &str, base: &str) -> QuestOffer {
     let release_of = |name: &str| channel_in(m, name).and_then(|v| quest_in(m, &v, base));
     QuestOffer {
-        channels: QUEST_CHANNELS
+        channels: NevrChannel::ALL
             .iter()
-            .map(|c| (c.to_string(), release_of(c).ok().map(|r| r.version)))
+            .map(|c| {
+                let name = c.name();
+                (name.to_string(), release_of(name).ok().map(|r| r.version))
+            })
             .collect(),
         release: release_of(channel),
     }
@@ -1001,6 +1053,23 @@ mod tests {
     /// The key that signs upstream's fixtures (docs/reference/release-verification/), never a release.
     const TEST_KEY: &str = "RWTHthwA6C/csRKFPrZPxjAVZFImiwbgTWoK+P0qiEHQ4mnKdzhbzOqA";
     const BEFORE: &str = "2026-10-26T12:00:00Z";
+
+    #[test]
+    fn a_channel_is_stable_unless_picked() {
+        assert_eq!(NevrChannel::default(), NevrChannel::Stable);
+        let names: Vec<&str> = NevrChannel::ALL.iter().map(|c| c.name()).collect();
+        assert_eq!(names, ["stable", "beta"]);
+        for c in NevrChannel::ALL {
+            let json = serde_json::to_string(&c).unwrap();
+            assert_eq!(json, format!("\"{}\"", c.name()));
+            assert_eq!(serde_json::from_str::<NevrChannel>(&json).unwrap(), c);
+        }
+        // A channel a later launcher knows: stable.
+        assert_eq!(
+            serde_json::from_str::<NevrChannel>("\"nightly\"").unwrap(),
+            NevrChannel::Stable
+        );
+    }
 
     fn fixture(name: &str) -> (Vec<u8>, String) {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))

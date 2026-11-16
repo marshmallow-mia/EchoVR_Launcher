@@ -2,7 +2,7 @@
 //! updated over adb; which version is installed, and starting/stopping it.
 //!
 //! Which release goes onto the headset is the player's pick of nEVR's channels (stable or
-//! beta, [`QuestChannel`], Play's picker), straight from nEVR's signed manifest the way
+//! beta, [`NevrChannel`], Play's picker), straight from nEVR's signed manifest the way
 //! Crafter's Quest installer does it ([`nevr_release::quest_offer`]): nothing of ours in
 //! between. The APK is the same for every player of a channel.
 
@@ -11,13 +11,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
 
 use super::versions::Step;
 use crate::core::adb::{self, PACKAGE};
 use crate::core::download::{self, Progress};
 use crate::core::error::UiError;
-use crate::core::nevr_release::{self, QuestRelease};
+use crate::core::nevr_release::{self, NevrChannel, QuestRelease};
 use crate::core::paths;
 use crate::core::quest_install::{self, ApkInstall, MAIN_USER};
 
@@ -31,64 +30,15 @@ pub enum Outcome {
     UpToDate(String),
 }
 
-/// nEVR's channel a Quest follows: Play's picker, launcher.json's `quest_channel`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum QuestChannel {
-    /// nEVR's tested releases; what Crafter's installer installs too.
-    #[default]
-    Stable,
-    Beta,
-}
-
-/// Unknown names (a channel a later launcher knows) are stable.
-impl<'de> Deserialize<'de> for QuestChannel {
-    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        let name = String::deserialize(d)?;
-        Ok(QuestChannel::ALL
-            .into_iter()
-            .find(|c| c.name() == name)
-            .unwrap_or_default())
-    }
-}
-
-impl QuestChannel {
-    pub const ALL: [QuestChannel; 2] = [QuestChannel::Stable, QuestChannel::Beta];
-
-    /// nEVR's name for it ("stable"), as in its manifest and launcher.json.
-    pub fn name(self) -> &'static str {
-        match self {
-            QuestChannel::Stable => "stable",
-            QuestChannel::Beta => "beta",
-        }
-    }
-
-    /// "Stable"
-    pub fn label(self) -> &'static str {
-        match self {
-            QuestChannel::Stable => "Stable",
-            QuestChannel::Beta => "Beta",
-        }
-    }
-
-    /// What following it means.
-    pub fn note(self) -> &'static str {
-        match self {
-            QuestChannel::Stable => "nEVR's tested releases",
-            QuestChannel::Beta => "nEVR's newest builds. They can have bugs",
-        }
-    }
-}
-
-static CHANNEL: Mutex<QuestChannel> = Mutex::new(QuestChannel::Stable);
+static CHANNEL: Mutex<NevrChannel> = Mutex::new(NevrChannel::Stable);
 
 /// Takes launcher.json's Quest channel; called whenever the settings are loaded or saved.
-pub fn set_channel(channel: QuestChannel) {
+pub fn set_channel(channel: NevrChannel) {
     *CHANNEL.lock().unwrap_or_else(|p| p.into_inner()) = channel;
 }
 
 /// The channel the Quest follows now.
-pub fn channel() -> QuestChannel {
+pub fn channel() -> NevrChannel {
     *CHANNEL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
@@ -345,7 +295,7 @@ pub struct QuestInfo {
     pub offered: Option<(String, u64)>,
     /// nEVR's channels and the release each has now (`None`: no Quest release there), when
     /// its manifest was read.
-    pub channels: Vec<(QuestChannel, Option<String>)>,
+    pub channels: Vec<(NevrChannel, Option<String>)>,
     /// Its Wi-Fi address, when it was read over USB.
     pub wifi_ip: Option<std::net::Ipv4Addr>,
     /// ADB reaches it over the network rather than USB.
@@ -421,7 +371,7 @@ pub fn info() -> Result<QuestInfo> {
     let (offered, channels) = match offer(&AtomicBool::new(false)) {
         Ok(o) => (
             o.release.ok().map(|r| (r.version, r.version_code)),
-            QuestChannel::ALL
+            NevrChannel::ALL
                 .into_iter()
                 .map(|c| {
                     let v = o.channels.iter().find(|(n, _)| n == c.name());
@@ -726,23 +676,6 @@ mod tests {
             Some("com.readyatdawn.r15/com.unity3d.player.UnityPlayerActivity")
         );
         assert_eq!(parse_activity("No activity found"), None);
-    }
-
-    #[test]
-    fn the_quest_channel_is_stable_unless_picked() {
-        assert_eq!(QuestChannel::default(), QuestChannel::Stable);
-        let names: Vec<&str> = QuestChannel::ALL.iter().map(|c| c.name()).collect();
-        assert_eq!(names, nevr_release::QUEST_CHANNELS);
-        for c in QuestChannel::ALL {
-            let json = serde_json::to_string(&c).unwrap();
-            assert_eq!(json, format!("\"{}\"", c.name()));
-            assert_eq!(serde_json::from_str::<QuestChannel>(&json).unwrap(), c);
-        }
-        // A channel a later launcher knows: stable.
-        assert_eq!(
-            serde_json::from_str::<QuestChannel>("\"nightly\"").unwrap(),
-            QuestChannel::Stable
-        );
     }
 
     #[test]
