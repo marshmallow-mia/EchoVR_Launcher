@@ -866,7 +866,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
     // unless ticked. A switch is an update of Echo VR's, offered like any other.
     use crate::core::nevr_release::NevrChannel;
     let mut beta = d.state.nevr_channel == NevrChannel::Beta;
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "nevr-beta",
         &mut beta,
