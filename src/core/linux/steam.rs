@@ -809,7 +809,15 @@ mod tests {
     fn an_ended_steam_is_not_steam_running() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("steam");
-        std::fs::copy("/bin/true", &fake).unwrap();
+        // NixOS has no /bin/true: take the first `true` on PATH.
+        let truth = std::env::var_os("PATH")
+            .and_then(|p| {
+                std::env::split_paths(&p)
+                    .map(|d| d.join("true"))
+                    .find(|t| t.is_file())
+            })
+            .unwrap_or_else(|| "/bin/true".into());
+        std::fs::copy(truth, &fake).unwrap();
         let mut child = std::process::Command::new(&fake).spawn().unwrap();
         let pid = child.id();
         let zombie = || {

@@ -8,7 +8,8 @@
 //! start a fresh one): the script starts it again until it is stopped. On Linux it runs the
 //! server in a Wine prefix of its own, not the game's (see `linux::echoxr::server_compat_data`).
 //! The launcher writes that folder only in this step: its keeper and PLAY keep to the
-//! game's own `_local/config.yaml`.
+//! game's own `_local/config.yaml`. The step sets only its own keys in that
+//! `config.yaml`: what the host added by hand stays ([`super::yaml_keys`]).
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,7 @@ use serde_json::Value;
 
 use super::nevr::{self, PluginLine};
 use super::store::InstalledVersion;
+use super::yaml_keys::{self, Edit};
 
 /// What a `host` step sets (its templates filled in).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -88,63 +90,72 @@ pub(crate) fn quote(text: &str) -> String {
     serde_json::to_string(&text.replace("${", "$${")).unwrap_or_else(|_| "\"\"".into())
 }
 
-/// Pure: the server's `config.yaml`: `h`'s services and account, then `plugins`.
-pub fn render(h: &Host, plugins: &[PluginLine], local: bool) -> String {
-    let mut out = String::from(
-        "# A game server's own config, written by an Echo VR launcher plugin (host step).\n\
-         # The launcher leaves it alone otherwise: change it in the plugin, or by hand.\n",
-    );
-    let section = |out: &mut String, name: &str, pairs: &[(&str, &str)]| {
-        let set: Vec<_> = pairs.iter().filter(|(_, v)| !v.trim().is_empty()).collect();
-        if set.is_empty() {
-            return;
-        }
-        out.push_str(&format!("{name}:\n"));
-        for (k, v) in set {
-            out.push_str(&format!("  {k}: {}\n", quote(v.trim())));
-        }
-    };
+/// The line the step keeps at the top of the server's `config.yaml`.
+const HEADER: &str = "# A game server's config: an Echo VR launcher plugin's host step sets its keys here. Others you add stay.";
+
+/// How the step's whole files started: such a file was all its own.
+const OLD_HEADERS: &[&str] = &[
+    "# A game server's own config, written by an Echo VR launcher plugin",
+    "# The launcher leaves it alone otherwise",
+];
+
+/// Pure: the keys the server's `config.yaml` gets: `h`'s services and account, then
+/// `plugins`; none where `h` leaves one empty (the host's own stays).
+pub fn edits(h: &Host, plugins: &[PluginLine], local: bool) -> Vec<Edit> {
+    let some = |v: &str| (!v.trim().is_empty()).then(|| quote(v.trim()));
     // A server without a login address never signs in (nEVR refuses to boot it): EchoVRCE's
     // when the plugin left it empty.
     let socket_uri = match h.socket_uri.trim() {
         "" => crate::core::server_host::SOCKET_URI,
         s => s,
     };
-    section(
-        &mut out,
-        "services",
-        &[
-            ("socket_uri", socket_uri),
-            ("serverdb_uri", &h.serverdb_uri),
-        ],
-    );
-    section(&mut out, "identity", &[("discord_id", &h.discord_id)]);
-    // The password as given: spaces may belong to it.
-    let mut auth = Vec::new();
-    for (k, v) in [
-        ("http_uri", h.http_uri.trim()),
-        ("http_key", h.http_key.trim()),
-        ("server_key", h.server_key.trim()),
-    ] {
-        if !v.is_empty() {
-            auth.push(format!("  {k}: {}\n", quote(v)));
-        }
+    vec![
+        Edit::inline(&["services", "socket_uri"], quote(socket_uri)),
+        Edit::maybe(&["services", "serverdb_uri"], some(&h.serverdb_uri)),
+        Edit::maybe(&["identity", "discord_id"], some(&h.discord_id)),
+        Edit::maybe(&["auth", "http_uri"], some(&h.http_uri)),
+        Edit::maybe(&["auth", "http_key"], some(&h.http_key)),
+        Edit::maybe(&["auth", "server_key"], some(&h.server_key)),
+        // The password as given: spaces may belong to it.
+        Edit::maybe(
+            &["auth", "password"],
+            (!h.password.is_empty()).then(|| quote(&h.password)),
+        ),
+        Edit::maybe(&["network", "regions"], list(&h.regions)),
+        Edit::maybe(&["guilds"], list(&h.guilds)),
+        Edit::maybe(
+            &[super::mods::LOCAL_PLUGINS_KEY],
+            local.then(|| "true".to_string()),
+        ),
+        Edit::set(&["plugins"], nevr::plugin_list(plugins)),
+    ]
+}
+
+/// Sets `edits` in the `config.yaml` at `path`, readable only by this user where the OS can
+/// say (it holds the server's password). One the step wrote whole is started again.
+fn write_config(path: &Path, edits: &[Edit]) -> Result<()> {
+    if !path.exists() {
+        // Made private before the password is in it (an edit keeps a file's permissions).
+        write_private(path, "")?;
     }
-    if !h.password.is_empty() {
-        auth.push(format!("  password: {}\n", quote(&h.password)));
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let old = text.lines().any(|l| {
+        OLD_HEADERS
+            .iter()
+            .any(|h| l.trim_start_matches('\u{feff}').starts_with(h))
+    });
+    if old {
+        let _ = std::fs::remove_file(yaml_keys::notes_path(path));
+        yaml_keys::apply_from(path, "", edits, HEADER, OLD_HEADERS)?;
+    } else {
+        yaml_keys::apply(path, edits, HEADER, OLD_HEADERS)?;
     }
-    if !auth.is_empty() {
-        out.push_str("auth:\n");
-        out.extend(auth);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
-    if let Some(regions) = list(&h.regions) {
-        out.push_str(&format!("network:\n  regions: {regions}\n"));
-    }
-    if let Some(guilds) = list(&h.guilds) {
-        out.push_str(&format!("guilds: {guilds}\n"));
-    }
-    out.push_str(&nevr::render_plugin_list(plugins, local));
-    out
+    Ok(())
 }
 
 /// Writes `h`'s server setup into `v` (the live build with nEVR in its slot): the folder,
@@ -187,7 +198,7 @@ pub fn write(v: &InstalledVersion, h: &Host) -> Result<Written> {
         (Vec::new(), false)
     };
     let config = dir.join(nevr::CONFIG);
-    write_private(&config, &render(h, &plugins, local))?;
+    write_config(&config, &edits(h, &plugins, local))?;
     let config_json = dir.join("config.json");
     if !config_json.is_file() {
         std::fs::write(&config_json, game_config(v))
@@ -408,6 +419,57 @@ mod tests {
         }
     }
 
+    /// The keys set in an empty file.
+    fn render(h: &Host, plugins: &[PluginLine], local: bool) -> String {
+        yaml_keys::apply_to("", &edits(h, plugins, local), &Default::default()).0
+    }
+
+    #[test]
+    fn keeps_what_the_host_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        write_config(&path, &edits(&host(), &[], false)).unwrap();
+        let t = std::fs::read_to_string(&path).unwrap();
+        assert!(t.starts_with(&format!("{HEADER}\nservices:\n")), "{t}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&path), 0o600);
+            assert_eq!(mode(&yaml_keys::notes_path(&path)), 0o600);
+        }
+        // A key and a comment of the host's stay when the step writes again.
+        std::fs::write(&path, format!("{t}# mine\nnetwork_extra: 1\n")).unwrap();
+        write_config(
+            &path,
+            &edits(
+                &Host {
+                    guilds: "7".into(),
+                    ..host()
+                },
+                &[],
+                false,
+            ),
+        )
+        .unwrap();
+        let t = std::fs::read_to_string(&path).unwrap();
+        assert!(t.contains("# mine\nnetwork_extra: 1\n") && t.contains("guilds: [\"7\"]"));
+        // A file the step wrote whole: started again.
+        std::fs::write(
+            &path,
+            "# A game server's own config, written by an Echo VR launcher plugin (host step).\n\
+             # The launcher leaves it alone otherwise: change it in the plugin, or by hand.\n\
+             guilds: [\"9\"]\nplugins: []\n",
+        )
+        .unwrap();
+        write_config(&path, &edits(&host(), &[], false)).unwrap();
+        let t = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            t.starts_with(&format!("{HEADER}\nservices:\n")) && !t.contains("\"9\""),
+            "{t}"
+        );
+    }
+
     #[test]
     fn a_server_always_has_its_login_address() {
         let text = render(
@@ -439,8 +501,6 @@ mod tests {
         assert!(text.contains("network:\n  regions: [\"uwu\"]\n"));
         assert!(!text.contains("guilds"));
         assert!(text.contains("    early: true\n"));
-        // Not the launcher's own config: the launcher leaves this one alone.
-        assert!(!text.starts_with("# Written by the Echo VR launcher"));
         let no_region = render(
             &Host {
                 regions: " , ".into(),

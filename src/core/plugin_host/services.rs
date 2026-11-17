@@ -67,10 +67,18 @@ pub fn call(op: &str, args: &Value) -> Result<Value, String> {
             } else {
                 vec![name.clone()]
             };
-            if run
-                && c.account.sign_in == SignIn::None
-                && !c.by_code(&crate::core::launcher::store::LauncherState::load())
-            {
+            let state = crate::core::launcher::store::LauncherState::load();
+            // No Echo VR to run: nothing starts, and the window asks whether to install it
+            // (the supervisor would only say "can't start" in each console). This comes
+            // before the account: without a game, whether it needs one is unknown.
+            if run && c.version_in(&state).is_none() {
+                if c.set_version_gone(&state) {
+                    return Err("The game version the servers are set to isn't installed any more: pick another under Server host settings.".into());
+                }
+                host::want_game();
+                return Ok(Value::Null);
+            }
+            if run && c.account.sign_in == SignIn::None && !c.by_code(&state) {
                 return Err("Sign the servers in first: they need an account of their own on EchoVRCE (Account). From nEVR 6.9.0 on they need none: update the game.".into());
             }
             for n in &names {

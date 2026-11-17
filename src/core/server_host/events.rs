@@ -15,6 +15,9 @@ pub enum Kind {
     Authenticated,
     /// The UDP port the broadcaster bound.
     Bound,
+    /// The broadcaster couldn't open `port`: something else on this PC holds it. The game
+    /// stays up after that and never registers.
+    PortTaken,
     /// ServerDB can't be reached: nEVR retries for ever, the register timeout ends it.
     ServerDbError,
     Registered,
@@ -45,6 +48,9 @@ pub enum Reason {
     InvalidConfig,
     RegistrationRejected,
     NotRegistered,
+    /// Another program on this PC holds the server's port (Echo VR itself uses 6794 to
+    /// 6796 while it is open, a second server host, a server started by hand).
+    PortInUse,
     Crashed,
     /// The sign-in by code ended without one (EchoVRCE couldn't be asked).
     SignIn,
@@ -66,6 +72,7 @@ impl Reason {
             Reason::InvalidConfig => "The server's settings are wrong",
             Reason::RegistrationRejected => "EchoVRCE refused the server's registration",
             Reason::NotRegistered => "The server didn't register in time",
+            Reason::PortInUse => "Another program on this PC is using its port",
             Reason::Crashed => "The game crashed",
             Reason::SignIn => "The server's sign-in by code didn't go through",
             Reason::Fatal => "The game stopped on an error",
@@ -79,7 +86,7 @@ pub struct Event {
     pub kind: Kind,
     /// The line without colours and without its jsonl wrapper.
     pub line: String,
-    /// `Bound`, `Registered`.
+    /// `Bound`, `Registered`, `PortTaken`.
     pub port: u16,
     /// `Registered`: the address EchoVRCE saw.
     pub ip: String,
@@ -285,6 +292,17 @@ pub fn parse(raw: &str) -> Event {
             ev.kind = Kind::Bound;
             ev.port = port;
         }
+    } else if l.contains("Broadcaster port (") && l.contains(") initialization failed") {
+        // `[EVR] R14NetClient: Broadcaster port (6794) initialization failed`, while it
+        // signs in, or the dedicated server's own.
+        ev.kind = Kind::PortTaken;
+        ev.reason = Some(Reason::PortInUse);
+        ev.port = l
+            .split("Broadcaster port (")
+            .nth(1)
+            .and_then(|r| r.split(')').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
     } else if l.contains("[NEVR.SERVERDB] Connection error") {
         ev.kind = Kind::ServerDbError;
     } else if l.contains("Dedicated: registered as") {
@@ -387,6 +405,21 @@ mod tests {
         let evs = kinds(include_str!("testdata/wine11-crash.jsonl"));
         let held = evs.iter().find(|e| e.kind == Kind::Held).unwrap();
         assert_eq!(held.reason, Some(Reason::Crashed));
+    }
+
+    #[test]
+    fn sees_a_port_another_program_holds() {
+        // nEVR 6's jsonl, as a server logs it while 6794 to 6796 are taken.
+        let ev = parse(
+            r#"{"ts":"2026-11-14T11:52:27.248Z","run":"2d7c","level":"error","msg":"[EVR] R14NetClient: Broadcaster port (6794) initialization failed"}"#,
+        );
+        assert_eq!(ev.kind, Kind::PortTaken);
+        assert_eq!(ev.port, 6794);
+        assert_eq!(ev.reason, Some(Reason::PortInUse));
+        assert!(Reason::PortInUse.retryable());
+        // The line after it names no port and is nothing to act on.
+        let after = parse("[EVR] [NETGAME] broadcaster initialization failed");
+        assert_eq!(after.kind, Kind::None);
     }
 
     #[test]

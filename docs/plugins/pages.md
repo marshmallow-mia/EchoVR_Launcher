@@ -45,7 +45,8 @@ The launcher's code is `src/core/launcher/plugin_page.rs` (the format),
   launcher's built-in draft is [../launcher/plugins.json](../launcher/plugins.json).
 - **A catalogue entry:** it names a zip with `plugin.json` at its root (or in one top folder) and its
   `sha256`, like a mod: `id`, `name`, `summary`, `author`, `version`, `url`, `sha256`, `homepage`,
-  and `icon` (as in `plugin.json`: the card's icon before the plugin is got).
+  and `icon` (as in `plugin.json`: the card's icon before the plugin is got). `description`
+  is optional, as in `plugin.json`.
   - A different `version` puts **Update** on the plugin.
   - An update keeps the plugin's settings files.
   - **When the catalogue is read:** at the start, every 30 seconds while the launcher is open
@@ -167,6 +168,9 @@ the signature before beside the new one).
 ```
 
 - **`id`:** lowercase letters, digits, `.`, `-`, `_`. **`name`** is the tab's name.
+- **`summary`:** what the Plugins page's card shows, best in one or two lines.
+  **`description`** (optional): more on what it does, in the card's tip in place
+  of the summary. Older launchers ignore it.
 - **`icon`:** the tab's icon: `plugin`, `calendar`, `globe` or `controller`.
 - **`settings`:** what the plugin keeps, in the format of mods' settings
   ([settings.md](settings.md)): keys, types, defaults, checks.
@@ -317,7 +321,9 @@ A `host` step writes a server's own setup into the live build, in `_local/<folde
 - **`config.yaml`:** the server account (`discord_id`, `password`), the services it signs
   in and registers with (`socket_uri`, `serverdb_uri`, `http_uri`, `http_key`, `server_key`),
   its `regions` and `guilds` (each comma-separated), and with `mods` (the default) the
-  plugins the Mods page has on, a content pack's included.
+  plugins the Mods page has on, a content pack's included. The step sets only these keys:
+  what the host added to the file by hand stays when the step runs again, and a value the
+  step leaves empty keeps the host's own.
 - **`config.json`:** the file the game's `-config-path` names. Its folder is where nEVR
   finds that `config.yaml`. A runtime from nevr-runtime #1255 on refuses `-config-path`:
   it gets `-config <config.json> -config-file <config.yaml>` instead.
@@ -338,8 +344,7 @@ script). The step ends the action when:
 - on Linux, the game was never set up there (PLAY does it).
 
 The launcher writes that folder only in this step: PLAY and its keeper keep to the game's
-own `_local/config.yaml` (one that isn't the launcher's is kept as `config.yaml.old`
-first). A server signs in only as its own account, with nEVR 4.1.0 on: it keeps its sign-in
+own `_local/config.yaml`, where it sets only its own keys. A server signs in only as its own account, with nEVR 4.1.0 on: it keeps its sign-in
 beside its own `config.yaml`, never the player's. A guild it hosts for has to give that
 account its server host role, or it registers for no guild. Content packs on a server need
 nEVR 4.1.0 or newer.

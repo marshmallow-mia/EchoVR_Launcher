@@ -1,9 +1,15 @@
 //! A server's own `_local/config.yaml` (nEVR's config): EchoVRCE's services, the server
-//! account, where it registers, its tick rate and the mods it loads. Written at every
-//! start: change a server on the page, not in the file.
+//! account, where it registers, its tick rate and the mods it loads. The file is the
+//! host's: at every start the Server host sets only the keys its page has, and keeps
+//! every other line ([`crate::core::launcher::yaml_keys`]).
+
+use std::path::Path;
+
+use anyhow::Result;
 
 use crate::core::launcher::host::quote;
 use crate::core::launcher::nevr::{self, PluginLine};
+use crate::core::launcher::yaml_keys::{self, Edit};
 
 use super::{list, Config, Server, SignIn};
 
@@ -87,70 +93,76 @@ pub fn http_problem(uri: &str) -> Option<String> {
     }
 }
 
-/// Pure: `s`'s `config.yaml` under `c`, loading `plugins`. A password sign-in reads the
-/// password from [`PASSWORD_ENV`]; a device link signs in with the server's
-/// `.credentials.json`.
-pub fn render(c: &Config, s: &Server, plugins: &[PluginLine], local: bool) -> String {
-    let mut out = String::from(
-        "# This game server's config, written by the Echo VR launcher (Server host) at every\n\
-         # start: change the server on the launcher's Server host page, not here.\n",
-    );
+/// The line the Server host keeps at the top of a server's `config.yaml`.
+pub const HEADER: &str =
+    "# The Echo VR launcher's Server host sets the keys on its page here. Others you add stay.";
+
+/// How the Server host's whole files started (up to 0.13): such a file was all its own.
+const OLD_HEADERS: &[&str] = &[
+    "# This game server's config, written by the Echo VR launcher",
+    "# start: change the server on the launcher's Server host page",
+];
+
+/// Pure: the keys `s`'s `config.yaml` gets under `c`, loading `plugins`: every field the
+/// page has, none where it is empty (the host's own value stays or comes back). A
+/// password sign-in reads the password from [`PASSWORD_ENV`]; a device link signs in with
+/// the server's `.credentials.json`.
+pub fn edits(c: &Config, s: &Server, plugins: &[PluginLine], local: bool) -> Vec<Edit> {
     let (regions, guilds) = (list(&s.regions), list(&s.guilds));
     let sv = &c.services;
-    out.push_str("services:\n");
-    out.push_str(&format!(
-        "  socket_uri: {}\n",
-        quote(&with_matchmaking(&sv.socket_uri, &regions, &guilds))
-    ));
-    if !sv.serverdb_uri.trim().is_empty() {
-        out.push_str(&format!(
-            "  serverdb_uri: {}\n",
-            quote(sv.serverdb_uri.trim())
-        ));
-    }
-    if !c.account.discord_id.trim().is_empty() {
-        out.push_str(&format!(
-            "identity:\n  discord_id: {}\n",
-            quote(c.account.discord_id.trim())
-        ));
-    }
-    out.push_str("auth:\n");
-    for (k, v) in [
-        ("http_uri", sv.http_uri.trim()),
-        ("http_key", sv.http_key.trim()),
-        ("server_key", sv.server_key.trim()),
-    ] {
-        if !v.is_empty() {
-            out.push_str(&format!("  {k}: {}\n", quote(v)));
-        }
-    }
-    if c.account.sign_in == SignIn::Password {
+    let some = |v: &str| (!v.trim().is_empty()).then(|| quote(v.trim()));
+    let flow = |l: &[String]| {
+        let q: Vec<String> = l.iter().map(|r| quote(r)).collect();
+        (!q.is_empty()).then(|| format!("[{}]", q.join(", ")))
+    };
+    vec![
+        Edit::inline(
+            &["services", "socket_uri"],
+            quote(&with_matchmaking(&sv.socket_uri, &regions, &guilds)),
+        ),
+        Edit::maybe(&["services", "serverdb_uri"], some(&sv.serverdb_uri)),
+        Edit::maybe(&["identity", "discord_id"], some(&c.account.discord_id)),
+        Edit::maybe(&["auth", "http_uri"], some(&sv.http_uri)),
+        Edit::maybe(&["auth", "http_key"], some(&sv.http_key)),
+        Edit::maybe(&["auth", "server_key"], some(&sv.server_key)),
         // Read by nEVR from the environment (the supervisor sets it): never on disk.
-        out.push_str(&format!("  password: \"${{{PASSWORD_ENV}}}\"\n"));
+        Edit::maybe(
+            &["auth", "password"],
+            (c.account.sign_in == SignIn::Password).then(|| format!("\"${{{PASSWORD_ENV}}}\"")),
+        ),
+        Edit::maybe(&["network", "regions"], flow(&regions)),
+        Edit::maybe(&["network", "internal_ip"], some(&c.internal_ip)),
+        Edit::maybe(&["network", "external_ip"], some(&c.external_ip)),
+        Edit::inline(&["network", "tick_rate_hz"], s.tick_rate.to_string()),
+        Edit::maybe(
+            &["network", "empty_server_ttl_seconds"],
+            (s.empty_ttl > 0).then(|| s.empty_ttl.to_string()),
+        ),
+        Edit::maybe(&["guilds"], flow(&guilds)),
+        Edit::maybe(
+            &[crate::core::launcher::mods::LOCAL_PLUGINS_KEY],
+            local.then(|| "true".to_string()),
+        ),
+        Edit::set(&["plugins"], nevr::plugin_list(plugins)),
+    ]
+}
+
+/// Sets `edits` in the server's `config.yaml` at `path` and keeps the rest. One the Server
+/// host wrote whole (its old header) is started again.
+pub fn write(path: &Path, edits: &[Edit]) -> Result<()> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let old = text.lines().any(|l| {
+        OLD_HEADERS
+            .iter()
+            .any(|h| l.trim_start_matches('\u{feff}').starts_with(h))
+    });
+    if old {
+        let _ = std::fs::remove_file(yaml_keys::notes_path(path));
+        yaml_keys::apply_from(path, "", edits, HEADER, OLD_HEADERS)?;
+    } else {
+        yaml_keys::apply(path, edits, HEADER, OLD_HEADERS)?;
     }
-    out.push_str("network:\n");
-    if !regions.is_empty() {
-        let r: Vec<String> = regions.iter().map(|r| quote(r)).collect();
-        out.push_str(&format!("  regions: [{}]\n", r.join(", ")));
-    }
-    for (k, v) in [
-        ("internal_ip", &c.internal_ip),
-        ("external_ip", &c.external_ip),
-    ] {
-        if !v.trim().is_empty() {
-            out.push_str(&format!("  {k}: {}\n", quote(v.trim())));
-        }
-    }
-    out.push_str(&format!("  tick_rate_hz: {}\n", s.tick_rate));
-    if s.empty_ttl > 0 {
-        out.push_str(&format!("  empty_server_ttl_seconds: {}\n", s.empty_ttl));
-    }
-    if !guilds.is_empty() {
-        let g: Vec<String> = guilds.iter().map(|g| quote(g)).collect();
-        out.push_str(&format!("guilds: [{}]\n", g.join(", ")));
-    }
-    out.push_str(&nevr::render_plugin_list(plugins, local));
-    out
+    Ok(())
 }
 
 /// Pure: the game's `_local/config.json` for the publisher lock (without one nEVR uses
@@ -163,6 +175,11 @@ pub fn game_config(publisher_lock: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::server_host::{Account, Services};
+
+    /// The keys set in an empty file.
+    fn render(c: &Config, s: &Server, plugins: &[PluginLine], local: bool) -> String {
+        yaml_keys::apply_to("", &edits(c, s, plugins, local), &Default::default()).0
+    }
 
     fn config(sign_in: SignIn) -> Config {
         Config {
@@ -217,6 +234,47 @@ mod tests {
         assert!(!text.contains("password"));
         assert!(text.contains("guilds: [\"1\", \"2\"]\n"));
         assert!(text.contains("  empty_server_ttl_seconds: 30\n"));
+    }
+
+    #[test]
+    fn keeps_the_hosts_own_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.yaml");
+        let mut c = config(SignIn::Device);
+        c.external_ip = "203.0.113.7".into();
+        let s = Server::default();
+        let read = || std::fs::read_to_string(&path).unwrap();
+        std::fs::write(
+            &path,
+            "# mine\nnetwork:\n  foo: 1\n  internal_ip: \"10.0.0.2\"\n",
+        )
+        .unwrap();
+        write(&path, &edits(&c, &s, &[], false)).unwrap();
+        let t = read();
+        assert!(
+            t.starts_with(&format!("{HEADER}\n# mine\nnetwork:\n  foo: 1\n")),
+            "{t}"
+        );
+        // An empty field on the page: the host's own value stays.
+        assert!(t.contains("  internal_ip: \"10.0.0.2\"\n"));
+        assert!(t.contains("  external_ip: \"203.0.113.7\"\n"));
+        // Cleared on the page: the page's goes.
+        c.external_ip.clear();
+        write(&path, &edits(&c, &s, &[], false)).unwrap();
+        let t = read();
+        assert!(!t.contains("external_ip") && t.contains("internal_ip"));
+        // A file the Server host wrote whole (up to 0.13): started again.
+        std::fs::write(
+            &path,
+            "# This game server's config, written by the Echo VR launcher (Server host) at every\n\
+             # start: change the server on the launcher's Server host page, not here.\n\
+             services:\n  socket_uri: \"x\"\nnetwork:\n  external_ip: \"198.51.100.1\"\n",
+        )
+        .unwrap();
+        write(&path, &edits(&c, &s, &[], false)).unwrap();
+        let t = read();
+        assert!(t.starts_with(&format!("{HEADER}\nservices:\n")), "{t}");
+        assert!(!t.contains("198.51.100.1") && !t.contains("written by"));
     }
 
     #[test]

@@ -3,11 +3,17 @@
 //! Windows directory junctions, which need no admin rights), while `bin/win10` is a copy of
 //! its files and plugins, so a game or mod update never meets a file a server holds, and a
 //! server takes a new nEVR at its next start. `_local` is the server's own: its
-//! `config.yaml`, `config.json` and sign-in.
+//! `config.yaml` (the host's, where the page's keys are set), `config.json` and sign-in.
 //!
 //! nEVR ignores `-port` (5.4.2): the broadcaster binds the port in
 //! `netconfig_dedicatedserver.json`, so each server has its own copy of that file, with its
 //! port. After evr-docker's farm (Echo-VR-Server-on-Docker).
+//!
+//! Before that, while it signs in, a server opens the game client's broadcaster for about
+//! two seconds, on the port in `netconfig_client.json`: 6794, then 6795 and 6796 (its two
+//! retries). Left alone, the servers set to those three ports keep every other server from
+//! starting, and four servers started together fight over them. So each server has its own
+//! copy of that file too, with its own port and no retries.
 
 use std::path::{Path, PathBuf};
 
@@ -20,6 +26,8 @@ pub fn bin_in(root: &Path) -> PathBuf {
 }
 /// The file that sets the server's port.
 pub const NETCONFIG: &str = "sourcedb/rad15/json/r14/config/netconfig_dedicatedserver.json";
+/// The file that sets the port a server opens while it signs in (the game client's).
+pub const NETCONFIG_CLIENT: &str = "sourcedb/rad15/json/r14/config/netconfig_client.json";
 /// Folders in `bin/win10` the server writes to: its own, never links.
 const BIN_OWN: &[&str] = &["logs", "_temp", "plugin_logs"];
 /// Copied (with what is in them) rather than linked: they are loaded and held. The game's
@@ -40,8 +48,8 @@ pub struct Farm<'a> {
     /// The server's own.
     pub root: &'a Path,
     pub port: u16,
-    /// `_local/config.yaml`.
-    pub config_yaml: &'a str,
+    /// The keys set in `_local/config.yaml` ([`super::config::edits`]).
+    pub config_yaml: &'a [crate::core::launcher::yaml_keys::Edit],
     /// `_local/config.json`.
     pub config_json: &'a str,
 }
@@ -80,7 +88,7 @@ impl Farm<'_> {
         self.sync_bin()?;
         self.write_netconfig()?;
         let local = self.local();
-        write_atomic(&local.join("config.yaml"), self.config_yaml)?;
+        super::config::write(&local.join("config.yaml"), self.config_yaml)?;
         write_atomic(&local.join("config.json"), self.config_json)?;
         std::fs::write(&marker, from)?;
         Ok(())
@@ -138,32 +146,51 @@ impl Farm<'_> {
         Ok(())
     }
 
-    /// The server's own `netconfig_dedicatedserver.json` with its port (and no retries),
-    /// the folders on the way to it real ones linking the rest.
+    /// The server's own `netconfig_dedicatedserver.json` and `netconfig_client.json` with
+    /// its port (and no retries), the folders on the way to them real ones linking the rest.
+    /// A game without the client's file (none known) only goes without that one.
     fn write_netconfig(&self) -> Result<()> {
-        let rel = Path::new(NETCONFIG);
+        let files = [Path::new(NETCONFIG), Path::new(NETCONFIG_CLIENT)];
+        let names: Vec<String> = files
+            .iter()
+            .filter_map(|f| f.file_name())
+            .map(|f| f.to_string_lossy().to_string())
+            .collect();
+        let rel = files[0];
         let parts: Vec<_> = rel.parent().unwrap_or(rel).components().collect();
         for i in 0..parts.len() {
             let here: PathBuf = parts[..=i].iter().collect();
-            let next = parts
-                .get(i + 1)
-                .map(|c| c.as_os_str().to_string_lossy().to_string())
-                .unwrap_or_else(|| {
-                    rel.file_name()
-                        .map(|f| f.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                });
-            link_dir(
-                &self.game.join(&here),
-                &self.root.join(&here),
-                &[next.as_str()],
-            )?;
+            // In the last folder both files are the server's own.
+            let own: Vec<String> = match parts.get(i + 1) {
+                Some(c) => vec![c.as_os_str().to_string_lossy().to_string()],
+                None => names.clone(),
+            };
+            let own: Vec<&str> = own.iter().map(String::as_str).collect();
+            link_dir(&self.game.join(&here), &self.root.join(&here), &own)?;
         }
-        let orig = std::fs::read_to_string(self.game.join(rel))
-            .with_context(|| format!("read the game's {NETCONFIG}"))?;
-        let text = with_port(&orig, self.port)
-            .with_context(|| format!("no \"port\" in the game's {NETCONFIG}"))?;
-        write_atomic(&self.root.join(rel), &text)
+        for (i, rel) in files.iter().enumerate() {
+            let name = rel.display();
+            let orig = match std::fs::read_to_string(self.game.join(rel)) {
+                Ok(t) => t,
+                Err(e) if i > 0 && e.kind() == std::io::ErrorKind::NotFound => {
+                    let _ = std::fs::remove_file(self.root.join(rel));
+                    continue;
+                }
+                Err(e) => return Err(e).with_context(|| format!("read the game's {name}")),
+            };
+            let text = match with_port(&orig, self.port) {
+                Some(t) => t,
+                // The client's file only keeps servers apart while they sign in: a game
+                // whose file has no port still runs with it as it is, as before.
+                None if i > 0 => {
+                    tracing::warn!("server host: no \"port\" in the game's {name}: kept as it is");
+                    orig
+                }
+                None => anyhow::bail!("no \"port\" in the game's {name}"),
+            };
+            write_atomic(&self.root.join(rel), &text)?;
+        }
+        Ok(())
     }
 }
 
@@ -409,8 +436,13 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::launcher::yaml_keys::Edit;
 
     const NET: &str = "{\n  // the dedicated server\n  \"port\" : 6792,\n  \"retries\": 3,\n  \"other_port\": 1\n}\n";
+
+    /// The game client's, as the game has it: 6794 and two retries.
+    const NET_CLIENT: &str =
+        "{\n  \"name\": \"R14NetClient\",\n  \"port\": 6794,\n  \"retries\": 2,\n}\n";
 
     #[test]
     fn sets_the_port_as_text() {
@@ -443,6 +475,7 @@ mod tests {
             ("bin/win10/plugins/sub/s.json", "s"),
             ("_local/config.yaml", "player's"),
             (NETCONFIG, NET),
+            (NETCONFIG_CLIENT, NET_CLIENT),
             ("sourcedb/rad15/json/r14/config/other.json", "{}"),
         ] {
             std::fs::write(g.join(f), t).unwrap();
@@ -459,7 +492,7 @@ mod tests {
             game: &g,
             root: &root,
             port: 6801,
-            config_yaml: "services: {}\n",
+            config_yaml: &[Edit::inline(&["services", "socket_uri"], "\"ws://h\"")],
             config_json: "{}",
         };
         farm.build().unwrap();
@@ -483,10 +516,26 @@ mod tests {
         assert!(is_link(&other) || (cfg!(windows) && other.is_file()));
         let net = std::fs::read_to_string(root.join(NETCONFIG)).unwrap();
         assert!(net.contains("\"port\" : 6801"));
+        // The port it opens while it signs in is its own too, with no second try.
+        let client = std::fs::read_to_string(root.join(NETCONFIG_CLIENT)).unwrap();
+        assert!(client.contains("\"port\": 6801,") && client.contains("\"retries\": 0,"));
+        assert!(!is_link(&root.join(NETCONFIG_CLIENT)));
+        let yaml = root.join("_local/config.yaml");
         assert_eq!(
-            std::fs::read_to_string(root.join("_local/config.yaml")).unwrap(),
-            "services: {}\n"
+            std::fs::read_to_string(&yaml).unwrap(),
+            format!(
+                "{}\nservices:\n  socket_uri: \"ws://h\"\n",
+                super::super::config::HEADER
+            )
         );
+        // The host's own keys and comments stay at the next start.
+        let mine = format!(
+            "{}\n# mine\nservices:\n  socket_uri: \"ws://h\"\nnetwork:\n  foo: 1\n",
+            super::super::config::HEADER
+        );
+        std::fs::write(&yaml, &mine).unwrap();
+        farm.build().unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), mine);
         assert!(root.join("_local/r14logs").is_dir());
 
         // An update: a plugin gone, nEVR changed; the server's sign-in stays.
@@ -506,5 +555,23 @@ mod tests {
             "player's"
         );
         assert_eq!(std::fs::read_to_string(g.join(NETCONFIG)).unwrap(), NET);
+        assert_eq!(
+            std::fs::read_to_string(g.join(NETCONFIG_CLIENT)).unwrap(),
+            NET_CLIENT
+        );
+
+        // A game without the client's file: the server starts without its own.
+        std::fs::remove_file(g.join(NETCONFIG_CLIENT)).unwrap();
+        farm.build().unwrap();
+        assert!(!root.join(NETCONFIG_CLIENT).exists());
+        assert!(root.join(NETCONFIG).is_file());
+
+        // A client's file without a port: kept as it is, and the server still builds.
+        std::fs::write(g.join(NETCONFIG_CLIENT), "{ \"retries\": 2 }").unwrap();
+        farm.build().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(NETCONFIG_CLIENT)).unwrap(),
+            "{ \"retries\": 2 }"
+        );
     }
 }

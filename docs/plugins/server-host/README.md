@@ -102,13 +102,19 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
   - `root/`: the server's own game folder.
     - `bin/win10` is a copy of the game's files and plugins.
     - Everything else links to the installed game.
-    - `_local` has the server's `config.yaml`, `config.json` and sign-in.
+    - `_local` has the server's `config.yaml`, `config.json` and sign-in. `config.yaml` is
+      yours: at every start the Server host sets only the keys its page has (services,
+      account, network, guilds, mods) and keeps every other line. A field left empty on
+      the page leaves your own value there. `config.yaml.launcher.json` notes what it set.
   - `status.json`, `console.log` and `control`.
 
   The installed game itself never changes. A game or mod update never meets a file a server
   holds. A server picks up a new nEVR at its next start.
 - nEVR ignores `-port`, so each server has its own `netconfig_dedicatedserver.json` with
   its port.
+- While it signs in, a server opens the game client's port for about two seconds
+  (`netconfig_client.json`: 6794, then 6795 and 6796). Each server has its own copy of that
+  file too, with its own port, so servers never wait for or take each other's port.
 - nEVR ends a server after every match. The server host starts it again after 5 seconds.
   - After an error it waits 5 seconds, then doubles the wait up to 5 minutes.
   - A refused sign-in or wrong settings wait 10 minutes, or until something changes.

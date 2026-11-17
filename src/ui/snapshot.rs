@@ -128,6 +128,17 @@ pub fn shots() -> Vec<Shot> {
             Page::Plugin(1),
             SnapVariant::ServerHostSettings,
         ),
+        ("host_only", Page::Plugin(1), SnapVariant::HostOnly),
+        (
+            "host_only_settings",
+            Page::Settings,
+            SnapVariant::HostOnlySettings,
+        ),
+        (
+            "host_only_install",
+            Page::Plugin(1),
+            SnapVariant::HostOnlyInstall,
+        ),
         ("dialog_error", Page::Play, SnapVariant::DialogError),
         (
             "dialog_install_error",

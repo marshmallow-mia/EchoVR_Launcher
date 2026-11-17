@@ -70,6 +70,43 @@ struct LogStream {
     scroll: f32,
     follow: bool,
     read_at: Option<std::time::Instant>,
+    /// When its `log-view` was last drawn: a console nobody looks at (another tab of the
+    /// page) is neither read nor does it ask for frames.
+    drawn_at: Option<std::time::Instant>,
+    /// Counts the changes of `lines`.
+    changes: u64,
+    /// `lines` as shown, and what they were made for (filter, noise, `changes`): made
+    /// again only when one of those changes, not every frame (5000 lines, a JSON parse
+    /// each).
+    shown: Vec<String>,
+    shown_for: Option<(String, bool, u64)>,
+}
+
+/// How long after its last frame a console still counts as looked at.
+const LOG_WATCHED: Duration = Duration::from_millis(1500);
+/// How much of its log a console shows when it opens, or comes back on screen.
+const LOG_BACK: u64 = 2 * 1024 * 1024;
+
+impl LogStream {
+    fn new(dir: &std::path::Path) -> LogStream {
+        LogStream {
+            tail: status::Tail::new(dir, LOG_BACK),
+            lines: VecDeque::new(),
+            scroll: 0.0,
+            follow: true,
+            read_at: None,
+            drawn_at: None,
+            changes: 0,
+            shown: Vec::new(),
+            shown_for: None,
+        }
+    }
+
+    /// Whether its view is on screen (or was never drawn yet: it fills for its first
+    /// frame).
+    fn watched(&self) -> bool {
+        self.drawn_at.is_none_or(|t| t.elapsed() < LOG_WATCHED)
+    }
 }
 
 impl CodeView {
@@ -142,6 +179,10 @@ fn demo_net(url: &str) -> (u16, String) {
 /// Every running schema 2 plugin, each frame: what they sent, the answers to their
 /// questions, what they know of the launcher.
 pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
+    // A server was started without Echo VR on this PC.
+    if !d.demo && crate::core::server_host::take_game_wanted() {
+        super::plugin_services::ask_for_game(d);
+    }
     // The answer to a plugin's question.
     if let Some(a) = d.dialogs.take(ASK_KEY) {
         if let Some(v) = d.plugins.code.values_mut().find(|v| v.asked.is_some()) {
@@ -191,18 +232,31 @@ pub(super) fn tick(d: &mut Dashboard, ctx: &egui::Context) {
         }
         // Its consoles.
         if let Some(v) = d.plugins.code.get_mut(&id) {
-            for l in v.logs.values_mut() {
+            let mut watched = false;
+            for l in v.logs.values_mut().filter(|l| l.watched()) {
+                watched = true;
                 if l.read_at
                     .is_none_or(|t| t.elapsed() >= Duration::from_millis(500))
                 {
+                    // Back on screen after a while: from the log's last 2 MB, as when it
+                    // opened, rather than all it missed (4 MB a frame on this thread).
+                    let away = l.read_at.is_some_and(|t| t.elapsed() > 2 * LOG_WATCHED);
+                    if away && l.tail.skip_to_last(LOG_BACK) {
+                        l.lines.clear();
+                        l.changes += 1;
+                    }
                     l.read_at = Some(std::time::Instant::now());
-                    l.lines.extend(l.tail.read());
-                    while l.lines.len() > LOG_LINES {
-                        l.lines.pop_front();
+                    let new = l.tail.read();
+                    if !new.is_empty() {
+                        l.changes += 1;
+                        l.lines.extend(new);
+                        while l.lines.len() > LOG_LINES {
+                            l.lines.pop_front();
+                        }
                     }
                 }
             }
-            if !v.logs.is_empty() && v.shown {
+            if watched && v.shown {
                 ctx.request_repaint_after(Duration::from_millis(500));
             }
         }
@@ -290,16 +344,7 @@ fn handle(d: &mut Dashboard, ctx: &egui::Context, p: &Installed, o: Out) {
         Out::OpenLog { log, server } => {
             let dir = crate::core::server_host::server_dir(&server);
             if let Some(v) = d.plugins.code.get_mut(&id) {
-                v.logs.insert(
-                    log,
-                    LogStream {
-                        tail: status::Tail::new(&dir, 2 * 1024 * 1024),
-                        lines: VecDeque::new(),
-                        scroll: 0.0,
-                        follow: true,
-                        read_at: None,
-                    },
-                );
+                v.logs.insert(log, LogStream::new(&dir));
             }
         }
         Out::CopyLog { log, filter } => {
@@ -1216,7 +1261,18 @@ fn draw_log(
         k.caps_text(x, y, w, "No console.", 15.0, design::GREY, 0.0);
         return;
     };
-    let shown = shown_lines(&stream.lines, &l.filter, l.noise);
+    // Looked at again after another tab: read what came since, in the next frame.
+    if !stream.watched() {
+        stream.read_at = None;
+        k.ui.ctx().request_repaint();
+    }
+    stream.drawn_at = Some(std::time::Instant::now());
+    let made_for = (l.filter.clone(), l.noise, stream.changes);
+    if stream.shown_for.as_ref() != Some(&made_for) {
+        stream.shown = shown_lines(&stream.lines, &l.filter, l.noise);
+        stream.shown_for = Some(made_for);
+    }
+    let shown = std::mem::take(&mut stream.shown);
     let content = shown.len() as f32 * lh;
     if l.follow && stream.follow {
         stream.scroll = (content - area_h).max(0.0);
@@ -1266,6 +1322,7 @@ fn draw_log(
         };
         k.caps_text(x, y + dz(10.0), w, note, 15.0, design::GREY, 0.0);
     }
+    stream.shown = shown;
 }
 
 /// Snapshots: Server host with four made-up servers (three running, one waiting to start
@@ -1278,7 +1335,7 @@ pub(super) fn snap_server_host(d: &mut Dashboard, v: Option<super::SnapVariant>)
     d.plugins.list.retain(|p| p.page.id != id);
     stop(d, id);
     let queued = match v {
-        Some(V::ServerHost) => vec![],
+        Some(V::ServerHost | V::HostOnly | V::HostOnlySettings | V::HostOnlyInstall) => vec![],
         Some(V::ServerHostConsole) => vec![UiEvent::Tab("tab".into(), 1)],
         Some(V::ServerHostDoctor) => vec![UiEvent::Tab("tab".into(), 2)],
         Some(V::ServerHostEdit) => vec![UiEvent::Clicked("servers/echo-2/edit".into())],
@@ -1318,7 +1375,9 @@ pub(super) fn snap_server_host(d: &mut Dashboard, v: Option<super::SnapVariant>)
             name: name.into(),
             state,
             since: t - 47 * 60,
-            updated: t + 3600,
+            // Written again for each shot, which takes seconds: fresh for its 45 s. (One
+            // from the future reads as old, as after the clock went back.)
+            updated: t,
             port: host::FIRST_PORT + i as u16,
             public_ip: "203.0.113.7".into(),
             runtime: "5.4.3+0.3caed2ef".into(),

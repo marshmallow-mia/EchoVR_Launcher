@@ -30,6 +30,38 @@ pub(super) fn guild_note(guilds: &[String]) -> String {
     }
 }
 
+/// A server was to start, but Echo VR isn't installed (or its files are gone): asks whether
+/// to install it, with the Install card of the newest Echo VR. Without the list of
+/// versions (offline) it opens the Install page and says why.
+pub(super) fn ask_for_game(d: &mut Dashboard) {
+    let newest = d
+        .catalog
+        .as_ref()
+        .and_then(|c| c.pc().find(|e| e.publisher_lock.is_none()))
+        .cloned();
+    // Only event builds here: they can't host, so a live one is what is missing.
+    let events_only = d.state.versions.iter().any(|v| v.present());
+    match newest {
+        Some(e) if d.overlay.is_none() => {
+            d.notify(if events_only {
+                "Event builds can't host: install the live build, then start the servers"
+            } else {
+                "The servers need Echo VR on this PC: install it, then start them"
+            });
+            setup::ask_install(d, e);
+        }
+        _ => {
+            d.page = Page::Install;
+            d.dialogs.message(
+                "",
+                "Echo VR isn't installed",
+                "The servers run Echo VR from this PC. Install it here on the Install page, then start the servers.",
+                crate::ui::dialogs::Icon::Warning,
+            );
+        }
+    }
+}
+
 /// Runs operation `op` for plugin `p` (its call's `ticket`).
 pub(super) fn start(
     d: &mut Dashboard,
@@ -67,10 +99,7 @@ pub(super) fn start(
     };
     match op {
         "running" => {
-            let demo = d.demo;
-            std::thread::spawn(move || {
-                answer(Ok(json!(demo || crate::core::tray::server_host_running())))
-            });
+            answer(Ok(json!(d.demo || host::supervisor::alive())));
         }
         "link-mine" => {
             if d.vrce.session().is_none() {
@@ -155,13 +184,22 @@ pub(super) fn start(
         }
         "doctor" if d.demo => answer(Ok(super::plugin_ui::snap_checks())),
         "doctor" => {
-            std::thread::spawn(move || answer(Ok(doctor_json(&Config::load()))));
+            let host_only = d.state.host_only;
+            std::thread::spawn(move || answer(Ok(doctor_json(&Config::load(), host_only))));
         }
         "fix" => match s("kind").as_str() {
             "game" => {
-                d.page = Page::Play;
+                // Host-only mode has no Play page.
+                d.page = if d.state.host_only {
+                    Page::Install
+                } else {
+                    Page::Play
+                };
                 answer(Ok(Value::Null));
             }
+            // Answered once GE-Proton is there (or couldn't be got: the launcher says why),
+            // so the Doctor checks again then, not while it downloads.
+            "proton" => setup::linux_server_setup(d, ctx, move || answer(Ok(Value::Null))),
             "firewall" => {
                 let ports = firewall_ports(&Config::load());
                 let mut consent = setup::consent_asker(d.worker.tx(ctx));
@@ -257,8 +295,9 @@ fn firewall_ports(c: &Config) -> Vec<u16> {
 }
 
 /// The Doctor's checks as a plugin shows them: each one's name, level, text and the fix
-/// it offers (`kind`: `sign-in`, `game`, `firewall` or `defender`; empty: none).
-fn doctor_json(c: &Config) -> Value {
+/// it offers (`kind`: `sign-in`, `game`, `proton`, `firewall` or `defender`; empty: none).
+/// In host-only mode `game` leads to Install, as there is no Play page.
+fn doctor_json(c: &Config, host_only: bool) -> Value {
     let now = echovrce::now();
     let running: Vec<String> = c
         .servers
@@ -276,7 +315,9 @@ fn doctor_json(c: &Config) -> Value {
                 let (kind, label) = match &ch.fix {
                     Fix::None => ("", ""),
                     Fix::SignIn => ("sign-in", "Account"),
+                    Fix::Game if host_only => ("game", "Go to Install"),
                     Fix::Game => ("game", "Go to Play"),
+                    Fix::Proton => ("proton", "Set up"),
                     Fix::Firewall(_) => ("firewall", "Let them in"),
                     Fix::Defender => ("defender", "Allow"),
                 };

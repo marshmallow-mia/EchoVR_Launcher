@@ -2,7 +2,9 @@
 //! `bin/win10/BugSplat64.dll`. It points the game at EchoVRCE, signs it in, brings friends
 //! and parties into the game, and loads the plugins `_local/config.yaml` lists from
 //! `plugins/`. The launcher:
-//! - writes that `config.yaml` before every start (the Mods page's choices);
+//! - sets its keys in that `config.yaml` before every start (the Mods page's plugins, and
+//!   the server while a start plays on another one): the rest of the file is the
+//!   player's ([`super::yaml_keys`]);
 //! - hands the game a sign-in of its own (`_local/.credentials.json`, a device of the
 //!   EchoVRCE account the launcher is signed in with), so it never asks in the browser;
 //! - reads what nEVR did with the plugins from its log
@@ -352,14 +354,39 @@ pub fn logins(v: &InstalledVersion) -> Vec<PathBuf> {
         .collect()
 }
 
-/// How every `config.yaml` the launcher writes starts (and has since its first release).
+/// How every `config.yaml` an older launcher wrote whole started: the file was the
+/// launcher's then.
 const WRITTEN_BY: &str = "# Written by the Echo VR launcher";
 
-/// Pure: whether `text` is a `config.yaml` the launcher may write over: its own, or one
-/// that sets nothing but the local plugins' switch (as its docs say to add). Anything
-/// else is someone's own, such as a game server's.
+/// The line the launcher keeps at the top of a `config.yaml` it sets its keys in. The
+/// file is the player's: only [`LAUNCHER_KEYS`] are the launcher's.
+pub const HEADER: &str = "# The Echo VR launcher sets plugins here (its Mods page), and the server while you play on another one. The rest is yours.";
+
+/// The header lines of the files older launchers wrote whole, taken out of the top.
+pub const OLD_HEADERS: &[&str] = &[
+    WRITTEN_BY,
+    "# Changes here are replaced",
+    "# x-local-plugins: true, which lets",
+];
+
+/// The keys the launcher sets in nEVR's root's `config.yaml` (#1255 on), as in its own.
+const LAUNCHER_KEYS: &[&[&str]] = &[
+    &["plugins"],
+    &["services", "socket_uri"],
+    &["identity", "discord_id"],
+    &["auth", "http_uri"],
+    &["auth", "password"],
+    &["auth", "server_key"],
+];
+
+/// Pure: whether `text` is a `config.yaml` an older launcher wrote whole (with its header),
+/// or one that sets nothing but the local plugins' switch (as its docs said to add). Such
+/// a file is started again: the player's own it kept as `.old` comes back.
 pub(super) fn written_by_launcher(text: &str) -> bool {
     let text = text.trim_start_matches('\u{feff}');
+    if text.lines().any(|l| l == HEADER) {
+        return false;
+    }
     // Its header on any line: the local plugins' switch added above it, as the docs said.
     if text.lines().any(|l| l.starts_with(WRITTEN_BY)) {
         return true;
@@ -368,6 +395,16 @@ pub(super) fn written_by_launcher(text: &str) -> bool {
         .filter(|l| !l.starts_with([' ', '\t', '#', '-']) && !l.trim().is_empty())
         .filter_map(|l| l.split_once(':').map(|(k, _)| k.trim()))
         .all(|k| k == super::mods::LOCAL_PLUGINS_KEY)
+}
+
+/// Pure: whether `text` is the launcher's copy of a version's `config.yaml`: one an older
+/// launcher wrote whole, or one with its [`HEADER`].
+pub(super) fn launchers_copy(text: &str) -> bool {
+    written_by_launcher(text)
+        || text
+            .trim_start_matches('\u{feff}')
+            .lines()
+            .any(|l| l == HEADER)
 }
 
 /// `path` kept as `<name>.old` (`.old.2`, `.old.3`, … when that is taken: nothing of the
@@ -384,34 +421,55 @@ pub fn keep_as_old(path: &Path) -> Result<PathBuf> {
     Ok(old)
 }
 
-/// Before a start of `v` with nEVR: every `config.yaml` nEVR would read instead of the
-/// launcher's goes to `.old`: someone's own in the game's `_local` (written by hand, an
-/// older tool's), and any one nearer the exe, which nEVR reads first. Then the Mods page's
-/// choices and a plugin's server reach the game. Game servers' configs (in their own
-/// folders) aren't nEVR's search, so they stay. Where each went.
-pub fn migrate_own_configs(v: &InstalledVersion) -> Result<Vec<PathBuf>> {
-    let ours = notes_dir(v).join(CONFIG);
-    let mut moved = Vec::new();
-    let mut local = false;
-    for dir in search(v) {
-        let path = dir.join(CONFIG);
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        if same_file(&path, &ours) && written_by_launcher(&text) {
-            continue;
-        }
-        local |= local_plugins_in(&text);
-        moved.push(keep_as_old(&path)?);
+/// Sets the launcher's keys (`edits`) in the `config.yaml` at `path` and keeps the rest.
+/// One an older launcher wrote whole is the launcher's: it starts again from the player's
+/// own that launcher kept as `.old` beside it (the newest), when there is one, with the
+/// local plugins' switch it had. Returns that `.old`.
+pub(super) fn edit_config(
+    path: &Path,
+    edits: &[super::yaml_keys::Edit],
+) -> Result<Option<PathBuf>> {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    if text.trim().is_empty() || !written_by_launcher(&text) {
+        super::yaml_keys::apply(path, edits, HEADER, OLD_HEADERS)?;
+        return Ok(None);
     }
-    // The local plugins' switch it had stays on: the launcher's config keeps it.
-    let ours_local = std::fs::read_to_string(&ours).is_ok_and(|t| local_plugins_in(&t));
-    if local && !ours_local {
-        std::fs::create_dir_all(notes_dir(v))?;
-        std::fs::write(&ours, format!("{}: true\n", super::mods::LOCAL_PLUGINS_KEY))
-            .with_context(|| format!("write {}", ours.display()))?;
+    let (back, mut base) = match players_old(path) {
+        Some((old, t)) => (Some(old), t),
+        None => (None, String::new()),
+    };
+    if local_plugins_in(&text) && !local_plugins_in(&base) {
+        base = format!("{}: true\n{base}", super::mods::LOCAL_PLUGINS_KEY);
     }
-    Ok(moved)
+    super::yaml_keys::apply_from(path, &base, edits, HEADER, OLD_HEADERS)?;
+    Ok(back)
+}
+
+/// The newest `.old` an older launcher made of the player's `config.yaml` at `path`, and
+/// its text (none it wrote itself).
+fn players_old(path: &Path) -> Option<(PathBuf, String)> {
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    let dir = path.parent()?;
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.strip_prefix(&name)
+                .and_then(|r| r.strip_prefix(".old"))
+                .is_some_and(|r| {
+                    r.is_empty()
+                        || r.strip_prefix('.')
+                            .is_some_and(|d| d.parse::<u32>().is_ok())
+                })
+        })
+        .filter_map(|e| {
+            let at = e.metadata().ok()?.modified().ok()?;
+            let text = std::fs::read_to_string(e.path()).ok()?;
+            (!written_by_launcher(&text)).then(|| (at, e.path(), text))
+        })
+        .max_by_key(|(at, ..)| *at)
+        .map(|(_, p, t)| (p, t))
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -534,9 +592,34 @@ pub fn local_plugins_in(text: &str) -> bool {
     })
 }
 
-/// Whether `v`'s loader config turns local plugins on.
+/// Whether `v`'s loader config turns local plugins on: the launcher's copy (`_local`'s, as
+/// its docs say), the player's own nEVR reads before it (an older nEVR), or nEVR's root's
+/// (#1255 on) where the player set it (not the launcher, from its copy).
 pub fn local_plugins(v: &InstalledVersion) -> bool {
-    std::fs::read_to_string(notes_dir(v).join(CONFIG)).is_ok_and(|t| local_plugins_in(&t))
+    let on = |p: &Path| std::fs::read_to_string(p).is_ok_and(|t| local_plugins_in(&t));
+    let ours = notes_dir(v).join(CONFIG);
+    if on(&ours) {
+        return true;
+    }
+    if super::mods::reads_root_config(&v.bin_dir()) {
+        let key = super::mods::LOCAL_PLUGINS_KEY;
+        return login_root().is_some_and(|r| {
+            let p = r.join(CONFIG);
+            on(&p) && !super::yaml_keys::read_notes(&p).keys.contains_key(key)
+        });
+    }
+    nearer_config(v).is_some_and(|p| on(&p))
+}
+
+/// The player's `config.yaml` an older nEVR reads before the launcher's copy: the first in
+/// its search, when that isn't the copy.
+fn nearer_config(v: &InstalledVersion) -> Option<PathBuf> {
+    let ours = notes_dir(v).join(CONFIG);
+    search(v)
+        .into_iter()
+        .map(|d| d.join(CONFIG))
+        .find(|p| p.is_file())
+        .filter(|p| !same_file(p, &ours))
 }
 
 /// A server other than EchoVRCE that a start plays on (a content pack's own, Settings):
@@ -609,67 +692,44 @@ pub fn http_uri(socket_uri: &str) -> Option<String> {
     })
 }
 
-/// Pure: the launcher's `config.yaml`: the plugins (none with mods off), the local
-/// plugins switch when it is on, and another server than EchoVRCE when this start plays
-/// on one. Values are written as JSON, which YAML reads as it is.
-pub fn render_config(plugins: &[PluginLine], local: bool, backend: Option<&Backend>) -> String {
-    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
-    let mut out = render_plugins(plugins, local);
-    if let Some(b) = backend {
-        // nEVR reads ${…} in any value as an environment variable (and drops the whole
-        // file when one isn't set): $${ is a literal ${.
-        let v = |s: &str| q(&s.replace("${", "$${"));
-        out.push_str("# The server this start plays on (Settings), instead of EchoVRCE.\n");
-        out.push_str(&format!("services:\n  socket_uri: {}\n", v(&b.socket_uri)));
-        if !b.discord_id.is_empty() {
-            out.push_str(&format!("identity:\n  discord_id: {}\n", v(&b.discord_id)));
-        }
-        let mut auth = String::new();
-        if !b.http_uri.is_empty() {
-            auth.push_str(&format!("  http_uri: {}\n", v(&b.http_uri)));
-        }
-        if !b.password.is_empty() {
-            auth.push_str(&format!("  password: {}\n", v(&b.password)));
-        }
-        if !b.server_key.is_empty() {
-            auth.push_str(&format!("  server_key: {}\n", v(&b.server_key)));
-        }
-        if !auth.is_empty() {
-            out.push_str("auth:\n");
-            out.push_str(&auth);
-        }
-    }
-    out
+/// Pure: the keys the launcher sets in `config.yaml` for a start: the plugins (none with
+/// mods off), and another server than EchoVRCE when this start plays on one (none of
+/// those otherwise: the player's own come back). Values are written as JSON, which YAML
+/// reads as it is.
+pub fn config_edits(
+    plugins: &[PluginLine],
+    backend: Option<&Backend>,
+) -> Vec<super::yaml_keys::Edit> {
+    use super::yaml_keys::Edit;
+    // nEVR reads ${…} in any value as an environment variable (and drops the whole file
+    // when one isn't set): $${ is a literal ${.
+    let v = |s: &str| json_str(&s.replace("${", "$${"));
+    let field = |f: fn(&Backend) -> &str| backend.map(f).filter(|s| !s.is_empty()).map(v);
+    vec![
+        Edit::set(&["plugins"], plugin_list(plugins)),
+        Edit::maybe(&["services", "socket_uri"], field(|b| &b.socket_uri)),
+        Edit::maybe(&["identity", "discord_id"], field(|b| &b.discord_id)),
+        Edit::maybe(&["auth", "http_uri"], field(|b| &b.http_uri)),
+        Edit::maybe(&["auth", "password"], field(|b| &b.password)),
+        Edit::maybe(&["auth", "server_key"], field(|b| &b.server_key)),
+    ]
 }
 
-/// Pure: the plugins part of [`render_config`].
-fn render_plugins(plugins: &[PluginLine], local: bool) -> String {
-    let mut out = String::from(
-        "# Written by the Echo VR launcher before every start, from its Mods page.\n\
-         # Changes here are replaced: change mods in the launcher. Kept: the line below,\n\
-         # x-local-plugins: true, which lets plugins load that aren't verified.\n",
-    );
-    out.push_str(&render_plugin_list(plugins, local));
-    out
+fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
 }
 
-/// Pure: a `config.yaml`'s `plugins:` list (and the local plugins' key), as the launcher
-/// writes it.
-pub fn render_plugin_list(plugins: &[PluginLine], local: bool) -> String {
-    let q = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into());
-    let mut out = String::new();
-    if local {
-        out.push_str(&format!("{}: true\n", super::mods::LOCAL_PLUGINS_KEY));
-    }
+/// Pure: a `config.yaml`'s `plugins:` list, as the launcher sets it.
+pub fn plugin_list(plugins: &[PluginLine]) -> super::yaml_keys::Val {
+    use super::yaml_keys::Val;
     if plugins.is_empty() {
-        out.push_str("plugins: []\n");
-        return out;
+        return Val::Inline("[]".into());
     }
-    out.push_str("plugins:\n");
+    let mut out = String::new();
     for p in plugins {
         let name = p.file.rsplit_once('.').map_or(p.file.as_str(), |(s, _)| s);
-        out.push_str(&format!("  - name: {}\n", q(name)));
-        out.push_str(&format!("    file: {}\n", q(&p.file)));
+        out.push_str(&format!("  - name: {}\n", json_str(name)));
+        out.push_str(&format!("    file: {}\n", json_str(&p.file)));
         out.push_str(&format!("    enabled: {}\n", p.enabled));
         if p.early {
             out.push_str("    early: true\n");
@@ -678,61 +738,90 @@ pub fn render_plugin_list(plugins: &[PluginLine], local: bool) -> String {
             out.push_str(&format!("    args: {}\n", Value::Object(p.args.clone())));
         }
     }
-    out
+    Val::Block(out)
 }
 
-/// Writes `v`'s `config.yaml` (only when it changed).
+/// Sets the launcher's keys for a start of `v` in its `config.yaml`, and in the player's
+/// own an older nEVR reads before it. Returns the player's own configs an older launcher
+/// had kept as `.old` that are back now.
 pub fn write_config(
     v: &InstalledVersion,
     plugins: &[PluginLine],
-    local: bool,
     backend: Option<&Backend>,
-) -> Result<()> {
+) -> Result<Vec<PathBuf>> {
     let dir = notes_dir(v);
-    let path = dir.join(CONFIG);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-    let text = render_config(plugins, local, backend);
-    if std::fs::read_to_string(&path).is_ok_and(|t| t == text) {
-        return Ok(());
+    let edits = config_edits(plugins, backend);
+    let mut back: Vec<PathBuf> = edit_config(&dir.join(CONFIG), &edits)?
+        .into_iter()
+        .collect();
+    if !super::mods::reads_root_config(&v.bin_dir()) {
+        if let Some(near) = nearer_config(v) {
+            back.extend(edit_config(&near, &edits)?);
+        }
     }
-    let part = path.with_extension("yaml.part");
-    std::fs::write(&part, &text).with_context(|| format!("Couldn't write {}", part.display()))?;
-    std::fs::rename(&part, &path).with_context(|| {
-        let _ = std::fs::remove_file(&part);
-        format!("Couldn't replace {}", path.display())
-    })
+    Ok(back)
 }
 
 /// Before a start of `v` whose runtime reads `config.yaml` only from nEVR's root (#1255 on):
-/// the launcher's `config.yaml` for `v` (its `_local` one: the root is one for every
-/// version) goes there. One there the launcher didn't write goes to `.old` first, as
-/// someone's own in `_local` does. Where that went.
+/// the launcher's keys from its `config.yaml` for `v` (its `_local` one: the root is one
+/// for every version) set in the root's, and the local plugins' switch as the copy has it.
+/// The rest of the root's is the player's. Returns the player's own an older launcher had
+/// kept as `.old` there, when it is back.
 pub fn config_into_root(v: &InstalledVersion) -> Result<Option<PathBuf>> {
     let Some(root) = login_root().filter(|_| super::mods::reads_root_config(&v.bin_dir())) else {
         return Ok(None);
     };
-    let Ok(text) = std::fs::read_to_string(notes_dir(v).join(CONFIG)) else {
+    let ours = notes_dir(v).join(CONFIG);
+    let Ok(text) = std::fs::read_to_string(&ours) else {
         return Ok(None);
     };
-    config_into(&root, &text)
+    let mut edits = super::yaml_keys::noted_edits(&ours, LAUNCHER_KEYS);
+    let key = [super::mods::LOCAL_PLUGINS_KEY];
+    edits.push(if local_plugins_in(&text) {
+        super::yaml_keys::Edit::inline(&key, "true")
+    } else {
+        super::yaml_keys::Edit::none(&key)
+    });
+    edit_config(&root.join(CONFIG), &edits)
 }
 
-pub(super) fn config_into(root: &Path, text: &str) -> Result<Option<PathBuf>> {
-    let path = root.join(CONFIG);
-    let mut moved = None;
-    match std::fs::read_to_string(&path) {
-        Ok(there) if there == text => return Ok(None),
-        Ok(there) if !written_by_launcher(&there) => moved = Some(keep_as_old(&path)?),
-        _ => {}
+/// Uninstall: the launcher's keys taken back out of the `config.yaml` at `path` (the
+/// player's values back), and the file gone when nothing else is left in it.
+pub fn take_back_config(path: &Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let notes = super::yaml_keys::notes_path(path);
+    if written_by_launcher(&text) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(notes);
+        return;
     }
-    std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
-    let part = path.with_extension("yaml.part");
-    std::fs::write(&part, text).with_context(|| format!("Couldn't write {}", part.display()))?;
-    std::fs::rename(&part, &path).with_context(|| {
-        let _ = std::fs::remove_file(&part);
-        format!("Couldn't replace {}", path.display())
-    })?;
-    Ok(moved)
+    let names: Vec<Vec<String>> = super::yaml_keys::read_notes(path)
+        .keys
+        .keys()
+        .map(|k| k.split('.').map(str::to_string).collect())
+        .collect();
+    let edits: Vec<super::yaml_keys::Edit> = names
+        .into_iter()
+        .map(|path| super::yaml_keys::Edit { path, want: None })
+        .collect();
+    match super::yaml_keys::apply_from(path, &text, &edits, HEADER, OLD_HEADERS) {
+        Ok(out)
+            if out
+                .lines()
+                .all(|l| l.trim().is_empty() || l.trim_start().starts_with('#')) =>
+        {
+            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(notes);
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(
+            "{}: the launcher's keys not taken out: {e:#}",
+            path.display()
+        ),
+    }
 }
 
 // ---- the game's sign-in ----
@@ -1540,11 +1629,17 @@ mod tests {
         assert_eq!(version_in(&dll).as_deref(), Some("4.0.0+182.e418eaa"));
     }
 
+    /// Pure: the launcher's keys set in an empty `config.yaml`.
+    fn render(plugins: &[PluginLine], backend: Option<&Backend>) -> String {
+        let edits = config_edits(plugins, backend);
+        super::super::yaml_keys::apply_to("", &edits, &Default::default()).0
+    }
+
     #[test]
     fn writes_the_plugins() {
         let mut args = Map::new();
         args.insert("logging".into(), Value::String("normal".into()));
-        let text = render_config(
+        let text = render(
             &[
                 PluginLine {
                     early: false,
@@ -1559,14 +1654,13 @@ mod tests {
                     args: Map::new(),
                 },
             ],
-            false,
             None,
         );
         assert!(text.contains(
             "plugins:\n  - name: \"NvrAssetPatches\"\n    file: \"NvrAssetPatches.dll\"\n    enabled: true\n    args: {\"logging\":\"normal\"}\n"
         ));
         assert!(text.contains("  - name: \"Other\"\n    file: \"Other.dll\"\n    enabled: false\n"));
-        assert!(render_config(&[], false, None).ends_with("plugins: []\n"));
+        assert_eq!(render(&[], None), "plugins: []\n");
         assert!(!local_plugins_in(&text));
     }
 
@@ -1579,14 +1673,14 @@ mod tests {
             discord_id: "900000000000000001".into(),
             password: "pa${ss".into(),
         };
-        let text = render_config(&[], false, Some(&b));
+        let text = render(&[], Some(&b));
         assert!(text.contains(
             "services:\n  socket_uri: \"ws://127.0.0.1:7350/ws?format=evr&token=k\"\n\
              identity:\n  discord_id: \"900000000000000001\"\n\
              auth:\n  http_uri: \"http://127.0.0.1:7350\"\n  password: \"pa$${ss\"\n  server_key: \"k\"\n"
         ));
         // Without one: EchoVRCE, nothing of the kind.
-        assert!(!render_config(&[], false, None).contains("services:"));
+        assert!(!render(&[], None).contains("services:"));
     }
 
     #[test]
@@ -1730,8 +1824,9 @@ mod tests {
         assert_eq!(run_of(&log), None);
     }
 
-    /// From #1255 on the runtime reads config.yaml only from its root: the launcher's for the
-    /// version that starts goes there; an older runtime's root is left alone.
+    /// From #1255 on the runtime reads config.yaml only from its root: the launcher's keys
+    /// for the version that starts are set there, and the rest stays the player's; an
+    /// older runtime's root is left alone.
     #[test]
     fn puts_the_config_into_nevrs_root_for_a_runtime_that_reads_it_there() {
         let dir = tempfile::tempdir().unwrap();
@@ -1757,24 +1852,84 @@ mod tests {
         assert!(super::super::mods::reads_root_config(&v.bin_dir()));
         assert!(!super::super::mods::reads_root_config(&older.bin_dir()));
         let in_root = || std::fs::read_to_string(root.join(CONFIG)).ok();
+        let line = |p: &str| PluginLine {
+            early: false,
+            file: format!("{p}.dll"),
+            enabled: true,
+            args: Map::new(),
+        };
+        let other = Backend {
+            socket_uri: "ws://other/ws".into(),
+            ..Backend::default()
+        };
         // An older runtime reads _local's: the root stays as it is.
-        write_config(&older, &[], false, None).unwrap();
+        write_config(&older, &[], None).unwrap();
         assert_eq!(config_into_root(&older).unwrap(), None);
         assert_eq!(in_root(), None);
-        // One that reads only the root's gets the launcher's, again when it changes.
-        write_config(&v, &[], false, None).unwrap();
+        // One that reads only the root's gets the launcher's keys, again when they change.
+        write_config(&v, &[line("A")], None).unwrap();
         assert_eq!(config_into_root(&v).unwrap(), None);
-        let ours = std::fs::read_to_string(local_dir(&v).join(CONFIG)).unwrap();
-        assert_eq!(in_root().as_deref(), Some(ours.as_str()));
-        write_config(&v, &[], true, None).unwrap();
+        assert_eq!(
+            in_root().unwrap(),
+            format!(
+                "{HEADER}\nplugins:\n  - name: \"A\"\n    file: \"A.dll\"\n    enabled: true\n"
+            )
+        );
+        // The player's own keys there stay, and their server comes back after another's.
+        let mine = format!("{HEADER}\n# mine\nservices:\n  socket_uri: ws://mine\nplugins: []\nnetwork:\n  tick_rate_hz: 90\n");
+        std::fs::write(root.join(CONFIG), &mine).unwrap();
+        write_config(&v, &[], Some(&other)).unwrap();
+        config_into_root(&v).unwrap();
+        let t = in_root().unwrap();
+        assert!(
+            t.contains("# mine\nservices:\n  socket_uri: \"ws://other/ws\"\n"),
+            "{t}"
+        );
+        assert!(t.contains("tick_rate_hz: 90"));
+        write_config(&v, &[], None).unwrap();
+        config_into_root(&v).unwrap();
+        assert_eq!(in_root().unwrap(), mine);
+        // The local plugins' switch in the launcher's copy reaches the root, and goes again.
+        let ours = local_dir(&v).join(CONFIG);
+        let copy = std::fs::read_to_string(&ours).unwrap();
+        std::fs::write(&ours, format!("x-local-plugins: true\n{copy}")).unwrap();
+        assert!(local_plugins(&v));
         config_into_root(&v).unwrap();
         assert!(local_plugins_in(&in_root().unwrap()));
-        // Someone's own there (nEVR's installer's) is kept as .old, never written over.
-        std::fs::write(root.join(CONFIG), "services:\n  socket_uri: ws://mine\n").unwrap();
-        let old = config_into_root(&v).unwrap().unwrap();
-        assert_eq!(old, root.join("config.yaml.old"));
-        assert!(std::fs::read_to_string(&old).unwrap().contains("ws://mine"));
-        assert!(written_by_launcher(&in_root().unwrap()));
+        std::fs::write(&ours, &copy).unwrap();
+        assert!(!local_plugins(&v), "the root's is the launcher's");
+        config_into_root(&v).unwrap();
+        assert_eq!(in_root().unwrap(), mine);
+        // Set there by the player: it counts.
+        std::fs::write(root.join(CONFIG), format!("{mine}x-local-plugins: true\n")).unwrap();
+        assert!(local_plugins(&v));
+        // An older launcher's whole file there: the player's own it kept as .old is back.
+        std::fs::write(
+            root.join(CONFIG),
+            "# Written by the Echo VR launcher before every start.\nplugins: []\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("config.yaml.old"),
+            "services:\n  socket_uri: ws://mine\n",
+        )
+        .unwrap();
+        let _ = std::fs::remove_file(super::super::yaml_keys::notes_path(&root.join(CONFIG)));
+        assert_eq!(
+            config_into_root(&v).unwrap(),
+            Some(root.join("config.yaml.old"))
+        );
+        assert_eq!(
+            in_root().unwrap(),
+            format!("{HEADER}\nservices:\n  socket_uri: ws://mine\nplugins: []\n")
+        );
+        assert_eq!(config_into_root(&v).unwrap(), None);
+        // Uninstall: the launcher's keys go, the player's stay.
+        take_back_config(&root.join(CONFIG));
+        assert_eq!(
+            in_root().unwrap(),
+            format!("{HEADER}\nservices:\n  socket_uri: ws://mine\n")
+        );
         TEST_ROOT.with(|r| *r.borrow_mut() = None);
     }
 
@@ -1836,9 +1991,6 @@ mod tests {
 
     #[test]
     fn keeps_the_local_plugins_switch() {
-        let on = render_config(&[], true, None);
-        assert!(on.contains("\nx-local-plugins: true\n"));
-        assert!(local_plugins_in(&on));
         for yes in [
             "x-local-plugins: true",
             "x-local-plugins:yes",
@@ -2045,9 +2197,13 @@ mod tests {
 
     #[test]
     fn leaves_someone_elses_config_alone() {
-        assert!(written_by_launcher(&render_config(&[], false, None)));
+        assert!(written_by_launcher(
+            "# Written by the Echo VR launcher before every start.\nplugins: []\n"
+        ));
         assert!(written_by_launcher("x-local-plugins: true\n"));
         assert!(written_by_launcher(""));
+        assert!(!written_by_launcher(&format!("{HEADER}\nplugins: []\n")));
+        assert!(launchers_copy(&format!("{HEADER}\nplugins: []\n")));
         assert!(!written_by_launcher(
             "services:\n  socket_uri: \"ws://h/spr\"\nplugins:\n  - name: \"A\"\n"
         ));
@@ -2059,55 +2215,49 @@ mod tests {
         let v = version_at(dir.path());
         let own = local_dir(&v).join(CONFIG);
         std::fs::create_dir_all(local_dir(&v)).unwrap();
-        // The launcher's own, one with only the local plugins' switch, and the launcher's
-        // with that switch added above its header (as the docs said) stay.
-        write_config(&v, &[], false, None).unwrap();
-        assert!(migrate_own_configs(&v).unwrap().is_empty());
-        std::fs::write(&own, "x-local-plugins: true\n").unwrap();
-        assert!(migrate_own_configs(&v).unwrap().is_empty());
-        let edited = format!("x-local-plugins: true\n{}", render_config(&[], false, None));
-        std::fs::write(&own, &edited).unwrap();
-        assert!(migrate_own_configs(&v).unwrap().is_empty());
+        // Someone's own keeps every line: only the plugins are set in it.
+        let mine = "# my notes\nidentity:\n  discord_id: \"1\"\nplugins:\n  - name: \"Music\"\n";
+        std::fs::write(&own, mine).unwrap();
+        assert!(write_config(&v, &[], None).unwrap().is_empty());
+        assert_eq!(
+            std::fs::read_to_string(&own).unwrap(),
+            format!("{HEADER}\n# my notes\nidentity:\n  discord_id: \"1\"\nplugins: []\n")
+        );
+        assert!(!local_dir(&v).join("config.yaml.old").exists());
+        // The local plugins' switch the player adds stays on.
+        let t = std::fs::read_to_string(&own).unwrap();
+        std::fs::write(&own, format!("{t}x-local-plugins: true\n")).unwrap();
+        write_config(&v, &[], None).unwrap();
         assert!(local_plugins(&v));
-        // A hand-written one with the switch on: kept as .old, the switch stays on.
+        // An older launcher's whole file, with the switch added: the switch stays, and
+        // the player's own it kept as .old comes back (the newest).
         std::fs::write(
             &own,
-            "x-local-plugins: true\nplugins:\n  - name: \"Music\"\n",
+            "x-local-plugins: true\n# Written by the Echo VR launcher before every start.\nplugins: []\n",
         )
         .unwrap();
-        assert_eq!(migrate_own_configs(&v).unwrap().len(), 1);
-        assert!(local_plugins(&v));
-        for f in std::fs::read_dir(local_dir(&v)).unwrap().flatten() {
-            if f.file_name()
-                .to_string_lossy()
-                .starts_with("config.yaml.old")
-            {
-                std::fs::remove_file(f.path()).unwrap();
-            }
-        }
-        // Someone's own is kept as .old (then .old.2), and the launcher's is written.
-        std::fs::write(&own, "identity:\n  discord_id: \"1\"\n").unwrap();
-        let old = local_dir(&v).join("config.yaml.old");
-        assert_eq!(migrate_own_configs(&v).unwrap(), vec![old.clone()]);
-        assert!(!own.exists());
-        write_config(&v, &[], false, None).unwrap();
-        assert!(written_by_launcher(&std::fs::read_to_string(&own).unwrap()));
+        let _ = std::fs::remove_file(super::super::yaml_keys::notes_path(&own));
+        std::fs::write(local_dir(&v).join("config.yaml.old"), "a: 1\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(local_dir(&v).join("config.yaml.old.2"), "b: 2\n").unwrap();
         assert_eq!(
-            std::fs::read_to_string(&old).unwrap(),
-            "identity:\n  discord_id: \"1\"\n"
-        );
-        std::fs::write(&own, "plugins: []\n").unwrap();
-        assert_eq!(
-            migrate_own_configs(&v).unwrap(),
+            write_config(&v, &[], None).unwrap(),
             vec![local_dir(&v).join("config.yaml.old.2")]
         );
+        assert_eq!(
+            std::fs::read_to_string(&own).unwrap(),
+            format!("{HEADER}\nx-local-plugins: true\nb: 2\nplugins: []\n")
+        );
+        assert!(local_plugins(&v));
         // A game server's, in its own folder, isn't nEVR's search: it stays.
         let server = local_dir(&v).join("server-1");
         std::fs::create_dir_all(&server).unwrap();
         std::fs::write(server.join(CONFIG), "services:\n  socket_uri: \"ws://h\"\n").unwrap();
-        write_config(&v, &[], false, None).unwrap();
-        assert!(migrate_own_configs(&v).unwrap().is_empty());
-        assert!(server.join(CONFIG).is_file());
+        write_config(&v, &[], None).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(server.join(CONFIG)).unwrap(),
+            "services:\n  socket_uri: \"ws://h\"\n"
+        );
     }
 
     /// nEVR's log filter: none for the defaults; otherwise a file nEVR reads (levels 1/2/4,
@@ -2173,18 +2323,20 @@ mod tests {
     }
 
     #[test]
-    fn moves_a_config_read_before_ours() {
+    fn sets_its_keys_in_a_config_read_before_ours() {
         let dir = tempfile::tempdir().unwrap();
         let v = version_at(dir.path());
-        write_config(&v, &[], false, None).unwrap();
-        // Nearer the exe (nEVR reads it first): it goes whoever wrote it.
+        write_config(&v, &[], None).unwrap();
+        // Nearer the exe (an older nEVR reads it first): the player's, with the plugins set.
         let near = v.bin_dir().join("_local");
         std::fs::create_dir_all(&near).unwrap();
-        std::fs::write(near.join(CONFIG), render_config(&[], false, None)).unwrap();
+        std::fs::write(near.join(CONFIG), "mine: 1\n").unwrap();
+        write_config(&v, &[], None).unwrap();
         assert_eq!(
-            migrate_own_configs(&v).unwrap(),
-            vec![near.join("config.yaml.old")]
+            std::fs::read_to_string(near.join(CONFIG)).unwrap(),
+            format!("{HEADER}\nmine: 1\nplugins: []\n")
         );
         assert!(local_dir(&v).join(CONFIG).is_file());
+        assert!(!near.join("config.yaml.old").exists());
     }
 }

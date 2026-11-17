@@ -55,6 +55,20 @@ pub const MAX_SERVERS: usize = 32;
 /// Snapshots: made-up servers in a folder of their own instead.
 static SNAP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// A server was to start but no Echo VR it can run is installed: the window asks whether
+/// to install it.
+static GAME_WANTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Notes that a start found no Echo VR to run (see [`take_game_wanted`]).
+pub fn want_game() {
+    GAME_WANTED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a start found no Echo VR to run since the last call.
+pub fn take_game_wanted() -> bool {
+    GAME_WANTED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Snapshots: the servers' files are in `dir` from now on (not the player's).
 pub fn snap_dir(dir: PathBuf) {
     let _ = SNAP_DIR.set(dir);
@@ -392,6 +406,15 @@ impl Config {
             .filter(live)
             .or_else(|| state.versions.iter().find(live))
     }
+
+    /// Whether the servers are set to a build that is gone while another live build is
+    /// installed: the servers' version setting is the fix, not another install.
+    pub fn set_version_gone(&self, state: &LauncherState) -> bool {
+        let live = |v: &InstalledVersion| v.publisher_lock.is_none() && v.present();
+        !self.version.is_empty()
+            && self.version_in(state).is_none()
+            && state.versions.iter().any(live)
+    }
 }
 
 /// Pure: whether `name` can be a server's name.
@@ -472,6 +495,37 @@ mod tests {
         assert!(!valid_name(""));
         assert!(!valid_name(&"a".repeat(32)));
         assert_eq!(list(" euw, ,uwu "), vec!["euw", "uwu"]);
+    }
+
+    #[test]
+    fn tells_a_gone_build_from_no_game() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = |id: &str, lock: Option<&str>| {
+            let root = dir.path().join(id);
+            let exe = crate::core::paths::bin_path(&root.to_string_lossy()).join("echovr.exe");
+            std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+            std::fs::write(&exe, b"").unwrap();
+            InstalledVersion {
+                id: id.into(),
+                root: root.to_string_lossy().into_owned(),
+                publisher_lock: lock.map(Into::into),
+                ..Default::default()
+            }
+        };
+        let mut c = Config::default();
+        let mut state = LauncherState::default();
+        // Nothing installed, or only an event build: an install is the fix.
+        assert!(!c.set_version_gone(&state));
+        state.versions.push(game("event", Some("event")));
+        c.version = "gone".into();
+        assert!(!c.set_version_gone(&state));
+        // A live build is here, but the servers are set to one that was removed.
+        state.versions.push(game("live", None));
+        assert!(c.set_version_gone(&state));
+        c.version = "live".into();
+        assert!(!c.set_version_gone(&state));
+        c.version.clear();
+        assert!(!c.set_version_gone(&state));
     }
 
     #[test]

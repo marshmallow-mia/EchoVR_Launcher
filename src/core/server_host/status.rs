@@ -94,9 +94,10 @@ pub struct Status {
 }
 
 impl Status {
-    /// Whether the supervisor wrote it lately (else it is gone, and this is old).
+    /// Whether the supervisor wrote it lately (else it is gone, and this is old). Either
+    /// way round: after the clock went back, a status from "the future" is old too.
     pub fn fresh(&self, now: i64) -> bool {
-        now - self.updated <= 3 * HEARTBEAT_S
+        (now - self.updated).abs() <= 3 * HEARTBEAT_S
     }
 
     /// The overview's words for what it is doing.
@@ -255,6 +256,28 @@ impl Tail {
         }
     }
 
+    /// Goes on from the file's last `back` bytes when more than that came since the last
+    /// read: a console that wasn't on screen for a while starts again from there, as a
+    /// new one does, instead of reading all it missed. Whether it skipped.
+    pub fn skip_to_last(&mut self, back: u64) -> bool {
+        let Ok(mut f) = std::fs::File::open(&self.path) else {
+            return false;
+        };
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        let mut head = vec![0u8; 64.min(len as usize)];
+        let _ = f.read_exact(&mut head);
+        let same =
+            self.head.is_empty() || head.starts_with(&self.head[..self.head.len().min(head.len())]);
+        let from = if same && len >= self.pos { self.pos } else { 0 };
+        if len - from <= back {
+            return false;
+        }
+        self.pos = len - back;
+        self.head = head;
+        self.partial.clear();
+        true
+    }
+
     /// Follows the file `path` from its start.
     pub fn file(path: &Path) -> Tail {
         Tail {
@@ -315,6 +338,7 @@ mod tests {
         assert_eq!(read(dir.path()).unwrap(), s);
         assert!(s.fresh(140));
         assert!(!s.fresh(200));
+        assert!(!s.fresh(0));
         assert!(s.summary(200).starts_with("Not running"));
         assert_eq!(s.summary(110), "Ready");
         assert!(!State::InSession.idle());
@@ -339,5 +363,16 @@ mod tests {
         c.host("two\r\n");
         assert_eq!(t.read(), vec!["[host] two"]);
         assert!(t.read().is_empty());
+
+        // Little came meanwhile: nothing skipped.
+        c.line("three");
+        assert!(!t.skip_to_last(1 << 20));
+        assert_eq!(t.read(), vec!["three"]);
+        // More than `back` came: only the last bytes are read.
+        for i in 0..100 {
+            c.line(&format!("line {i:03}"));
+        }
+        assert!(t.skip_to_last(9));
+        assert_eq!(t.read(), vec!["line 099"]);
     }
 }

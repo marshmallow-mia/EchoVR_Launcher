@@ -113,7 +113,7 @@ fn prepare_for(state: &LauncherState, v: &InstalledVersion, root: bool) -> Resul
         super::nevr_root::put_in_place_for(&v.bin_dir()).map_err(fail(Part::Runtime))?;
         if let Some(old) = super::nevr::config_into_root(v).map_err(fail(Part::Mods))? {
             tracing::info!(
-                "{}: nEVR's root had a config.yaml of its own: kept as {}",
+                "{}: your own config.yaml in nEVR's root (kept as {} by an older launcher) is back, with the launcher's plugins set in it",
                 v.id,
                 old.display()
             );

@@ -163,10 +163,10 @@ which also brings Discord sign-in, friends and parties into the game) and what i
 at the last start, lets you turn plugins and asset patches on or off, set a plugin's
 arguments, start without mods, and install mods from the catalogue on release.echovr.de or a
 DLL of your own. **Installed mods** lists only what is installed; **More mods** offers the
-rest (the catalogue's optional plugins, EchoXR Hands and, on Windows, EchoXR) with **Get**. The launcher keeps its choices in its own files and writes nEVR's
-`_local/config.yaml` from them before every start, so updates and Verify never undo them.
-A `config.yaml` of your own (a game server's, written by hand) is left as it is, and so is
-the sign-in beside it: the launcher only writes over its own.
+rest (the catalogue's optional plugins, EchoXR Hands and, on Windows, EchoXR) with **Get**. The launcher keeps its choices in its own files and sets them in nEVR's
+`config.yaml` before every start, so updates and Verify never undo them. The file is
+yours: the launcher sets only the plugins, and the server while you play on another one.
+Everything else you put in it stays, and so does the sign-in beside it.
 Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask in the
 browser. See
 [docs/launcher/mods.md](docs/launcher/mods.md).

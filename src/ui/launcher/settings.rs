@@ -38,9 +38,17 @@ pub(super) fn show(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     if !kit.ghost {
         answers(d, ctx);
     }
-    game(d, kit, ctx);
     // Side by side, sharing the extra width; taller in a taller window.
     let (half, dy) = (kit.dx() / 2.0, kit.dy());
+    if d.state.host_only {
+        // Nobody plays on this PC: how you play and the launch options don't apply.
+        // Storage stays (the servers' Echo VR is in the library), where Game starts.
+        let top = Dr::new(LOWER[0].x, GAME.y, LOWER[0].w, LOWER[0].h);
+        storage(d, kit, top.wider(half).taller(dy));
+        panel::at_right(kit, |k| launcher(d, k, ctx));
+        return;
+    }
+    game(d, kit, ctx);
     launch_options(d, kit, ctx, LOWER[0].wider(half).taller(dy));
     storage(d, kit, LOWER[1].moved(half).wider(half).taller(dy));
     panel::at_right(kit, |k| launcher(d, k, ctx));
@@ -90,6 +98,30 @@ fn option(
         0.0,
     );
     (flipped, dz(38.0) + h + dz(26.0))
+}
+
+/// [`option`] for the Launcher column: its note goes into the tooltip, ahead of `tip`.
+/// That column has the most options and About under them; with their notes it ran into
+/// About on a 720p window (Windows and Linux, with spark:// links).
+#[allow(clippy::too_many_arguments)]
+fn tip_option(
+    kit: &mut Kit,
+    key: &str,
+    on: &mut bool,
+    label: &str,
+    note: &str,
+    x: f32,
+    y: f32,
+    w: f32,
+    enabled: bool,
+    tip: &str,
+) -> (bool, f32) {
+    let tip = match (note.is_empty(), tip.is_empty()) {
+        (true, _) => tip.to_string(),
+        (false, true) => note.to_string(),
+        (false, false) => format!("{note}\n\n{tip}"),
+    };
+    option(kit, key, on, label, "", x, y, w, enabled, &tip)
 }
 
 // ---- the cards ----
@@ -328,6 +360,24 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
     y += start_points(d, kit, ctx, x, y, w, compact);
     kit.caption(x, y, "Extra arguments");
     y += dz(30.0);
+    let vd_oculus =
+        d.state.profile.runtime == Runtime::VirtualDesktop && !d.state.profile.through_echoxr();
+    let args_note = if vd_oculus {
+        "Not in Virtual Desktop's Oculus mode: VD starts Echo VR without them."
+    } else {
+        "Added to every start as typed; quotes group words. Desktop shortcuts get them too."
+    };
+    // Two servers or more below (the live build's, the classic lobbies', a content
+    // pack's): the card is full, and this note goes into the field's tooltip too.
+    let packs = pack_list(d);
+    let servers = usize::from(d.state.game_server.is_some())
+        + usize::from(d.state.has_event_builds())
+        + packs.len();
+    let args_tip = if servers >= 2 {
+        format!("Passed to echovr.exe after the options above. {args_note}")
+    } else {
+        "Passed to echovr.exe after the options above".to_string()
+    };
     changed |= kit.field(
         "opt-args",
         &mut d.state.profile.extra_args,
@@ -337,24 +387,12 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
         BTN_H,
         "e.g. -mp -http",
         false,
-        "Passed to echovr.exe after the options above",
+        &args_tip,
     );
-    y += BTN_H + dz(12.0);
-    let vd_oculus =
-        d.state.profile.runtime == Runtime::VirtualDesktop && !d.state.profile.through_echoxr();
-    y += kit.caps_text(
-        x,
-        y,
-        w,
-        if vd_oculus {
-            "Not in Virtual Desktop's Oculus mode: VD starts Echo VR without them."
-        } else {
-            "Added to every start as typed; quotes group words. Desktop shortcuts get them too."
-        },
-        14.0,
-        design::GREY,
-        0.0,
-    );
+    y += BTN_H;
+    if servers < 2 {
+        y += dz(12.0) + kit.caps_text(x, y + dz(12.0), w, args_note, 14.0, design::GREY, 0.0);
+    }
     if changed {
         d.save();
     }
@@ -366,14 +404,19 @@ fn launch_options(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context, r: Dr) 
     if d.state.has_event_builds() {
         y = classic_lobbies(d, kit, x, y + dz(26.0), w);
     }
-    // Content packs installed anywhere: each one's server (EchoCombat's).
+    for (id, name) in packs {
+        y = pack_server(d, kit, x, y + dz(22.0), w, &id, &name);
+    }
+}
+
+/// Content packs installed anywhere (their id and name), once each: each one's server
+/// (EchoCombat's) has a row in Launch options.
+fn pack_list(d: &mut Dashboard) -> Vec<(String, String)> {
     let mut packs: Vec<(String, String)> =
         d.packs().into_iter().map(|(_, p)| (p.id, p.name)).collect();
     packs.sort();
     packs.dedup_by(|a, b| a.0 == b.0);
-    for (id, name) in packs {
-        y = pack_server(d, kit, x, y + dz(22.0), w, &id, &name);
-    }
+    packs
 }
 
 /// Where Echo VR also starts from, through the launcher (`--play`): Steam's library on
@@ -607,7 +650,7 @@ fn classic_lobbies(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> 
     }
     let note = match &d.state.relay_account {
         Some(a) => format!("You play there as {}.", a.name),
-        None => "An event build asks for your account there when you first play it.".into(),
+        None => "An event build asks for your account there the first time.".into(),
     };
     let ny = fy + BTN_H + dz(12.0);
     ny + kit.caps_text(x, ny, w, &note, 14.0, design::GREY, 0.0)
@@ -753,7 +796,7 @@ fn storage(d: &mut Dashboard, kit: &mut Kit, r: Dr) {
 fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f32 {
     use crate::core::tray;
     let mut y = y;
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "desktop-notifications",
         &mut d.state.desktop_notifications,
@@ -769,7 +812,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         d.save();
     }
     y += h + dz(6.0);
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "tray",
         &mut d.state.tray,
@@ -795,7 +838,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
     }
     y += h + dz(6.0);
     let mut login = d.state.tray_at_login;
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "tray-login",
         &mut login,
@@ -823,7 +866,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
     // unless ticked. A switch is an update of Echo VR's, offered like any other.
     use crate::core::nevr_release::NevrChannel;
     let mut beta = d.state.nevr_channel == NevrChannel::Beta;
-    let (flipped, h) = option(
+    let (flipped, h) = tip_option(
         kit,
         "nevr-beta",
         &mut beta,
@@ -1093,26 +1136,29 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
     let (x, w) = (dz(panel::X), dz(PANEL_W));
     let mut y = dz(panel::BODY_Y);
 
-    let (flipped, h) = option(
-        kit,
-        "minimize",
-        &mut d.state.minimize_on_launch,
-        "Minimize when Echo VR starts",
-        "Keeps the launcher out of the way while you play.",
-        x,
-        y,
-        w,
-        true,
-        "",
-    );
-    if flipped {
-        d.save();
+    // Host-only mode: nobody plays on this PC, and the servers don't minimize it.
+    if !d.state.host_only {
+        let (flipped, h) = tip_option(
+            kit,
+            "minimize",
+            &mut d.state.minimize_on_launch,
+            "Minimize when Echo VR starts",
+            "Keeps the launcher out of the way while you play.",
+            x,
+            y,
+            w,
+            true,
+            "",
+        );
+        if flipped {
+            d.save();
+        }
+        y += h + dz(6.0);
     }
-    y += h + dz(6.0);
     if d.software_render {
         // No graphics card draws the window: the video would take several cores.
         let mut off = false;
-        let (_, h) = option(
+        let (_, h) = tip_option(
             kit,
             "animated-background",
             &mut off,
@@ -1126,7 +1172,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         );
         y += h + dz(6.0);
     } else {
-        let (flipped, h) = option(
+        let (flipped, h) = tip_option(
             kit,
             "animated-background",
             &mut d.state.animated_background,
@@ -1143,6 +1189,24 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
         }
         y += h + dz(6.0);
     }
+    let (flipped, h) = tip_option(
+        kit,
+        "host-only",
+        &mut d.state.host_only,
+        "Host-only mode",
+        "",
+        x,
+        y,
+        w,
+        true,
+        "For a PC that only runs game servers. The launcher shows the Server host, Install, Mods, Plugins and Settings, and stops what it does in the background for playing: watching for Echo VR and the Quest, lobbies, friends, news and the moving background. Without the Server host it offers to get it.",
+    );
+    if flipped {
+        // Turned on: the Server host is offered (or turned on) again.
+        d.plugins.host_only_asked = false;
+        d.save();
+    }
+    y += h + dz(6.0);
     // spark:// links (Windows, Linux).
     if let Some(handler) = d
         .link_handler
@@ -1154,7 +1218,7 @@ fn launcher(d: &mut Dashboard, kit: &mut Kit, ctx: &egui::Context) {
             Handler::Other(_) => "Spark opens them now. Tick to have the launcher open them instead.",
             _ => "Match links from Discord, echo.taxi or the browser open the launcher, ready to join.",
         };
-        let (flipped, h) = option(
+        let (flipped, h) = tip_option(
             kit,
             "spark-links",
             &mut on,
