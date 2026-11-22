@@ -275,9 +275,9 @@ pub struct GameData {
     pub contents: Vec<Member>,
 }
 
-/// One of nEVR's channels, the way a player follows it: the Quest (Play's picker,
-/// launcher.json's `quest_channel`) and Echo VR on the PC (Settings' "nEVR beta",
-/// `nevr_channel`), each on its own. Stable unless picked.
+/// One of nEVR's channels, the way the Quest follows it (Play's picker, launcher.json's
+/// `quest_channel`). Echo VR on the PC follows any channel nEVR's manifest has (Settings'
+/// "nEVR channel", [`pc_channels`]), stable and beta first. Stable unless picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NevrChannel {
@@ -357,6 +357,49 @@ fn quest_offer_in(m: &Value, channel: &str, base: &str) -> QuestOffer {
             .collect(),
         release: release_of(channel),
     }
+}
+
+/// nEVR's channels in the manifest checked last (no network), each with the release it has
+/// now: stable and beta first (as the Quest has them), then the others by name. Stable and
+/// beta are there without a checked manifest too, with no release. Read again only when the
+/// stored manifest changes (Settings asks every frame).
+pub fn pc_channels() -> Vec<(String, Option<String>)> {
+    type Seen = (Option<std::time::SystemTime>, Vec<(String, Option<String>)>);
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let dir = state_dir();
+    let stamp = std::fs::metadata(dir.join(MANIFEST))
+        .and_then(|m| m.modified())
+        .ok();
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((s, channels)) = seen.as_ref() {
+        if *s == stamp {
+            return channels.clone();
+        }
+    }
+    let channels = channels_in(stored(&dir).ok().as_ref());
+    *seen = Some((stamp, channels.clone()));
+    channels
+}
+
+/// Pure: [`pc_channels`] in the checked manifest `m` (None: none checked yet).
+fn channels_in(m: Option<&Value>) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = NevrChannel::ALL
+        .iter()
+        .map(|c| (c.name().to_string(), None))
+        .collect();
+    let Some(listed) = m.and_then(|m| m["channels"].as_object()) else {
+        return out;
+    };
+    for (name, v) in listed {
+        let Some(v) = v.as_str().filter(|v| semver_ok(v) && channel_ok(name)) else {
+            continue;
+        };
+        match out.iter_mut().find(|(n, _)| n == name) {
+            Some((_, release)) => *release = Some(v.to_string()),
+            None => out.push((name.clone(), Some(v.to_string()))),
+        }
+    }
+    out
 }
 
 /// The release whose Quest APK has `version_code`, from the manifest checked last (no
@@ -1053,6 +1096,25 @@ mod tests {
     /// The key that signs upstream's fixtures (docs/reference/release-verification/), never a release.
     const TEST_KEY: &str = "RWTHthwA6C/csRKFPrZPxjAVZFImiwbgTWoK+P0qiEHQ4mnKdzhbzOqA";
     const BEFORE: &str = "2026-10-26T12:00:00Z";
+
+    #[test]
+    fn the_pc_may_follow_any_channel_the_manifest_has() {
+        let none = |n: &str| (n.to_string(), None::<String>);
+        let at = |n: &str, v: &str| (n.to_string(), Some(v.to_string()));
+        assert_eq!(channels_in(None), [none("stable"), none("beta")]);
+        let m = serde_json::json!({"channels": {
+            "nightly": "6.19.0", "beta": "6.17.0", "stable": "6.16.5",
+            "Bad Name": "6.0.0", "broken": "latest"
+        }});
+        assert_eq!(
+            channels_in(Some(&m)),
+            [
+                at("stable", "6.16.5"),
+                at("beta", "6.17.0"),
+                at("nightly", "6.19.0")
+            ]
+        );
+    }
 
     #[test]
     fn a_channel_is_stable_unless_picked() {

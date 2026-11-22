@@ -113,7 +113,35 @@ pub fn build(
     lobby: Option<&str>,
 ) -> Result<Command> {
     let cwd = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-    let args = game_args(profile, lobby);
+    let mut args = game_args(profile, lobby);
+    args.extend(nevr_args(&cwd));
+    build_with(profile, exe, tools, args)
+}
+
+/// The arguments nEVR in `bin` gets from the launcher's settings: with the launcher updating
+/// nEVR, a runtime that updates itself (6.17.0 on) runs without its own update check. Its
+/// `config.yaml` says so too ([`super::nevr::update_edits`]), for the starts that drop
+/// arguments (Virtual Desktop's Oculus mode, SteamVR's library).
+pub fn nevr_args(bin: &Path) -> Vec<String> {
+    no_update_arg(super::nevr::updates(), super::mods::updates_itself(bin))
+        .map(|a| vec![a.to_string()])
+        .unwrap_or_default()
+}
+
+/// Pure: [`nevr_args`]'s flag for who updates nEVR (`by`) and whether its runtime updates
+/// itself (`itself`).
+pub fn no_update_arg(by: super::nevr::NevrUpdates, itself: bool) -> Option<&'static str> {
+    (itself && by == super::nevr::NevrUpdates::Launcher).then_some(super::nevr::NO_UPDATE_ARG)
+}
+
+/// [`build`] with the game's arguments `args`.
+fn build_with(
+    profile: &LaunchProfile,
+    exe: &Path,
+    tools: &Tools,
+    args: Vec<String>,
+) -> Result<Command> {
+    let cwd = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     // EchoXR.exe beside the game starts it (as its copy, echovr_openxr.exe) on an OpenXR
     // runtime: SteamVR's (SteamVR, or Virtual Desktop's SteamVR driver), or Virtual
     // Desktop's own. Its arguments first; the game gets the rest.
@@ -190,7 +218,7 @@ pub fn build_relay(profile: &LaunchProfile, exe: &Path, tools: &Tools) -> Result
         vd_via: profile.vd_via,
         ..Default::default()
     };
-    let mut c = build(&bare, exe, tools, None)?;
+    let mut c = build_with(&bare, exe, tools, game_args(&bare, None))?;
     // Revive's injector starts from Revive's folder, EchoXR.exe from the bin folder.
     if runtime != Runtime::Revive && !bare.through_echoxr() {
         // bin/win7/<exe> -> the game folder.
@@ -272,6 +300,15 @@ pub fn spawn(cmd: &Command) -> Result<std::process::Child> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_launcher_updating_nevr_turns_its_own_check_off() {
+        use super::super::nevr::NevrUpdates::{Launcher, Nevr};
+        assert_eq!(no_update_arg(Launcher, true), Some("-no-update"));
+        assert_eq!(no_update_arg(Nevr, true), None);
+        // Before 6.17.0 nEVR has no such flag.
+        assert_eq!(no_update_arg(Launcher, false), None);
+    }
     use crate::core::launcher::store::{SteamVrVia, VdVia};
 
     const LOBBY: &str = "0f5c1a2b-3c4d-5e6f-7a8b-9c0d1e2f3a4b";

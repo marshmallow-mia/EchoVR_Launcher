@@ -395,6 +395,9 @@ struct Prepared {
     /// The server's `config.yaml`, named exactly for a runtime that reads it only from its
     /// root or `-config-file` (#1255 on); None: nEVR finds it beside `config_json`.
     config_yaml: Option<PathBuf>,
+    /// The runtime's own update check off ([`nevr::NO_UPDATE_ARG`]): it updates itself
+    /// (6.17.0 on) and the launcher updates nEVR.
+    no_update: bool,
     sign_in: SignIn,
     password: String,
     /// Windows: the server's own `LOCALAPPDATA` (nEVR's log goes there).
@@ -439,7 +442,15 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     } else {
         (Vec::new(), false)
     };
-    let yaml = config::edits(&cfg, &server, &plugins, local);
+    let mut yaml = config::edits(&cfg, &server, &plugins, local);
+    // How nEVR updates (6.17.0 on), as for Echo VR on this PC: the server's runtime is in its
+    // own root, and reads these from its config.yaml (`-config-file`).
+    let itself = mods::updates_itself(&v.bin_dir());
+    yaml.extend(nevr::update_edits(
+        itself,
+        state.nevr_updates,
+        &state.nevr_channel,
+    ));
     let json = config::game_config(&cfg.publisher_lock);
     let game = Path::new(&v.root).join(paths::ARENA_DIR);
     let root = super::farm_root(dir);
@@ -465,7 +476,7 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     }
     if let Some(root) = &root {
         let record = dir.join("nevr-root.json");
-        nevr_root::put_in_place(&v.bin_dir(), root, &record, false)
+        nevr_root::put_in_place(&v.bin_dir(), root, &record, false, state.nevr_updates)
             .context("nEVR's runtime for the server")?;
         nevr_root::plugins_into(&v.bin_dir(), root, &record, false)
             .context("the server's plugins")?;
@@ -483,6 +494,7 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
         bin: f.bin(),
         config_json: f.local().join(nevr::GAME_CONFIG),
         config_yaml: mods::reads_root_config(&v.bin_dir()).then(|| f.local().join(nevr::CONFIG)),
+        no_update: itself && state.nevr_updates == nevr::NevrUpdates::Launcher,
         sign_in: cfg.account.sign_in,
         password,
         appdata,
@@ -494,8 +506,9 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
 /// Pure: the game's arguments for `s` (`config` and `yaml` as the game sees the paths). A
 /// runtime from #1255 on reads `config.yaml` from `-config-file` and refuses `-config-path`:
 /// it gets the game's JSON as `-config`; an older one finds `config.yaml` beside the JSON
-/// `-config-path` names.
-pub fn game_args(s: &Server, config: &str, yaml: Option<&str>) -> Vec<String> {
+/// `-config-path` names. `no_update`: a runtime that updates itself (6.17.0 on) while the
+/// launcher updates nEVR runs without its own update check.
+pub fn game_args(s: &Server, config: &str, yaml: Option<&str>, no_update: bool) -> Vec<String> {
     let config_args = match yaml {
         Some(yaml) => vec!["-config", config, nevr::CONFIG_FILE_ARG, yaml],
         None => vec!["-config-path", config],
@@ -514,6 +527,9 @@ pub fn game_args(s: &Server, config: &str, yaml: Option<&str>) -> Vec<String> {
     .chain(config_args.iter())
     .map(|x| x.to_string())
     .collect();
+    if no_update {
+        a.push(nevr::NO_UPDATE_ARG.to_string());
+    }
     a.extend(s.extra_args.split_whitespace().map(str::to_string));
     a
 }
@@ -530,7 +546,7 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
         // reaches this pipe.
         c.arg("run")
             .arg(echoxr::wine_path(&[], &p.exe))
-            .args(game_args(&p.server, &config, yaml.as_deref()))
+            .args(game_args(&p.server, &config, yaml.as_deref(), p.no_update))
             .current_dir(&p.bin)
             .env("STEAM_COMPAT_DATA_PATH", &p.compat)
             .env("STEAM_COMPAT_CLIENT_INSTALL_PATH", "")
@@ -558,6 +574,7 @@ fn command(p: &Prepared) -> (std::process::Command, Option<super::proc::Wine>) {
         &p.server,
         &p.config_json.to_string_lossy(),
         yaml.as_deref(),
+        p.no_update,
     ))
     .current_dir(&p.bin)
     .env("LOCALAPPDATA", &p.appdata);
@@ -1012,7 +1029,7 @@ mod tests {
             extra_args: " -foo  bar ".into(),
             ..Server::default()
         };
-        let a = game_args(&s, r"Z:\x\config.json", None);
+        let a = game_args(&s, r"Z:\x\config.json", None, false);
         assert_eq!(
             a,
             [
@@ -1031,7 +1048,7 @@ mod tests {
             ]
         );
         // A runtime from #1255 on: the game's JSON as -config, config.yaml named exactly.
-        let a = game_args(&s, r"Z:\x\config.json", Some(r"Z:\x\config.yaml"));
+        let a = game_args(&s, r"Z:\x\config.json", Some(r"Z:\x\config.yaml"), false);
         assert_eq!(
             a[8..12],
             [
@@ -1042,5 +1059,10 @@ mod tests {
             ]
         );
         assert!(!a.iter().any(|x| x == "-config-path"));
+        assert!(!a.iter().any(|x| x == "-no-update"));
+        // The launcher updating nEVR (6.17.0 on): nEVR's own check off, before the host's
+        // own arguments.
+        let a = game_args(&s, r"Z:\x\config.json", Some(r"Z:\x\config.yaml"), true);
+        assert_eq!(a[12..], ["-no-update", "-foo", "bar"]);
     }
 }

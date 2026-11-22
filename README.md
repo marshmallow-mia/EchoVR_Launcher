@@ -165,8 +165,14 @@ arguments, start without mods, and install mods from the catalogue on release.ec
 DLL of your own. **Installed mods** lists only what is installed; **More mods** offers the
 rest (the catalogue's optional plugins, EchoXR Hands and, on Windows, EchoXR) with **Get**. The launcher keeps its choices in its own files and sets them in nEVR's
 `config.yaml` before every start, so updates and Verify never undo them. The file is
-yours: the launcher sets only the plugins, and the server while you play on another one.
-Everything else you put in it stays, and so does the sign-in beside it.
+yours: the launcher sets only the plugins, the server while you play on another one, and how
+nEVR updates. Everything else you put in it stays, and so does the sign-in beside it.
+
+Settings → Updates picks **nEVR's channel** (stable unless you pick another one nEVR has,
+like beta) and **who updates nEVR**. From nEVR 6.17.0 on, nEVR updates itself to its
+channel's newest release when Echo VR starts, and the launcher leaves a release nEVR put in
+place there. Pick **The launcher** to have only the launcher's Echo VR updates bring new
+nEVR releases: nEVR's own check is off then (`update.enabled: false` and `-no-update`).
 Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask in the
 browser. See
 [docs/launcher/mods.md](docs/launcher/mods.md).

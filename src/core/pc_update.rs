@@ -66,17 +66,24 @@ pub fn set_launcher_channel(channel: Channel) {
     *LAUNCHER_CHANNEL.lock().unwrap_or_else(|p| p.into_inner()) = channel;
 }
 
-/// The channel of nEVR's launcher.json follows on the PC ([`set_nevr_channel`]).
-static NEVR_CHANNEL: std::sync::Mutex<NevrChannel> = std::sync::Mutex::new(NevrChannel::Stable);
+/// The channel of nEVR's launcher.json follows on the PC ([`set_nevr_channel`]); empty
+/// until the settings are read, which is stable.
+static NEVR_CHANNEL: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
-/// Takes launcher.json's nEVR channel (Settings' "nEVR beta"); called whenever the settings
-/// are loaded or saved.
-pub fn set_nevr_channel(channel: NevrChannel) {
-    *NEVR_CHANNEL.lock().unwrap_or_else(|p| p.into_inner()) = channel;
+/// Takes launcher.json's nEVR channel (Settings' "nEVR channel"); called whenever the
+/// settings are loaded or saved.
+pub fn set_nevr_channel(channel: &str) {
+    *NEVR_CHANNEL.lock().unwrap_or_else(|p| p.into_inner()) = channel.to_string();
 }
 
-fn nevr_channel_picked() -> NevrChannel {
-    *NEVR_CHANNEL.lock().unwrap_or_else(|p| p.into_inner())
+/// The channel of nEVR's the PC follows: a name nEVR's manifest has (`stable`, `beta`, …).
+pub fn nevr_channel_picked() -> String {
+    let c = NEVR_CHANNEL.lock().unwrap_or_else(|p| p.into_inner());
+    if nevr_release::channel_ok(&c) {
+        c.clone()
+    } else {
+        NevrChannel::Stable.name().to_string()
+    }
 }
 
 /// The overlays on the live PC update for `channel`, in the order they apply (the last
@@ -122,20 +129,26 @@ pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
 /// The channel of nEVR's the update `m` follows for this platform, when it names one and no
 /// version ([`channel_for`]).
 fn nevr_channel(m: &Manifest) -> Option<String> {
-    channel_for(m, nevr_channel_picked())
+    channel_for(m, &nevr_channel_picked())
 }
 
 /// Pure: the channel of nEVR's `m` follows for this platform with the player's pick
-/// `picked`. Where the update follows stable or beta, the player picks which: stable unless
-/// Settings' "nEVR beta" is on (Main's update once named nEVR's beta, and every Main player
-/// got nEVR's untested builds). Another channel of nEVR's (one for testing), a version or
-/// `none` stay the update's to say.
-fn channel_for(m: &Manifest, picked: NevrChannel) -> Option<String> {
+/// `picked`. Where the update follows stable or beta, the player picks the channel
+/// (Settings' "nEVR channel", any nEVR's manifest has): stable unless picked (Main's
+/// update once named nEVR's beta, and every Main player got nEVR's untested builds).
+/// Another channel of nEVR's (one for testing), a version or `none` stay the update's to
+/// say.
+fn channel_for(m: &Manifest, picked: &str) -> Option<String> {
     let named = m
         .nevr_release(nevr_release::PLATFORM)
         .filter(|v| !nevr_release::semver_ok(v))?;
     let players = NevrChannel::ALL.iter().any(|c| c.name() == named);
-    Some(if players { picked.name() } else { named }.to_string())
+    let picked = if nevr_release::channel_ok(picked) {
+        picked
+    } else {
+        NevrChannel::Stable.name()
+    };
+    Some(if players { picked } else { named }.to_string())
 }
 
 /// Pure: the line the release channel `name` has now (`version`) adds to an update's text.
@@ -1452,7 +1465,7 @@ mod tests {
             nevr_release::PLATFORM
         );
         let (m, text) = with_overlays(PC_MANIFEST_URL, &main, &[(ALPHA_OVERLAY, alpha)]).unwrap();
-        assert_eq!(channel_for(&m, NevrChannel::Beta).as_deref(), Some("beta"));
+        assert_eq!(channel_for(&m, "beta").as_deref(), Some("beta"));
         // The release it has goes into the text an update check hashes, as a line that is
         // nothing when the text is read again.
         let a = format!("{text}{}", channel_line("beta", "6.0.0"));
@@ -1462,37 +1475,40 @@ mod tests {
         assert_eq!(again.nevr_release(nevr_release::PLATFORM), Some("beta"));
         let mut m = m;
         m.set_nevr_release(nevr_release::PLATFORM, "6.0.0");
-        assert_eq!(channel_for(&m, NevrChannel::Beta), None);
+        assert_eq!(channel_for(&m, "beta"), None);
     }
 
     #[test]
-    fn the_player_picks_nevr_stable_or_beta() {
+    fn the_player_picks_nevrs_channel() {
         let named = |v: &str| {
             let text = format!("# nEVR {}: {v}\n", nevr_release::PLATFORM);
             Manifest::parse(&text, PC_MANIFEST_URL).unwrap()
         };
         // Main's update following nEVR's beta: stable unless the player picked beta.
         let beta = named("beta");
+        assert_eq!(channel_for(&beta, "stable").as_deref(), Some("stable"));
+        assert_eq!(channel_for(&beta, "beta").as_deref(), Some("beta"));
         assert_eq!(
-            channel_for(&beta, NevrChannel::Stable).as_deref(),
-            Some("stable")
-        );
-        assert_eq!(
-            channel_for(&beta, NevrChannel::Beta).as_deref(),
-            Some("beta")
-        );
-        assert_eq!(
-            channel_for(&named("stable"), NevrChannel::Beta).as_deref(),
+            channel_for(&named("stable"), "beta").as_deref(),
             Some("beta")
         );
         // A channel of nEVR's for testing stays as the update says.
         assert_eq!(
-            channel_for(&named("nightly"), NevrChannel::Stable).as_deref(),
+            channel_for(&named("nightly"), "stable").as_deref(),
             Some("nightly")
         );
         // So do a version and none.
-        assert_eq!(channel_for(&named("6.16.5"), NevrChannel::Beta), None);
-        assert_eq!(channel_for(&named("none"), NevrChannel::Beta), None);
+        assert_eq!(channel_for(&named("6.16.5"), "beta"), None);
+        assert_eq!(channel_for(&named("none"), "beta"), None);
+        // Any channel nEVR's manifest has can be picked; a name that can't be one is stable.
+        assert_eq!(
+            channel_for(&named("stable"), "nightly").as_deref(),
+            Some("nightly")
+        );
+        assert_eq!(
+            channel_for(&named("beta"), "Beta 2").as_deref(),
+            Some("stable")
+        );
     }
 
     #[test]

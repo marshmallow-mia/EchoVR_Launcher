@@ -104,12 +104,17 @@ operations (`src/core/plugin_host/services.rs` and `src/ui/launcher/plugin_servi
     - Everything else links to the installed game.
     - `_local` has the server's `config.yaml`, `config.json` and sign-in. `config.yaml` is
       yours: at every start the Server host sets only the keys its page has (services,
-      account, network, guilds, mods) and keeps every other line. A field left empty on
+      account, network, guilds, mods) and how nEVR updates (from nEVR 6.17.0 on, as
+      Settings → Updates has it), and keeps every other line. A field left empty on
       the page leaves your own value there. `config.yaml.launcher.json` notes what it set.
   - `status.json`, `console.log` and `control`.
 
   The installed game itself never changes. A game or mod update never meets a file a server
   holds. A server picks up a new nEVR at its next start.
+- From nEVR 6.17.0 on, a server's nEVR updates itself in its own nEVR root, to the channel
+  Settings → Updates picks, unless Settings leave nEVR's updates to the launcher. Then
+  the server runs with `-no-update` and `update.enabled: false`, and what nEVR had staged
+  is cleared before it starts.
 - nEVR ignores `-port`, so each server has its own `netconfig_dedicatedserver.json` with
   its port.
 - While it signs in, a server opens the game client's port for about two seconds

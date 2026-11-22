@@ -124,6 +124,62 @@ fn tip_option(
     option(kit, key, on, label, "", x, y, w, enabled, &tip)
 }
 
+/// A label with a dark button on the right that opens `items` (showing `shown`): returns the
+/// row picked. As tall as an [`option`] without a note.
+#[allow(clippy::too_many_arguments)]
+fn picker_row(
+    kit: &mut Kit,
+    key: &str,
+    label: &str,
+    shown: &str,
+    items: &[MenuItem],
+    x: f32,
+    y: f32,
+    w: f32,
+    tip: &str,
+) -> Option<usize> {
+    let g = kit.label_galley(label, design::din(18.0), design::TEXT, f32::INFINITY);
+    let gh = g.size().y;
+    kit.put(x, y + (24.0 - gh) / 2.0, g);
+    let bw = dz(220.0).min(w / 2.0);
+    let bh = 30.0;
+    kit.menu_button(
+        key,
+        shown,
+        items,
+        x + w - bw,
+        y + (24.0 - bh) / 2.0,
+        bw,
+        bh,
+        tip,
+    )
+}
+
+/// nEVR's channel `name` as Settings shows it: "Stable", "Beta", or its own name with a
+/// capital.
+fn channel_label(name: &str) -> String {
+    use crate::core::nevr_release::NevrChannel;
+    if let Some(c) = NevrChannel::ALL.iter().find(|c| c.name() == name) {
+        return c.label().to_string();
+    }
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// What following nEVR's channel `name` means.
+fn channel_note(name: &str) -> &'static str {
+    use crate::core::nevr_release::NevrChannel;
+    NevrChannel::ALL
+        .iter()
+        .find(|c| c.name() == name)
+        .map_or("Another channel of nEVR's. Its builds can have bugs", |c| {
+            c.note()
+        })
+}
+
 // ---- the cards ----
 
 /// GAME: how you play, as the Install card asks it (a tile each), and the SteamVR
@@ -862,32 +918,89 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         }
     }
     y += h + dz(6.0);
-    // nEVR's channel Echo VR updates to on this PC (the Quest has its own, on Play): stable
-    // unless ticked. A switch is an update of Echo VR's, offered like any other.
-    use crate::core::nevr_release::NevrChannel;
-    let mut beta = d.state.nevr_channel == NevrChannel::Beta;
-    let (flipped, h) = tip_option(
+    // nEVR's channel Echo VR updates to on this PC (the Quest has its own, on Play): any
+    // nEVR's manifest has, stable unless picked. A switch is an update of Echo VR's, offered
+    // like any other; nEVR 6.17.0 on follows it too when it updates itself.
+    let channels = crate::core::nevr_release::pc_channels();
+    let current = d.state.nevr_channel.clone();
+    let items: Vec<MenuItem> = channels
+        .iter()
+        .map(|(name, release)| MenuItem::Pick {
+            label: channel_label(name),
+            detail: release
+                .as_ref()
+                .map(|v| format!("nEVR {v}"))
+                .unwrap_or_default(),
+            detail_color: design::GREY,
+            checked: *name == current,
+            tip: channel_note(name).into(),
+        })
+        .collect();
+    if let Some(i) = picker_row(
         kit,
-        "nevr-beta",
-        &mut beta,
-        "nEVR beta",
-        "Echo VR updates to nEVR's newest builds before they reach stable. They can have bugs.",
+        "nevr-channel",
+        "nEVR channel",
+        &channel_label(&current),
+        &items,
         x,
         y,
         w,
-        true,
-        "",
-    );
-    if flipped {
-        d.state.nevr_channel = if beta {
-            NevrChannel::Beta
-        } else {
-            NevrChannel::Stable
-        };
-        d.save();
-        d.updates.check_soon();
+        "nEVR's releases Echo VR updates to. Stable is tested; beta has nEVR's newest builds, which can have bugs.",
+    ) {
+        if let Some((name, _)) = channels.get(i).filter(|(n, _)| *n != current) {
+            d.state.nevr_channel = name.clone();
+            d.save();
+            d.updates.check_soon();
+        }
     }
-    y += h + dz(12.0);
+    y += dz(50.0);
+    // Who updates nEVR from 6.17.0 on: nEVR itself between the launcher's updates, or only
+    // the launcher (nEVR's own check off).
+    use crate::core::launcher::nevr::NevrUpdates;
+    let by = d.state.nevr_updates;
+    let choices = [
+        (
+            NevrUpdates::Nevr,
+            "nEVR itself",
+            "nEVR updates itself to its channel's newest release when Echo VR starts (nEVR 6.17.0 and later).",
+        ),
+        (
+            NevrUpdates::Launcher,
+            "The launcher",
+            "Only the launcher updates nEVR, with Echo VR's updates. nEVR's own update check is off.",
+        ),
+    ];
+    let items: Vec<MenuItem> = choices
+        .iter()
+        .map(|(c, label, tip)| MenuItem::Pick {
+            label: (*label).into(),
+            detail: String::new(),
+            detail_color: design::GREY,
+            checked: *c == by,
+            tip: (*tip).into(),
+        })
+        .collect();
+    let shown = choices
+        .iter()
+        .find(|(c, _, _)| *c == by)
+        .map_or("", |(_, label, _)| label);
+    if let Some(i) = picker_row(
+        kit,
+        "nevr-updates",
+        "nEVR updates",
+        shown,
+        &items,
+        x,
+        y,
+        w,
+        "Who updates nEVR (6.17.0 and later): nEVR itself when Echo VR starts, or only the launcher.",
+    ) {
+        if let Some((c, _, _)) = choices.get(i).filter(|(c, _, _)| *c != by) {
+            d.state.nevr_updates = *c;
+            d.save();
+        }
+    }
+    y += dz(50.0) + dz(12.0);
     // A test channel for the PC update (launcher.json's update_manifest, or the
     // environment's ECHOVR_UPDATE_MANIFEST): said here while it applies.
     if let Some((url, from)) = crate::core::pc_update::channel_override() {
