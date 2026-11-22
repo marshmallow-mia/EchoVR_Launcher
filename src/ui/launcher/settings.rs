@@ -954,7 +954,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         }
     }
     y += dz(50.0);
-    // Who updates nEVR from 6.17.0 on: nEVR itself between the launcher's updates, or only
+    // Who updates nEVR from 6.18.0 on (the launcher keeps 6.17.x current itself): nEVR itself between the launcher's updates, or only
     // the launcher (nEVR's own check off).
     use crate::core::launcher::nevr::NevrUpdates;
     let by = d.state.nevr_updates;
@@ -962,7 +962,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         (
             NevrUpdates::Nevr,
             "nEVR itself",
-            "nEVR updates itself to its channel's newest release when Echo VR starts (nEVR 6.17.0 and later).",
+            "nEVR updates itself to its channel's newest release when Echo VR starts (nEVR 6.18.0 and later).",
         ),
         (
             NevrUpdates::Launcher,
@@ -993,7 +993,7 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         x,
         y,
         w,
-        "Who updates nEVR (6.17.0 and later): nEVR itself when Echo VR starts, or only the launcher.",
+        "Who updates nEVR (6.18.0 and later): nEVR itself when Echo VR starts, or only the launcher.",
     ) {
         if let Some((c, _, _)) = choices.get(i).filter(|(c, _, _)| *c != by) {
             d.state.nevr_updates = *c;

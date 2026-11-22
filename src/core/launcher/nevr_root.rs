@@ -19,7 +19,9 @@
 //! noting it in `update\state.json`. Unless Settings leave nEVR's updates to the launcher
 //! ([`super::nevr::NevrUpdates`]), a runtime nEVR put there that isn't older than the
 //! version's stays ([`put_in_place`]); with the launcher updating, what nEVR staged goes as
-//! its installer clears it ([`clear_update`]).
+//! its installer clears it ([`clear_update`]). 6.17.x is always updated by the launcher: it
+//! refuses `config.yaml`'s `update` section, so its channel can't be picked
+//! ([`nevr::takes_update_section`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -140,6 +142,8 @@ pub fn put_in_place(
     })?;
     let ours_bytes = std::fs::read(&ours).unwrap_or_default();
     let itself = nevr::updates_itself(&ours_bytes);
+    // 6.17.x can't be told its channel: the launcher keeps it current whatever Settings pick.
+    let by = nevr::updates_for(by, nevr::takes_update_section(&ours_bytes));
     if itself && by == nevr::NevrUpdates::Launcher && !running {
         clear_update(root);
     }
@@ -924,7 +928,8 @@ mod tests {
         assert!(format!("{e:#}").contains("Repair game files"), "{e:#}");
     }
 
-    /// A runtime that updates itself (6.17.0 on) carries its flag; `version` is its build.
+    /// A runtime that updates itself (6.17.0 on) carries its flag; `version` is its build
+    /// (from 6.18.0 on it takes config.yaml's `update` section, and nEVR may update it).
     fn runtime_6_17(version: &str) -> String {
         format!("MZ NEVR-BUILD {version} abcdef0\0-no-update\0")
     }
@@ -951,14 +956,14 @@ mod tests {
         use nevr::NevrUpdates::{Launcher, Nevr};
         let dir = tempfile::tempdir().unwrap();
         let (root, record) = (dir.path().join("root"), dir.path().join("rec.json"));
-        let ours = runtime_6_17("6.17.0");
+        let ours = runtime_6_17("6.18.0");
         let bin = game(&dir.path().join("a"), &ours);
         let in_root = || std::fs::read_to_string(root.join(nevr::RUNTIME)).unwrap();
         put_in_place(&bin, &root, &record, false, Nevr).unwrap();
         assert_eq!(in_root(), ours);
         // nEVR swapped in its channel's newer release: it stays, even while Echo VR runs.
-        let newer = runtime_6_17("6.18.1");
-        nevr_runs(&root, "6.18.1", &newer);
+        let newer = runtime_6_17("6.19.0");
+        nevr_runs(&root, "6.19.0", &newer);
         put_in_place(&bin, &root, &record, false, Nevr).unwrap();
         assert_eq!(in_root(), newer);
         put_in_place(&bin, &root, &record, true, Nevr).unwrap();
@@ -970,7 +975,7 @@ mod tests {
         assert_eq!(in_root(), ours);
         // With the launcher updating nEVR, its own goes in, nEVR's isn't set aside, and what
         // nEVR staged is cleared (the quarantine in state.json stays).
-        nevr_runs(&root, "6.18.1", &newer);
+        nevr_runs(&root, "6.19.0", &newer);
         let update = root.join(UPDATE);
         std::fs::create_dir_all(update.join("staging").join("6.19.0")).unwrap();
         for f in ["staged.json", "pending.json", "swap.json", "crashed"] {
@@ -991,9 +996,28 @@ mod tests {
         // A runtime from before 6.17.0 doesn't update itself: another one nEVR put there is
         // replaced, whatever the choice.
         let old_bin = game(&dir.path().join("b"), "runtime 6.16.5");
-        nevr_runs(&root, "6.18.1", &newer);
+        nevr_runs(&root, "6.19.0", &newer);
         put_in_place(&old_bin, &root, &record, false, Nevr).unwrap();
         assert_eq!(in_root(), "runtime 6.16.5");
+    }
+
+    /// 6.17.x updates itself but can't be told its channel: the launcher keeps it current
+    /// even with nEVR picked, as if the launcher were.
+    #[test]
+    fn keeps_6_17_current_whatever_settings_pick() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, record) = (dir.path().join("root"), dir.path().join("rec.json"));
+        let ours = runtime_6_17("6.17.0");
+        let bin = game(&dir.path().join("a"), &ours);
+        let newer = runtime_6_17("6.18.1");
+        nevr_runs(&root, "6.18.1", &newer);
+        std::fs::write(root.join(UPDATE).join("staged.json"), "{}").unwrap();
+        put_in_place(&bin, &root, &record, false, nevr::NevrUpdates::Nevr).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join(nevr::RUNTIME)).unwrap(),
+            ours
+        );
+        assert!(!root.join(UPDATE).join("staged.json").exists());
     }
 
     #[test]

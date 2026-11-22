@@ -119,11 +119,16 @@ pub fn build(
 }
 
 /// The arguments nEVR in `bin` gets from the launcher's settings: with the launcher updating
-/// nEVR, a runtime that updates itself (6.17.0 on) runs without its own update check. Its
-/// `config.yaml` says so too ([`super::nevr::update_edits`]), for the starts that drop
-/// arguments (Virtual Desktop's Oculus mode, SteamVR's library).
+/// nEVR (always for 6.17.x, [`super::nevr::updates_for`]), a runtime that updates itself
+/// (6.17.0 on) runs without its own update check. From 6.18.0 on its `config.yaml` says so
+/// too ([`super::nevr::update_edits`]), for the starts that drop arguments (Virtual
+/// Desktop's Oculus mode, SteamVR's library).
 pub fn nevr_args(bin: &Path) -> Vec<String> {
-    no_update_arg(super::nevr::updates(), super::mods::updates_itself(bin))
+    let by = super::nevr::updates_for(
+        super::nevr::updates(),
+        super::mods::takes_update_section(bin),
+    );
+    no_update_arg(by, super::mods::updates_itself(bin))
         .map(|a| vec![a.to_string()])
         .unwrap_or_default()
 }
@@ -308,6 +313,9 @@ mod tests {
         assert_eq!(no_update_arg(Nevr, true), None);
         // Before 6.17.0 nEVR has no such flag.
         assert_eq!(no_update_arg(Launcher, false), None);
+        // 6.17.x gets it with nEVR picked too: its channel can't be picked.
+        let by = super::super::nevr::updates_for(Nevr, false);
+        assert_eq!(no_update_arg(by, true), Some("-no-update"));
     }
     use crate::core::launcher::store::{SteamVrVia, VdVia};
 

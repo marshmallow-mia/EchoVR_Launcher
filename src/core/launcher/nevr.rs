@@ -189,10 +189,10 @@ pub fn signs_servers_in_by_code(bytes: &[u8]) -> bool {
 }
 
 /// Pure: whether runtime `bytes` updates itself (nevr-runtime 6.17.0 on, ADR 0024): at a
-/// start it stages the release its channel names (`update.channel` in `config.yaml`, stable
-/// when unset) and its host swaps it in at the next start, an older one too. It carries the
-/// flag that turns that off for a run ([`NO_UPDATE_ARG`]); 6.16.5 and older have neither, and
-/// refuse `config.yaml`'s `update` keys like any key they don't know.
+/// start it stages the release its channel names and its host swaps it in at the next start,
+/// an older one too. It carries the flag that turns that off for a run ([`NO_UPDATE_ARG`]);
+/// 6.16.5 and older have neither. Whether its `config.yaml` may say so is
+/// [`takes_update_section`].
 pub fn updates_itself(bytes: &[u8]) -> bool {
     let wide: Vec<u8> = NO_UPDATE_ARG
         .encode_utf16()
@@ -204,6 +204,36 @@ pub fn updates_itself(bytes: &[u8]) -> bool {
 /// The runtime's flag for a run without its own update check (6.17.0 on): a release its
 /// host already swapped in is still confirmed.
 pub const NO_UPDATE_ARG: &str = "-no-update";
+
+/// What a runtime whose `config.yaml` may have an `update` section carries (nevr-runtime
+/// 6.18.0 on): the list of top-level keys in the message it refuses another key with.
+const UPDATE_SECTION: &str = "combat, update";
+
+/// Pure: whether runtime `bytes` takes `config.yaml`'s `update` section (`update.enabled`,
+/// `update.channel`; nevr-runtime 6.18.0 on): its own marker, or a `NEVR-BUILD` of 6.18.0 or
+/// newer. 6.17.0 updates itself but refuses the section as an unknown key: a client then
+/// runs with nEVR's built-in defaults instead of the whole `config.yaml`, and a game server
+/// stops. Its channel can't be picked either, so the launcher keeps it current
+/// ([`updates_for`]) and turns its check off with [`NO_UPDATE_ARG`] only.
+pub fn takes_update_section(bytes: &[u8]) -> bool {
+    let first = crate::core::semver::Version::parse("6.18.0");
+    updates_itself(bytes)
+        && (contains(bytes, UPDATE_SECTION.as_bytes())
+            || build_version(bytes)
+                .and_then(|v| crate::core::semver::Version::parse(&v))
+                .is_some_and(|v| first.is_some_and(|first| v >= first)))
+}
+
+/// Pure: who updates a runtime when Settings pick `by` and the runtime takes `config.yaml`'s
+/// `update` section (`section`, [`takes_update_section`]): nEVR only when it can be told its
+/// channel, else the launcher (6.17.x, whose own check follows a channel nobody picked).
+pub fn updates_for(by: NevrUpdates, section: bool) -> NevrUpdates {
+    if section {
+        by
+    } else {
+        NevrUpdates::Launcher
+    }
+}
 
 /// Who updates nEVR's runtime on this PC, from nevr-runtime 6.17.0 on (Settings' "nEVR
 /// updates"): nEVR itself, to the release of the channel Settings picks, or the launcher
@@ -240,13 +270,13 @@ pub fn updates() -> NevrUpdates {
     *UPDATES.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-/// Pure: the `update` keys the launcher sets in a `config.yaml` for a runtime that
-/// updates itself (`itself`, [`updates_itself`]): nEVR's channel `channel` when nEVR updates
-/// it, its check off when the launcher does. For an older runtime none (it refuses them):
-/// the launcher's values go and the player's own come back.
-pub fn update_edits(itself: bool, by: NevrUpdates, channel: &str) -> Vec<super::yaml_keys::Edit> {
+/// Pure: the `update` keys the launcher sets in a `config.yaml` for a runtime that takes
+/// them (`section`, [`takes_update_section`]): nEVR's channel `channel` when nEVR updates
+/// it, its check off when the launcher does. For an older runtime, 6.17.x too, none (it
+/// refuses them): the launcher's values go and the player's own come back.
+pub fn update_edits(section: bool, by: NevrUpdates, channel: &str) -> Vec<super::yaml_keys::Edit> {
     use super::yaml_keys::Edit;
-    let (enabled, channel) = match (itself, by) {
+    let (enabled, channel) = match (section, by) {
         (false, _) => (None, None),
         (true, NevrUpdates::Launcher) => (Some("false".to_string()), None),
         (true, NevrUpdates::Nevr) => (None, Some(json_str(channel))),
@@ -825,9 +855,9 @@ pub fn write_config(
     let dir = notes_dir(v);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let mut edits = config_edits(plugins, backend);
-    // How nEVR updates (6.17.0 on): into the root's with the rest ([`config_into_root`]).
+    // How nEVR updates (6.18.0 on): into the root's with the rest ([`config_into_root`]).
     edits.extend(update_edits(
-        super::mods::updates_itself(&v.bin_dir()),
+        super::mods::takes_update_section(&v.bin_dir()),
         updates(),
         &crate::core::pc_update::nevr_channel_picked(),
     ));
@@ -1606,6 +1636,36 @@ mod tests {
             .collect();
         assert!(updates_itself(&wide));
         assert!(!updates_itself(b"MZ NEVR-BUILD 6.16.5 abcdef0\0"));
+    }
+
+    #[test]
+    fn only_a_runtime_from_6_18_0_on_takes_the_update_section() {
+        // 6.17.0 updates itself but refuses `update:` in config.yaml.
+        assert!(!takes_update_section(
+            b"MZ NEVR-BUILD 6.17.0 abcdef0\0-no-update\0"
+        ));
+        assert!(!takes_update_section(
+            b"MZ NEVR-BUILD 6.17.0-dev.125+1a874753 abcdef0\0-no-update\0"
+        ));
+        assert!(takes_update_section(
+            b"MZ NEVR-BUILD 6.18.0 abcdef0\0-no-update\0"
+        ));
+        assert!(takes_update_section(
+            b"MZ NEVR-BUILD 6.18.1 abcdef0\0-no-update\0"
+        ));
+        // A development build after the fix: by its list of keys.
+        assert!(takes_update_section(
+            b"MZ NEVR-BUILD 6.17.1-dev.3+abc1234 abcdef0\0-no-update\0graphics, combat, update, maps\0"
+        ));
+        // Without the flag it doesn't update itself at all.
+        assert!(!takes_update_section(b"MZ NEVR-BUILD 6.18.1 abcdef0\0"));
+        // 6.17.x is kept current by the launcher, whatever Settings pick.
+        assert_eq!(updates_for(NevrUpdates::Nevr, false), NevrUpdates::Launcher);
+        assert_eq!(updates_for(NevrUpdates::Nevr, true), NevrUpdates::Nevr);
+        assert_eq!(
+            updates_for(NevrUpdates::Launcher, true),
+            NevrUpdates::Launcher
+        );
     }
 
     #[test]

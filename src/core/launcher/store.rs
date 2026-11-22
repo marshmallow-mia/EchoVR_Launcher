@@ -206,7 +206,7 @@ pub struct LauncherState {
     /// itself.
     #[serde(deserialize_with = "channel_name")]
     pub nevr_channel: String,
-    /// Who updates nEVR's runtime from 6.17.0 on (Settings' "nEVR updates"): nEVR itself
+    /// Who updates nEVR's runtime from 6.18.0 on (Settings' "nEVR updates"): nEVR itself
     /// unless the launcher is picked.
     pub nevr_updates: NevrUpdates,
     /// The EchoVRCE account echovrce.com inside the launcher was signed in for.

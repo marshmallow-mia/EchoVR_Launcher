@@ -169,10 +169,12 @@ yours: the launcher sets only the plugins, the server while you play on another 
 nEVR updates. Everything else you put in it stays, and so does the sign-in beside it.
 
 Settings → Updates picks **nEVR's channel** (stable unless you pick another one nEVR has,
-like beta) and **who updates nEVR**. From nEVR 6.17.0 on, nEVR updates itself to its
+like beta) and **who updates nEVR**. From nEVR 6.18.0 on, nEVR updates itself to its
 channel's newest release when Echo VR starts, and the launcher leaves a release nEVR put in
 place there. Pick **The launcher** to have only the launcher's Echo VR updates bring new
 nEVR releases: nEVR's own check is off then (`update.enabled: false` and `-no-update`).
+nEVR 6.17 updates itself too, but can't be told its channel (it refuses `update` in
+`config.yaml`), so the launcher always keeps it current and starts it with `-no-update`.
 Signed in with EchoVRCE, the launcher also signs the game in, so it doesn't ask in the
 browser. See
 [docs/launcher/mods.md](docs/launcher/mods.md).

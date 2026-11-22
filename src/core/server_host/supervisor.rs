@@ -444,10 +444,11 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     };
     let mut yaml = config::edits(&cfg, &server, &plugins, local);
     // How nEVR updates (6.17.0 on), as for Echo VR on this PC: the server's runtime is in its
-    // own root, and reads these from its config.yaml (`-config-file`).
+    // own root, and reads these from its config.yaml (`-config-file`, 6.18.0 on).
     let itself = mods::updates_itself(&v.bin_dir());
+    let section = mods::takes_update_section(&v.bin_dir());
     yaml.extend(nevr::update_edits(
-        itself,
+        section,
         state.nevr_updates,
         &state.nevr_channel,
     ));
@@ -494,7 +495,8 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
         bin: f.bin(),
         config_json: f.local().join(nevr::GAME_CONFIG),
         config_yaml: mods::reads_root_config(&v.bin_dir()).then(|| f.local().join(nevr::CONFIG)),
-        no_update: itself && state.nevr_updates == nevr::NevrUpdates::Launcher,
+        no_update: itself
+            && nevr::updates_for(state.nevr_updates, section) == nevr::NevrUpdates::Launcher,
         sign_in: cfg.account.sign_in,
         password,
         appdata,
@@ -507,7 +509,8 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
 /// runtime from #1255 on reads `config.yaml` from `-config-file` and refuses `-config-path`:
 /// it gets the game's JSON as `-config`; an older one finds `config.yaml` beside the JSON
 /// `-config-path` names. `no_update`: a runtime that updates itself (6.17.0 on) while the
-/// launcher updates nEVR runs without its own update check.
+/// launcher updates nEVR (always for 6.17.x: [`nevr::updates_for`]) runs without its own
+/// update check.
 pub fn game_args(s: &Server, config: &str, yaml: Option<&str>, no_update: bool) -> Vec<String> {
     let config_args = match yaml {
         Some(yaml) => vec!["-config", config, nevr::CONFIG_FILE_ARG, yaml],
