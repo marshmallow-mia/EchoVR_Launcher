@@ -77,6 +77,9 @@ pub const CANCELLED: u8 = 0;
 /// Step 8's file didn't arrive (no connection, an error from the server, a file that
 /// couldn't be saved): nothing about the release itself was wrong.
 pub const UNREACHABLE: u8 = 9;
+/// Not a step of the guide: nEVR's manifest lists the file, but nEVR's server doesn't have
+/// it (404 or 410; nEVR 6.18.1's Windows zip was listed before it was uploaded).
+pub const MISSING: u8 = 10;
 
 impl Refused {
     /// As an error for the rest of the launcher: a cancel is [`super::http::Cancelled`],
@@ -109,6 +112,7 @@ fn say(step: u8) -> &'static str {
         CANCELLED => "Cancelled. Nothing was changed.",
         7 => "nEVR's release information doesn't have the nEVR this update brings. Nothing was changed.",
         UNREACHABLE => "Couldn't download nEVR. Check your connection and free disk space, then try again. Nothing was changed.",
+        MISSING => "nEVR's server doesn't have this nEVR release's download yet. Try again later, or pick another nEVR version in Settings. Nothing was changed.",
         _ => "A file from nEVR's release didn't match it, so it was deleted and nothing was installed.",
     }
 }
@@ -240,12 +244,14 @@ fn fetch_checked(
 }
 
 /// Why a release's file wasn't downloaded: the player cancelled, the server sent more
-/// than the manifest's size (step 8), or no file came at all.
+/// than the manifest's size (step 8), doesn't have it, or no file came at all.
 fn download_refused(e: &anyhow::Error) -> Refused {
     let step = if super::http::is_cancelled(e) {
         CANCELLED
     } else if e.downcast_ref::<super::http::TooLarge>().is_some() {
         8
+    } else if e.downcast_ref::<super::http::NotThere>().is_some() {
+        MISSING
     } else {
         UNREACHABLE
     };
@@ -1312,6 +1318,11 @@ mod tests {
         let r = download_refused(&long);
         assert_eq!(r.step, 8);
         assert!(r.to_string().contains("didn't match"), "{r}");
+
+        let gone = anyhow::Error::new(crate::core::http::NotThere(404)).context("GET x");
+        let r = download_refused(&gone);
+        assert_eq!(r.step, MISSING);
+        assert!(r.to_string().contains("doesn't have"), "{r}");
 
         let r = download_refused(&anyhow::anyhow!("GET x: connection refused"));
         assert_eq!(r.step, UNREACHABLE);
