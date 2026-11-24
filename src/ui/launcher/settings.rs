@@ -326,7 +326,8 @@ pub(super) fn pick_nevr(d: &mut Dashboard, ctx: &egui::Context, p: &NevrPick) {
 
 /// After a new pick under "nEVR version": every Echo VR on this PC that gets the live
 /// update updates to it now, as "Update" would (one that is busy gets it with the next
-/// update check).
+/// update check). The update check waits for those updates (each looks again when it's
+/// done): one now would offer the update they are installing.
 fn update_to_nevr_pick(d: &mut Dashboard, ctx: &egui::Context) {
     let live: Vec<_> = d
         .state
@@ -335,10 +336,12 @@ fn update_to_nevr_pick(d: &mut Dashboard, ctx: &egui::Context) {
         .filter(|v| v.present() && crate::core::launcher::versions::has_updates(v))
         .cloned()
         .collect();
+    if live.is_empty() {
+        d.updates.check_soon();
+    }
     for v in live {
         super::versions::update(d, ctx, v);
     }
-    d.updates.check_soon();
 }
 
 // ---- the cards ----
