@@ -183,9 +183,15 @@ pub fn loads_root_plugins(bytes: &[u8]) -> bool {
 }
 
 /// Pure: whether runtime `bytes` signs a game server without a password in by a code it
-/// shows ([`SERVER_SIGN_IN_CODE`], 6.9.0 on). Older ones refuse such a server.
+/// shows (6.9.0 on): its event name ([`SERVER_SIGN_IN_CODE`]), or a `NEVR-BUILD` of 6.9.0 or
+/// newer. 6.17.0 still prints the event but its build doesn't keep the name as text, so the
+/// version decides there. Older ones refuse such a server.
 pub fn signs_servers_in_by_code(bytes: &[u8]) -> bool {
+    let first = crate::core::semver::Version::parse("6.9.0");
     contains(bytes, SERVER_SIGN_IN_CODE.as_bytes())
+        || build_version(bytes)
+            .and_then(|v| crate::core::semver::Version::parse(&v))
+            .is_some_and(|v| first.is_some_and(|first| v >= first))
 }
 
 /// Pure: whether runtime `bytes` updates itself (nevr-runtime 6.17.0 on, ADR 0024): at a
@@ -1636,6 +1642,22 @@ mod tests {
             .collect();
         assert!(updates_itself(&wide));
         assert!(!updates_itself(b"MZ NEVR-BUILD 6.16.5 abcdef0\0"));
+    }
+
+    #[test]
+    fn a_server_signs_in_by_code_from_6_9_0_on_with_or_without_the_event_name() {
+        assert!(signs_servers_in_by_code(
+            b"MZ NEVR-BUILD 6.16.5 abcdef0\0server_sign_in_code\0"
+        ));
+        // 6.17.0's build doesn't keep the event name as text.
+        assert!(signs_servers_in_by_code(b"MZ NEVR-BUILD 6.17.0 abcdef0\0"));
+        assert!(signs_servers_in_by_code(b"MZ NEVR-BUILD 6.9.0 abcdef0\0"));
+        assert!(!signs_servers_in_by_code(b"MZ NEVR-BUILD 6.8.2 abcdef0\0"));
+        assert!(!signs_servers_in_by_code(b"MZ NEVR-BUILD 5.16.0 abcdef0\0"));
+        // A development build: only by the event name.
+        assert!(!signs_servers_in_by_code(
+            b"MZ NEVR-BUILD 6.17.0-dev.4+abc1234 abcdef0\0"
+        ));
     }
 
     #[test]
