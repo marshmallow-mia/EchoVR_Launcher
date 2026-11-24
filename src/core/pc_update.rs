@@ -86,6 +86,39 @@ pub fn nevr_channel_picked() -> String {
     }
 }
 
+/// The release of nEVR's launcher.json keeps Echo VR at on the PC ([`set_nevr_version`]),
+/// in place of its channel's newest.
+static NEVR_VERSION: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// A picked release nEVR's manifest no longer has, until the launcher's window tells the
+/// player ([`take_nevr_version_dropped`]).
+static NEVR_VERSION_DROPPED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Takes launcher.json's nEVR version (Settings' "nEVR version"); called whenever the
+/// settings are loaded or saved.
+pub fn set_nevr_version(version: Option<&str>) {
+    *NEVR_VERSION.lock().unwrap_or_else(|p| p.into_inner()) = version
+        .filter(|v| nevr_release::semver_ok(v))
+        .map(str::to_string);
+}
+
+/// The release of nEVR's the PC stays at, if one is picked.
+pub fn nevr_version_picked() -> Option<String> {
+    NEVR_VERSION
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+}
+
+/// A picked release an update check found gone from nEVR's manifest (Echo VR followed its
+/// channel instead), once.
+pub fn take_nevr_version_dropped() -> Option<String> {
+    NEVR_VERSION_DROPPED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+}
+
 /// The overlays on the live PC update for `channel`, in the order they apply (the last
 /// wins).
 pub fn overlays(channel: Channel) -> &'static [&'static str] {
@@ -117,13 +150,58 @@ pub fn fetch_manifest(url: &str) -> Result<(Manifest, String)> {
     }
     let (mut m, mut text) = with_overlays(url, &text, &over)?;
     // A channel of nEVR's is the release it has now, in the text too: a new one there is an
-    // update.
+    // update. A release the player picked in its place stays, while nEVR's manifest has it.
     if let Some(name) = nevr_channel(&m) {
-        let v = channel_release(&name, &AtomicBool::new(false))?;
-        m.set_nevr_release(nevr_release::PLATFORM, &v);
-        text.push_str(&channel_line(&name, &v));
+        let cancel = AtomicBool::new(false);
+        let picked = match version_for(&m, nevr_version_picked().as_deref()) {
+            Some(v) => match nevr_release::pc_version_offered(&v, &cancel) {
+                Ok(true) => Some(v),
+                Ok(false) => {
+                    tracing::warn!(
+                        "UpdateService: nEVR {v} is no longer in nEVR's manifest: following {name}"
+                    );
+                    *NEVR_VERSION_DROPPED
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = Some(v);
+                    None
+                }
+                Err(e) => {
+                    return Err(e
+                        .into_error()
+                        .context(format!("nEVR {v} couldn't be read from nEVR's manifest")))
+                }
+            },
+            None => None,
+        };
+        match picked {
+            Some(v) => {
+                m.set_nevr_release(nevr_release::PLATFORM, &v);
+                text.push_str(&version_line(&v));
+            }
+            None => {
+                let v = channel_release(&name, &cancel)?;
+                m.set_nevr_release(nevr_release::PLATFORM, &v);
+                text.push_str(&channel_line(&name, &v));
+            }
+        }
     }
     Ok((m, text))
+}
+
+/// Pure: the release the player picked (`picked`, Settings' "nEVR version") where the
+/// update `m` follows the player's channel of nEVR's (stable or beta, [`channel_for`]).
+/// Another channel of nEVR's (one for testing), a version or `none` stay the update's to say.
+fn version_for(m: &Manifest, picked: Option<&str>) -> Option<String> {
+    let named = m.nevr_release(nevr_release::PLATFORM)?;
+    let players = NevrChannel::ALL.iter().any(|c| c.name() == named);
+    picked
+        .filter(|v| players && nevr_release::semver_ok(v))
+        .map(str::to_string)
+}
+
+/// Pure: the line a picked release `version` adds to an update's text.
+fn version_line(version: &str) -> String {
+    format!("\n# nEVR {} picked: {version}\n", nevr_release::PLATFORM)
 }
 
 /// The channel of nEVR's the update `m` follows for this platform, when it names one and no
@@ -1476,6 +1554,39 @@ mod tests {
         let mut m = m;
         m.set_nevr_release(nevr_release::PLATFORM, "6.0.0");
         assert_eq!(channel_for(&m, "beta"), None);
+    }
+
+    #[test]
+    fn the_player_may_pick_a_release_in_place_of_the_channel() {
+        let named = |v: &str| {
+            let text = format!("# nEVR {}: {v}\n", nevr_release::PLATFORM);
+            Manifest::parse(&text, PC_MANIFEST_URL).unwrap()
+        };
+        // Where the update follows the player's channel, the picked release.
+        for ch in ["stable", "beta"] {
+            assert_eq!(
+                version_for(&named(ch), Some("6.16.5")).as_deref(),
+                Some("6.16.5")
+            );
+            assert_eq!(version_for(&named(ch), None), None);
+            assert_eq!(version_for(&named(ch), Some("latest")), None);
+        }
+        // A channel for testing, a version or none stay the update's.
+        assert_eq!(version_for(&named("nightly"), Some("6.16.5")), None);
+        assert_eq!(version_for(&named("6.17.0"), Some("6.16.5")), None);
+        assert_eq!(version_for(&named("none"), Some("6.16.5")), None);
+        // Another pick, or back to the channel, is an update.
+        let channel = channel_line("stable", "6.16.5");
+        assert_ne!(version_line("6.16.5"), channel);
+        assert_ne!(version_line("6.16.5"), version_line("6.17.0"));
+        // The line is nothing when the text is read again.
+        let text = format!(
+            "# nEVR {}: stable\n{}",
+            nevr_release::PLATFORM,
+            version_line("6.17.0")
+        );
+        let again = Manifest::parse(&text, PC_MANIFEST_URL).unwrap();
+        assert_eq!(again.nevr_release(nevr_release::PLATFORM), Some("stable"));
     }
 
     #[test]

@@ -639,6 +639,10 @@ pub enum SnapVariant {
     ServerHere,
     /// The Play page's version picker, open.
     VersionMenu,
+    /// Settings' "nEVR version", open.
+    NevrMenu,
+    /// A version's "Change nEVR version…" list (from MANAGE), open, with a release picked.
+    NevrManageMenu,
     /// A placeholder version chosen on the Install page.
     Placeholder,
     /// The "Join a lobby" card with a pasted link.
@@ -2430,6 +2434,15 @@ impl Dashboard {
                     addr: std::net::SocketAddrV4::new(ip(90), 37199),
                 }];
             }
+            Some(SnapVariant::NevrMenu) => {
+                let id = crate::ui::widgets::menu_id("nevr-channel");
+                ctx.data_mut(|d| d.insert_temp(id, true));
+            }
+            Some(SnapVariant::NevrManageMenu) => {
+                self.state.nevr_version = Some("6.1.4".into());
+                let id = crate::ui::widgets::menu_id("nevr-pc-latest");
+                ctx.data_mut(|d| d.insert_temp(id, true));
+            }
             Some(SnapVariant::QuestChannelMenu) => {
                 self.platform = Platform::Quest;
                 let id = crate::ui::widgets::menu_id(play::QUEST_CHANNEL_MENU);
@@ -2727,6 +2740,19 @@ impl Dashboard {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        // The nEVR release picked in Settings is gone from nEVR's manifest: Echo VR follows
+        // its channel again, and the player is told.
+        if let Some(v) = crate::core::pc_update::take_nevr_version_dropped() {
+            if self.state.nevr_version.as_deref() == Some(v.as_str()) {
+                self.state.nevr_version = None;
+                self.save();
+                self.notices.push(notices::Notice::info(&format!(
+                    "nEVR {v} isn't offered any more, so Echo VR updates to nEVR's {} channel again.",
+                    self.state.nevr_channel
+                )));
+                self.updates.check_soon();
+            }
+        }
         // Linux: Steam's start (`--play`) failed: what it found, once.
         let due = self
             .linux_outcome_at

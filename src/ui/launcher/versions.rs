@@ -409,6 +409,7 @@ pub(super) fn manage_menu(
     enum Act {
         Update,
         GoBack,
+        Nevr,
         Verify,
         Open,
         Shortcut,
@@ -454,6 +455,18 @@ pub(super) fn manage_menu(
             },
             Some(Act::GoBack),
         ));
+        // The live build updates to nEVR: which release, from a list (Settings' "nEVR
+        // version"), not guessed through Undo.
+        if v.publisher_lock.is_none() && v.update_manifest.is_none() {
+            menu.push((
+                MenuItem::row(
+                    "Change nEVR version…",
+                    "Pick the nEVR release Echo VR has: a channel's newest, or an older or newer one to stay at",
+                )
+                .unless(changes),
+                Some(Act::Nevr),
+            ));
+        }
         menu.push((
             MenuItem::row(
                 "Check files",
@@ -515,9 +528,23 @@ pub(super) fn manage_menu(
             "Update, verify, patch, open or remove",
         )
         .and_then(|i| acts.into_iter().nth(i).flatten());
+    // "Change nEVR version…": the list opens where MANAGE is.
+    let nevr_key = format!("nevr-{}", v.id);
+    if k.menu_open(&nevr_key) {
+        let (picks, items, _) = super::settings::nevr_menu(d);
+        let pw = 300.0f32.max(w);
+        let anchor = k.rect(x + w - pw, y, pw, h);
+        if let Some(p) = k
+            .menu_at(&nevr_key, anchor, &items)
+            .and_then(|i| picks.get(i))
+        {
+            super::settings::pick_nevr(d, ctx, p);
+        }
+    }
     // Rows that can't be used now are off (their tip says why): a pick is always allowed.
     match picked {
         Some(Act::Update) => update(d, ctx, v.clone()),
+        Some(Act::Nevr) => k.toggle_menu(&nevr_key),
         Some(Act::GoBack) => {
             let part = crate::core::launcher::goback::Part::Game {
                 version: v.id.clone(),

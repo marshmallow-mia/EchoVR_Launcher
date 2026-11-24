@@ -402,6 +402,67 @@ fn channels_in(m: Option<&Value>) -> Vec<(String, Option<String>)> {
     out
 }
 
+/// One release of nEVR's for the PC that Settings' "nEVR version" can pick: its version
+/// and the channels that have it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcVersion {
+    pub version: String,
+    pub channels: Vec<String>,
+}
+
+/// Every release of nEVR's for the PC in the manifest checked last (no network), newest
+/// first: what a player can move Echo VR up or down to. nEVR's manifest lists only the
+/// releases it keeps signed (its channels' and a few more), so this is all there is to
+/// pick from. Read again only when the stored manifest changes (Settings asks every frame).
+pub fn pc_versions() -> Vec<PcVersion> {
+    type Seen = (Option<std::time::SystemTime>, Vec<PcVersion>);
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let dir = state_dir();
+    let stamp = std::fs::metadata(dir.join(MANIFEST))
+        .and_then(|m| m.modified())
+        .ok();
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((s, versions)) = seen.as_ref() {
+        if *s == stamp {
+            return versions.clone();
+        }
+    }
+    let versions = stored(&dir)
+        .map(|m| versions_in(&m, &base()))
+        .unwrap_or_default();
+    *seen = Some((stamp, versions.clone()));
+    versions
+}
+
+/// Pure: [`pc_versions`] in the checked manifest `m` (whose folder is `base`): the releases
+/// with a PC zip that passes step 8's checks, newest first.
+fn versions_in(m: &Value, base: &str) -> Vec<PcVersion> {
+    let Some(releases) = m["releases"].as_object() else {
+        return Vec::new();
+    };
+    let mut out: Vec<PcVersion> = releases
+        .keys()
+        .filter(|v| semver_ok(v) && release_in(m, v, base).is_ok())
+        .map(|v| PcVersion {
+            version: v.clone(),
+            channels: channels_in(Some(m))
+                .into_iter()
+                .filter(|(_, r)| r.as_deref() == Some(v.as_str()))
+                .map(|(name, _)| name)
+                .collect(),
+        })
+        .collect();
+    out.sort_by_key(|p| std::cmp::Reverse(semver_key(&p.version)));
+    out
+}
+
+/// Steps 1 to 6, then whether nEVR's manifest has a PC release `version` (a version the
+/// player picked, which nEVR may have stopped listing).
+pub fn pc_version_offered(version: &str, cancel: &AtomicBool) -> Result<bool, Refused> {
+    let (m, base) = checked(cancel)?;
+    Ok(release_in(&m, version, &base).is_ok())
+}
+
 /// The release whose Quest APK has `version_code`, from the manifest checked last (no
 /// network): what the headset has installed, by name.
 pub fn quest_version_of(version_code: u64) -> Option<String> {
@@ -1114,6 +1175,45 @@ mod tests {
                 at("nightly", "6.19.0")
             ]
         );
+    }
+
+    #[test]
+    fn the_pc_may_pick_every_release_with_a_pc_zip_newest_first() {
+        let pc = |v: &str| {
+            serde_json::json!({"version": v, "artifacts": [{
+                "kind": "windows-zip",
+                "path": format!("v{v}/nevr-runtime-v{v}-windows.zip"),
+                "sha256": "a".repeat(64), "size": 1,
+                "contents": [{"path": mods::SLOT, "sha256": "b".repeat(64), "size": 1}]
+            }]})
+        };
+        let m = serde_json::json!({
+            "channels": {"stable": "6.16.5", "beta": "6.17.0"},
+            "releases": {
+                "6.9.0": pc("6.9.0"),
+                "6.16.5": pc("6.16.5"),
+                "6.18.1": pc("6.18.1"),
+                "6.17.0": pc("6.17.0"),
+                // Quest only: nothing for the PC to pick.
+                "6.15.0": {"version": "6.15.0", "artifacts": []},
+                "latest": pc("latest"),
+            }
+        });
+        let got: Vec<(String, Vec<String>)> = versions_in(&m, BASE)
+            .into_iter()
+            .map(|p| (p.version, p.channels))
+            .collect();
+        let at = |v: &str, c: &[&str]| (v.to_string(), c.iter().map(|s| s.to_string()).collect());
+        assert_eq!(
+            got,
+            [
+                at("6.18.1", &[]),
+                at("6.17.0", &["beta"]),
+                at("6.16.5", &["stable"]),
+                at("6.9.0", &[]),
+            ]
+        );
+        assert!(versions_in(&serde_json::json!({}), BASE).is_empty());
     }
 
     #[test]

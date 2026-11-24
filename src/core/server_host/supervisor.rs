@@ -449,7 +449,7 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     let section = mods::takes_update_section(&v.bin_dir());
     yaml.extend(nevr::update_edits(
         section,
-        state.nevr_updates,
+        state.nevr_updates_now(),
         &state.nevr_channel,
     ));
     let json = config::game_config(&cfg.publisher_lock);
@@ -477,7 +477,7 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
     }
     if let Some(root) = &root {
         let record = dir.join("nevr-root.json");
-        nevr_root::put_in_place(&v.bin_dir(), root, &record, false, state.nevr_updates)
+        nevr_root::put_in_place(&v.bin_dir(), root, &record, false, state.nevr_updates_now())
             .context("nEVR's runtime for the server")?;
         nevr_root::plugins_into(&v.bin_dir(), root, &record, false)
             .context("the server's plugins")?;
@@ -496,7 +496,7 @@ fn prepare(name: &str, dir: &Path) -> Result<Prepared> {
         config_json: f.local().join(nevr::GAME_CONFIG),
         config_yaml: mods::reads_root_config(&v.bin_dir()).then(|| f.local().join(nevr::CONFIG)),
         no_update: itself
-            && nevr::updates_for(state.nevr_updates, section) == nevr::NevrUpdates::Launcher,
+            && nevr::updates_for(state.nevr_updates_now(), section) == nevr::NevrUpdates::Launcher,
         sign_in: cfg.account.sign_in,
         password,
         appdata,

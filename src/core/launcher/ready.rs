@@ -168,7 +168,7 @@ pub fn fingerprint(state: &LauncherState, v: &InstalledVersion) -> u64 {
         &state.relay_account,
         // How nEVR updates (6.17.0 on): its config.yaml says it.
         &state.nevr_channel,
-        state.nevr_updates,
+        state.nevr_updates_now(),
     ))
     .unwrap_or_default();
     choices.hash(&mut h);
