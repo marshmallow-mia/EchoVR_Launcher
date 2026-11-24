@@ -496,7 +496,9 @@ pub fn play_from_steam(ask: &crate::core::launcher::headless::Ask) -> i32 {
     let args = if v.publisher_lock.is_some() {
         Vec::new()
     } else {
-        launch::game_args(&profile, lobby.as_ref().map(|(l, _)| l.as_str()))
+        let mut a = launch::game_args(&profile, lobby.as_ref().map(|(l, _)| l.as_str()));
+        a.extend(launch::nevr_args(&v.bin_dir()));
+        a
     };
     let event = v.publisher_lock.is_some();
     // An event build: in VR always (it can't sign in on the monitor).

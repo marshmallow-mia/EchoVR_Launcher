@@ -77,6 +77,9 @@ pub const CANCELLED: u8 = 0;
 /// Step 8's file didn't arrive (no connection, an error from the server, a file that
 /// couldn't be saved): nothing about the release itself was wrong.
 pub const UNREACHABLE: u8 = 9;
+/// Not a step of the guide: nEVR's manifest lists the file, but nEVR's server doesn't have
+/// it (404 or 410; nEVR 6.18.1's Windows zip was listed before it was uploaded).
+pub const MISSING: u8 = 10;
 
 impl Refused {
     /// As an error for the rest of the launcher: a cancel is [`super::http::Cancelled`],
@@ -109,6 +112,7 @@ fn say(step: u8) -> &'static str {
         CANCELLED => "Cancelled. Nothing was changed.",
         7 => "nEVR's release information doesn't have the nEVR this update brings. Nothing was changed.",
         UNREACHABLE => "Couldn't download nEVR. Check your connection and free disk space, then try again. Nothing was changed.",
+        MISSING => "nEVR's server doesn't have this nEVR release's download yet. Try again later, or pick another nEVR version in Settings. Nothing was changed.",
         _ => "A file from nEVR's release didn't match it, so it was deleted and nothing was installed.",
     }
 }
@@ -240,12 +244,14 @@ fn fetch_checked(
 }
 
 /// Why a release's file wasn't downloaded: the player cancelled, the server sent more
-/// than the manifest's size (step 8), or no file came at all.
+/// than the manifest's size (step 8), doesn't have it, or no file came at all.
 fn download_refused(e: &anyhow::Error) -> Refused {
     let step = if super::http::is_cancelled(e) {
         CANCELLED
     } else if e.downcast_ref::<super::http::TooLarge>().is_some() {
         8
+    } else if e.downcast_ref::<super::http::NotThere>().is_some() {
+        MISSING
     } else {
         UNREACHABLE
     };
@@ -275,9 +281,9 @@ pub struct GameData {
     pub contents: Vec<Member>,
 }
 
-/// One of nEVR's channels, the way a player follows it: the Quest (Play's picker,
-/// launcher.json's `quest_channel`) and Echo VR on the PC (Settings' "nEVR beta",
-/// `nevr_channel`), each on its own. Stable unless picked.
+/// One of nEVR's channels, the way the Quest follows it (Play's picker, launcher.json's
+/// `quest_channel`). Echo VR on the PC follows any channel nEVR's manifest has (Settings'
+/// "nEVR channel", [`pc_channels`]), stable and beta first. Stable unless picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NevrChannel {
@@ -357,6 +363,110 @@ fn quest_offer_in(m: &Value, channel: &str, base: &str) -> QuestOffer {
             .collect(),
         release: release_of(channel),
     }
+}
+
+/// nEVR's channels in the manifest checked last (no network), each with the release it has
+/// now: stable and beta first (as the Quest has them), then the others by name. Stable and
+/// beta are there without a checked manifest too, with no release. Read again only when the
+/// stored manifest changes (Settings asks every frame).
+pub fn pc_channels() -> Vec<(String, Option<String>)> {
+    type Seen = (Option<std::time::SystemTime>, Vec<(String, Option<String>)>);
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let dir = state_dir();
+    let stamp = std::fs::metadata(dir.join(MANIFEST))
+        .and_then(|m| m.modified())
+        .ok();
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((s, channels)) = seen.as_ref() {
+        if *s == stamp {
+            return channels.clone();
+        }
+    }
+    let channels = channels_in(stored(&dir).ok().as_ref());
+    *seen = Some((stamp, channels.clone()));
+    channels
+}
+
+/// Pure: [`pc_channels`] in the checked manifest `m` (None: none checked yet).
+fn channels_in(m: Option<&Value>) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<(String, Option<String>)> = NevrChannel::ALL
+        .iter()
+        .map(|c| (c.name().to_string(), None))
+        .collect();
+    let Some(listed) = m.and_then(|m| m["channels"].as_object()) else {
+        return out;
+    };
+    for (name, v) in listed {
+        let Some(v) = v.as_str().filter(|v| semver_ok(v) && channel_ok(name)) else {
+            continue;
+        };
+        match out.iter_mut().find(|(n, _)| n == name) {
+            Some((_, release)) => *release = Some(v.to_string()),
+            None => out.push((name.clone(), Some(v.to_string()))),
+        }
+    }
+    out
+}
+
+/// One release of nEVR's for the PC that Settings' "nEVR version" can pick: its version
+/// and the channels that have it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PcVersion {
+    pub version: String,
+    pub channels: Vec<String>,
+}
+
+/// Every release of nEVR's for the PC in the manifest checked last (no network), newest
+/// first: what a player can move Echo VR up or down to. nEVR's manifest lists only the
+/// releases it keeps signed (its channels' and a few more), so this is all there is to
+/// pick from. Read again only when the stored manifest changes (Settings asks every frame).
+pub fn pc_versions() -> Vec<PcVersion> {
+    type Seen = (Option<std::time::SystemTime>, Vec<PcVersion>);
+    static SEEN: std::sync::Mutex<Option<Seen>> = std::sync::Mutex::new(None);
+    let dir = state_dir();
+    let stamp = std::fs::metadata(dir.join(MANIFEST))
+        .and_then(|m| m.modified())
+        .ok();
+    let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((s, versions)) = seen.as_ref() {
+        if *s == stamp {
+            return versions.clone();
+        }
+    }
+    let versions = stored(&dir)
+        .map(|m| versions_in(&m, &base()))
+        .unwrap_or_default();
+    *seen = Some((stamp, versions.clone()));
+    versions
+}
+
+/// Pure: [`pc_versions`] in the checked manifest `m` (whose folder is `base`): the releases
+/// with a PC zip that passes step 8's checks, newest first.
+fn versions_in(m: &Value, base: &str) -> Vec<PcVersion> {
+    let Some(releases) = m["releases"].as_object() else {
+        return Vec::new();
+    };
+    let mut out: Vec<PcVersion> = releases
+        .keys()
+        .filter(|v| semver_ok(v) && release_in(m, v, base).is_ok())
+        .map(|v| PcVersion {
+            version: v.clone(),
+            channels: channels_in(Some(m))
+                .into_iter()
+                .filter(|(_, r)| r.as_deref() == Some(v.as_str()))
+                .map(|(name, _)| name)
+                .collect(),
+        })
+        .collect();
+    out.sort_by_key(|p| std::cmp::Reverse(semver_key(&p.version)));
+    out
+}
+
+/// Steps 1 to 6, then whether nEVR's manifest has a PC release `version` (a version the
+/// player picked, which nEVR may have stopped listing).
+pub fn pc_version_offered(version: &str, cancel: &AtomicBool) -> Result<bool, Refused> {
+    let (m, base) = checked(cancel)?;
+    Ok(release_in(&m, version, &base).is_ok())
 }
 
 /// The release whose Quest APK has `version_code`, from the manifest checked last (no
@@ -1055,6 +1165,64 @@ mod tests {
     const BEFORE: &str = "2026-10-26T12:00:00Z";
 
     #[test]
+    fn the_pc_may_follow_any_channel_the_manifest_has() {
+        let none = |n: &str| (n.to_string(), None::<String>);
+        let at = |n: &str, v: &str| (n.to_string(), Some(v.to_string()));
+        assert_eq!(channels_in(None), [none("stable"), none("beta")]);
+        let m = serde_json::json!({"channels": {
+            "nightly": "6.19.0", "beta": "6.17.0", "stable": "6.16.5",
+            "Bad Name": "6.0.0", "broken": "latest"
+        }});
+        assert_eq!(
+            channels_in(Some(&m)),
+            [
+                at("stable", "6.16.5"),
+                at("beta", "6.17.0"),
+                at("nightly", "6.19.0")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_pc_may_pick_every_release_with_a_pc_zip_newest_first() {
+        let pc = |v: &str| {
+            serde_json::json!({"version": v, "artifacts": [{
+                "kind": "windows-zip",
+                "path": format!("v{v}/nevr-runtime-v{v}-windows.zip"),
+                "sha256": "a".repeat(64), "size": 1,
+                "contents": [{"path": mods::SLOT, "sha256": "b".repeat(64), "size": 1}]
+            }]})
+        };
+        let m = serde_json::json!({
+            "channels": {"stable": "6.16.5", "beta": "6.17.0"},
+            "releases": {
+                "6.9.0": pc("6.9.0"),
+                "6.16.5": pc("6.16.5"),
+                "6.18.1": pc("6.18.1"),
+                "6.17.0": pc("6.17.0"),
+                // Quest only: nothing for the PC to pick.
+                "6.15.0": {"version": "6.15.0", "artifacts": []},
+                "latest": pc("latest"),
+            }
+        });
+        let got: Vec<(String, Vec<String>)> = versions_in(&m, BASE)
+            .into_iter()
+            .map(|p| (p.version, p.channels))
+            .collect();
+        let at = |v: &str, c: &[&str]| (v.to_string(), c.iter().map(|s| s.to_string()).collect());
+        assert_eq!(
+            got,
+            [
+                at("6.18.1", &[]),
+                at("6.17.0", &["beta"]),
+                at("6.16.5", &["stable"]),
+                at("6.9.0", &[]),
+            ]
+        );
+        assert!(versions_in(&serde_json::json!({}), BASE).is_empty());
+    }
+
+    #[test]
     fn a_channel_is_stable_unless_picked() {
         assert_eq!(NevrChannel::default(), NevrChannel::Stable);
         let names: Vec<&str> = NevrChannel::ALL.iter().map(|c| c.name()).collect();
@@ -1150,6 +1318,11 @@ mod tests {
         let r = download_refused(&long);
         assert_eq!(r.step, 8);
         assert!(r.to_string().contains("didn't match"), "{r}");
+
+        let gone = anyhow::Error::new(crate::core::http::NotThere(404)).context("GET x");
+        let r = download_refused(&gone);
+        assert_eq!(r.step, MISSING);
+        assert!(r.to_string().contains("doesn't have"), "{r}");
 
         let r = download_refused(&anyhow::anyhow!("GET x: connection refused"));
         assert_eq!(r.step, UNREACHABLE);

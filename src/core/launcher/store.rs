@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::catalog::{Catalog, VersionEntry};
+use super::nevr::NevrUpdates;
 use super::update_check::Channel;
 use crate::core::nevr_release::NevrChannel;
 use crate::core::paths;
@@ -200,8 +201,20 @@ pub struct LauncherState {
     /// nEVR's channel the Quest installs from (Play's picker): stable unless picked.
     pub quest_channel: NevrChannel,
     /// nEVR's channel Echo VR on the PC updates to where its update follows nEVR's channels
-    /// (Settings' "nEVR beta"): stable unless picked.
-    pub nevr_channel: NevrChannel,
+    /// (Settings' "nEVR channel"): any channel nEVR's manifest has, stable unless picked. A
+    /// name that can't be a channel is stable. nEVR 6.17.0 on follows it too when it updates
+    /// itself.
+    #[serde(deserialize_with = "channel_name")]
+    pub nevr_channel: String,
+    /// The release of nEVR's Echo VR on the PC stays at (Settings' "nEVR version"), in place
+    /// of its channel's newest: one the player moved up or down to. None follows
+    /// `nevr_channel`. nEVR doesn't update itself while one is picked. Anything that isn't a
+    /// version `X.Y.Z` is none.
+    #[serde(deserialize_with = "version_name")]
+    pub nevr_version: Option<String>,
+    /// Who updates nEVR's runtime from 6.18.0 on (Settings' "nEVR updates"): nEVR itself
+    /// unless the launcher is picked.
+    pub nevr_updates: NevrUpdates,
     /// The EchoVRCE account echovrce.com inside the launcher was signed in for.
     pub vrce_site_account: Option<String>,
     /// Linux: the Steam shortcut that starts Echo VR (its appid), once set up.
@@ -397,7 +410,9 @@ impl Default for LauncherState {
             quest_ip: None,
             quest_adb_network: false,
             quest_channel: Default::default(),
-            nevr_channel: Default::default(),
+            nevr_channel: NevrChannel::Stable.name().to_string(),
+            nevr_version: None,
+            nevr_updates: Default::default(),
             vrce_site_account: None,
             linux_appid: None,
             steam_flatpak_override: false,
@@ -449,6 +464,24 @@ pub fn default_library() -> String {
     }
 }
 
+/// launcher.json's `nevr_channel`: a name nEVR's channels can have (`[a-z]+`), else stable.
+fn channel_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let name = <String as Deserialize>::deserialize(d)?;
+    Ok(if crate::core::nevr_release::channel_ok(&name) {
+        name
+    } else {
+        NevrChannel::Stable.name().to_string()
+    })
+}
+
+/// launcher.json's `nevr_version`: a version `X.Y.Z`, else none (the channel).
+fn version_name<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let v = <serde_json::Value as Deserialize>::deserialize(d)?;
+    Ok(v.as_str()
+        .filter(|v| crate::core::nevr_release::semver_ok(v))
+        .map(str::to_string))
+}
+
 pub fn state_file() -> PathBuf {
     paths::data_dir().join("launcher.json")
 }
@@ -458,7 +491,9 @@ impl LauncherState {
         let s = Self::load_upgraded(&state_file());
         crate::core::pc_update::set_channel(s.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(s.launcher_channel);
-        crate::core::pc_update::set_nevr_channel(s.nevr_channel);
+        crate::core::pc_update::set_nevr_channel(&s.nevr_channel);
+        crate::core::pc_update::set_nevr_version(s.nevr_version.as_deref());
+        super::nevr::set_updates(s.nevr_updates_now());
         super::quest::set_channel(s.quest_channel);
         super::dev_code::set_all(&s.dev_codes);
         super::prefs::set(&s);
@@ -526,10 +561,23 @@ impl LauncherState {
         self
     }
 
+    /// Who updates nEVR's runtime now: the launcher while a version is picked (Settings'
+    /// "nEVR version"), which nEVR would otherwise leave at once for its channel's newest;
+    /// else Settings' "nEVR updates".
+    pub fn nevr_updates_now(&self) -> NevrUpdates {
+        if self.nevr_version.is_some() {
+            NevrUpdates::Launcher
+        } else {
+            self.nevr_updates
+        }
+    }
+
     pub fn save(&self) -> Result<()> {
         crate::core::pc_update::set_channel(self.update_manifest.as_deref());
         crate::core::pc_update::set_launcher_channel(self.launcher_channel);
-        crate::core::pc_update::set_nevr_channel(self.nevr_channel);
+        crate::core::pc_update::set_nevr_channel(&self.nevr_channel);
+        crate::core::pc_update::set_nevr_version(self.nevr_version.as_deref());
+        super::nevr::set_updates(self.nevr_updates_now());
         super::quest::set_channel(self.quest_channel);
         super::dev_code::set_all(&self.dev_codes);
         super::prefs::set(self);
@@ -994,26 +1042,73 @@ mod tests {
     }
 
     #[test]
-    fn echo_vr_follows_nevr_stable_unless_beta_is_picked() {
+    fn echo_vr_follows_nevr_stable_unless_another_channel_is_picked() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("launcher.json");
-        assert_eq!(
-            LauncherState::load_from(&f).nevr_channel,
-            NevrChannel::Stable
-        );
+        assert_eq!(LauncherState::load_from(&f).nevr_channel, "stable");
         // From before the setting (when Main's update followed nEVR's beta): stable.
         std::fs::write(&f, r#"{"schema":3}"#).unwrap();
         let mut s = LauncherState::load_from(&f);
-        assert_eq!(s.nevr_channel, NevrChannel::Stable);
-        s.nevr_channel = NevrChannel::Beta;
+        assert_eq!(s.nevr_channel, "stable");
+        s.nevr_channel = "beta".into();
         s.save_to(&f).unwrap();
         assert!(std::fs::read_to_string(&f)
             .unwrap()
             .contains(r#""nevr_channel": "beta""#));
         let s = LauncherState::load_from(&f);
-        assert_eq!(s.nevr_channel, NevrChannel::Beta);
+        assert_eq!(s.nevr_channel, "beta");
         // Each on its own: the Quest's stays stable.
         assert_eq!(s.quest_channel, NevrChannel::Stable);
+        // Any channel nEVR has; a name that can't be one is stable.
+        std::fs::write(&f, r#"{"schema":3,"nevr_channel":"nightly"}"#).unwrap();
+        assert_eq!(LauncherState::load_from(&f).nevr_channel, "nightly");
+        std::fs::write(&f, r#"{"schema":3,"nevr_channel":"../x"}"#).unwrap();
+        assert_eq!(LauncherState::load_from(&f).nevr_channel, "stable");
+    }
+
+    #[test]
+    fn echo_vr_follows_its_channel_unless_a_version_is_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        std::fs::write(&f, r#"{"schema":3}"#).unwrap();
+        let mut s = LauncherState::load_from(&f);
+        assert_eq!(s.nevr_version, None);
+        assert_eq!(s.nevr_updates_now(), NevrUpdates::Nevr);
+        s.nevr_version = Some("6.16.5".into());
+        // A picked version stays: nEVR doesn't update itself away from it.
+        assert_eq!(s.nevr_updates_now(), NevrUpdates::Launcher);
+        s.save_to(&f).unwrap();
+        assert_eq!(
+            LauncherState::load_from(&f).nevr_version.as_deref(),
+            Some("6.16.5")
+        );
+        // Anything but a version: the channel.
+        for bad in [r#""latest""#, r#""../6.1.0""#, "null", "5"] {
+            std::fs::write(&f, format!(r#"{{"schema":3,"nevr_version":{bad}}}"#)).unwrap();
+            let s = LauncherState::load_from(&f);
+            assert_eq!(s.nevr_version, None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn nevr_updates_itself_unless_the_launcher_is_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("launcher.json");
+        std::fs::write(&f, r#"{"schema":3}"#).unwrap();
+        let mut s = LauncherState::load_from(&f);
+        assert_eq!(s.nevr_updates, NevrUpdates::Nevr);
+        s.nevr_updates = NevrUpdates::Launcher;
+        s.save_to(&f).unwrap();
+        assert!(std::fs::read_to_string(&f)
+            .unwrap()
+            .contains(r#""nevr_updates": "launcher""#));
+        assert_eq!(
+            LauncherState::load_from(&f).nevr_updates,
+            NevrUpdates::Launcher
+        );
+        // A choice a later launcher has: nEVR's own.
+        std::fs::write(&f, r#"{"schema":3,"nevr_updates":"someone"}"#).unwrap();
+        assert_eq!(LauncherState::load_from(&f).nevr_updates, NevrUpdates::Nevr);
     }
 
     fn catalog() -> Catalog {

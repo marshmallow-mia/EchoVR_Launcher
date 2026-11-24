@@ -198,6 +198,16 @@ pub fn shots() -> Vec<Shot> {
         ("settings_rail_open", Page::Settings, SnapVariant::RailOpen),
         ("settings_uninstall", Page::Settings, SnapVariant::Uninstall),
         ("install_menu", Page::Install, SnapVariant::MenuOpen),
+        (
+            "install_nevr_menu",
+            Page::Install,
+            SnapVariant::NevrManageMenu,
+        ),
+        (
+            "settings_nevr_version",
+            Page::Settings,
+            SnapVariant::NevrMenu,
+        ),
         ("install_fresh", Page::Install, SnapVariant::Fresh),
         ("install_extracting", Page::Install, SnapVariant::Extracting),
         ("install_quest", Page::Install, SnapVariant::QuestSide),

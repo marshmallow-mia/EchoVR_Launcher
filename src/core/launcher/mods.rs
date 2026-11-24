@@ -1032,10 +1032,23 @@ pub fn reads_root_config(bin: &Path) -> bool {
     facts(bin).3
 }
 
-/// [`slot_facts`], [`reads_root_login`] and [`reads_root_config`].
-fn facts(bin: &Path) -> (Loader, bool, bool, bool) {
+/// Whether the runtime of the nEVR in `bin`'s slot updates itself (6.17.0 on:
+/// [`nevr::updates_itself`]).
+pub fn updates_itself(bin: &Path) -> bool {
+    facts(bin).4
+}
+
+/// Whether the runtime of the nEVR in `bin`'s slot takes `config.yaml`'s `update` section
+/// (6.18.0 on: [`nevr::takes_update_section`]).
+pub fn takes_update_section(bin: &Path) -> bool {
+    facts(bin).5
+}
+
+/// [`slot_facts`], [`reads_root_login`], [`reads_root_config`], [`updates_itself`] and
+/// [`takes_update_section`].
+fn facts(bin: &Path) -> (Loader, bool, bool, bool, bool, bool) {
     type Stamp = Option<(u64, std::time::SystemTime)>;
-    type Seen = (Stamp, [Stamp; 2], Loader, bool, bool, bool);
+    type Seen = (Stamp, [Stamp; 2], Loader, [bool; 5]);
     static SEEN: std::sync::Mutex<BTreeMap<PathBuf, Seen>> = std::sync::Mutex::new(BTreeMap::new());
     let path = bin.join(SLOT);
     let stamp_of = |p: &Path| {
@@ -1048,9 +1061,18 @@ fn facts(bin: &Path) -> (Loader, bool, bool, bool) {
     let stamp = stamp_of(&path);
     if stamp.is_some() {
         let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((s, rs, loader, early, root_login, root_config)) = seen.get(&path) {
+        if let Some((s, rs, loader, [early, root_login, root_config, itself, section])) =
+            seen.get(&path)
+        {
             if (*s, *rs) == (stamp, runtime_stamp) {
-                return (loader.clone(), *early, *root_login, *root_config);
+                return (
+                    loader.clone(),
+                    *early,
+                    *root_login,
+                    *root_config,
+                    *itself,
+                    *section,
+                );
             }
         }
     }
@@ -1070,6 +1092,8 @@ fn facts(bin: &Path) -> (Loader, bool, bool, bool) {
         .is_some_and(packs::loads_early);
     let root_login = runtime.as_deref().is_some_and(nevr::reads_root_login);
     let root_config = runtime.as_deref().is_some_and(nevr::reads_root_config);
+    let itself = runtime.as_deref().is_some_and(nevr::updates_itself);
+    let section = runtime.as_deref().is_some_and(nevr::takes_update_section);
     if stamp.is_some() {
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).insert(
             path,
@@ -1077,13 +1101,11 @@ fn facts(bin: &Path) -> (Loader, bool, bool, bool) {
                 stamp,
                 runtime_stamp,
                 loader.clone(),
-                early,
-                root_login,
-                root_config,
+                [early, root_login, root_config, itself, section],
             ),
         );
     }
-    (loader, early, root_login, root_config)
+    (loader, early, root_login, root_config, itself, section)
 }
 
 /// Reads `v`'s mods (file I/O: on a worker).

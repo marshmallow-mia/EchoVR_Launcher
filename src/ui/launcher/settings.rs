@@ -124,6 +124,226 @@ fn tip_option(
     option(kit, key, on, label, "", x, y, w, enabled, &tip)
 }
 
+/// A label with a dark button on the right that opens `items` (showing `shown`): returns the
+/// row picked. As tall as an [`option`] without a note.
+#[allow(clippy::too_many_arguments)]
+fn picker_row(
+    kit: &mut Kit,
+    key: &str,
+    label: &str,
+    shown: &str,
+    items: &[MenuItem],
+    x: f32,
+    y: f32,
+    w: f32,
+    tip: &str,
+) -> Option<usize> {
+    let g = kit.label_galley(label, design::din(18.0), design::TEXT, f32::INFINITY);
+    let gh = g.size().y;
+    kit.put(x, y + (24.0 - gh) / 2.0, g);
+    let bw = dz(220.0).min(w / 2.0);
+    let bh = 30.0;
+    kit.menu_button(
+        key,
+        shown,
+        items,
+        x + w - bw,
+        y + (24.0 - bh) / 2.0,
+        bw,
+        bh,
+        tip,
+    )
+}
+
+/// nEVR's channel `name` as Settings shows it: "Stable", "Beta", or its own name with a
+/// capital.
+fn channel_label(name: &str) -> String {
+    use crate::core::nevr_release::NevrChannel;
+    if let Some(c) = NevrChannel::ALL.iter().find(|c| c.name() == name) {
+        return c.label().to_string();
+    }
+    let mut chars = name.chars();
+    chars
+        .next()
+        .map(|c| c.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
+}
+
+/// What following nEVR's channel `name` means.
+fn channel_note(name: &str) -> &'static str {
+    use crate::core::nevr_release::NevrChannel;
+    NevrChannel::ALL
+        .iter()
+        .find(|c| c.name() == name)
+        .map_or("Another channel of nEVR's. Its builds can have bugs", |c| {
+            c.note()
+        })
+}
+
+/// One row of Settings' "nEVR version": a channel of nEVR's with the release it has now,
+/// one of nEVR's releases to stay at, or the line between them.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum NevrPick {
+    Channel(String, Option<String>),
+    Release(crate::core::nevr_release::PcVersion),
+    Divider,
+}
+
+/// Pure: the rows of "nEVR version": nEVR's channels, then every release its manifest has
+/// for the PC (none before it was read), newest first.
+fn nevr_picks(
+    channels: Vec<(String, Option<String>)>,
+    releases: Vec<crate::core::nevr_release::PcVersion>,
+) -> Vec<NevrPick> {
+    let mut out: Vec<NevrPick> = channels
+        .into_iter()
+        .map(|(name, v)| NevrPick::Channel(name, v))
+        .collect();
+    if !releases.is_empty() {
+        out.push(NevrPick::Divider);
+        out.extend(releases.into_iter().map(NevrPick::Release));
+    }
+    out
+}
+
+/// The screenshots' made-up channels of nEVR's (as the Quest's demo has them).
+fn demo_nevr_channels() -> Vec<(String, Option<String>)> {
+    vec![
+        ("stable".into(), Some("6.2.0".into())),
+        ("beta".into(), Some("6.3.0".into())),
+    ]
+}
+
+/// The screenshots' made-up releases of nEVR's.
+fn demo_nevr_releases() -> Vec<crate::core::nevr_release::PcVersion> {
+    let at = |v: &str, c: &[&str]| crate::core::nevr_release::PcVersion {
+        version: v.into(),
+        channels: c.iter().map(|c| c.to_string()).collect(),
+    };
+    vec![
+        at("6.3.0", &["beta"]),
+        at("6.2.0", &["stable"]),
+        at("6.1.4", &[]),
+    ]
+}
+
+/// "nEVR version"'s rows and menu items, and what its button shows.
+pub(super) fn nevr_menu(d: &Dashboard) -> (Vec<NevrPick>, Vec<MenuItem>, String) {
+    let picks = if d.demo {
+        nevr_picks(demo_nevr_channels(), demo_nevr_releases())
+    } else {
+        nevr_picks(
+            crate::core::nevr_release::pc_channels(),
+            crate::core::nevr_release::pc_versions(),
+        )
+    };
+    let channel = &d.state.nevr_channel;
+    let picked = d.state.nevr_version.as_deref();
+    let items: Vec<MenuItem> = picks
+        .iter()
+        .map(|p| match p {
+            NevrPick::Channel(name, release) => MenuItem::Pick {
+                label: channel_label(name),
+                detail: release
+                    .as_ref()
+                    .map(|v| format!("nEVR {v}"))
+                    .unwrap_or_default(),
+                detail_color: design::GREY,
+                checked: picked.is_none() && name == channel,
+                tip: format!(
+                    "{}. Echo VR updates to each new release.",
+                    channel_note(name)
+                ),
+            },
+            NevrPick::Release(r) => MenuItem::Pick {
+                label: format!("nEVR {}", r.version),
+                detail: r
+                    .channels
+                    .iter()
+                    .map(|c| channel_label(c))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                detail_color: design::GREY,
+                checked: picked == Some(r.version.as_str()),
+                tip: format!(
+                    "Echo VR stays at nEVR {} until you pick something else here. nEVR doesn't update itself meanwhile.",
+                    r.version
+                ),
+            },
+            NevrPick::Divider => MenuItem::Divider,
+        })
+        .collect();
+    let shown = match picked {
+        Some(v) => format!("nEVR {v}"),
+        None => channel_label(channel),
+    };
+    (picks, items, shown)
+}
+
+/// "nEVR version": what Echo VR on this PC has of nEVR's. A channel's newest release (as
+/// before), or one release to stay at, to go back to an older one or try a newer one,
+/// picked from the list instead of guessed through "Undo an update". A version's MANAGE
+/// menu has the same list ("Change nEVR version…").
+fn nevr_version_row(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) {
+    let (picks, items, shown) = nevr_menu(d);
+    if let Some(i) = picker_row(
+        kit,
+        "nevr-channel",
+        "nEVR version",
+        &shown,
+        &items,
+        x,
+        y,
+        w,
+        "Which nEVR Echo VR has: a channel's newest release, or one release to stay at (an older one to go back to, or a newer one to try).",
+    ) {
+        if let Some(p) = picks.get(i) {
+            pick_nevr(d, &kit.ctx(), p);
+        }
+    }
+}
+
+/// Takes a row of "nEVR version": a new pick is saved and Echo VR updates to it at once.
+pub(super) fn pick_nevr(d: &mut Dashboard, ctx: &egui::Context, p: &NevrPick) {
+    let picked = d.state.nevr_version.clone();
+    let changed = match p {
+        NevrPick::Channel(name, _) if picked.is_some() || *name != d.state.nevr_channel => {
+            d.state.nevr_channel = name.clone();
+            d.state.nevr_version = None;
+            true
+        }
+        NevrPick::Release(r) if picked.as_deref() != Some(r.version.as_str()) => {
+            d.state.nevr_version = Some(r.version.clone());
+            true
+        }
+        _ => false,
+    };
+    if changed {
+        d.save();
+        update_to_nevr_pick(d, ctx);
+    }
+}
+
+/// After a new pick under "nEVR version": every Echo VR on this PC that gets the live
+/// update updates to it now, as "Update" would (one that is busy gets it with the next
+/// update check). The update check waits for those updates (each looks again when it's
+/// done): one now would offer the update they are installing.
+fn update_to_nevr_pick(d: &mut Dashboard, ctx: &egui::Context) {
+    let live: Vec<_> = d
+        .state
+        .versions
+        .iter()
+        .filter(|v| v.present() && crate::core::launcher::versions::has_updates(v))
+        .cloned()
+        .collect();
+    if live.is_empty() {
+        d.updates.check_soon();
+    }
+    for v in live {
+        super::versions::update(d, ctx, v);
+    }
+}
+
 // ---- the cards ----
 
 /// GAME: how you play, as the Install card asks it (a tile each), and the SteamVR
@@ -862,32 +1082,78 @@ fn update_options(d: &mut Dashboard, kit: &mut Kit, x: f32, y: f32, w: f32) -> f
         }
     }
     y += h + dz(6.0);
-    // nEVR's channel Echo VR updates to on this PC (the Quest has its own, on Play): stable
-    // unless ticked. A switch is an update of Echo VR's, offered like any other.
-    use crate::core::nevr_release::NevrChannel;
-    let mut beta = d.state.nevr_channel == NevrChannel::Beta;
-    let (flipped, h) = tip_option(
+    // Which nEVR Echo VR has on this PC (the Quest has its own, on Play): a channel of
+    // nEVR's (any its manifest has, stable unless picked), or one release to stay at, up or
+    // down. A switch updates Echo VR to it at once; nEVR 6.17.0 on follows the channel too
+    // when it updates itself.
+    nevr_version_row(d, kit, x, y, w);
+    y += dz(50.0);
+    // Who updates nEVR from 6.18.0 on (the launcher keeps 6.17.x current itself): nEVR itself between the launcher's updates, or only
+    // the launcher (nEVR's own check off).
+    use crate::core::launcher::nevr::NevrUpdates;
+    let by = d.state.nevr_updates;
+    let choices = [
+        (
+            NevrUpdates::Nevr,
+            "nEVR itself",
+            "nEVR updates itself to its channel's newest release when Echo VR starts (nEVR 6.18.0 and later).",
+        ),
+        (
+            NevrUpdates::Launcher,
+            "The launcher",
+            "Only the launcher updates nEVR, with Echo VR's updates. nEVR's own update check is off.",
+        ),
+    ];
+    // A release picked under "nEVR version" stays: only the launcher updates nEVR then.
+    let picked = d.state.nevr_version.clone();
+    let by = if picked.is_some() {
+        NevrUpdates::Launcher
+    } else {
+        by
+    };
+    let items: Vec<MenuItem> = choices
+        .iter()
+        .map(|(c, label, tip)| match &picked {
+            Some(v) => MenuItem::Row {
+                label: (*label).into(),
+                tip: format!(
+                    "Echo VR stays at nEVR {v} (nEVR version), so only the launcher updates nEVR."
+                ),
+                enabled: false,
+            },
+            None => MenuItem::Pick {
+                label: (*label).into(),
+                detail: String::new(),
+                detail_color: design::GREY,
+                checked: *c == by,
+                tip: (*tip).into(),
+            },
+        })
+        .collect();
+    let shown = choices
+        .iter()
+        .find(|(c, _, _)| *c == by)
+        .map_or("", |(_, label, _)| label);
+    if let Some(i) = picker_row(
         kit,
-        "nevr-beta",
-        &mut beta,
-        "nEVR beta",
-        "Echo VR updates to nEVR's newest builds before they reach stable. They can have bugs.",
+        "nevr-updates",
+        "nEVR updates",
+        shown,
+        &items,
         x,
         y,
         w,
-        true,
-        "",
-    );
-    if flipped {
-        d.state.nevr_channel = if beta {
-            NevrChannel::Beta
-        } else {
-            NevrChannel::Stable
-        };
-        d.save();
-        d.updates.check_soon();
+        "Who updates nEVR (6.18.0 and later): nEVR itself when Echo VR starts, or only the launcher.",
+    ) {
+        if let Some((c, _, _)) = choices
+            .get(i)
+            .filter(|(c, _, _)| *c != by && picked.is_none())
+        {
+            d.state.nevr_updates = *c;
+            d.save();
+        }
     }
-    y += h + dz(12.0);
+    y += dz(50.0) + dz(12.0);
     // A test channel for the PC update (launcher.json's update_manifest, or the
     // environment's ECHOVR_UPDATE_MANIFEST): said here while it applies.
     if let Some((url, from)) = crate::core::pc_update::channel_override() {
@@ -2396,5 +2662,21 @@ mod tests {
             what_goes(&demo_sources()[..1]),
             "It sends 1 log file (0.4 MB): from the launcher (1)."
         );
+    }
+
+    #[test]
+    fn nevr_version_lists_the_channels_then_every_release() {
+        let picks = nevr_picks(demo_nevr_channels(), demo_nevr_releases());
+        let names: Vec<String> = picks
+            .iter()
+            .map(|p| match p {
+                NevrPick::Channel(n, _) => n.clone(),
+                NevrPick::Release(r) => r.version.clone(),
+                NevrPick::Divider => "-".into(),
+            })
+            .collect();
+        assert_eq!(names, ["stable", "beta", "-", "6.3.0", "6.2.0", "6.1.4"]);
+        // Before nEVR's manifest was read: the channels alone, no line.
+        assert_eq!(nevr_picks(demo_nevr_channels(), Vec::new()).len(), 2);
     }
 }

@@ -159,6 +159,12 @@ pub struct Cancelled;
 #[error("the server sent more than {0} bytes")]
 pub struct TooLarge(pub u64);
 
+/// Error for a file the server doesn't have (404 or 410, [`get_capped`]): nothing is wrong
+/// with the connection.
+#[derive(Debug, thiserror::Error)]
+#[error("the server responded with {0}")]
+pub struct NotThere(pub u16);
+
 pub fn is_cancelled(e: &anyhow::Error) -> bool {
     e.downcast_ref::<Cancelled>().is_some()
 }
@@ -360,8 +366,12 @@ pub fn get_capped(
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
-        if resp.status().as_u16() != 200 {
-            bail!("GET {url}: server responded with {}", resp.status());
+        match resp.status().as_u16() {
+            200 => {}
+            code @ (404 | 410) => {
+                return Err(anyhow::Error::new(NotThere(code)).context(format!("GET {url}")))
+            }
+            _ => bail!("GET {url}: server responded with {}", resp.status()),
         }
         let (mut sha, mut size) = (Sha256::new(), 0u64);
         while let Some(chunk) = next_chunk(&mut resp, cancel).await? {
